@@ -25,6 +25,7 @@ body {
     align-items: center;
     padding: 0 15px;
     border-bottom: 1px solid #3d3d3d;
+    -webkit-app-region: drag;
 }
 
 .header-left {
@@ -749,6 +750,120 @@ body {
 .setting-select:focus {
     outline: none;
     border-color: #007acc;
+}
+
+/* Keyword blocking table styles */
+.keyword-blocking-table {
+    margin-top: 12px;
+    border: 1px solid #3d3d3d;
+    border-radius: 4px;
+    background-color: #1e1e1e;
+}
+
+.keyword-table-header {
+    display: grid;
+    grid-template-columns: 1fr 1.2fr 70px;
+    gap: 8px;
+    padding: 10px;
+    background-color: #2d2d2d;
+    border-bottom: 1px solid #3d3d3d;
+    font-size: 12px;
+    font-weight: 600;
+    color: #cccccc;
+}
+
+.keyword-rules-list {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.keyword-rule-row {
+    display: grid;
+    grid-template-columns: 1fr 1.2fr 70px;
+    gap: 8px;
+    padding: 10px;
+    border-bottom: 1px solid #3d3d3d;
+    align-items: center;
+}
+
+.keyword-rule-row:last-child {
+    border-bottom: none;
+}
+
+.keyword-rule-text {
+    font-size: 13px;
+    color: #ffffff;
+    word-break: break-word;
+}
+
+.keyword-rule-keyword {
+    font-family: monospace;
+    background-color: #3d3d3d;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+
+.keyword-rule-response {
+    color: #cccccc;
+}
+
+.keyword-add-row {
+    display: grid;
+    grid-template-columns: 1fr 1.2fr 70px;
+    gap: 8px;
+    padding: 10px;
+    background-color: #2d2d2d;
+}
+
+.keyword-input, .response-input {
+    padding: 6px 8px;
+    background-color: #3d3d3d;
+    border: 1px solid #555555;
+    border-radius: 4px;
+    color: #ffffff;
+    font-size: 12px;
+    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    min-width: 0;
+}
+
+.keyword-input:focus, .response-input:focus {
+    outline: none;
+    border-color: #007acc;
+}
+
+.add-keyword-btn {
+    background-color: #007acc;
+    border: none;
+    border-radius: 4px;
+    color: #ffffff;
+    cursor: pointer;
+    padding: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.2s;
+    min-width: 0;
+}
+
+.add-keyword-btn:hover {
+    background-color: #005a9e;
+}
+
+.remove-keyword-btn {
+    background-color: #dc3545;
+    border: none;
+    border-radius: 3px;
+    color: #ffffff;
+    cursor: pointer;
+    padding: 3px 6px;
+    font-size: 10px;
+    transition: background-color 0.2s;
+    white-space: nowrap;
+}
+
+.remove-keyword-btn:hover {
+    background-color: #c82333;
 }
 
 /* Message dropdown styles */

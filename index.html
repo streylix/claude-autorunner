@@ -141,6 +141,29 @@
                     </select>
                     <p class="setting-description">Time to wait before auto-scrolling after user interaction.</p>
                 </div>
+                <div class="setting-group">
+                    <label class="setting-label">
+                        <span class="setting-title">Claude Prompt Keyword Blocking</span>
+                    </label>
+                    <p class="setting-description">Block auto-continue when Claude prompts contain specific keywords. Press Esc and inject custom response instead.</p>
+                    <div class="keyword-blocking-table">
+                        <div class="keyword-table-header">
+                            <div class="keyword-col">Keyword</div>
+                            <div class="response-col">Response</div>
+                            <div class="actions-col">Actions</div>
+                        </div>
+                        <div id="keyword-rules-list" class="keyword-rules-list">
+                            <!-- Keyword rules will be dynamically added here -->
+                        </div>
+                        <div class="keyword-add-row">
+                            <input type="text" id="new-keyword" placeholder="Enter keyword..." class="keyword-input">
+                            <input type="text" id="new-response" placeholder="Enter response..." class="response-input">
+                            <button id="add-keyword-btn" class="add-keyword-btn" title="Add keyword rule">
+                                <i data-lucide="plus"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

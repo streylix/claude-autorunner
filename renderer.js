@@ -28,7 +28,8 @@ class TerminalGUI {
             autoscrollDelay: 3000,
             autoContinueEnabled: false,
             defaultDuration: 5,
-            defaultUnit: 'seconds'
+            defaultUnit: 'seconds',
+            keywordRules: []
         };
         
         this.initializeTerminal();
@@ -221,6 +222,23 @@ class TerminalGUI {
             this.autoscrollDelay = parseInt(e.target.value);
             this.preferences.autoscrollDelay = parseInt(e.target.value);
             this.saveAllPreferences();
+        });
+
+        // Keyword blocking controls
+        document.getElementById('add-keyword-btn').addEventListener('click', () => {
+            this.addKeywordRule();
+        });
+
+        document.getElementById('new-keyword').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                this.addKeywordRule();
+            }
+        });
+
+        document.getElementById('new-response').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                this.addKeywordRule();
+            }
         });
     }
 
@@ -511,9 +529,17 @@ class TerminalGUI {
         // Check current terminal state for blocking conditions before injecting
         const hasEscToInterrupt = this.lastTerminalOutput.includes("esc to interrupt");
         const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
+        const keywordBlockResult = this.checkForKeywordBlocking();
         
-        if (hasEscToInterrupt || hasClaudePrompt) {
-            const reason = hasEscToInterrupt ? 'esc to interrupt detected' : 'Claude prompt detected';
+        if (hasEscToInterrupt || hasClaudePrompt || keywordBlockResult.blocked) {
+            let reason;
+            if (hasEscToInterrupt) {
+                reason = 'esc to interrupt detected';
+            } else if (hasClaudePrompt) {
+                reason = 'Claude prompt detected';
+            } else if (keywordBlockResult.blocked) {
+                reason = `keyword "${keywordBlockResult.keyword}" detected`;
+            }
             this.logAction(`Message injection blocked - ${reason}`, 'warning');
             
             // Update blocking status
@@ -647,9 +673,12 @@ class TerminalGUI {
         const hasEscToInterrupt = this.lastTerminalOutput.includes("esc to interrupt");
         const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
         
+        // Check for custom keyword blocking
+        const keywordBlockResult = this.checkForKeywordBlocking();
+        
         // Update injection blocking status
         const previouslyBlocked = this.injectionBlocked;
-        this.injectionBlocked = hasEscToInterrupt || hasClaudePrompt;
+        this.injectionBlocked = hasEscToInterrupt || hasClaudePrompt || keywordBlockResult.blocked;
         
         // Log when blocking status changes
         if (previouslyBlocked && !this.injectionBlocked) {
@@ -659,7 +688,28 @@ class TerminalGUI {
                 this.scheduleNextInjection();
             }
         } else if (!previouslyBlocked && this.injectionBlocked) {
-            const reason = hasEscToInterrupt ? 'esc to interrupt detected' : 'Claude prompt detected';
+            let reason;
+            if (hasEscToInterrupt) {
+                reason = 'esc to interrupt detected';
+            } else if (hasClaudePrompt) {
+                reason = 'Claude prompt detected';
+            } else if (keywordBlockResult.blocked) {
+                reason = `keyword "${keywordBlockResult.keyword}" detected`;
+                // Inject custom response if specified
+                if (keywordBlockResult.response) {
+                    this.logAction(`Pressing Esc and injecting custom response for keyword "${keywordBlockResult.keyword}"`, 'info');
+                    // Send Esc key
+                    ipcRenderer.send('terminal-input', '\x1b');
+                    // Wait a moment then inject the custom response
+                    setTimeout(() => {
+                        this.typeMessage(keywordBlockResult.response, () => {
+                            setTimeout(() => {
+                                ipcRenderer.send('terminal-input', '\r');
+                            }, 200);
+                        });
+                    }, 500);
+                }
+            }
             this.logAction(`Message injection blocked - ${reason}`, 'warning');
             // Cancel any pending injection
             if (this.injectionTimer) {
@@ -668,14 +718,17 @@ class TerminalGUI {
             }
         }
         
-        // Auto-continue logic (independent of injection blocking)
+        // Auto-continue logic (independent of injection blocking but respects keyword blocking)
         if (!this.autoContinueEnabled || this.isInjecting) return;
         
         // Check for prompts that should trigger auto-continue
         const hasGeneralPrompt = /Do you want to proceed\?/i.test(this.lastTerminalOutput);
         
-        // Auto-continue for Claude prompt or general prompts (always auto-continue when enabled)
-        if (hasClaudePrompt || hasGeneralPrompt) {
+        // Check if we should skip auto-continue due to keyword blocking
+        const shouldSkipAutoContinue = keywordBlockResult.blocked && keywordBlockResult.response;
+        
+        // Auto-continue for Claude prompt or general prompts (unless keyword blocked with custom response)
+        if ((hasClaudePrompt || hasGeneralPrompt) && !shouldSkipAutoContinue) {
             const promptType = hasClaudePrompt ? 'Claude prompt' : 'general prompt';
             
             // If auto-continue is not already active for this prompt, start it
@@ -936,6 +989,9 @@ class TerminalGUI {
             document.getElementById('duration-input').value = this.preferences.defaultDuration;
             document.getElementById('duration-unit').value = this.preferences.defaultUnit;
             
+            // Update keyword rules display
+            this.updateKeywordRulesDisplay();
+            
         } catch (error) {
             console.error('Error loading preferences:', error);
         }
@@ -1009,6 +1065,114 @@ class TerminalGUI {
         this.actionLog = [];
         this.updateActionLogDisplay();
         this.logAction('Action log cleared', 'info');
+    }
+
+    // Keyword blocking methods
+    addKeywordRule() {
+        const keywordInput = document.getElementById('new-keyword');
+        const responseInput = document.getElementById('new-response');
+        
+        const keyword = keywordInput.value.trim();
+        const response = responseInput.value.trim();
+        
+        if (!keyword) {
+            alert('Please enter a keyword');
+            return;
+        }
+        
+        // Check if keyword already exists
+        const exists = this.preferences.keywordRules.some(rule => rule.keyword.toLowerCase() === keyword.toLowerCase());
+        if (exists) {
+            alert('This keyword already exists');
+            return;
+        }
+        
+        const rule = {
+            id: Date.now().toString(),
+            keyword: keyword,
+            response: response
+        };
+        
+        this.preferences.keywordRules.push(rule);
+        this.saveAllPreferences();
+        this.updateKeywordRulesDisplay();
+        
+        // Clear inputs
+        keywordInput.value = '';
+        responseInput.value = '';
+        
+        this.logAction(`Added keyword rule: "${keyword}" -> "${response || 'Esc only'}"`, 'info');
+    }
+    
+    removeKeywordRule(ruleId) {
+        const ruleIndex = this.preferences.keywordRules.findIndex(rule => rule.id === ruleId);
+        if (ruleIndex !== -1) {
+            const removedRule = this.preferences.keywordRules[ruleIndex];
+            this.preferences.keywordRules.splice(ruleIndex, 1);
+            this.saveAllPreferences();
+            this.updateKeywordRulesDisplay();
+            this.logAction(`Removed keyword rule: "${removedRule.keyword}"`, 'info');
+        }
+    }
+    
+    updateKeywordRulesDisplay() {
+        const rulesList = document.getElementById('keyword-rules-list');
+        rulesList.innerHTML = '';
+        
+        this.preferences.keywordRules.forEach(rule => {
+            const ruleRow = document.createElement('div');
+            ruleRow.className = 'keyword-rule-row';
+            
+            const keywordDiv = document.createElement('div');
+            keywordDiv.className = 'keyword-rule-text';
+            keywordDiv.innerHTML = `<span class="keyword-rule-keyword">${rule.keyword}</span>`;
+            
+            const responseDiv = document.createElement('div');
+            responseDiv.className = 'keyword-rule-text keyword-rule-response';
+            responseDiv.textContent = rule.response || '(Esc only)';
+            
+            const actionsDiv = document.createElement('div');
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-keyword-btn';
+            removeBtn.textContent = 'Remove';
+            removeBtn.onclick = () => this.removeKeywordRule(rule.id);
+            actionsDiv.appendChild(removeBtn);
+            
+            ruleRow.appendChild(keywordDiv);
+            ruleRow.appendChild(responseDiv);
+            ruleRow.appendChild(actionsDiv);
+            
+            rulesList.appendChild(ruleRow);
+        });
+    }
+    
+    checkForKeywordBlocking() {
+        // Only check for keyword blocking if Claude prompt is present first
+        const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
+        if (!hasClaudePrompt) {
+            return { blocked: false };
+        }
+        
+        // Extract the text that appears after the Claude prompt (user input area)
+        const promptIndex = this.lastTerminalOutput.lastIndexOf("No, and tell Claude what to do differently");
+        if (promptIndex === -1) {
+            return { blocked: false };
+        }
+        
+        // Get text after the prompt - this should contain user input
+        const textAfterPrompt = this.lastTerminalOutput.substring(promptIndex + "No, and tell Claude what to do differently".length);
+        
+        // Look for keywords only in the user input area after the prompt
+        for (const rule of this.preferences.keywordRules) {
+            if (textAfterPrompt.toLowerCase().includes(rule.keyword.toLowerCase())) {
+                return {
+                    blocked: true,
+                    keyword: rule.keyword,
+                    response: rule.response
+                };
+            }
+        }
+        return { blocked: false };
     }
 }
 
