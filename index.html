@@ -34,6 +34,7 @@
             <div class="terminal-section">
                 <div class="terminal-header">
                     <span class="terminal-title">&lt;Terminal&gt;</span>
+                    <span class="terminal-status" id="terminal-status"></span>
                 </div>
                 <div id="terminal-container"></div>
             </div>
@@ -42,9 +43,11 @@
                 <div class="important-details">
                     <div class="section-header">
                         <span class="status-title">Status</span>
-                        <span class="settings-cog" id="settings-btn" title="Open Settings">
-                            <i data-lucide="settings"></i>
-                        </span>
+                        <div class="status-actions">
+                            <span class="settings-cog" id="settings-btn" title="Open Settings">
+                                <i data-lucide="settings"></i>
+                            </span>
+                        </div>
                     </div>
                     <div class="status-info">
                         <div class="status-item">
@@ -163,6 +166,21 @@
                             </button>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Usage Limit Modal -->
+    <div id="usage-limit-modal" class="modal">
+        <div class="modal-content usage-limit-modal">
+            <div class="usage-limit-progress-bar"></div>
+            <div class="modal-body usage-limit-body">
+                <h3>You're nearing your limit</h3>
+                <p class="usage-limit-subtitle">Queue messages for <span id="reset-time"></span>?</p>
+                <div class="usage-limit-actions">
+                    <button class="cancel-btn" id="usage-limit-no">No thanks</button>
+                    <button class="save-btn" id="usage-limit-yes">Sure <span id="usage-countdown">10</span>s</button>
                 </div>
             </div>
         </div>

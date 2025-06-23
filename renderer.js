@@ -24,19 +24,32 @@ class TerminalGUI {
         this.autoContinueActive = false;
         this.autoContinueRetryCount = 0;
         this.keywordBlockingActive = false;
+        this.terminalStatus = '';
+        this.currentResetTime = null;
+        this.statusUpdateTimeout = null;
         this.preferences = {
             autoscrollEnabled: true,
             autoscrollDelay: 3000,
             autoContinueEnabled: false,
             defaultDuration: 5,
             defaultUnit: 'seconds',
-            keywordRules: []
+            keywordRules: [
+                {
+                    id: "claude_credit_example",
+                    keyword: "🤖 Generated with",
+                    response: "do not credit yourself"
+                }
+            ]
         };
+        this.usageLimitSyncInterval = null;
+        this.usageLimitResetTime = null;
+        this.autoSyncEnabled = true; // Auto-sync until user manually changes timer
         
         this.initializeTerminal();
         this.setupEventListeners();
         this.initializeLucideIcons();
         this.updateStatusDisplay();
+        this.setTerminalStatusDisplay(''); // Initialize with default status
         this.loadAllPreferences();
     }
 
@@ -93,6 +106,11 @@ class TerminalGUI {
         
         // Fit terminal to container
         this.fitAddon.fit();
+        
+        // Ensure terminal starts at bottom on initialization
+        setTimeout(() => {
+            this.scrollToBottom();
+        }, 50);
 
         // Handle terminal input
         this.terminal.onData((data) => {
@@ -129,6 +147,8 @@ class TerminalGUI {
             this.terminal.write(data);
             this.detectDirectoryChange(data);
             this.detectAutoContinuePrompt(data);
+            this.detectUsageLimit(data);
+            this.updateTerminalStatus(); // Call after lastTerminalOutput is updated
             this.handleTerminalOutput();
         });
 
@@ -181,15 +201,19 @@ class TerminalGUI {
             }
         });
 
-        // Duration and unit change listeners
+        // Duration and unit change listeners - disable auto-sync when user manually changes
         document.getElementById('duration-input').addEventListener('change', (e) => {
             this.preferences.defaultDuration = parseInt(e.target.value) || 5;
             this.saveAllPreferences();
+            // Disable auto-sync when user manually changes the value
+            this.disableAutoSync();
         });
 
         document.getElementById('duration-unit').addEventListener('change', (e) => {
             this.preferences.defaultUnit = e.target.value;
             this.saveAllPreferences();
+            // Disable auto-sync when user manually changes the unit
+            this.disableAutoSync();
         });
 
         // Action log clear button
@@ -201,6 +225,7 @@ class TerminalGUI {
         document.getElementById('settings-btn').addEventListener('click', () => {
             this.openSettingsModal();
         });
+
 
         document.getElementById('settings-close').addEventListener('click', () => {
             this.closeSettingsModal();
@@ -241,6 +266,7 @@ class TerminalGUI {
                 this.addKeywordRule();
             }
         });
+
     }
 
     addMessageToQueue() {
@@ -558,6 +584,7 @@ class TerminalGUI {
         
         const message = this.messageQueue.shift();
         this.isInjecting = true;
+        this.setTerminalStatusDisplay('injecting');
         
         console.log(`Injecting message: ${message.content}`);
         
@@ -577,6 +604,7 @@ class TerminalGUI {
             setTimeout(() => {
                 ipcRenderer.send('terminal-input', '\r');
                 this.isInjecting = false;
+                this.setTerminalStatusDisplay('');
                 
                 // If auto-continue is enabled and there are more messages, continue
                 const autoContinue = document.getElementById('auto-continue').checked;
@@ -617,6 +645,7 @@ class TerminalGUI {
         if (messages.length === 0 || this.isInjecting) return;
         
         this.isInjecting = true;
+        this.setTerminalStatusDisplay('injecting');
         let index = 0;
         
         const processNext = () => {
@@ -637,6 +666,7 @@ class TerminalGUI {
                             setTimeout(processNext, 1000);
                         } else {
                             this.isInjecting = false;
+                            this.setTerminalStatusDisplay('');
                             this.logAction('Batch injection completed successfully', 'success');
                             this.scheduleNextInjection(); // Schedule any remaining messages
                         }
@@ -837,6 +867,212 @@ class TerminalGUI {
         }
     }
 
+    detectUsageLimit(data) {
+        // Check for usage limit message and parse the reset time
+        const usageLimitMatch = data.match(/Approaching usage limit · resets at (\d{1,2})(am|pm)/i);
+        if (usageLimitMatch) {
+            const resetHour = parseInt(usageLimitMatch[1]);
+            const ampm = usageLimitMatch[2].toLowerCase();
+            const resetTimeString = `${resetHour}${ampm}`;
+            
+            // Check if we've already shown modal for this specific reset time
+            const lastShownResetTime = localStorage.getItem('usageLimitModalLastResetTime');
+            
+            if (lastShownResetTime !== resetTimeString) {
+                this.showUsageLimitModal(resetHour, ampm);
+                localStorage.setItem('usageLimitModalLastResetTime', resetTimeString);
+            }
+        }
+    }
+
+    showUsageLimitModal(resetHour, ampm) {
+        const modal = document.getElementById('usage-limit-modal');
+        const progressBar = modal.querySelector('.usage-limit-progress-bar');
+        const resetTimeSpan = document.getElementById('reset-time');
+        const countdownSpan = document.getElementById('usage-countdown');
+        const yesBtn = document.getElementById('usage-limit-yes');
+        const noBtn = document.getElementById('usage-limit-no');
+        
+        // Calculate time until the parsed reset time
+        const now = new Date();
+        const resetTime = new Date();
+        
+        // Convert 12-hour format to 24-hour format
+        let hour24 = resetHour;
+        if (ampm === 'pm' && resetHour !== 12) {
+            hour24 = resetHour + 12;
+        } else if (ampm === 'am' && resetHour === 12) {
+            hour24 = 0;
+        }
+        
+        resetTime.setHours(hour24, 0, 0, 0);
+        
+        // If the reset time has already passed today, it must be tomorrow
+        if (resetTime.getTime() <= now.getTime()) {
+            resetTime.setDate(resetTime.getDate() + 1);
+        }
+        
+        const timeDiff = resetTime.getTime() - now.getTime();
+        const hours = Math.floor(timeDiff / (1000 * 60 * 60));
+        const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+        
+        // Store the reset time info for auto-fill
+        this.currentResetTime = { resetHour, ampm, hour24, resetTime };
+        this.setUsageLimitResetTime(resetTime);
+        
+        // Update reset time text
+        if (hours > 0) {
+            resetTimeSpan.textContent = `${hours}h ${minutes}m`;
+        } else {
+            resetTimeSpan.textContent = `${minutes}m`;
+        }
+        
+        // Show modal and start progress bar animation
+        modal.classList.add('show');
+        setTimeout(() => {
+            progressBar.classList.add('active');
+        }, 100);
+        
+        // Start countdown timer
+        let countdown = 10;
+        const countdownInterval = setInterval(() => {
+            countdown--;
+            countdownSpan.textContent = countdown;
+            
+            if (countdown <= 0) {
+                clearInterval(countdownInterval);
+                this.handleUsageLimitChoice(true);
+            }
+        }, 1000);
+        
+        // Handle button clicks
+        const handleChoice = (choice) => {
+            clearInterval(countdownInterval);
+            this.handleUsageLimitChoice(choice);
+        };
+        
+        yesBtn.onclick = () => handleChoice(true);
+        noBtn.onclick = () => handleChoice(false);
+        
+        // Auto-close after 10 seconds
+        setTimeout(() => {
+            if (modal.classList.contains('show')) {
+                handleChoice(true);
+            }
+        }, 10000);
+    }
+
+    handleUsageLimitChoice(queue) {
+        const modal = document.getElementById('usage-limit-modal');
+        const progressBar = modal.querySelector('.usage-limit-progress-bar');
+        
+        // Hide modal
+        modal.classList.remove('show');
+        progressBar.classList.remove('active');
+        
+        // Log the choice and auto-fill form if user chose to queue
+        if (queue) {
+            this.logAction('Usage limit detected - Queue mode enabled until 3am reset', 'info');
+            // Auto-fill the Execute in form with calculated time until reset
+            this.autoFillExecuteInForm();
+        } else {
+            this.logAction('Usage limit detected - Continuing normally', 'info');
+        }
+    }
+
+    autoFillExecuteInForm() {
+        // Use the stored reset time from the modal
+        if (!this.currentResetTime) {
+            this.logAction('No current reset time available for auto-fill', 'warning');
+            return;
+        }
+        
+        const now = new Date();
+        const timeDiff = this.currentResetTime.resetTime.getTime() - now.getTime();
+        const totalMinutes = Math.floor(timeDiff / (1000 * 60));
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = totalMinutes % 60;
+        
+        // Fill the form based on the calculated time
+        const durationInput = document.getElementById('duration-input');
+        const unitSelect = document.getElementById('duration-unit');
+        
+        if (totalMinutes <= 0) {
+            // Reset time has passed, set to 1 minute as fallback
+            durationInput.value = 1;
+            unitSelect.value = 'minutes';
+            this.preferences.defaultDuration = 1;
+            this.preferences.defaultUnit = 'minutes';
+            this.logAction('Reset time has passed, auto-filled Execute in: 1 minute', 'warning');
+        } else {
+            // Use minutes for all cases to provide better accuracy
+            const roundedMinutes = Math.max(1, totalMinutes); // Round total minutes, ensure at least 1 minute
+            durationInput.value = roundedMinutes;
+            unitSelect.value = 'minutes';
+            this.preferences.defaultDuration = roundedMinutes;
+            this.preferences.defaultUnit = 'minutes';
+            this.logAction(`Auto-filled Execute in: ${roundedMinutes} minutes until ${this.currentResetTime.resetHour}${this.currentResetTime.ampm} reset`, 'info');
+        }
+        
+        // Save preferences
+        this.saveAllPreferences();
+    }
+
+    updateTerminalStatus() {
+        let newStatus = '';
+        
+        if (this.isInjecting) {
+            newStatus = 'injecting';
+        } else {
+            // Check for status indicators in recent output (case-insensitive)
+            const recentOutput = this.lastTerminalOutput.toLowerCase();
+            
+            if (recentOutput.includes('esc to interrupt')) {
+                newStatus = 'running';
+            } else if (recentOutput.includes('no, and tell claude what to do differently')) {
+                newStatus = 'prompted';
+            } else if (recentOutput.includes('processing') || recentOutput.includes('thinking') || recentOutput.includes('working')) {
+                newStatus = 'running';
+            } else if (recentOutput.includes('$') || recentOutput.includes('➜') || recentOutput.includes('#')) {
+                newStatus = ''; // Ready state
+            }
+        }
+        
+        // Only update if status actually changed
+        if (newStatus !== this.terminalStatus) {
+            this.terminalStatus = newStatus;
+            this.setTerminalStatusDisplay(newStatus);
+        }
+    }
+
+    setTerminalStatusDisplay(status) {
+        const statusElement = document.getElementById('terminal-status');
+        if (!statusElement) return;
+        
+        // Clear all classes
+        statusElement.className = 'terminal-status';
+        
+        // Set new status
+        switch(status) {
+            case 'running':
+                statusElement.className = 'terminal-status visible running';
+                statusElement.textContent = 'Running';
+                break;
+            case 'prompted':
+                statusElement.className = 'terminal-status visible prompted';
+                statusElement.textContent = 'Prompted';
+                break;
+            case 'injecting':
+                statusElement.className = 'terminal-status visible injecting';
+                statusElement.textContent = 'Injecting';
+                break;
+            default:
+                // Show default status
+                statusElement.className = 'terminal-status';
+                statusElement.textContent = '...';
+        }
+    }
+
     updateStatusDisplay() {
         // Update individual status elements
         const directoryElement = document.getElementById('current-directory');
@@ -1007,6 +1243,9 @@ class TerminalGUI {
             
             // Update keyword rules display
             this.updateKeywordRulesDisplay();
+            
+            // Load saved usage limit reset time and start auto-sync if available
+            this.loadUsageLimitResetTime();
             
         } catch (error) {
             console.error('Error loading preferences:', error);
@@ -1202,6 +1441,111 @@ class TerminalGUI {
         }
         
         return { blocked: false };
+    }
+
+    startUsageLimitSync() {
+        if (!this.usageLimitResetTime || !this.autoSyncEnabled) {
+            return;
+        }
+
+        // Clear any existing interval
+        this.stopUsageLimitSync();
+
+        // Start interval to update every minute
+        this.usageLimitSyncInterval = setInterval(() => {
+            this.updateSyncedTimer();
+        }, 60000); // Update every minute
+
+        // Update immediately
+        this.updateSyncedTimer();
+        this.logAction('Auto-sync to usage limit enabled - timer will update every minute', 'info');
+    }
+
+    stopUsageLimitSync() {
+        if (this.usageLimitSyncInterval) {
+            clearInterval(this.usageLimitSyncInterval);
+            this.usageLimitSyncInterval = null;
+        }
+    }
+
+    disableAutoSync() {
+        this.autoSyncEnabled = false;
+        this.stopUsageLimitSync();
+        this.logAction('Auto-sync disabled - user manually changed timer', 'info');
+    }
+
+    updateSyncedTimer() {
+        if (!this.usageLimitResetTime || !this.autoSyncEnabled) {
+            return;
+        }
+
+        const now = new Date();
+        const timeDiff = this.usageLimitResetTime.getTime() - now.getTime();
+        
+        if (timeDiff <= 0) {
+            this.logAction('Usage limit reset time reached - sync completed', 'success');
+            this.stopUsageLimitSync();
+            localStorage.removeItem('usageLimitResetTime');
+            return;
+        }
+
+        const totalMinutes = Math.max(1, Math.floor(timeDiff / (1000 * 60)));
+
+        // Update the form without triggering change events
+        const durationInput = document.getElementById('duration-input');
+        const unitSelect = document.getElementById('duration-unit');
+
+        // Temporarily remove event listeners to prevent disabling auto-sync
+        const oldOnChange = durationInput.onchange;
+        durationInput.onchange = null;
+        unitSelect.onchange = null;
+
+        durationInput.value = totalMinutes;
+        unitSelect.value = 'minutes';
+        this.preferences.defaultDuration = totalMinutes;
+        this.preferences.defaultUnit = 'minutes';
+        this.saveAllPreferences();
+
+        // Restore event listeners
+        setTimeout(() => {
+            durationInput.onchange = oldOnChange;
+        }, 0);
+
+        this.logAction(`Auto-synced: ${totalMinutes} minutes until usage limit reset`, 'info');
+    }
+
+    setUsageLimitResetTime(resetTime) {
+        this.usageLimitResetTime = resetTime;
+        
+        // Save to localStorage
+        localStorage.setItem('usageLimitResetTime', resetTime.getTime().toString());
+        
+        // Start sync if auto-sync is enabled
+        if (this.autoSyncEnabled) {
+            this.startUsageLimitSync();
+        }
+    }
+
+    loadUsageLimitResetTime() {
+        const savedResetTime = localStorage.getItem('usageLimitResetTime');
+        if (savedResetTime) {
+            const resetTime = new Date(parseInt(savedResetTime));
+            const now = new Date();
+            
+            // Only use if it's in the future
+            if (resetTime.getTime() > now.getTime()) {
+                this.usageLimitResetTime = resetTime;
+                this.logAction(`Loaded saved usage limit reset time: ${resetTime.toLocaleTimeString()}`, 'info');
+                
+                // Start auto-sync if enabled
+                if (this.autoSyncEnabled) {
+                    this.startUsageLimitSync();
+                }
+            } else {
+                // Remove expired reset time
+                localStorage.removeItem('usageLimitResetTime');
+            }
+        }
     }
 }
 
