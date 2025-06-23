@@ -610,7 +610,7 @@ body {
     left: 50%;
     transform: translateX(-50%);
     opacity: 0;
-    transition: opacity 0.3s;
+    transition: opacity 0.1s;
     font-size: 12px;
     border: 1px solid #3d3d3d;
     word-break: break-all;
