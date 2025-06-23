@@ -1147,24 +1147,24 @@ class TerminalGUI {
     }
     
     checkForKeywordBlocking() {
-        // Only check for keyword blocking if Claude prompt is present first
-        const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
+        // Find the ╭ character which marks the start of the current Claude prompt area
+        const claudePromptStart = this.lastTerminalOutput.lastIndexOf("╭");
+        if (claudePromptStart === -1) {
+            return { blocked: false };
+        }
+        
+        // Extract only the text from ╭ to the end (current prompt area)
+        const currentPromptArea = this.lastTerminalOutput.substring(claudePromptStart);
+        
+        // Only proceed if this area contains the Claude prompt
+        const hasClaudePrompt = currentPromptArea.includes("No, and tell Claude what to do differently");
         if (!hasClaudePrompt) {
             return { blocked: false };
         }
         
-        // Extract the text that appears after the Claude prompt (user input area)
-        const promptIndex = this.lastTerminalOutput.lastIndexOf("No, and tell Claude what to do differently");
-        if (promptIndex === -1) {
-            return { blocked: false };
-        }
-        
-        // Get text after the prompt - this should contain user input
-        const textAfterPrompt = this.lastTerminalOutput.substring(promptIndex + "No, and tell Claude what to do differently".length);
-        
-        // Look for keywords only in the user input area after the prompt
+        // Look for keywords only in the current prompt area (from ╭ to end)
         for (const rule of this.preferences.keywordRules) {
-            if (textAfterPrompt.toLowerCase().includes(rule.keyword.toLowerCase())) {
+            if (currentPromptArea.toLowerCase().includes(rule.keyword.toLowerCase())) {
                 return {
                     blocked: true,
                     keyword: rule.keyword,
