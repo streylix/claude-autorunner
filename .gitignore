@@ -1,3 +1,6 @@
 /node_modules
 .cursor
 package-lock.json
+
+*.png
+run.sh

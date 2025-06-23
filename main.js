@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const pty = require('node-pty');
 const os = require('os');
@@ -34,7 +34,12 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  
+  // Register IPC handlers after app is ready
+  setupIpcHandlers();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -48,35 +53,53 @@ app.on('activate', () => {
   }
 });
 
-// Terminal handling
-ipcMain.on('terminal-start', (event) => {
-  const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/zsh';
-  
-  ptyProcess = pty.spawn(shell, [], {
-    name: 'xterm-color',
-    cols: 80,
-    rows: 24,
-    cwd: process.cwd(),
-    env: process.env
+function setupIpcHandlers() {
+  // Terminal handling
+  ipcMain.on('terminal-start', (event) => {
+    const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/zsh';
+    
+    ptyProcess = pty.spawn(shell, [], {
+      name: 'xterm-color',
+      cols: 80,
+      rows: 24,
+      cwd: process.cwd(),
+      env: process.env
+    });
+
+    ptyProcess.onData((data) => {
+      event.reply('terminal-data', data);
+    });
+
+    ptyProcess.onExit(() => {
+      event.reply('terminal-exit');
+    });
   });
 
-  ptyProcess.onData((data) => {
-    event.reply('terminal-data', data);
+  ipcMain.on('terminal-input', (event, data) => {
+    if (ptyProcess) {
+      ptyProcess.write(data);
+    }
   });
 
-  ptyProcess.onExit(() => {
-    event.reply('terminal-exit');
+  ipcMain.on('terminal-resize', (event, cols, rows) => {
+    if (ptyProcess) {
+      ptyProcess.resize(cols, rows);
+    }
   });
-});
 
-ipcMain.on('terminal-input', (event, data) => {
-  if (ptyProcess) {
-    ptyProcess.write(data);
-  }
-});
-
-ipcMain.on('terminal-resize', (event, cols, rows) => {
-  if (ptyProcess) {
-    ptyProcess.resize(cols, rows);
-  }
-}); 
+  // Directory dialog handling
+  ipcMain.handle('show-directory-dialog', async (event, currentPath) => {
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openDirectory'],
+        defaultPath: currentPath,
+        title: 'Select Directory'
+      });
+      
+      return result;
+    } catch (error) {
+      console.error('Error in show-directory-dialog handler:', error);
+      throw error;
+    }
+  });
+} 

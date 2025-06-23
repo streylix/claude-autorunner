@@ -6,19 +6,31 @@
     <title>Terminal GUI</title>
     <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css">
     <link rel="stylesheet" href="style.css">
+    <script src="node_modules/lucide/dist/umd/lucide.js"></script>
 </head>
 <body>
     <div class="app-container">
         <div class="header">
+            <div class="header-left"></div>
             <div class="title">Terminal GUI</div>
-            <div class="controls">
-                <span class="control-button minimize"></span>
-                <span class="control-button maximize"></span>
-                <span class="control-button close"></span>
-            </div>
         </div>
 
         <div class="main-content">
+            <div class="action-log-sidebar">
+                <div class="action-log-header">
+                    <span class="action-log-title">Action Log</span>
+                    <button class="icon-btn" id="clear-log-btn" title="Clear action log">
+                        <i data-lucide="eraser"></i>
+                    </button>
+                </div>
+                <div class="action-log-content" id="action-log">
+                    <div class="log-item log-info">
+                        <span class="log-time">[startup]</span>
+                        <span class="log-message">Terminal GUI initialized</span>
+                    </div>
+                </div>
+            </div>
+            
             <div class="terminal-section">
                 <div class="terminal-header">
                     <span class="terminal-title">&lt;Terminal&gt;</span>
@@ -29,14 +41,40 @@
             <div class="sidebar">
                 <div class="important-details">
                     <div class="section-header">
-                        <span>[important details (i.e what directory we are in, how many injections have been made, etc)]</span>
-                        <span class="settings-cog">[settings cog]</span>
+                        <span class="status-title">Status</span>
+                        <span class="settings-cog" id="settings-btn" title="Open Settings">
+                            <i data-lucide="settings"></i>
+                        </span>
+                    </div>
+                    <div class="status-info">
+                        <div class="status-item">
+                            <span class="status-label">Directory:</span>
+                            <span class="status-value directory-path tooltip" id="current-directory" title="Click to change directory">/Users/ethan/claude code bot
+                                <span class="tooltip-text" id="directory-tooltip">/Users/ethan/claude code bot</span>
+                            </span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Injections:</span>
+                            <span class="status-value" id="injection-count">0</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Queued:</span>
+                            <span class="status-value" id="queue-count">0</span>
+                        </div>
                     </div>
                 </div>
                 
                 <div class="queued-messages">
                     <div class="section-header">
-                        <span>[queued messages]</span>
+                        <span class="queue-title">Message Queue</span>
+                        <div class="queue-actions">
+                            <button class="icon-btn" id="inject-now-btn" title="Inject all ready messages now">
+                                <i data-lucide="play"></i>
+                            </button>
+                            <button class="icon-btn" id="clear-queue-header-btn" title="Clear all queued messages">
+                                <i data-lucide="trash-2"></i>
+                            </button>
+                        </div>
                     </div>
                     <div class="message-list" id="message-list">
                         <!-- Queued messages will appear here -->
@@ -45,34 +83,63 @@
                 
                 <div class="input-section">
                     <div class="input-container">
-                        <textarea id="message-input" placeholder="input container" rows="3"></textarea>
-                        <div class="input-controls">
-                            <button type="button" id="add-message-btn">Add to Queue</button>
-                            <button type="button" id="clear-queue-btn">Clear Queue</button>
+                        <div class="input-wrapper">
+                            <textarea id="message-input" placeholder="Type your command here..." rows="3"></textarea>
+                            <button type="button" id="send-btn" class="send-button" title="Add message to queue (Enter)">
+                                <i data-lucide="send-horizontal"></i>
+                            </button>
+                        </div>
+                        <div class="timing-wrapper">
+                            <label for="duration-input">Execute in:</label>
+                            <div class="duration-controls">
+                                <input type="number" id="duration-input" min="1" value="5" class="duration-value">
+                                <select id="duration-unit" class="duration-unit">
+                                    <option value="seconds">seconds</option>
+                                    <option value="minutes">minutes</option>
+                                    <option value="hours">hours</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
-                    
-                    <div class="timing-controls">
-                        <div class="timing-input">
-                            <label for="execution-time">Execute at time:</label>
-                            <input type="time" id="execution-time" step="1">
-                        </div>
-                        <div class="timing-input">
-                            <label for="execution-date">Date:</label>
-                            <input type="date" id="execution-date">
-                        </div>
-                    </div>
-                    
                     <div class="auto-controls">
                         <label class="checkbox-container">
-                            <input type="checkbox" id="auto-agree">
+                            <input type="checkbox" id="auto-continue" title="Automatically press Enter when prompts are detected">
                             <span class="checkmark"></span>
-                            auto agree
+                            Auto-continue on prompts
                         </label>
-                        <div class="status-text">
-                            will inject messages at <span id="injection-time">[input_time]</span>
-                        </div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Settings</h3>
+                <button class="modal-close" id="settings-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="setting-group">
+                    <label class="setting-label">
+                        <input type="checkbox" id="autoscroll-enabled" checked>
+                        <span class="setting-title">Auto-scroll Terminal</span>
+                    </label>
+                    <p class="setting-description">Automatically scroll to bottom when new output appears. Pauses when you scroll up, resumes after 3 seconds of inactivity.</p>
+                </div>
+                <div class="setting-group">
+                    <label class="setting-label">
+                        <span class="setting-title">Auto-scroll Delay</span>
+                    </label>
+                    <select id="autoscroll-delay" class="setting-select">
+                        <option value="1000">1 second</option>
+                        <option value="2000">2 seconds</option>
+                        <option value="3000" selected>3 seconds</option>
+                        <option value="5000">5 seconds</option>
+                        <option value="10000">10 seconds</option>
+                    </select>
+                    <p class="setting-description">Time to wait before auto-scrolling after user interaction.</p>
                 </div>
             </div>
         </div>
