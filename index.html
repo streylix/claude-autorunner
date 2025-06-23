@@ -84,7 +84,7 @@
                 <div class="input-section">
                     <div class="input-container">
                         <div class="input-wrapper">
-                            <textarea id="message-input" placeholder="Type your command here..." rows="3"></textarea>
+                            <textarea id="message-input" placeholder="Type your command here..." rows="3" title="Enter command to add to message queue"></textarea>
                             <button type="button" id="send-btn" class="send-button" title="Add message to queue (Enter)">
                                 <i data-lucide="send-horizontal"></i>
                             </button>
@@ -92,8 +92,8 @@
                         <div class="timing-wrapper">
                             <label for="duration-input">Execute in:</label>
                             <div class="duration-controls">
-                                <input type="number" id="duration-input" min="1" value="5" class="duration-value">
-                                <select id="duration-unit" class="duration-unit">
+                                <input type="number" id="duration-input" min="1" value="5" class="duration-value" title="Duration for message execution">
+                                <select id="duration-unit" class="duration-unit" title="Time unit for message execution">
                                     <option value="seconds">seconds</option>
                                     <option value="minutes">minutes</option>
                                     <option value="hours">hours</option>
@@ -102,8 +102,8 @@
                         </div>
                     </div>
                     <div class="auto-controls">
-                        <label class="checkbox-container">
-                            <input type="checkbox" id="auto-continue" title="Automatically press Enter when prompts are detected">
+                        <label class="checkbox-container" title="Automatically press Enter when prompts are detected">
+                            <input type="checkbox" id="auto-continue">
                             <span class="checkmark"></span>
                             Auto-continue on prompts
                         </label>
@@ -118,7 +118,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3>Settings</h3>
-                <button class="modal-close" id="settings-close">&times;</button>
+                <button class="modal-close" id="settings-close" title="Close settings">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="setting-group">

@@ -511,8 +511,10 @@ body {
     color: #ffffff;
     font-family: inherit;
     font-size: 12px;
-    resize: vertical;
+    resize: none;
     line-height: 1.4;
+    min-height: 80px;
+    max-height: 80px;
 }
 
 #message-input::placeholder {
@@ -860,11 +862,13 @@ body {
 
 /* Action Log Sidebar Styles */
 .action-log-header {
-    padding: 15px;
-    border-bottom: 1px solid #3d3d3d;
+    height: 40px;
+    background-color: #2d2d2d;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    padding: 0 15px;
+    border-bottom: 1px solid #3d3d3d;
 }
 
 .action-log-title {

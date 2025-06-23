@@ -20,6 +20,9 @@ class TerminalGUI {
         this.autoscrollTimeout = null;
         this.userInteracting = false;
         this.actionLog = [];
+        this.injectionBlocked = false;
+        this.autoContinueActive = false;
+        this.autoContinueRetryCount = 0;
         this.preferences = {
             autoscrollEnabled: true,
             autoscrollDelay: 3000,
@@ -239,7 +242,7 @@ class TerminalGUI {
             const executeAt = new Date(Date.now() + delayMs);
             
             // Convert newlines to escape sequence for injection
-            const processedMessage = message.replace(/\n/g, '\\ ');
+            const processedMessage = message.replace(/\n/g, '\\\n');
             
             this.messageQueue.push({
                 id: this.messageIdCounter++,
@@ -481,6 +484,12 @@ class TerminalGUI {
         }
 
         if (this.messageQueue.length > 0) {
+            // Don't schedule if injection is blocked
+            if (this.injectionBlocked) {
+                this.logAction('Injection scheduling paused - waiting for blocking conditions to clear', 'warning');
+                return;
+            }
+            
             const nextMessage = this.messageQueue[0];
             const now = new Date();
             const delay = nextMessage.executeAt.getTime() - now.getTime();
@@ -498,6 +507,27 @@ class TerminalGUI {
 
     injectNextMessage() {
         if (this.messageQueue.length === 0 || this.isInjecting) return;
+        
+        // Check current terminal state for blocking conditions before injecting
+        const hasEscToInterrupt = this.lastTerminalOutput.includes("esc to interrupt");
+        const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
+        
+        if (hasEscToInterrupt || hasClaudePrompt) {
+            const reason = hasEscToInterrupt ? 'esc to interrupt detected' : 'Claude prompt detected';
+            this.logAction(`Message injection blocked - ${reason}`, 'warning');
+            
+            // Update blocking status
+            this.injectionBlocked = true;
+            
+            // Reschedule for later
+            setTimeout(() => {
+                this.scheduleNextInjection();
+            }, 2000);
+            return;
+        }
+        
+        // Clear blocking status if no blocking conditions found
+        this.injectionBlocked = false;
         
         const message = this.messageQueue.shift();
         this.isInjecting = true;
@@ -613,73 +643,129 @@ class TerminalGUI {
             this.lastTerminalOutput = this.lastTerminalOutput.slice(-2000);
         }
         
-        // Don't auto-continue if disabled, currently injecting, or in the middle of message injection
-        if (!this.autoContinueEnabled || this.isInjecting) return;
-        
-        // Check for conditions that should prevent auto-continue
+        // Check for blocking conditions for message injection
         const hasEscToInterrupt = this.lastTerminalOutput.includes("esc to interrupt");
         const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
         
-        // Only proceed if we don't see either blocking condition
-        if (hasEscToInterrupt || hasClaudePrompt) {
-            return; // Don't auto-continue if either condition is present
+        // Update injection blocking status
+        const previouslyBlocked = this.injectionBlocked;
+        this.injectionBlocked = hasEscToInterrupt || hasClaudePrompt;
+        
+        // Log when blocking status changes
+        if (previouslyBlocked && !this.injectionBlocked) {
+            this.logAction('Message injection unblocked - conditions cleared', 'success');
+            // Resume injection scheduling if we have queued messages
+            if (this.messageQueue.length > 0) {
+                this.scheduleNextInjection();
+            }
+        } else if (!previouslyBlocked && this.injectionBlocked) {
+            const reason = hasEscToInterrupt ? 'esc to interrupt detected' : 'Claude prompt detected';
+            this.logAction(`Message injection blocked - ${reason}`, 'warning');
+            // Cancel any pending injection
+            if (this.injectionTimer) {
+                clearTimeout(this.injectionTimer);
+                this.injectionTimer = null;
+            }
         }
         
-        // Prevent multiple rapid Enter presses (debounce)
-        const now = Date.now();
-        if (this.lastAutoContinueTime && (now - this.lastAutoContinueTime) < 2000) {
-            return; // Don't auto-continue if we just did it within 2 seconds
-        }
+        // Auto-continue logic (independent of injection blocking)
+        if (!this.autoContinueEnabled || this.isInjecting) return;
         
-        // Look for other prompt patterns that should trigger auto-continue
-        // For example, general "Do you want to proceed?" patterns without the Claude-specific text
+        // Check for prompts that should trigger auto-continue
         const hasGeneralPrompt = /Do you want to proceed\?/i.test(this.lastTerminalOutput);
         
-        if (hasGeneralPrompt) {
-            console.log('Auto-continue: General prompt detected!');
+        // Auto-continue for Claude prompt or general prompts (always auto-continue when enabled)
+        if (hasClaudePrompt || hasGeneralPrompt) {
+            const promptType = hasClaudePrompt ? 'Claude prompt' : 'general prompt';
             
-            // Log to action log instead of terminal
-            this.logAction('Auto-continue detected prompt - pressing Enter', 'info');
-            
-            // Record the time to prevent rapid re-triggering
-            this.lastAutoContinueTime = now;
-            
-            // Wait a short delay then just send Enter
-            setTimeout(() => {
-                ipcRenderer.send('terminal-input', '\r');
-                this.logAction('Auto-continue: Enter key sent', 'success');
-                
-                // Clear the stored output to avoid re-triggering
-                this.lastTerminalOutput = '';
-            }, 500);
+            // If auto-continue is not already active for this prompt, start it
+            if (!this.autoContinueActive) {
+                console.log(`Auto-continue: ${promptType} detected! Starting persistent auto-continue.`);
+                this.logAction(`Auto-continue detected ${promptType} - starting persistent checking`, 'info');
+                this.autoContinueActive = true;
+                this.autoContinueRetryCount = 0;
+                this.performAutoContinue(promptType);
+            }
+        } else if (this.autoContinueActive) {
+            // If we were auto-continuing but no longer see prompts, stop
+            this.logAction(`Auto-continue completed - prompt cleared after ${this.autoContinueRetryCount + 1} attempts`, 'success');
+            this.autoContinueActive = false;
+            this.autoContinueRetryCount = 0;
         }
+    }
+
+    performAutoContinue(promptType) {
+        if (!this.autoContinueActive || !this.autoContinueEnabled) return;
+        
+        this.autoContinueRetryCount++;
+        this.logAction(`Auto-continue attempt #${this.autoContinueRetryCount} for ${promptType}`, 'info');
+        
+        // Send Enter key
+        ipcRenderer.send('terminal-input', '\r');
+        
+        // Wait for terminal to process, then check if we need to continue
+        setTimeout(() => {
+            if (this.autoContinueActive) {
+                // Check if prompt text is still present in recent output
+                const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
+                const hasGeneralPrompt = /Do you want to proceed\?/i.test(this.lastTerminalOutput);
+                
+                if (hasClaudePrompt || hasGeneralPrompt) {
+                    // Prompt still there, continue if we haven't exceeded max attempts
+                    if (this.autoContinueRetryCount < 10) {
+                        this.logAction(`Prompt still present, retrying auto-continue`, 'warning');
+                        this.performAutoContinue(promptType);
+                    } else {
+                        this.logAction(`Auto-continue stopped - max attempts (10) reached`, 'error');
+                        this.autoContinueActive = false;
+                        this.autoContinueRetryCount = 0;
+                    }
+                } else {
+                    // Prompt is gone, success!
+                    this.logAction(`Auto-continue successful after ${this.autoContinueRetryCount} attempts`, 'success');
+                    this.autoContinueActive = false;
+                    this.autoContinueRetryCount = 0;
+                    // Clear the stored output
+                    this.lastTerminalOutput = '';
+                }
+            }
+        }, 1000); // Wait 1 second for terminal to process
     }
 
     detectDirectoryChange(data) {
         // Enhanced directory detection from terminal output
         const lines = data.split('\n');
-        lines.forEach(line => {
+        let detectedDir = null;
+        
+        // Process lines to find directory information
+        for (const line of lines) {
             // Look for common directory patterns in terminal output
             const promptMatch = line.match(/.*[➜$#]\s+([^\s]+)/);
             const pwdMatch = line.match(/^([\/~].*?)(?:\s|$)/);
             
-            let detectedDir = null;
             if (promptMatch && promptMatch[1] && promptMatch[1].length > 1) {
                 detectedDir = promptMatch[1];
+                break; // Use first match found
             } else if (pwdMatch && pwdMatch[1]) {
                 detectedDir = pwdMatch[1];
+                break; // Use first match found
+            }
+        }
+        
+        // Only update if we found a directory and it's different from current
+        if (detectedDir && detectedDir !== this.currentDirectory && detectedDir !== '~') {
+            // Expand ~ to home directory if needed
+            if (detectedDir.startsWith('~/')) {
+                detectedDir = detectedDir.replace('~', process.env.HOME || '/Users/' + process.env.USER);
             }
             
-            if (detectedDir && detectedDir !== this.currentDirectory && detectedDir !== '~') {
-                // Expand ~ to home directory if needed
-                if (detectedDir.startsWith('~/')) {
-                    detectedDir = detectedDir.replace('~', process.env.HOME || '/Users/' + process.env.USER);
-                }
-                
+            // Only update if the expanded directory is still different
+            if (detectedDir !== this.currentDirectory) {
                 this.currentDirectory = detectedDir;
                 this.updateStatusDisplay();
+                this.logAction(`Directory changed to: ${detectedDir}`, 'info');
             }
-        });
+        }
     }
 
     updateStatusDisplay() {
@@ -715,7 +801,7 @@ class TerminalGUI {
             }
         } catch (error) {
             console.error('Error opening directory dialog:', error);
-            this.terminal.write(`\r\n\x1b[33m[DIRECTORY] Dialog failed, using prompt fallback\x1b[0m\r\n`);
+            this.logAction('Directory dialog failed, using prompt fallback', 'warning');
             
             // Fallback to prompt-based directory selection
             this.openDirectoryPrompt();
@@ -741,7 +827,7 @@ class TerminalGUI {
     resetTerminalToCurrentDirectory() {
         // Reset terminal to the current directory
         const cdCommand = `cd "${this.currentDirectory}"`;
-        this.terminal.write(`\r\n\x1b[36m[DIRECTORY] Resetting terminal to: ${this.currentDirectory}\x1b[0m\r\n`);
+        this.logAction(`Resetting terminal to: ${this.currentDirectory}`, 'info');
         
         // Type the command in the terminal
         this.typeMessage(cdCommand, () => {
@@ -755,7 +841,7 @@ class TerminalGUI {
     changeDirectory(newPath) {
         // Send cd command to terminal
         const cdCommand = `cd "${newPath}"`;
-        this.terminal.write(`\r\n\x1b[36m[DIRECTORY] Changing to: ${newPath}\x1b[0m\r\n`);
+        this.logAction(`Changing directory to: ${newPath}`, 'info');
         
         // Type the command in the terminal
         this.typeMessage(cdCommand, () => {
