@@ -23,6 +23,7 @@ class TerminalGUI {
         this.injectionBlocked = false;
         this.autoContinueActive = false;
         this.autoContinueRetryCount = 0;
+        this.keywordBlockingActive = false;
         this.preferences = {
             autoscrollEnabled: true,
             autoscrollDelay: 3000,
@@ -664,21 +665,60 @@ class TerminalGUI {
         // Store recent terminal output for analysis
         this.lastTerminalOutput += data;
         
-        // Keep only recent output (last 2000 characters to avoid memory issues)
-        if (this.lastTerminalOutput.length > 2000) {
-            this.lastTerminalOutput = this.lastTerminalOutput.slice(-2000);
+        // Keep only recent output (last 4000 characters to ensure we capture full Claude prompts)
+        if (this.lastTerminalOutput.length > 4000) {
+            this.lastTerminalOutput = this.lastTerminalOutput.slice(-4000);
         }
         
         // Check for blocking conditions for message injection
         const hasEscToInterrupt = this.lastTerminalOutput.includes("esc to interrupt");
         const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
         
-        // Check for custom keyword blocking
+        // Handle keyword blocking specifically for Claude prompts (only if auto-continue is enabled)
+        if (hasClaudePrompt && this.autoContinueEnabled) {
+            const keywordBlockResult = this.checkForKeywordBlocking();
+            if (keywordBlockResult.blocked && !this.keywordBlockingActive) {
+                this.keywordBlockingActive = true;
+                this.logAction(`Keyword "${keywordBlockResult.keyword}" detected in Claude prompt - executing escape sequence`, 'warning');
+                
+                // Send Esc key to interrupt
+                ipcRenderer.send('terminal-input', '\x1b');
+                
+                // Wait and inject custom response if provided
+                if (keywordBlockResult.response) {
+                    setTimeout(() => {
+                        this.logAction(`Injecting custom response: "${keywordBlockResult.response}"`, 'info');
+                        this.typeMessage(keywordBlockResult.response, () => {
+                            setTimeout(() => {
+                                ipcRenderer.send('terminal-input', '\r');
+                                // Reset keyword blocking flag
+                                setTimeout(() => {
+                                    this.keywordBlockingActive = false;
+                                }, 1000);
+                            }, 200);
+                        });
+                    }, 800);
+                } else {
+                    // Just Esc without response
+                    setTimeout(() => {
+                        this.keywordBlockingActive = false;
+                    }, 1000);
+                }
+                return; // Exit early, don't process auto-continue
+            }
+        }
+        
+        // Reset keyword blocking flag if Claude prompt is no longer present
+        if (!hasClaudePrompt && this.keywordBlockingActive) {
+            this.keywordBlockingActive = false;
+        }
+        
+        // Check for custom keyword blocking for injection blocking
         const keywordBlockResult = this.checkForKeywordBlocking();
         
         // Update injection blocking status
         const previouslyBlocked = this.injectionBlocked;
-        this.injectionBlocked = hasEscToInterrupt || hasClaudePrompt || keywordBlockResult.blocked;
+        this.injectionBlocked = hasEscToInterrupt || keywordBlockResult.blocked;
         
         // Log when blocking status changes
         if (previouslyBlocked && !this.injectionBlocked) {
@@ -688,28 +728,7 @@ class TerminalGUI {
                 this.scheduleNextInjection();
             }
         } else if (!previouslyBlocked && this.injectionBlocked) {
-            let reason;
-            if (hasEscToInterrupt) {
-                reason = 'esc to interrupt detected';
-            } else if (hasClaudePrompt) {
-                reason = 'Claude prompt detected';
-            } else if (keywordBlockResult.blocked) {
-                reason = `keyword "${keywordBlockResult.keyword}" detected`;
-                // Inject custom response if specified
-                if (keywordBlockResult.response) {
-                    this.logAction(`Pressing Esc and injecting custom response for keyword "${keywordBlockResult.keyword}"`, 'info');
-                    // Send Esc key
-                    ipcRenderer.send('terminal-input', '\x1b');
-                    // Wait a moment then inject the custom response
-                    setTimeout(() => {
-                        this.typeMessage(keywordBlockResult.response, () => {
-                            setTimeout(() => {
-                                ipcRenderer.send('terminal-input', '\r');
-                            }, 200);
-                        });
-                    }, 500);
-                }
-            }
+            let reason = hasEscToInterrupt ? 'esc to interrupt detected' : `keyword "${keywordBlockResult.keyword}" detected`;
             this.logAction(`Message injection blocked - ${reason}`, 'warning');
             // Cancel any pending injection
             if (this.injectionTimer) {
@@ -718,17 +737,14 @@ class TerminalGUI {
             }
         }
         
-        // Auto-continue logic (independent of injection blocking but respects keyword blocking)
-        if (!this.autoContinueEnabled || this.isInjecting) return;
+        // Auto-continue logic (skip if keyword blocking just activated)
+        if (!this.autoContinueEnabled || this.isInjecting || this.keywordBlockingActive) return;
         
         // Check for prompts that should trigger auto-continue
         const hasGeneralPrompt = /Do you want to proceed\?/i.test(this.lastTerminalOutput);
         
-        // Check if we should skip auto-continue due to keyword blocking
-        const shouldSkipAutoContinue = keywordBlockResult.blocked && keywordBlockResult.response;
-        
-        // Auto-continue for Claude prompt or general prompts (unless keyword blocked with custom response)
-        if ((hasClaudePrompt || hasGeneralPrompt) && !shouldSkipAutoContinue) {
+        // Auto-continue for Claude prompt or general prompts
+        if (hasClaudePrompt || hasGeneralPrompt) {
             const promptType = hasClaudePrompt ? 'Claude prompt' : 'general prompt';
             
             // If auto-continue is not already active for this prompt, start it
@@ -1147,6 +1163,11 @@ class TerminalGUI {
     }
     
     checkForKeywordBlocking() {
+        // Only check if we have keyword rules
+        if (!this.preferences.keywordRules || this.preferences.keywordRules.length === 0) {
+            return { blocked: false };
+        }
+        
         // Find the ╭ character which marks the start of the current Claude prompt area
         const claudePromptStart = this.lastTerminalOutput.lastIndexOf("╭");
         if (claudePromptStart === -1) {
@@ -1162,9 +1183,16 @@ class TerminalGUI {
             return { blocked: false };
         }
         
+        // Debug logging
+        console.log('Checking keywords in Claude prompt area:', currentPromptArea.substring(0, 200) + '...');
+        
         // Look for keywords only in the current prompt area (from ╭ to end)
         for (const rule of this.preferences.keywordRules) {
-            if (currentPromptArea.toLowerCase().includes(rule.keyword.toLowerCase())) {
+            const keywordLower = rule.keyword.toLowerCase();
+            const promptAreaLower = currentPromptArea.toLowerCase();
+            
+            if (promptAreaLower.includes(keywordLower)) {
+                console.log(`Keyword "${rule.keyword}" found in Claude prompt!`);
                 return {
                     blocked: true,
                     keyword: rule.keyword,
@@ -1172,6 +1200,7 @@ class TerminalGUI {
                 };
             }
         }
+        
         return { blocked: false };
     }
 }
