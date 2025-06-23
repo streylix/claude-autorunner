@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terminal GUI</title>
+    <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <div class="header">
+            <div class="title">Terminal GUI</div>
+            <div class="controls">
+                <span class="control-button minimize"></span>
+                <span class="control-button maximize"></span>
+                <span class="control-button close"></span>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="terminal-section">
+                <div class="terminal-header">
+                    <span class="terminal-title">&lt;Terminal&gt;</span>
+                </div>
+                <div id="terminal-container"></div>
+            </div>
+            
+            <div class="sidebar">
+                <div class="important-details">
+                    <div class="section-header">
+                        <span>[important details (i.e what directory we are in, how many injections have been made, etc)]</span>
+                        <span class="settings-cog">[settings cog]</span>
+                    </div>
+                </div>
+                
+                <div class="queued-messages">
+                    <div class="section-header">
+                        <span>[queued messages]</span>
+                    </div>
+                    <div class="message-list" id="message-list">
+                        <!-- Queued messages will appear here -->
+                    </div>
+                </div>
+                
+                <div class="input-section">
+                    <div class="input-container">
+                        <textarea id="message-input" placeholder="input container" rows="3"></textarea>
+                        <div class="input-controls">
+                            <button type="button" id="add-message-btn">Add to Queue</button>
+                            <button type="button" id="clear-queue-btn">Clear Queue</button>
+                        </div>
+                    </div>
+                    
+                    <div class="timing-controls">
+                        <div class="timing-input">
+                            <label for="execution-time">Execute at time:</label>
+                            <input type="time" id="execution-time" step="1">
+                        </div>
+                        <div class="timing-input">
+                            <label for="execution-date">Date:</label>
+                            <input type="date" id="execution-date">
+                        </div>
+                    </div>
+                    
+                    <div class="auto-controls">
+                        <label class="checkbox-container">
+                            <input type="checkbox" id="auto-agree">
+                            <span class="checkmark"></span>
+                            auto agree
+                        </label>
+                        <div class="status-text">
+                            will inject messages at <span id="injection-time">[input_time]</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
+    <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+    <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+    <script src="renderer.js"></script>
+</body>
+</html> 
