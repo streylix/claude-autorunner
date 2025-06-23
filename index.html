@@ -126,6 +126,17 @@
             <div class="modal-body">
                 <div class="setting-group">
                     <label class="setting-label">
+                        <span class="setting-title">Theme</span>
+                    </label>
+                    <select id="theme-select" class="setting-select">
+                        <option value="dark">Dark Mode</option>
+                        <option value="light">Light Mode (Catppuccin Latte)</option>
+                        <option value="system">System (Auto)</option>
+                    </select>
+                    <p class="setting-description">Choose your preferred theme. System mode automatically switches between light and dark based on your system preferences.</p>
+                </div>
+                <div class="setting-group">
+                    <label class="setting-label">
                         <input type="checkbox" id="autoscroll-enabled" checked>
                         <span class="setting-title">Auto-scroll Terminal</span>
                     </label>

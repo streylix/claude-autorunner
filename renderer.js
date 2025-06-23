@@ -33,6 +33,7 @@ class TerminalGUI {
             autoContinueEnabled: false,
             defaultDuration: 5,
             defaultUnit: 'seconds',
+            theme: 'dark',
             keywordRules: [
                 {
                     id: "claude_credit_example",
@@ -44,6 +45,8 @@ class TerminalGUI {
         this.usageLimitSyncInterval = null;
         this.usageLimitResetTime = null;
         this.autoSyncEnabled = true; // Auto-sync until user manually changes timer
+        this.safetyCheckCount = 0;
+        this.safetyCheckInterval = null;
         
         this.initializeTerminal();
         this.setupEventListeners();
@@ -63,29 +66,7 @@ class TerminalGUI {
     initializeTerminal() {
         // Create terminal instance
         this.terminal = new Terminal({
-            theme: {
-                background: '#1e1e1e',
-                foreground: '#ffffff',
-                cursor: '#ffffff',
-                cursorAccent: '#000000',
-                selection: '#3d3d3d',
-                black: '#000000',
-                red: '#ff5f57',
-                green: '#28ca42',
-                yellow: '#ffbe2e',
-                blue: '#007acc',
-                magenta: '#af52de',
-                cyan: '#5ac8fa',
-                white: '#ffffff',
-                brightBlack: '#666666',
-                brightRed: '#ff6e67',
-                brightGreen: '#32d74b',
-                brightYellow: '#ffcc02',
-                brightBlue: '#007aff',
-                brightMagenta: '#bf5af2',
-                brightCyan: '#64d8ff',
-                brightWhite: '#ffffff'
-            },
+            theme: this.getTerminalTheme(),
             fontFamily: 'Monaco, Menlo, Consolas, monospace',
             fontSize: 13,
             lineHeight: 1.2,
@@ -139,6 +120,92 @@ class TerminalGUI {
         window.addEventListener('resize', () => {
             this.fitAddon.fit();
         });
+    }
+
+    getTerminalTheme() {
+        const currentTheme = this.preferences.theme;
+        
+        // Check for system theme if 'system' is selected
+        if (currentTheme === 'system') {
+            const isSystemLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+            return isSystemLight ? this.getLightTerminalTheme() : this.getDarkTerminalTheme();
+        }
+        
+        return currentTheme === 'light' ? this.getLightTerminalTheme() : this.getDarkTerminalTheme();
+    }
+
+    getDarkTerminalTheme() {
+        return {
+            background: '#1e1e1e',
+            foreground: '#ffffff',
+            cursor: '#ffffff',
+            cursorAccent: '#000000',
+            selection: '#3d3d3d',
+            black: '#000000',
+            red: '#ff5f57',
+            green: '#28ca42',
+            yellow: '#ffbe2e',
+            blue: '#007acc',
+            magenta: '#af52de',
+            cyan: '#5ac8fa',
+            white: '#ffffff',
+            brightBlack: '#666666',
+            brightRed: '#ff6e67',
+            brightGreen: '#32d74b',
+            brightYellow: '#ffcc02',
+            brightBlue: '#007aff',
+            brightMagenta: '#bf5af2',
+            brightCyan: '#64d8ff',
+            brightWhite: '#ffffff'
+        };
+    }
+
+    getLightTerminalTheme() {
+        return {
+            background: '#e6e9ef',
+            foreground: '#4c4f69',
+            cursor: '#4c4f69',
+            cursorAccent: '#e6e9ef',
+            selection: '#dce0e8',
+            black: '#5c5f77',
+            red: '#d20f39',
+            green: '#40a02b',
+            yellow: '#df8e1d',
+            blue: '#1e66f5',
+            magenta: '#ea76cb',
+            cyan: '#179299',
+            white: '#4c4f69',
+            brightBlack: '#6c6f85',
+            brightRed: '#d20f39',
+            brightGreen: '#40a02b',
+            brightYellow: '#df8e1d',
+            brightBlue: '#1e66f5',
+            brightMagenta: '#ea76cb',
+            brightCyan: '#179299',
+            brightWhite: '#4c4f69'
+        };
+    }
+
+    applyTheme(theme) {
+        // Update preferences
+        this.preferences.theme = theme;
+        
+        // Apply theme to document
+        if (theme === 'system') {
+            document.documentElement.setAttribute('data-theme', 'system');
+        } else {
+            document.documentElement.setAttribute('data-theme', theme);
+        }
+        
+        // Update terminal theme
+        if (this.terminal) {
+            this.terminal.options.theme = this.getTerminalTheme();
+        }
+        
+        // Save preferences
+        this.saveAllPreferences();
+        
+        this.logAction('Theme changed to: ' + theme, 'info');
     }
 
     setupEventListeners() {
@@ -250,6 +317,11 @@ class TerminalGUI {
             this.saveAllPreferences();
         });
 
+        // Theme selection control
+        document.getElementById('theme-select').addEventListener('change', (e) => {
+            this.applyTheme(e.target.value);
+        });
+
         // Keyword blocking controls
         document.getElementById('add-keyword-btn').addEventListener('click', () => {
             this.addKeywordRule();
@@ -264,6 +336,13 @@ class TerminalGUI {
         document.getElementById('new-response').addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 this.addKeywordRule();
+            }
+        });
+
+        // System theme change listener
+        window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+            if (this.preferences.theme === 'system') {
+                this.applyTheme('system');
             }
         });
 
@@ -529,76 +608,107 @@ class TerminalGUI {
         }
 
         if (this.messageQueue.length > 0) {
-            // Don't schedule if injection is blocked
-            if (this.injectionBlocked) {
-                this.logAction('Injection scheduling paused - waiting for blocking conditions to clear', 'warning');
-                return;
-            }
-            
             const nextMessage = this.messageQueue[0];
             const now = new Date();
             const delay = nextMessage.executeAt.getTime() - now.getTime();
             
             if (delay > 0) {
                 this.injectionTimer = setTimeout(() => {
-                    this.injectNextMessage();
+                    this.attemptSmartInjection();
                 }, delay);
             } else {
-                // Message is ready to be injected
-                setTimeout(() => this.injectNextMessage(), 100);
+                // Message is ready - check if we can inject safely
+                setTimeout(() => this.attemptSmartInjection(), 100);
             }
         }
     }
 
-    injectNextMessage() {
-        if (this.messageQueue.length === 0 || this.isInjecting) return;
+    attemptSmartInjection() {
+        if (this.messageQueue.length === 0) return;
         
-        // Check current terminal state for blocking conditions before injecting
-        const hasEscToInterrupt = this.lastTerminalOutput.includes("esc to interrupt");
-        const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
-        const keywordBlockResult = this.checkForKeywordBlocking();
+        // Check if the first message is ready
+        const now = new Date();
+        const nextMessage = this.messageQueue[0];
         
-        if (hasEscToInterrupt || hasClaudePrompt || keywordBlockResult.blocked) {
-            let reason;
-            if (hasEscToInterrupt) {
-                reason = 'esc to interrupt detected';
-            } else if (hasClaudePrompt) {
-                reason = 'Claude prompt detected';
-            } else if (keywordBlockResult.blocked) {
-                reason = `keyword "${keywordBlockResult.keyword}" detected`;
-            }
-            this.logAction(`Message injection blocked - ${reason}`, 'warning');
-            
-            // Update blocking status
-            this.injectionBlocked = true;
-            
-            // Reschedule for later
-            setTimeout(() => {
-                this.scheduleNextInjection();
-            }, 2000);
+        if (nextMessage.executeAt.getTime() > now.getTime()) {
+            // Not ready yet, reschedule
+            this.scheduleNextInjection();
             return;
         }
         
-        // Clear blocking status if no blocking conditions found
-        this.injectionBlocked = false;
+        // Start safety checks for injection
+        this.performSafetyChecks(() => {
+            // All safety checks passed - inject the message and process queue
+            this.injectMessageAndProcessQueue();
+        });
+    }
+
+    performSafetyChecks(callback) {
+        this.safetyCheckCount = 0;
+        
+        // Start the safety check cycle
+        this.runSafetyCheck(callback);
+    }
+
+    runSafetyCheck(callback) {
+        this.safetyCheckCount++;
+        
+        // Safety check 1: Not already injecting
+        if (this.isInjecting) {
+            this.logAction(`Safety check failed - already injecting (attempt ${this.safetyCheckCount}/3)`, 'warning');
+            this.retrySafetyCheck(callback);
+            return;
+        }
+        
+        // Safety check 2: No 'esc to interrupt' in terminal
+        if (this.lastTerminalOutput.toLowerCase().includes('esc to interrupt')) {
+            this.logAction(`Safety check failed - 'esc to interrupt' detected (attempt ${this.safetyCheckCount}/3)`, 'warning');
+            this.retrySafetyCheck(callback);
+            return;
+        }
+        
+        // Safety check 3: No Claude prompt
+        if (this.lastTerminalOutput.toLowerCase().includes('no, and tell claude what to do differently')) {
+            this.logAction(`Safety check failed - Claude prompt detected (attempt ${this.safetyCheckCount}/3)`, 'warning');
+            this.retrySafetyCheck(callback);
+            return;
+        }
+        
+        // All safety checks passed
+        this.logAction(`Safety checks passed (attempt ${this.safetyCheckCount}/3) - proceeding with injection`, 'success');
+        callback();
+    }
+
+    retrySafetyCheck(callback) {
+        if (this.safetyCheckCount >= 3) {
+            this.logAction('Safety checks failed after 3 attempts - scheduling retry in 1 minute', 'error');
+            // Reschedule for 1 minute later
+            this.injectionTimer = setTimeout(() => {
+                this.attemptSmartInjection();
+            }, 60000);
+            return;
+        }
+        
+        // Retry after 200ms
+        setTimeout(() => {
+            this.runSafetyCheck(callback);
+        }, 200);
+    }
+
+    injectMessageAndProcessQueue() {
+        if (this.messageQueue.length === 0) return;
         
         const message = this.messageQueue.shift();
         this.isInjecting = true;
         this.setTerminalStatusDisplay('injecting');
         
-        console.log(`Injecting message: ${message.content}`);
-        
-        // Log to action log instead of terminal
         this.logAction(`Injecting: "${message.content}"`, 'success');
         
-        // Type the processed message (with newlines converted)
+        // Type the message
         this.typeMessage(message.processedContent, () => {
             this.injectionCount++;
             this.updateStatusDisplay();
             this.updateMessageList();
-            
-            // Log successful injection
-            this.logAction(`Successfully injected: "${message.content}"`, 'success');
             
             // Send Enter key
             setTimeout(() => {
@@ -606,15 +716,29 @@ class TerminalGUI {
                 this.isInjecting = false;
                 this.setTerminalStatusDisplay('');
                 
-                // If auto-continue is enabled and there are more messages, continue
-                const autoContinue = document.getElementById('auto-continue').checked;
-                if (autoContinue && this.messageQueue.length > 0) {
-                    setTimeout(() => this.scheduleNextInjection(), 1000);
-                } else {
-                    this.scheduleNextInjection();
-                }
+                // Process next message in queue immediately if available and ready
+                this.processQueueSequentially();
+                
             }, 200);
         });
+    }
+
+    processQueueSequentially() {
+        if (this.messageQueue.length === 0) return;
+        
+        const now = new Date();
+        const nextMessage = this.messageQueue[0];
+        
+        // If next message is ready, inject it immediately after a short delay
+        if (nextMessage.executeAt.getTime() <= now.getTime()) {
+            this.logAction('Next message ready - injecting immediately', 'info');
+            setTimeout(() => {
+                this.attemptSmartInjection();
+            }, 1000); // Short delay between sequential injections
+        } else {
+            // Schedule the next message normally
+            this.scheduleNextInjection();
+        }
     }
 
     injectMessages() {
@@ -1240,6 +1364,10 @@ class TerminalGUI {
             document.getElementById('auto-continue').checked = this.autoContinueEnabled;
             document.getElementById('duration-input').value = this.preferences.defaultDuration;
             document.getElementById('duration-unit').value = this.preferences.defaultUnit;
+            document.getElementById('theme-select').value = this.preferences.theme;
+            
+            // Apply theme
+            this.applyTheme(this.preferences.theme);
             
             // Update keyword rules display
             this.updateKeywordRulesDisplay();
