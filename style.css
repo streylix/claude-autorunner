@@ -371,7 +371,6 @@ body {
     align-items: center;
     font-size: 12px;
     color: var(--text-tertiary);
-    margin-bottom: 15px;
 }
 
 .queue-title {
@@ -509,23 +508,49 @@ body {
     opacity: 1;
 }
 
-.message-delete-btn {
+.message-edit-btn {
     background: none;
     border: none;
-    color: var(--text-quaternary);
+    color: var(--text-tertiary);
     cursor: pointer;
     padding: 4px;
     border-radius: 3px;
-    transition: all 0.2s;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-right: 4px;
+    width: 24px;
+    height: 24px;
+    transition: all 0.2s;
+}
+
+.message-edit-btn:hover {
+    background-color: var(--accent-info);
+    color: var(--text-primary);
+}
+
+.message-edit-btn i {
+    width: 12px;
+    height: 12px;
+}
+
+.message-delete-btn {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    transition: all 0.2s;
 }
 
 .message-delete-btn:hover {
-    color: var(--accent-error);
-    background-color: rgba(255, 95, 87, 0.1);
+    background-color: var(--accent-error);
+    color: var(--text-primary);
 }
 
 .message-delete-btn i {
@@ -560,8 +585,6 @@ body {
     font-weight: 500;
     color: var(--accent-primary);
 }
-
-
 
 .input-section {
     padding: 15px;
@@ -605,6 +628,14 @@ body {
 .send-button i {
     width: 16px;
     height: 16px;
+}
+
+.send-button.editing-mode {
+    /* Keep same styling as normal mode, just different icon */
+}
+
+.send-button.editing-mode:hover {
+    background-color: var(--accent-primary);
 }
 
 .timing-wrapper {
@@ -652,7 +683,6 @@ body {
     color: var(--text-primary);
     background-color: var(--bg-tertiary);
 }
-
 
 .timer-btn:focus {
     outline: none;
@@ -735,112 +765,118 @@ body {
 /* Timer edit dropdown styles */
 .timer-edit-dropdown {
     position: fixed;
-    background-color: var(--bg-tertiary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 8px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
     z-index: 1000;
     animation: dropdownFadeIn 0.15s ease-out;
+    min-width: 240px;
 }
 
 .timer-edit-content {
-    padding: 12px;
+    padding: 16px;
 }
 
 .timer-edit-header {
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--text-primary);
     margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-primary);
     text-align: center;
 }
 
-.timer-edit-form {
+.timer-segments-row {
     display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-.timer-input-row {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-.timer-input-row label {
-    font-size: 12px;
-    color: var(--text-secondary);
-    font-weight: 500;
-}
-
-.timer-input {
-    padding: 8px 12px;
-    border: 1px solid var(--border-secondary);
-    border-radius: 4px;
-    background-color: var(--bg-secondary);
-    color: var(--text-primary);
-    font-family: inherit;
-    font-size: 14px;
-}
-
-.timer-input:focus {
-    outline: none;
-    border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
-}
-
-.timer-time-input {
-    padding: 8px 12px;
-    border: 1px solid var(--border-secondary);
-    border-radius: 4px;
-    background-color: var(--bg-secondary);
-    color: var(--text-primary);
-    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
-    font-size: 14px;
-    width: 120px;
-    text-align: center;
-}
-
-.timer-time-input:focus {
-    outline: none;
-    border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
-}
-
-.timer-quick-buttons {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+    align-items: center;
     justify-content: center;
+    gap: 8px;
+    padding: 12px;
+    background-color: var(--bg-secondary);
+    border-radius: 6px;
+    border: 1px solid var(--border-secondary);
+    margin-bottom: 12px;
 }
 
-.timer-quick-btn {
-    padding: 4px 8px;
+.timer-segment {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    cursor: grab;
+    user-select: none;
+    transition: all 0.15s ease;
+    padding: 4px;
+    border-radius: 4px;
+}
+
+.timer-segment:hover {
+    transform: translateY(-1px);
+    background-color: var(--bg-tertiary);
+}
+
+.timer-segment.dragging {
+    cursor: grabbing;
+    transform: scale(1.05);
+    background-color: var(--accent-primary);
+    box-shadow: 0 2px 8px rgba(0, 122, 204, 0.3);
+}
+
+.timer-segment-input {
+    width: 36px;
+    height: 28px;
+    text-align: center;
+    font-size: 16px;
+    font-weight: 600;
+    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    background-color: var(--bg-primary);
     border: 1px solid var(--border-secondary);
     border-radius: 4px;
-    background-color: var(--bg-secondary);
-    color: var(--text-secondary);
-    font-size: 11px;
-    font-weight: 500;
-    cursor: pointer;
+    color: var(--text-primary);
     transition: all 0.15s ease;
-    min-width: 40px;
 }
 
-.timer-quick-btn:hover {
-    background-color: var(--accent-primary);
-    color: var(--text-primary);
+.timer-segment-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+}
+
+.timer-segment-input:hover {
     border-color: var(--accent-primary);
 }
 
-.timer-quick-btn:active {
-    transform: translateY(1px);
+.timer-segment.dragging .timer-segment-input {
+    color: white;
+    border-color: white;
+    background-color: transparent;
+}
+
+.timer-segment-label {
+    font-size: 9px;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+    pointer-events: none;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.timer-separator {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin: 0 2px;
+    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
 }
 
 .timer-edit-actions {
     display: flex;
     gap: 8px;
     justify-content: flex-end;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-primary);
 }
 
 .timer-edit-btn-action {
@@ -901,8 +937,6 @@ body {
     border-color: var(--accent-primary);
 }
 
-
-
 .auto-controls {
     margin-top: 12px;
 }
@@ -931,7 +965,6 @@ body {
     width: 16px;
     height: 16px;
 }
-
 
 /* XTerm overrides */
 .xterm {
@@ -1497,4 +1530,6 @@ body {
 #clear-log-btn i {
     width: 16px;
     height: 16px;
-} 
+}
+
+ 

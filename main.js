@@ -55,14 +55,15 @@ app.on('activate', () => {
 
 function setupIpcHandlers() {
   // Terminal handling
-  ipcMain.on('terminal-start', (event) => {
+  ipcMain.on('terminal-start', (event, startDirectory = null) => {
     const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/zsh';
+    const cwd = startDirectory || process.cwd();
     
     ptyProcess = pty.spawn(shell, [], {
       name: 'xterm-color',
       cols: 80,
       rows: 24,
-      cwd: process.cwd(),
+      cwd: cwd,
       env: process.env
     });
 
@@ -84,6 +85,50 @@ function setupIpcHandlers() {
   ipcMain.on('terminal-resize', (event, cols, rows) => {
     if (ptyProcess) {
       ptyProcess.resize(cols, rows);
+    }
+  });
+
+  // Change terminal working directory
+  ipcMain.handle('change-terminal-directory', async (event, newPath) => {
+    try {
+      // Store current terminal size
+      let cols = 80, rows = 24;
+      if (ptyProcess) {
+        cols = ptyProcess.cols || 80;
+        rows = ptyProcess.rows || 24;
+        // Kill existing process
+        ptyProcess.kill();
+      }
+      
+      // Start new process in the new directory
+      const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/zsh';
+      
+      ptyProcess = pty.spawn(shell, [], {
+        name: 'xterm-color',
+        cols: cols,
+        rows: rows,
+        cwd: newPath,
+        env: process.env
+      });
+
+      ptyProcess.onData((data) => {
+        // Send data to all renderer processes
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('terminal-data', data);
+        }
+      });
+
+      ptyProcess.onExit(() => {
+        // Send exit event to all renderer processes
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('terminal-exit');
+        }
+      });
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Error changing terminal directory:', error);
+      return { success: false, error: error.message };
     }
   });
 

@@ -10,7 +10,7 @@ class TerminalGUI {
         this.messageQueue = [];
         this.injectionTimer = null;
         this.injectionCount = 0;
-        this.currentDirectory = process.cwd();
+        this.currentDirectory = null; // Will be set when terminal starts or directory is detected
         this.isInjecting = false;
         this.messageIdCounter = 1;
         this.autoContinueEnabled = false;
@@ -44,7 +44,11 @@ class TerminalGUI {
             // Add timer persistence
             timerHours: 0,
             timerMinutes: 0,
-            timerSeconds: 0
+            timerSeconds: 0,
+            // Add message queue persistence
+            messageQueue: [],
+            // Add directory persistence
+            currentDirectory: null
         };
         this.usageLimitSyncInterval = null;
         this.usageLimitResetTime = null;
@@ -61,12 +65,17 @@ class TerminalGUI {
         this.timerExpired = false;
         this.injectionInProgress = false;
         
+        // Message editing state
+        this.editingMessageId = null;
+        
+        // Load preferences FIRST so we have saved directory before starting terminal
+        this.loadAllPreferences();
+        
         this.initializeTerminal();
         this.setupEventListeners();
         this.initializeLucideIcons();
         this.updateStatusDisplay();
         this.setTerminalStatusDisplay(''); // Initialize with default status
-        this.loadAllPreferences(); // Load preferences first
         this.updateTimerUI(); // Initialize timer UI after loading preferences
     }
 
@@ -127,8 +136,17 @@ class TerminalGUI {
             ipcRenderer.send('terminal-resize', cols, rows);
         });
 
-        // Start terminal process
-        ipcRenderer.send('terminal-start');
+        // Load saved directory before starting terminal (preferences already loaded in constructor)
+        const savedDirectory = this.preferences.currentDirectory;
+        if (savedDirectory) {
+            this.currentDirectory = savedDirectory;
+            this.logAction(`Starting terminal in saved directory: ${savedDirectory}`, 'info');
+        } else {
+            this.logAction('Starting terminal in default directory', 'info');
+        }
+
+        // Start terminal process in saved directory (or default if none saved)
+        ipcRenderer.send('terminal-start', savedDirectory);
 
         // Handle window resize
         window.addEventListener('resize', () => {
@@ -226,6 +244,7 @@ class TerminalGUI {
         // IPC listeners for terminal data
         ipcRenderer.on('terminal-data', (event, data) => {
             this.terminal.write(data);
+            this.updateTerminalOutput(data);
             this.detectDirectoryChange(data);
             this.detectAutoContinuePrompt(data);
             this.detectUsageLimit(data);
@@ -239,7 +258,26 @@ class TerminalGUI {
 
         // UI event listeners
         document.getElementById('send-btn').addEventListener('click', () => {
-            this.addMessageToQueue();
+            if (this.editingMessageId) {
+                this.handleMessageUpdate();
+            } else {
+                this.addMessageToQueue();
+            }
+        });
+
+        // Handle Enter key in message input
+        document.getElementById('message-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (this.editingMessageId) {
+                    this.handleMessageUpdate();
+                } else {
+                    this.addMessageToQueue();
+                }
+            } else if (e.key === 'Escape' && this.editingMessageId) {
+                e.preventDefault();
+                this.cancelEdit();
+            }
         });
 
         // Directory click handler
@@ -253,21 +291,6 @@ class TerminalGUI {
 
         document.getElementById('inject-now-btn').addEventListener('click', () => {
             this.injectMessages();
-        });
-
-        // Smart input handling
-        const messageInput = document.getElementById('message-input');
-        messageInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                if (e.shiftKey) {
-                    // Shift+Enter: allow new line (default behavior)
-                    return;
-                } else {
-                    // Enter: add to queue
-                    e.preventDefault();
-                    this.addMessageToQueue();
-                }
-            }
         });
 
         // Auto-continue checkbox listener
@@ -366,43 +389,51 @@ class TerminalGUI {
     }
 
     addMessageToQueue() {
-        const messageInput = document.getElementById('message-input');
-        const message = messageInput.value.trim();
+        const input = document.getElementById('message-input');
+        const content = input.value.trim();
         
-        if (message) {
-            // Convert newlines to escape sequence for injection
-            const processedMessage = message.replace(/\n/g, '\\\n');
-            
-            this.messageQueue.push({
+        if (content) {
+            const message = {
                 id: this.messageIdCounter++,
-                content: message,
-                processedContent: processedMessage,
-                timestamp: new Date().toISOString()
-            });
+                content: content,
+                processedContent: content, // Store processed version
+                timestamp: Date.now()
+            };
             
-            messageInput.value = '';
+            this.messageQueue.push(message);
+            this.saveMessageQueue(); // Save to localStorage
             this.updateMessageList();
             this.updateStatusDisplay();
+            input.value = '';
             
-            // Log the action
-            this.logAction(`Added message to queue: "${message}"`, 'info');
+            this.logAction(`Added message to queue: "${content}"`, 'info');
         }
     }
 
+    handleMessageUpdate() {
+        const input = document.getElementById('message-input');
+        const content = input.value.trim();
+        
+        if (content && this.editingMessageId) {
+            this.updateMessage(this.editingMessageId, content);
+            this.cancelEdit();
+        } else if (!content && this.editingMessageId) {
+            // If content is empty, delete the message
+            this.deleteMessage(this.editingMessageId);
+            this.cancelEdit();
+        }
+    }
 
     clearQueue() {
-        const clearedCount = this.messageQueue.length;
-        this.messageQueue = [];
-        this.updateMessageList();
-        this.updateStatusDisplay();
-        
-        if (this.injectionTimer) {
-            clearTimeout(this.injectionTimer);
-            this.injectionTimer = null;
+        if (this.messageQueue.length > 0) {
+            const count = this.messageQueue.length;
+            this.messageQueue = [];
+            this.saveMessageQueue(); // Save to localStorage
+            this.updateMessageList();
+            this.updateStatusDisplay();
+            
+            this.logAction(`Cleared message queue (${count} messages removed)`, 'warning');
         }
-        
-        // Log to action log instead of terminal
-        this.logAction(`Cleared ${clearedCount} messages from queue`, 'warning');
     }
 
     updateMessageList() {
@@ -431,6 +462,16 @@ class TerminalGUI {
             const actions = document.createElement('div');
             actions.className = 'message-actions';
             
+            // Edit button
+            const editBtn = document.createElement('button');
+            editBtn.className = 'message-edit-btn';
+            editBtn.innerHTML = '<i data-lucide="edit-3"></i>';
+            editBtn.title = 'Edit message';
+            editBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.editMessage(message.id);
+            });
+            
             // Delete button
             const deleteBtn = document.createElement('button');
             deleteBtn.className = 'message-delete-btn';
@@ -441,6 +482,7 @@ class TerminalGUI {
                 this.deleteMessage(message.id);
             });
             
+            actions.appendChild(editBtn);
             actions.appendChild(deleteBtn);
             messageElement.appendChild(content);
             messageElement.appendChild(actions);
@@ -458,12 +500,76 @@ class TerminalGUI {
         if (index !== -1) {
             const deletedMessage = this.messageQueue[index];
             this.messageQueue.splice(index, 1);
+            this.saveMessageQueue(); // Save to localStorage
             this.updateMessageList();
             this.updateStatusDisplay();
             
             // Log the action instead of writing to terminal
             this.logAction(`Deleted message: "${deletedMessage.content}"`, 'warning');
         }
+    }
+
+    editMessage(messageId) {
+        const message = this.messageQueue.find(m => m.id === messageId);
+        if (message) {
+            const input = document.getElementById('message-input');
+            input.value = message.content;
+            input.focus();
+            
+            // Store the editing state
+            this.editingMessageId = messageId;
+            
+            // Update the send button to show edit mode
+            const sendBtn = document.getElementById('send-btn');
+            sendBtn.innerHTML = '<i data-lucide="check"></i>';
+            sendBtn.title = 'Update message (Enter)';
+            sendBtn.classList.add('editing-mode');
+            
+            // Reinitialize icons to ensure they render
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+            
+            this.logAction(`Editing message: "${message.content}"`, 'info');
+        }
+    }
+
+    updateMessage(messageId, newContent) {
+        const index = this.messageQueue.findIndex(m => m.id === messageId);
+        if (index !== -1) {
+            const oldContent = this.messageQueue[index].content;
+            this.messageQueue[index].content = newContent;
+            this.messageQueue[index].processedContent = newContent;
+            // Keep original timestamp
+            
+            this.saveMessageQueue(); // Save to localStorage
+            this.updateMessageList();
+            this.updateStatusDisplay();
+            
+            this.logAction(`Updated message: "${oldContent}" → "${newContent}"`, 'info');
+        }
+    }
+
+    cancelEdit() {
+        this.editingMessageId = null;
+        const input = document.getElementById('message-input');
+        input.value = '';
+        
+        // Reset send button
+        const sendBtn = document.getElementById('send-btn');
+        sendBtn.innerHTML = '<i data-lucide="send-horizontal"></i>';
+        sendBtn.title = 'Add message to queue (Enter)';
+        sendBtn.classList.remove('editing-mode');
+        
+        // Reinitialize icons to ensure they render
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+    }
+
+    saveMessageQueue() {
+        this.preferences.messageQueue = this.messageQueue;
+        this.saveAllPreferences();
     }
 
     // New timer system functions
@@ -637,27 +743,38 @@ class TerminalGUI {
         
         const button = event.target.closest('button');
         
+        // Store original values for potential revert
+        this.originalTimerValues = {
+            hours: this.timerHours,
+            minutes: this.timerMinutes,
+            seconds: this.timerSeconds
+        };
+        
         // Create dropdown
         const dropdown = document.createElement('div');
         dropdown.className = 'timer-edit-dropdown';
-        const currentTimeString = `${String(this.timerHours).padStart(2, '0')}:${String(this.timerMinutes).padStart(2, '0')}:${String(this.timerSeconds).padStart(2, '0')}`;
         dropdown.innerHTML = `
             <div class="timer-edit-content">
                 <div class="timer-edit-header">Set Timer</div>
                 <div class="timer-edit-form">
-                    <div class="timer-input-row">
-                        <label>Time (HH:MM:SS):</label>
-                        <input type="text" id="edit-timer-time" value="${currentTimeString}" placeholder="HH:MM:SS" class="timer-time-input" maxlength="8">
-                    </div>
-                    <div class="timer-quick-buttons">
-                        <button type="button" class="timer-quick-btn" data-time="00:05:00">5min</button>
-                        <button type="button" class="timer-quick-btn" data-time="00:10:00">10min</button>
-                        <button type="button" class="timer-quick-btn" data-time="00:15:00">15min</button>
-                        <button type="button" class="timer-quick-btn" data-time="00:30:00">30min</button>
-                        <button type="button" class="timer-quick-btn" data-time="01:00:00">1hr</button>
+                    <div class="timer-segments-row">
+                        <div class="timer-segment" data-segment="hours">
+                            <input type="text" class="timer-segment-input" value="${String(this.timerHours).padStart(2, '0')}" maxlength="2" data-segment="hours">
+                            <span class="timer-segment-label">HH</span>
+                        </div>
+                        <span class="timer-separator">:</span>
+                        <div class="timer-segment" data-segment="minutes">
+                            <input type="text" class="timer-segment-input" value="${String(this.timerMinutes).padStart(2, '0')}" maxlength="2" data-segment="minutes">
+                            <span class="timer-segment-label">MM</span>
+                        </div>
+                        <span class="timer-separator">:</span>
+                        <div class="timer-segment" data-segment="seconds">
+                            <input type="text" class="timer-segment-input" value="${String(this.timerSeconds).padStart(2, '0')}" maxlength="2" data-segment="seconds">
+                            <span class="timer-segment-label">SS</span>
+                        </div>
                     </div>
                     <div class="timer-edit-actions">
-                        <button class="timer-edit-btn-action timer-save-btn" id="save-timer">Save</button>
+                        <button class="timer-edit-btn-action timer-save-btn" id="save-timer">Done</button>
                         <button class="timer-edit-btn-action timer-cancel-btn" id="cancel-timer">Cancel</button>
                     </div>
                 </div>
@@ -666,14 +783,13 @@ class TerminalGUI {
         
         document.body.appendChild(dropdown);
         
-        // Position dropdown so its bottom-right corner touches the button's top-left corner
+        // Position dropdown
         const rect = button.getBoundingClientRect();
         const dropdownRect = dropdown.getBoundingClientRect();
         
         let left = rect.left - dropdownRect.width;
         let top = rect.top - dropdownRect.height;
         
-        // Adjust position if dropdown goes off-screen
         if (left < 10) {
             left = 10;
         }
@@ -684,86 +800,26 @@ class TerminalGUI {
         dropdown.style.left = left + 'px';
         dropdown.style.top = top + 'px';
         
-        // Focus the input and select all text for easy editing
-        const timeInput = dropdown.querySelector('#edit-timer-time');
-        setTimeout(() => {
-            timeInput.focus();
-            timeInput.select();
-        }, 50);
+        // Set up drag and click functionality for each segment with auto-save
+        this.setupTimerSegmentInteractions(dropdown);
         
-        // Add input validation and formatting
-        timeInput.addEventListener('input', (e) => {
-            let value = e.target.value.replace(/[^0-9:]/g, '');
-            
-            // Auto-format as user types
-            if (value.length >= 2 && !value.includes(':')) {
-                value = value.substring(0, 2) + ':' + value.substring(2);
-            }
-            if (value.length >= 5 && value.split(':').length === 2) {
-                const parts = value.split(':');
-                value = parts[0] + ':' + parts[1] + ':' + (parts[1].length > 2 ? parts[1].substring(2) : '');
-            }
-            
-            e.target.value = value;
-        });
-        
-        // Handle keyboard shortcuts
-        timeInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                dropdown.querySelector('#save-timer').click();
-            } else if (e.key === 'Escape') {
-                e.preventDefault();
-                dropdown.querySelector('#cancel-timer').click();
-            }
-        });
-        
-        // Quick buttons functionality
-        dropdown.querySelectorAll('.timer-quick-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const timeValue = e.target.dataset.time;
-                timeInput.value = timeValue;
-                timeInput.focus();
-            });
-        });
-        
-        // Save button
+        // Done button (just closes dropdown since changes are auto-saved)
         dropdown.querySelector('#save-timer').addEventListener('click', () => {
-            const timeValue = timeInput.value.trim();
-            const timeParts = timeValue.split(':');
-            
-            if (timeParts.length === 3) {
-                const hours = parseInt(timeParts[0]) || 0;
-                const minutes = parseInt(timeParts[1]) || 0;
-                const seconds = parseInt(timeParts[2]) || 0;
-                
-                // Validate ranges
-                if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59 && seconds >= 0 && seconds <= 59) {
-                    this.setTimer(hours, minutes, seconds);
-                    this.closeAllTimerDropdowns();
-                } else {
-                    timeInput.style.borderColor = 'var(--accent-error)';
-                    timeInput.focus();
-                    setTimeout(() => {
-                        timeInput.style.borderColor = '';
-                    }, 2000);
-                }
-            } else {
-                timeInput.style.borderColor = 'var(--accent-error)';
-                timeInput.focus();
-                setTimeout(() => {
-                    timeInput.style.borderColor = '';
-                }, 2000);
-            }
-        });
-        
-        // Cancel button
-        dropdown.querySelector('#cancel-timer').addEventListener('click', () => {
             this.closeAllTimerDropdowns();
         });
         
-        // Close dropdown when clicking outside
+        // Cancel button (reverts changes)
+        dropdown.querySelector('#cancel-timer').addEventListener('click', () => {
+            // Revert to original values
+            this.setTimer(this.originalTimerValues.hours, this.originalTimerValues.minutes, this.originalTimerValues.seconds);
+            this.closeAllTimerDropdowns();
+        });
+        
+        // Close dropdown when clicking outside (auto-saves)
         const closeHandler = (event) => {
+            // Don't close if we're currently dragging
+            if (dropdown._isAnySegmentDragging && dropdown._isAnySegmentDragging()) return;
+            
             if (!event.target.closest('.timer-edit-dropdown') && !event.target.closest('#timer-edit-btn')) {
                 this.closeAllTimerDropdowns();
                 document.removeEventListener('click', closeHandler);
@@ -773,6 +829,155 @@ class TerminalGUI {
         setTimeout(() => {
             document.addEventListener('click', closeHandler);
         }, 100);
+    }
+
+    setupTimerSegmentInteractions(dropdown) {
+        const segments = dropdown.querySelectorAll('.timer-segment');
+        let isAnySegmentDragging = false;
+        
+        // Auto-save function
+        const autoSave = () => {
+            const hoursInput = dropdown.querySelector('.timer-segment-input[data-segment="hours"]');
+            const minutesInput = dropdown.querySelector('.timer-segment-input[data-segment="minutes"]');
+            const secondsInput = dropdown.querySelector('.timer-segment-input[data-segment="seconds"]');
+            
+            const hours = Math.max(0, Math.min(23, parseInt(hoursInput.value) || 0));
+            const minutes = Math.max(0, Math.min(59, parseInt(minutesInput.value) || 0));
+            const seconds = Math.max(0, Math.min(59, parseInt(secondsInput.value) || 0));
+            
+            this.setTimer(hours, minutes, seconds, true); // Silent mode to prevent log spam
+        };
+        
+        segments.forEach(segment => {
+            const input = segment.querySelector('.timer-segment-input');
+            const segmentType = segment.dataset.segment;
+            
+            let isDragging = false;
+            let startY = 0;
+            let startValue = 0;
+            let clickTimeout = null;
+            
+            // Mouse down - start drag or prepare for click
+            segment.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                startY = e.clientY;
+                startValue = parseInt(input.value) || 0;
+                isDragging = false;
+                
+                // Set a timeout to detect if this is a click vs drag
+                clickTimeout = setTimeout(() => {
+                    // This is a click, not a drag - select the input
+                    input.focus();
+                    input.select();
+                    clickTimeout = null;
+                }, 150);
+                
+                const handleMouseMove = (e) => {
+                    if (clickTimeout) {
+                        clearTimeout(clickTimeout);
+                        clickTimeout = null;
+                    }
+                    
+                    if (!isDragging) {
+                        isDragging = true;
+                        isAnySegmentDragging = true;
+                        segment.classList.add('dragging');
+                    }
+                    
+                    const deltaY = startY - e.clientY;
+                    const sensitivity = 5; // pixels per increment
+                    const change = Math.floor(deltaY / sensitivity);
+                    
+                    let newValue = startValue + change;
+                    
+                    // Apply limits based on segment type
+                    if (segmentType === 'hours') {
+                        newValue = Math.max(0, Math.min(23, newValue));
+                    } else {
+                        newValue = Math.max(0, Math.min(59, newValue));
+                    }
+                    
+                    input.value = String(newValue).padStart(2, '0');
+                    autoSave(); // Auto-save on drag change
+                };
+                
+                const handleMouseUp = () => {
+                    if (clickTimeout) {
+                        clearTimeout(clickTimeout);
+                        clickTimeout = null;
+                        // This was a quick click, focus the input
+                        input.focus();
+                        input.select();
+                    }
+                    
+                    segment.classList.remove('dragging');
+                    isDragging = false;
+                    
+                    // Reset dragging state with a small delay to prevent dropdown closing
+                    setTimeout(() => {
+                        isAnySegmentDragging = false;
+                    }, 100);
+                    
+                    document.removeEventListener('mousemove', handleMouseMove);
+                    document.removeEventListener('mouseup', handleMouseUp);
+                };
+                
+                document.addEventListener('mousemove', handleMouseMove);
+                document.addEventListener('mouseup', handleMouseUp);
+            });
+            
+            // Handle direct input
+            input.addEventListener('input', (e) => {
+                let value = e.target.value.replace(/[^0-9]/g, '');
+                if (value.length > 2) value = value.slice(0, 2);
+                
+                let numValue = parseInt(value) || 0;
+                if (segmentType === 'hours') {
+                    numValue = Math.min(23, numValue);
+                } else {
+                    numValue = Math.min(59, numValue);
+                }
+                
+                e.target.value = value;
+            });
+            
+            // Format on blur and auto-save
+            input.addEventListener('blur', (e) => {
+                const value = parseInt(e.target.value) || 0;
+                e.target.value = String(value).padStart(2, '0');
+                autoSave(); // Auto-save on blur
+            });
+            
+            // Handle keyboard shortcuts
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    autoSave(); // Auto-save on enter
+                    dropdown.querySelector('#save-timer').click();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    dropdown.querySelector('#cancel-timer').click();
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    let value = parseInt(input.value) || 0;
+                    if (segmentType === 'hours') {
+                        value = Math.min(23, value + 1);
+                    } else {
+                        value = Math.min(59, value + 1);
+                    }
+                    input.value = String(value).padStart(2, '0');
+                    autoSave(); // Auto-save on arrow key change
+                } else if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    let value = Math.max(0, (parseInt(input.value) || 0) - 1);
+                    input.value = String(value).padStart(2, '0');
+                    autoSave(); // Auto-save on arrow key change
+                }
+            });
+        });
+        
+        // Store reference to dragging state for dropdown close handler
+        dropdown._isAnySegmentDragging = () => isAnySegmentDragging;
     }
     
     closeAllTimerDropdowns() {
@@ -786,9 +991,9 @@ class TerminalGUI {
         }
     }
 
-    setTimer(hours, minutes, seconds) {
+    setTimer(hours, minutes, seconds, silent = false) {
         // Disable auto-sync when user manually sets timer
-        this.disableAutoSync();
+        this.disableAutoSync(silent);
         
         this.timerHours = Math.max(0, Math.min(23, hours));
         this.timerMinutes = Math.max(0, Math.min(59, minutes));
@@ -802,7 +1007,21 @@ class TerminalGUI {
         this.saveAllPreferences();
         
         this.updateTimerUI();
-        this.logAction(`Timer set to ${String(this.timerHours).padStart(2, '0')}:${String(this.timerMinutes).padStart(2, '0')}:${String(this.timerSeconds).padStart(2, '0')}`, 'info');
+        
+        // Only log when not in silent mode
+        if (!silent) {
+            this.logAction(`Timer set to ${String(this.timerHours).padStart(2, '0')}:${String(this.timerMinutes).padStart(2, '0')}:${String(this.timerSeconds).padStart(2, '0')}`, 'info');
+        }
+    }
+
+    disableAutoSync(silent = false) {
+        this.autoSyncEnabled = false;
+        this.stopUsageLimitSync();
+        
+        // Only log when not in silent mode
+        if (!silent) {
+            this.logAction('Auto-sync disabled - user manually changed timer', 'info');
+        }
     }
 
     startSequentialInjection() {
@@ -822,10 +1041,14 @@ class TerminalGUI {
         if (this.messageQueue.length === 0) {
             this.injectionInProgress = false;
             this.timerExpired = false; // Reset timer expired state when injection completes
+            this.safetyCheckCount = 0; // Reset safety check count
             this.updateTimerUI();
             this.logAction('Sequential injection completed - all messages processed', 'success');
             return;
         }
+        
+        // Reset safety check count for each new message
+        this.safetyCheckCount = 0;
         
         // Start safety checks for the next message
         this.performSafetyChecks(() => {
@@ -841,6 +1064,7 @@ class TerminalGUI {
         }
         
         const message = this.messageQueue.shift();
+        this.saveMessageQueue(); // Save queue changes to localStorage
         this.isInjecting = true;
         this.setTerminalStatusDisplay('injecting');
         
@@ -867,6 +1091,13 @@ class TerminalGUI {
         });
     }
 
+    cancelSequentialInjection() {
+        this.injectionInProgress = false;
+        this.timerExpired = false;
+        this.safetyCheckCount = 0;
+        this.updateTimerUI();
+        this.logAction(`Sequential injection cancelled - ${this.messageQueue.length} messages remaining in queue`, 'warning');
+    }
 
     // Old scheduling system removed - now using timer-based injection
 
@@ -883,43 +1114,52 @@ class TerminalGUI {
         
         // Safety check 1: Not already injecting
         if (this.isInjecting) {
-            this.logAction(`Safety check failed - already injecting (attempt ${this.safetyCheckCount}/3)`, 'warning');
+            this.logAction(`Safety check failed - already injecting (attempt ${this.safetyCheckCount})`, 'warning');
             this.retrySafetyCheck(callback);
             return;
         }
         
         // Safety check 2: No 'esc to interrupt' in terminal
         if (this.lastTerminalOutput.toLowerCase().includes('esc to interrupt')) {
-            this.logAction(`Safety check failed - 'esc to interrupt' detected (attempt ${this.safetyCheckCount}/3)`, 'warning');
+            this.logAction(`Safety check failed - 'esc to interrupt' detected (attempt ${this.safetyCheckCount})`, 'warning');
             this.retrySafetyCheck(callback);
             return;
         }
         
         // Safety check 3: No Claude prompt
         if (this.lastTerminalOutput.toLowerCase().includes('no, and tell claude what to do differently')) {
-            this.logAction(`Safety check failed - Claude prompt detected (attempt ${this.safetyCheckCount}/3)`, 'warning');
+            this.logAction(`Safety check failed - Claude prompt detected (attempt ${this.safetyCheckCount})`, 'warning');
             this.retrySafetyCheck(callback);
             return;
         }
         
         // All safety checks passed
-        this.logAction(`Safety checks passed (attempt ${this.safetyCheckCount}/3) - proceeding with injection`, 'success');
+        this.logAction(`Safety checks passed (attempt ${this.safetyCheckCount}) - proceeding with injection`, 'success');
         callback();
     }
 
     retrySafetyCheck(callback) {
-        if (this.safetyCheckCount >= 3) {
-            this.logAction('Safety checks failed after 3 attempts - pausing sequential injection', 'error');
-            // Stop the sequential injection process
-            this.injectionInProgress = false;
-            this.updateTimerUI();
-            return;
+        // Don't stop after 3 attempts - keep trying with increasing delays
+        let retryDelay;
+        if (this.safetyCheckCount <= 3) {
+            retryDelay = 200; // First 3 attempts: 200ms delay
+        } else if (this.safetyCheckCount <= 10) {
+            retryDelay = 1000; // Next 7 attempts: 1 second delay
+        } else if (this.safetyCheckCount <= 20) {
+            retryDelay = 2000; // Next 10 attempts: 2 second delay
+        } else {
+            retryDelay = 5000; // After 20 attempts: 5 second delay
         }
         
-        // Retry after 200ms
+        // Log less frequently to avoid spam
+        if (this.safetyCheckCount % 5 === 0) {
+            this.logAction(`Still waiting for safe injection conditions (attempt ${this.safetyCheckCount}) - retrying in ${retryDelay/1000}s`, 'info');
+        }
+        
+        // Continue retrying until conditions are safe
         setTimeout(() => {
             this.runSafetyCheck(callback);
-        }, 200);
+        }, retryDelay);
     }
 
     injectMessages() {
@@ -990,14 +1230,6 @@ class TerminalGUI {
     }
 
     detectAutoContinuePrompt(data) {
-        // Store recent terminal output for analysis
-        this.lastTerminalOutput += data;
-        
-        // Keep only recent output (last 4000 characters to ensure we capture full Claude prompts)
-        if (this.lastTerminalOutput.length > 4000) {
-            this.lastTerminalOutput = this.lastTerminalOutput.slice(-4000);
-        }
-        
         // Check for blocking conditions for message injection
         const hasEscToInterrupt = this.lastTerminalOutput.includes("esc to interrupt");
         const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
@@ -1131,46 +1363,99 @@ class TerminalGUI {
 
     detectDirectoryChange(data) {
         // Enhanced directory detection from terminal output
-        const lines = data.split('\n');
+        const lines = data.split(/\r?\n/);
         let detectedDir = null;
         
         // Process lines to find directory information
         for (const line of lines) {
-            // Look for common directory patterns in terminal output
-            const promptMatch = line.match(/.*[➜$#]\s+([^\s]+)/);
-            const pwdMatch = line.match(/^([\/~].*?)(?:\s|$)/);
+            // Clean the line of ANSI escape codes and extra whitespace
+            const cleanLine = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
             
-            if (promptMatch && promptMatch[1] && promptMatch[1].length > 1) {
-                detectedDir = promptMatch[1];
-                break; // Use first match found
-            } else if (pwdMatch && pwdMatch[1]) {
+            if (!cleanLine) continue;
+            
+            // Pattern 1: Common shell prompts with directory in format: user@host:path$ or similar
+            const promptWithPath = cleanLine.match(/.*?[:\s]([~\/][^\s$#>]*)\s*[$#>%]\s*$/);
+            
+            // Pattern 2: Bare directory path at start of line
+            const barePathMatch = cleanLine.match(/^([~\/][^\s]+)\s*$/);
+            
+            // Pattern 3: pwd command output
+            const pwdMatch = cleanLine.match(/^([~\/][^\s]*?)$/);
+            
+            // Pattern 4: Common zsh/bash prompts like "➜ directoryname" 
+            const zshMatch = cleanLine.match(/[➜▶]\s+([^\s]+)/);
+            
+            // Pattern 5: Fish shell style prompts
+            const fishMatch = cleanLine.match(/.*\s([~\/][^\s]*)\s*>/);
+            
+            if (promptWithPath && promptWithPath[1]) {
+                detectedDir = promptWithPath[1];
+                break;
+            } else if (zshMatch && zshMatch[1] && zshMatch[1] !== '~') {
+                // For zsh prompts, the directory name is often just the basename
+                // We need to be more careful here to avoid false positives
+                const dirName = zshMatch[1];
+                if (dirName.includes('/') || this.currentDirectory.endsWith('/' + dirName)) {
+                    detectedDir = dirName.includes('/') ? dirName : this.currentDirectory;
+                }
+            } else if (fishMatch && fishMatch[1]) {
+                detectedDir = fishMatch[1];
+                break;
+            } else if (barePathMatch && barePathMatch[1] && barePathMatch[1].length > 2) {
+                detectedDir = barePathMatch[1];
+                break;
+            } else if (pwdMatch && pwdMatch[1] && pwdMatch[1].startsWith('/') && pwdMatch[1].length > 1) {
                 detectedDir = pwdMatch[1];
-                break; // Use first match found
+                break;
             }
         }
         
         // Only update if we found a directory and it's different from current
-        if (detectedDir && detectedDir !== this.currentDirectory && detectedDir !== '~') {
+        if (detectedDir && detectedDir !== this.currentDirectory) {
             // Expand ~ to home directory if needed
-            if (detectedDir.startsWith('~/')) {
-                detectedDir = detectedDir.replace('~', process.env.HOME || '/Users/' + process.env.USER);
+            if (detectedDir === '~') {
+                detectedDir = process.env.HOME || `/Users/${process.env.USER}`;
+            } else if (detectedDir.startsWith('~/')) {
+                detectedDir = detectedDir.replace('~', process.env.HOME || `/Users/${process.env.USER}`);
             }
             
-            // Only update if the expanded directory is still different
-            if (detectedDir !== this.currentDirectory) {
+            // Validate that this looks like a real directory path
+            if (detectedDir.startsWith('/') && detectedDir.length > 1 && detectedDir !== this.currentDirectory) {
                 this.currentDirectory = detectedDir;
+                
+                // Save to preferences
+                this.preferences.currentDirectory = detectedDir;
+                this.saveAllPreferences();
+                
+                // Update UI
                 this.updateStatusDisplay();
-                this.logAction(`Directory changed to: ${detectedDir}`, 'info');
+                this.logAction(`Directory detected and updated to: ${detectedDir}`, 'info');
             }
         }
     }
 
     detectUsageLimit(data) {
-        // Check for usage limit message and parse the reset time
-        const usageLimitMatch = data.match(/Approaching usage limit · resets at (\d{1,2})(am|pm)/i);
-        if (usageLimitMatch) {
-            const resetHour = parseInt(usageLimitMatch[1]);
-            const ampm = usageLimitMatch[2].toLowerCase();
+        // Check for "Approaching usage limit" message and parse the reset time
+        const approachingMatch = data.match(/Approaching usage limit · resets at (\d{1,2})(am|pm)/i);
+        if (approachingMatch) {
+            const resetHour = parseInt(approachingMatch[1]);
+            const ampm = approachingMatch[2].toLowerCase();
+            const resetTimeString = `${resetHour}${ampm}`;
+            
+            // Check if we've already shown modal for this specific reset time
+            const lastShownResetTime = localStorage.getItem('usageLimitModalLastResetTime');
+            
+            if (lastShownResetTime !== resetTimeString) {
+                this.showUsageLimitModal(resetHour, ampm);
+                localStorage.setItem('usageLimitModalLastResetTime', resetTimeString);
+            }
+        }
+        
+        // Also check for "Claude usage limit reached" message and parse the reset time
+        const reachedMatch = data.match(/Claude usage limit reached\. Your limit will reset at (\d{1,2})(am|pm)/i);
+        if (reachedMatch) {
+            const resetHour = parseInt(reachedMatch[1]);
+            const ampm = reachedMatch[2].toLowerCase();
             const resetTimeString = `${resetHour}${ampm}`;
             
             // Check if we've already shown modal for this specific reset time
@@ -1399,7 +1684,7 @@ class TerminalGUI {
             if (!result.canceled && result.filePaths.length > 0) {
                 const selectedPath = result.filePaths[0];
                 if (selectedPath !== this.currentDirectory) {
-                    this.changeDirectory(selectedPath);
+                    await this.changeDirectory(selectedPath);
                 }
             }
         } catch (error) {
@@ -1413,52 +1698,43 @@ class TerminalGUI {
 
     openDirectoryPrompt() {
         // Simple directory browser using prompt for now
-        const newPath = prompt('Enter directory path or press OK to reset terminal to current directory:', this.currentDirectory);
+        const newPath = prompt('Enter directory path:', this.currentDirectory);
         
-        if (newPath === null) {
-            return; // User cancelled
+        if (newPath === null || newPath.trim() === '') {
+            return; // User cancelled or entered empty path
         }
         
-        if (newPath.trim() === '' || newPath.trim() === this.currentDirectory) {
-            // Reset terminal to current directory
-            this.resetTerminalToCurrentDirectory();
-        } else if (newPath.trim() !== this.currentDirectory) {
+        if (newPath.trim() !== this.currentDirectory) {
             this.changeDirectory(newPath.trim());
         }
     }
 
-    resetTerminalToCurrentDirectory() {
-        // Reset terminal to the current directory
-        const cdCommand = `cd "${this.currentDirectory}"`;
-        this.logAction(`Resetting terminal to: ${this.currentDirectory}`, 'info');
-        
-        // Type the command in the terminal
-        this.typeMessage(cdCommand, () => {
-            // Send Enter key
-            setTimeout(() => {
-                ipcRenderer.send('terminal-input', '\r');
-            }, 200);
-        });
-    }
-
-    changeDirectory(newPath) {
-        // Send cd command to terminal
-        const cdCommand = `cd "${newPath}"`;
-        this.logAction(`Changing directory to: ${newPath}`, 'info');
-        
-        // Type the command in the terminal
-        this.typeMessage(cdCommand, () => {
-            // Send Enter key
-            setTimeout(() => {
-                ipcRenderer.send('terminal-input', '\r');
+    async changeDirectory(newPath) {
+        try {
+            this.logAction(`Changing directory to: ${newPath}`, 'info');
+            
+            // Use the new IPC method to properly change the terminal's working directory
+            const result = await ipcRenderer.invoke('change-terminal-directory', newPath);
+            
+            if (result.success) {
+                // Update local state
+                this.currentDirectory = newPath;
                 
-                // Update current directory after a short delay to allow command to execute
-                setTimeout(() => {
-                    this.currentDirectory = newPath;
-                    this.updateStatusDisplay();
-                }, 500);
-            }, 200);
-        });
+                // Save to preferences
+                this.preferences.currentDirectory = newPath;
+                this.saveAllPreferences();
+                
+                // Update UI
+                this.updateStatusDisplay();
+                
+                this.logAction(`Successfully changed directory to: ${newPath}`, 'success');
+            } else {
+                this.logAction(`Failed to change directory: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            console.error('Error changing directory:', error);
+            this.logAction(`Failed to change directory: ${error.message}`, 'error');
+        }
     }
 
     handleTerminalOutput() {
@@ -1536,6 +1812,18 @@ class TerminalGUI {
             this.timerHours = this.preferences.timerHours || 0;
             this.timerMinutes = this.preferences.timerMinutes || 0;
             this.timerSeconds = this.preferences.timerSeconds || 0;
+            
+            // Load saved message queue
+            if (this.preferences.messageQueue && Array.isArray(this.preferences.messageQueue)) {
+                this.messageQueue = this.preferences.messageQueue;
+                this.updateMessageList();
+            }
+            
+            // Load saved directory
+            if (this.preferences.currentDirectory) {
+                this.currentDirectory = this.preferences.currentDirectory;
+                this.updateStatusDisplay();
+            }
             
             // Update UI elements
             document.getElementById('autoscroll-enabled').checked = this.autoscrollEnabled;
@@ -1773,12 +2061,6 @@ class TerminalGUI {
         }
     }
 
-    disableAutoSync() {
-        this.autoSyncEnabled = false;
-        this.stopUsageLimitSync();
-        this.logAction('Auto-sync disabled - user manually changed timer', 'info');
-    }
-
     updateSyncedTimer() {
         if (!this.usageLimitResetTime || !this.autoSyncEnabled) {
             return;
@@ -1870,6 +2152,23 @@ class TerminalGUI {
         
         this.updateTimerUI();
         this.logAction(`Timer reset to saved value: ${String(savedHours).padStart(2, '0')}:${String(savedMinutes).padStart(2, '0')}:${String(savedSeconds).padStart(2, '0')}`, 'info');
+    }
+
+    updateTerminalOutput(data) {
+        // Add new data to terminal output
+        this.lastTerminalOutput += data;
+        
+        // Detect if terminal was cleared
+        if (data.includes('\x1b[2J') || data.includes('\x1b[H\x1b[2J') || data.includes('\x1b[3J')) {
+            // Terminal was cleared, reset the output buffer
+            this.lastTerminalOutput = '';
+            return;
+        }
+        
+        // Keep only recent output (last 5000 characters) for safety checks
+        if (this.lastTerminalOutput.length > 5000) {
+            this.lastTerminalOutput = this.lastTerminalOutput.slice(-5000);
+        }
     }
 }
 

@@ -1,0 +1,7 @@
+
+> terminal-gui@1.0.0 start
+> electron .
+
+2025-06-23 21:11:34.958 Electron[36789:15299400] +[IMKClient subclass]: chose IMKClient_Modern
+2025-06-23 21:11:34.958 Electron[36789:15299400] +[IMKInputSession subclass]: chose IMKInputSession_Modern
+2025-06-23 21:11:37.825 Electron[36789:15299400] The class 'NSOpenPanel' overrides the method identifier.  This method is implemented by class 'NSWindow'
