@@ -40,7 +40,11 @@ class TerminalGUI {
                     keyword: "🤖 Generated with",
                     response: "do not credit yourself"
                 }
-            ]
+            ],
+            // Add timer persistence
+            timerHours: 0,
+            timerMinutes: 0,
+            timerSeconds: 0
         };
         this.usageLimitSyncInterval = null;
         this.usageLimitResetTime = null;
@@ -48,12 +52,22 @@ class TerminalGUI {
         this.safetyCheckCount = 0;
         this.safetyCheckInterval = null;
         
+        // New timer system
+        this.timerActive = false;
+        this.timerHours = 0;
+        this.timerMinutes = 0;
+        this.timerSeconds = 0;
+        this.timerInterval = null;
+        this.timerExpired = false;
+        this.injectionInProgress = false;
+        
         this.initializeTerminal();
         this.setupEventListeners();
         this.initializeLucideIcons();
         this.updateStatusDisplay();
         this.setTerminalStatusDisplay(''); // Initialize with default status
-        this.loadAllPreferences();
+        this.loadAllPreferences(); // Load preferences first
+        this.updateTimerUI(); // Initialize timer UI after loading preferences
     }
 
     initializeLucideIcons() {
@@ -268,19 +282,22 @@ class TerminalGUI {
             }
         });
 
-        // Duration and unit change listeners - disable auto-sync when user manually changes
-        document.getElementById('duration-input').addEventListener('change', (e) => {
-            this.preferences.defaultDuration = parseInt(e.target.value) || 5;
-            this.saveAllPreferences();
-            // Disable auto-sync when user manually changes the value
-            this.disableAutoSync();
+        // New timer system event listeners
+        document.getElementById('timer-play-pause-btn').addEventListener('click', () => {
+            this.toggleTimer();
         });
 
-        document.getElementById('duration-unit').addEventListener('change', (e) => {
-            this.preferences.defaultUnit = e.target.value;
-            this.saveAllPreferences();
-            // Disable auto-sync when user manually changes the unit
-            this.disableAutoSync();
+        document.getElementById('timer-stop-btn').addEventListener('click', () => {
+            const stopBtn = document.getElementById('timer-stop-btn');
+            if (stopBtn.classList.contains('timer-refresh')) {
+                this.resetTimer();
+            } else {
+                this.stopTimer();
+            }
+        });
+
+        document.getElementById('timer-edit-btn').addEventListener('click', (e) => {
+            this.openTimerEditDropdown(e);
         });
 
         // Action log clear button
@@ -351,20 +368,8 @@ class TerminalGUI {
     addMessageToQueue() {
         const messageInput = document.getElementById('message-input');
         const message = messageInput.value.trim();
-        const duration = parseInt(document.getElementById('duration-input').value) || this.preferences.defaultDuration;
-        const unit = document.getElementById('duration-unit').value || this.preferences.defaultUnit;
         
         if (message) {
-            let delayMs;
-            switch (unit) {
-                case 'seconds': delayMs = duration * 1000; break;
-                case 'minutes': delayMs = duration * 60 * 1000; break;
-                case 'hours': delayMs = duration * 60 * 60 * 1000; break;
-                default: delayMs = duration * 1000;
-            }
-            
-            const executeAt = new Date(Date.now() + delayMs);
-            
             // Convert newlines to escape sequence for injection
             const processedMessage = message.replace(/\n/g, '\\\n');
             
@@ -372,26 +377,18 @@ class TerminalGUI {
                 id: this.messageIdCounter++,
                 content: message,
                 processedContent: processedMessage,
-                executeAt: executeAt,
-                duration: duration,
-                unit: unit,
                 timestamp: new Date().toISOString()
             });
             
             messageInput.value = '';
-            this.sortQueueByExecutionTime();
             this.updateMessageList();
             this.updateStatusDisplay();
-            this.scheduleNextInjection();
             
             // Log the action
-            this.logAction(`Added message to queue: "${message}" (${duration} ${unit})`, 'info');
+            this.logAction(`Added message to queue: "${message}"`, 'info');
         }
     }
 
-    sortQueueByExecutionTime() {
-        this.messageQueue.sort((a, b) => a.executeAt.getTime() - b.executeAt.getTime());
-    }
 
     clearQueue() {
         const clearedCount = this.messageQueue.length;
@@ -423,12 +420,12 @@ class TerminalGUI {
             const meta = document.createElement('div');
             meta.className = 'message-meta';
             
-            const timeUntil = this.getTimeUntilExecution(message.executeAt);
-            const executionTime = document.createElement('span');
-            executionTime.className = 'execution-time';
-            executionTime.textContent = timeUntil;
+            const timestamp = new Date(message.timestamp).toLocaleTimeString();
+            const timeStamp = document.createElement('span');
+            timeStamp.className = 'message-timestamp';
+            timeStamp.textContent = `Added at ${timestamp}`;
             
-            meta.appendChild(executionTime);
+            meta.appendChild(timeStamp);
             content.appendChild(meta);
             
             const actions = document.createElement('div');
@@ -444,18 +441,7 @@ class TerminalGUI {
                 this.deleteMessage(message.id);
             });
             
-            // Three dots menu button
-            const menuBtn = document.createElement('button');
-            menuBtn.className = 'message-menu-btn';
-            menuBtn.innerHTML = '<i data-lucide="more-horizontal"></i>';
-            menuBtn.title = 'Adjust timing';
-            menuBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.toggleMessageDropdown(e, message, menuBtn);
-            });
-            
             actions.appendChild(deleteBtn);
-            actions.appendChild(menuBtn);
             messageElement.appendChild(content);
             messageElement.appendChild(actions);
             messageList.appendChild(messageElement);
@@ -467,21 +453,6 @@ class TerminalGUI {
         }
     }
 
-    getTimeUntilExecution(executeAt) {
-        const now = new Date();
-        const diff = executeAt.getTime() - now.getTime();
-        
-        if (diff <= 0) return 'Ready';
-        
-        const seconds = Math.floor(diff / 1000);
-        const minutes = Math.floor(seconds / 60);
-        const hours = Math.floor(minutes / 60);
-        
-        if (hours > 0) return `${hours}h ${minutes % 60}m`;
-        if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
-        return `${seconds}s`;
-    }
-
     deleteMessage(messageId) {
         const index = this.messageQueue.findIndex(m => m.id === messageId);
         if (index !== -1) {
@@ -489,160 +460,417 @@ class TerminalGUI {
             this.messageQueue.splice(index, 1);
             this.updateMessageList();
             this.updateStatusDisplay();
-            this.scheduleNextInjection();
             
             // Log the action instead of writing to terminal
             this.logAction(`Deleted message: "${deletedMessage.content}"`, 'warning');
         }
     }
 
-    toggleMessageDropdown(event, message, button) {
+    // New timer system functions
+    toggleTimer() {
+        if (this.timerActive) {
+            this.pauseTimer();
+        } else {
+            this.startTimer();
+        }
+    }
+
+    startTimer() {
+        if (this.timerHours === 0 && this.timerMinutes === 0 && this.timerSeconds === 0) {
+            this.logAction('Cannot start timer - time not set', 'warning');
+            return;
+        }
+
+        this.timerActive = true;
+        this.timerExpired = false;
+        this.updateTimerUI();
+        
+        this.timerInterval = setInterval(() => {
+            this.decrementTimer();
+        }, 1000);
+        
+        this.logAction('Timer started', 'info');
+    }
+
+    pauseTimer() {
+        this.timerActive = false;
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+            this.timerInterval = null;
+        }
+        this.updateTimerUI();
+        this.logAction('Timer paused', 'info');
+    }
+
+    stopTimer() {
+        this.timerActive = false;
+        this.timerExpired = false;
+        this.injectionInProgress = false;
+        this.timerHours = 0;
+        this.timerMinutes = 0;
+        this.timerSeconds = 0;
+        
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+            this.timerInterval = null;
+        }
+        
+        this.updateTimerUI();
+        this.logAction('Timer stopped and reset', 'info');
+    }
+
+    decrementTimer() {
+        if (this.timerSeconds > 0) {
+            this.timerSeconds--;
+        } else if (this.timerMinutes > 0) {
+            this.timerMinutes--;
+            this.timerSeconds = 59;
+        } else if (this.timerHours > 0) {
+            this.timerHours--;
+            this.timerMinutes = 59;
+            this.timerSeconds = 59;
+        } else {
+            // Timer expired
+            this.timerExpired = true;
+            this.timerActive = false;
+            if (this.timerInterval) {
+                clearInterval(this.timerInterval);
+                this.timerInterval = null;
+            }
+            this.updateTimerUI();
+            this.startSequentialInjection();
+            return;
+        }
+        
+        // Only update display, not full UI on every tick for performance
+        this.updateTimerDisplay();
+    }
+
+    updateTimerDisplay() {
+        const display = document.getElementById('timer-display');
+        const hours = String(this.timerHours).padStart(2, '0');
+        const minutes = String(this.timerMinutes).padStart(2, '0');
+        const seconds = String(this.timerSeconds).padStart(2, '0');
+        display.textContent = `${hours}:${minutes}:${seconds}`;
+    }
+
+    updateTimerUI() {
+        const playPauseBtn = document.getElementById('timer-play-pause-btn');
+        const stopBtn = document.getElementById('timer-stop-btn');
+        const editBtn = document.getElementById('timer-edit-btn');
+        const injectionStatus = document.getElementById('injection-status');
+        const waitingStatus = document.getElementById('timer-waiting-status');
+        const display = document.getElementById('timer-display');
+        
+        if (!playPauseBtn || !stopBtn || !editBtn || !display) {
+            console.warn('Timer UI elements not found');
+            return;
+        }
+        
+        // Update display
+        this.updateTimerDisplay();
+        
+        // Update display classes
+        display.className = 'timer-display';
+        if (this.timerActive) {
+            display.classList.add('active');
+        } else if (this.timerExpired && this.injectionInProgress) {
+            display.classList.add('expired');
+        }
+        // When timer is at 00:00:00 and not injecting, it goes back to grey (no additional classes)
+        
+        // Update play/pause button
+        if (this.timerActive) {
+            playPauseBtn.innerHTML = '<i data-lucide="pause"></i>';
+            playPauseBtn.classList.add('active');
+            playPauseBtn.title = 'Pause timer';
+        } else {
+            playPauseBtn.innerHTML = '<i data-lucide="play"></i>';
+            playPauseBtn.classList.remove('active');
+            playPauseBtn.title = 'Start timer';
+        }
+        
+        // Update stop/refresh button
+        const timerIsSet = this.timerHours > 0 || this.timerMinutes > 0 || this.timerSeconds > 0;
+        const timerAtZero = this.timerHours === 0 && this.timerMinutes === 0 && this.timerSeconds === 0;
+        
+        if (this.timerActive || (timerIsSet && !timerAtZero)) {
+            // Show stop button when timer is active or set to non-zero value
+            stopBtn.style.display = 'flex';
+            stopBtn.innerHTML = '<i data-lucide="square"></i>';
+            stopBtn.title = 'Stop timer';
+            stopBtn.className = 'timer-btn timer-stop';
+        } else if (timerAtZero && !this.timerActive && !this.injectionInProgress) {
+            // Show refresh button when timer is at 00:00:00 and not active/injecting
+            stopBtn.style.display = 'flex';
+            stopBtn.innerHTML = '<i data-lucide="refresh-cw"></i>';
+            stopBtn.title = 'Reset timer to last saved value';
+            stopBtn.className = 'timer-btn timer-refresh';
+        } else {
+            stopBtn.style.display = 'none';
+        }
+        
+        // Update edit button / status display
+        if (this.injectionInProgress) {
+            editBtn.style.display = 'none';
+            if (waitingStatus) waitingStatus.style.display = 'none';
+            if (injectionStatus) injectionStatus.style.display = 'inline';
+        } else if (this.timerActive) {
+            editBtn.style.display = 'none';
+            if (waitingStatus) waitingStatus.style.display = 'inline';
+            if (injectionStatus) injectionStatus.style.display = 'none';
+        } else {
+            editBtn.style.display = 'flex';
+            if (waitingStatus) waitingStatus.style.display = 'none';
+            if (injectionStatus) injectionStatus.style.display = 'none';
+        }
+        
+        // Reinitialize lucide icons to apply icon changes
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+    }
+
+    openTimerEditDropdown(event) {
         // Close any existing dropdowns
-        this.closeAllDropdowns();
+        this.closeAllTimerDropdowns();
+        
+        const button = event.target.closest('button');
         
         // Create dropdown
         const dropdown = document.createElement('div');
-        dropdown.className = 'message-dropdown';
+        dropdown.className = 'timer-edit-dropdown';
+        const currentTimeString = `${String(this.timerHours).padStart(2, '0')}:${String(this.timerMinutes).padStart(2, '0')}:${String(this.timerSeconds).padStart(2, '0')}`;
         dropdown.innerHTML = `
-            <div class="dropdown-content">
-                <div class="dropdown-header">Adjust Timing</div>
-                <div class="timing-form">
-                    <div class="form-row">
-                        <label>Duration:</label>
-                        <input type="number" id="dropdown-duration" value="${message.duration}" min="1" class="dropdown-input">
+            <div class="timer-edit-content">
+                <div class="timer-edit-header">Set Timer</div>
+                <div class="timer-edit-form">
+                    <div class="timer-input-row">
+                        <label>Time (HH:MM:SS):</label>
+                        <input type="text" id="edit-timer-time" value="${currentTimeString}" placeholder="HH:MM:SS" class="timer-time-input" maxlength="8">
                     </div>
-                    <div class="form-row">
-                        <label>Unit:</label>
-                        <select id="dropdown-unit" class="dropdown-select">
-                            <option value="seconds" ${message.unit === 'seconds' ? 'selected' : ''}>seconds</option>
-                            <option value="minutes" ${message.unit === 'minutes' ? 'selected' : ''}>minutes</option>
-                            <option value="hours" ${message.unit === 'hours' ? 'selected' : ''}>hours</option>
-                        </select>
+                    <div class="timer-quick-buttons">
+                        <button type="button" class="timer-quick-btn" data-time="00:05:00">5min</button>
+                        <button type="button" class="timer-quick-btn" data-time="00:10:00">10min</button>
+                        <button type="button" class="timer-quick-btn" data-time="00:15:00">15min</button>
+                        <button type="button" class="timer-quick-btn" data-time="00:30:00">30min</button>
+                        <button type="button" class="timer-quick-btn" data-time="01:00:00">1hr</button>
                     </div>
-                    <div class="form-actions">
-                        <button class="dropdown-btn save-btn" id="save-timing">Save</button>
-                        <button class="dropdown-btn cancel-btn" id="cancel-timing">Cancel</button>
+                    <div class="timer-edit-actions">
+                        <button class="timer-edit-btn-action timer-save-btn" id="save-timer">Save</button>
+                        <button class="timer-edit-btn-action timer-cancel-btn" id="cancel-timer">Cancel</button>
                     </div>
                 </div>
             </div>
         `;
         
-        // Position dropdown to bottom-left of button
-        const rect = button.getBoundingClientRect();
-        dropdown.style.position = 'fixed';
-        dropdown.style.left = (rect.left - 200 + rect.width) + 'px'; // Position to the left of button
-        dropdown.style.top = (rect.bottom + 5) + 'px';
-        dropdown.style.zIndex = '1000';
-        
         document.body.appendChild(dropdown);
         
-        // Adjust position if dropdown goes off-screen
-        setTimeout(() => {
-            const dropdownRect = dropdown.getBoundingClientRect();
-            if (dropdownRect.left < 10) {
-                dropdown.style.left = '10px';
-            }
-        }, 0);
+        // Position dropdown so its bottom-right corner touches the button's top-left corner
+        const rect = button.getBoundingClientRect();
+        const dropdownRect = dropdown.getBoundingClientRect();
         
-        // Add event listeners
-        dropdown.querySelector('#save-timing').addEventListener('click', () => {
-            const newDuration = parseInt(dropdown.querySelector('#dropdown-duration').value);
-            const newUnit = dropdown.querySelector('#dropdown-unit').value;
+        let left = rect.left - dropdownRect.width;
+        let top = rect.top - dropdownRect.height;
+        
+        // Adjust position if dropdown goes off-screen
+        if (left < 10) {
+            left = 10;
+        }
+        if (top < 10) {
+            top = rect.bottom + 10;
+        }
+        
+        dropdown.style.left = left + 'px';
+        dropdown.style.top = top + 'px';
+        
+        // Focus the input and select all text for easy editing
+        const timeInput = dropdown.querySelector('#edit-timer-time');
+        setTimeout(() => {
+            timeInput.focus();
+            timeInput.select();
+        }, 50);
+        
+        // Add input validation and formatting
+        timeInput.addEventListener('input', (e) => {
+            let value = e.target.value.replace(/[^0-9:]/g, '');
             
-            if (newDuration && newDuration > 0) {
-                this.updateMessageTiming(message.id, newDuration, newUnit);
+            // Auto-format as user types
+            if (value.length >= 2 && !value.includes(':')) {
+                value = value.substring(0, 2) + ':' + value.substring(2);
             }
-            this.closeAllDropdowns();
+            if (value.length >= 5 && value.split(':').length === 2) {
+                const parts = value.split(':');
+                value = parts[0] + ':' + parts[1] + ':' + (parts[1].length > 2 ? parts[1].substring(2) : '');
+            }
+            
+            e.target.value = value;
         });
         
-        dropdown.querySelector('#cancel-timing').addEventListener('click', () => {
-            this.closeAllDropdowns();
+        // Handle keyboard shortcuts
+        timeInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                dropdown.querySelector('#save-timer').click();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                dropdown.querySelector('#cancel-timer').click();
+            }
+        });
+        
+        // Quick buttons functionality
+        dropdown.querySelectorAll('.timer-quick-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const timeValue = e.target.dataset.time;
+                timeInput.value = timeValue;
+                timeInput.focus();
+            });
+        });
+        
+        // Save button
+        dropdown.querySelector('#save-timer').addEventListener('click', () => {
+            const timeValue = timeInput.value.trim();
+            const timeParts = timeValue.split(':');
+            
+            if (timeParts.length === 3) {
+                const hours = parseInt(timeParts[0]) || 0;
+                const minutes = parseInt(timeParts[1]) || 0;
+                const seconds = parseInt(timeParts[2]) || 0;
+                
+                // Validate ranges
+                if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59 && seconds >= 0 && seconds <= 59) {
+                    this.setTimer(hours, minutes, seconds);
+                    this.closeAllTimerDropdowns();
+                } else {
+                    timeInput.style.borderColor = 'var(--accent-error)';
+                    timeInput.focus();
+                    setTimeout(() => {
+                        timeInput.style.borderColor = '';
+                    }, 2000);
+                }
+            } else {
+                timeInput.style.borderColor = 'var(--accent-error)';
+                timeInput.focus();
+                setTimeout(() => {
+                    timeInput.style.borderColor = '';
+                }, 2000);
+            }
+        });
+        
+        // Cancel button
+        dropdown.querySelector('#cancel-timer').addEventListener('click', () => {
+            this.closeAllTimerDropdowns();
         });
         
         // Close dropdown when clicking outside
+        const closeHandler = (event) => {
+            if (!event.target.closest('.timer-edit-dropdown') && !event.target.closest('#timer-edit-btn')) {
+                this.closeAllTimerDropdowns();
+                document.removeEventListener('click', closeHandler);
+            }
+        };
+        
         setTimeout(() => {
-            document.addEventListener('click', this.closeDropdownOnOutsideClick.bind(this), { once: true });
-        }, 10);
+            document.addEventListener('click', closeHandler);
+        }, 100);
     }
     
-    closeAllDropdowns() {
-        const dropdowns = document.querySelectorAll('.message-dropdown');
+    closeAllTimerDropdowns() {
+        const dropdowns = document.querySelectorAll('.timer-edit-dropdown');
         dropdowns.forEach(dropdown => dropdown.remove());
     }
     
-    closeDropdownOnOutsideClick(event) {
-        if (!event.target.closest('.message-dropdown') && !event.target.closest('.message-menu-btn')) {
-            this.closeAllDropdowns();
+    closeTimerDropdownOnOutsideClick(event) {
+        if (!event.target.closest('.timer-edit-dropdown') && !event.target.closest('#timer-edit-btn')) {
+            this.closeAllTimerDropdowns();
         }
     }
 
-    updateMessageTiming(messageId, duration, unit) {
-        const message = this.messageQueue.find(m => m.id === messageId);
-        if (message) {
-            let delayMs;
-            switch (unit) {
-                case 'seconds': delayMs = duration * 1000; break;
-                case 'minutes': delayMs = duration * 60 * 1000; break;
-                case 'hours': delayMs = duration * 60 * 60 * 1000; break;
-                default: return;
-            }
-            
-            const oldTiming = `${message.duration} ${message.unit}`;
-            message.duration = duration;
-            message.unit = unit;
-            message.executeAt = new Date(Date.now() + delayMs);
-            
-            this.sortQueueByExecutionTime();
-            this.updateMessageList();
-            this.scheduleNextInjection();
-            
-            // Log the timing change
-            this.logAction(`Updated timing for "${message.content}": ${oldTiming} → ${duration} ${unit}`, 'info');
-        }
-    }
-
-    scheduleNextInjection() {
-        if (this.injectionTimer) {
-            clearTimeout(this.injectionTimer);
-            this.injectionTimer = null;
-        }
-
-        if (this.messageQueue.length > 0) {
-            const nextMessage = this.messageQueue[0];
-            const now = new Date();
-            const delay = nextMessage.executeAt.getTime() - now.getTime();
-            
-            if (delay > 0) {
-                this.injectionTimer = setTimeout(() => {
-                    this.attemptSmartInjection();
-                }, delay);
-            } else {
-                // Message is ready - check if we can inject safely
-                setTimeout(() => this.attemptSmartInjection(), 100);
-            }
-        }
-    }
-
-    attemptSmartInjection() {
-        if (this.messageQueue.length === 0) return;
+    setTimer(hours, minutes, seconds) {
+        // Disable auto-sync when user manually sets timer
+        this.disableAutoSync();
         
-        // Check if the first message is ready
-        const now = new Date();
-        const nextMessage = this.messageQueue[0];
+        this.timerHours = Math.max(0, Math.min(23, hours));
+        this.timerMinutes = Math.max(0, Math.min(59, minutes));
+        this.timerSeconds = Math.max(0, Math.min(59, seconds));
+        this.timerExpired = false;
         
-        if (nextMessage.executeAt.getTime() > now.getTime()) {
-            // Not ready yet, reschedule
-            this.scheduleNextInjection();
+        // Save timer values to preferences for persistence
+        this.preferences.timerHours = this.timerHours;
+        this.preferences.timerMinutes = this.timerMinutes;
+        this.preferences.timerSeconds = this.timerSeconds;
+        this.saveAllPreferences();
+        
+        this.updateTimerUI();
+        this.logAction(`Timer set to ${String(this.timerHours).padStart(2, '0')}:${String(this.timerMinutes).padStart(2, '0')}:${String(this.timerSeconds).padStart(2, '0')}`, 'info');
+    }
+
+    startSequentialInjection() {
+        if (this.messageQueue.length === 0) {
+            this.logAction('Timer expired but no messages to inject', 'warning');
             return;
         }
         
-        // Start safety checks for injection
+        this.injectionInProgress = true;
+        this.updateTimerUI();
+        this.logAction(`Timer expired - starting sequential injection of ${this.messageQueue.length} messages`, 'success');
+        
+        this.processNextQueuedMessage();
+    }
+
+    processNextQueuedMessage() {
+        if (this.messageQueue.length === 0) {
+            this.injectionInProgress = false;
+            this.timerExpired = false; // Reset timer expired state when injection completes
+            this.updateTimerUI();
+            this.logAction('Sequential injection completed - all messages processed', 'success');
+            return;
+        }
+        
+        // Start safety checks for the next message
         this.performSafetyChecks(() => {
-            // All safety checks passed - inject the message and process queue
-            this.injectMessageAndProcessQueue();
+            // Safety checks passed - inject the message
+            this.injectMessageAndContinueQueue();
         });
     }
 
+    injectMessageAndContinueQueue() {
+        if (this.messageQueue.length === 0) {
+            this.processNextQueuedMessage();
+            return;
+        }
+        
+        const message = this.messageQueue.shift();
+        this.isInjecting = true;
+        this.setTerminalStatusDisplay('injecting');
+        
+        this.logAction(`Sequential injection: "${message.content}"`, 'success');
+        
+        // Type the message
+        this.typeMessage(message.processedContent, () => {
+            this.injectionCount++;
+            this.updateStatusDisplay();
+            this.updateMessageList();
+            
+            // Send Enter key
+            setTimeout(() => {
+                ipcRenderer.send('terminal-input', '\r');
+                this.isInjecting = false;
+                this.setTerminalStatusDisplay('');
+                
+                // Continue with next message after a short delay
+                setTimeout(() => {
+                    this.processNextQueuedMessage();
+                }, 1000);
+                
+            }, 200);
+        });
+    }
+
+
+    // Old scheduling system removed - now using timer-based injection
+
+    // Safety check functions for the new system
     performSafetyChecks(callback) {
         this.safetyCheckCount = 0;
         
@@ -681,11 +909,10 @@ class TerminalGUI {
 
     retrySafetyCheck(callback) {
         if (this.safetyCheckCount >= 3) {
-            this.logAction('Safety checks failed after 3 attempts - scheduling retry in 1 minute', 'error');
-            // Reschedule for 1 minute later
-            this.injectionTimer = setTimeout(() => {
-                this.attemptSmartInjection();
-            }, 60000);
+            this.logAction('Safety checks failed after 3 attempts - pausing sequential injection', 'error');
+            // Stop the sequential injection process
+            this.injectionInProgress = false;
+            this.updateTimerUI();
             return;
         }
         
@@ -695,74 +922,21 @@ class TerminalGUI {
         }, 200);
     }
 
-    injectMessageAndProcessQueue() {
-        if (this.messageQueue.length === 0) return;
-        
-        const message = this.messageQueue.shift();
-        this.isInjecting = true;
-        this.setTerminalStatusDisplay('injecting');
-        
-        this.logAction(`Injecting: "${message.content}"`, 'success');
-        
-        // Type the message
-        this.typeMessage(message.processedContent, () => {
-            this.injectionCount++;
-            this.updateStatusDisplay();
-            this.updateMessageList();
-            
-            // Send Enter key
-            setTimeout(() => {
-                ipcRenderer.send('terminal-input', '\r');
-                this.isInjecting = false;
-                this.setTerminalStatusDisplay('');
-                
-                // Process next message in queue immediately if available and ready
-                this.processQueueSequentially();
-                
-            }, 200);
-        });
-    }
-
-    processQueueSequentially() {
-        if (this.messageQueue.length === 0) return;
-        
-        const now = new Date();
-        const nextMessage = this.messageQueue[0];
-        
-        // If next message is ready, inject it immediately after a short delay
-        if (nextMessage.executeAt.getTime() <= now.getTime()) {
-            this.logAction('Next message ready - injecting immediately', 'info');
-            setTimeout(() => {
-                this.attemptSmartInjection();
-            }, 1000); // Short delay between sequential injections
-        } else {
-            // Schedule the next message normally
-            this.scheduleNextInjection();
-        }
-    }
-
     injectMessages() {
-        if (this.messageQueue.length === 0) return;
-        
-        // Inject all ready messages immediately
-        const now = new Date();
-        const readyMessages = this.messageQueue.filter(msg => msg.executeAt.getTime() <= now.getTime());
-        
-        if (readyMessages.length === 0) {
-            this.logAction('No messages ready for injection', 'warning');
+        if (this.messageQueue.length === 0) {
+            this.logAction('No messages in queue to inject', 'warning');
             return;
         }
         
-        console.log(`Force injecting ${readyMessages.length} ready messages...`);
+        // Force inject the top message (bypass timer but keep safety checks)
+        const topMessage = this.messageQueue[0];
+        this.logAction(`Force injecting top message: "${topMessage.content}"`, 'info');
         
-        // Log to action log instead of terminal
-        this.logAction(`Force injecting ${readyMessages.length} ready messages`, 'info');
-        
-        // Remove ready messages from queue and process them
-        this.messageQueue = this.messageQueue.filter(msg => !readyMessages.includes(msg));
-        this.updateMessageList();
-        
-        this.processMessageBatch(readyMessages);
+        // Start safety checks for immediate injection
+        this.performSafetyChecks(() => {
+            // All safety checks passed - inject the message immediately
+            this.injectMessageAndContinueQueue();
+        });
     }
     
     processMessageBatch(messages) {
@@ -1358,12 +1532,15 @@ class TerminalGUI {
             this.autoscrollDelay = this.preferences.autoscrollDelay;
             this.autoContinueEnabled = this.preferences.autoContinueEnabled;
             
+            // Load saved timer values
+            this.timerHours = this.preferences.timerHours || 0;
+            this.timerMinutes = this.preferences.timerMinutes || 0;
+            this.timerSeconds = this.preferences.timerSeconds || 0;
+            
             // Update UI elements
             document.getElementById('autoscroll-enabled').checked = this.autoscrollEnabled;
             document.getElementById('autoscroll-delay').value = this.autoscrollDelay;
             document.getElementById('auto-continue').checked = this.autoContinueEnabled;
-            document.getElementById('duration-input').value = this.preferences.defaultDuration;
-            document.getElementById('duration-unit').value = this.preferences.defaultUnit;
             document.getElementById('theme-select').value = this.preferences.theme;
             
             // Apply theme
@@ -1617,29 +1794,26 @@ class TerminalGUI {
             return;
         }
 
-        const totalMinutes = Math.max(1, Math.floor(timeDiff / (1000 * 60)));
+        // Calculate hours, minutes, seconds until reset time
+        const totalSeconds = Math.max(1, Math.floor(timeDiff / 1000));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
 
-        // Update the form without triggering change events
-        const durationInput = document.getElementById('duration-input');
-        const unitSelect = document.getElementById('duration-unit');
+        // Set the timer and auto-start it
+        this.timerHours = hours;
+        this.timerMinutes = minutes;
+        this.timerSeconds = seconds;
+        this.timerExpired = false;
+        
+        // Start the timer if not already active
+        if (!this.timerActive) {
+            this.startTimer();
+        } else {
+            this.updateTimerUI();
+        }
 
-        // Temporarily remove event listeners to prevent disabling auto-sync
-        const oldOnChange = durationInput.onchange;
-        durationInput.onchange = null;
-        unitSelect.onchange = null;
-
-        durationInput.value = totalMinutes;
-        unitSelect.value = 'minutes';
-        this.preferences.defaultDuration = totalMinutes;
-        this.preferences.defaultUnit = 'minutes';
-        this.saveAllPreferences();
-
-        // Restore event listeners
-        setTimeout(() => {
-            durationInput.onchange = oldOnChange;
-        }, 0);
-
-        this.logAction(`Auto-synced: ${totalMinutes} minutes until usage limit reset`, 'info');
+        this.logAction(`Auto-synced timer: ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')} until usage limit reset`, 'info');
     }
 
     setUsageLimitResetTime(resetTime) {
@@ -1674,6 +1848,28 @@ class TerminalGUI {
                 localStorage.removeItem('usageLimitResetTime');
             }
         }
+    }
+
+    resetTimer() {
+        // Restore timer to last saved values from preferences
+        const savedHours = this.preferences.timerHours || 0;
+        const savedMinutes = this.preferences.timerMinutes || 0;
+        const savedSeconds = this.preferences.timerSeconds || 0;
+        
+        this.timerActive = false;
+        this.timerExpired = false;
+        this.injectionInProgress = false;
+        this.timerHours = savedHours;
+        this.timerMinutes = savedMinutes;
+        this.timerSeconds = savedSeconds;
+        
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+            this.timerInterval = null;
+        }
+        
+        this.updateTimerUI();
+        this.logAction(`Timer reset to saved value: ${String(savedHours).padStart(2, '0')}:${String(savedMinutes).padStart(2, '0')}:${String(savedSeconds).padStart(2, '0')}`, 'info');
     }
 }
 

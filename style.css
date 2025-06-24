@@ -444,15 +444,28 @@ body {
 
 .queued-messages {
     flex: 1;
+    display: flex;
+    flex-direction: column;
+    border-bottom: 1px solid var(--border-primary);
+    overflow: hidden;
+}
+
+.queued-messages .section-header {
+    padding: 15px 15px 0 15px;
+    flex-shrink: 0;
+}
+
+.timer-section {
     padding: 15px;
     border-bottom: 1px solid var(--border-primary);
-    overflow-y: auto;
 }
 
 .message-list {
     flex: 1;
     overflow-y: auto;
     min-height: 100px;
+    padding: 15px;
+    padding-top: 15px;
 }
 
 .message-item {
@@ -548,26 +561,7 @@ body {
     color: var(--accent-primary);
 }
 
-.message-item::before {
-    content: counter(message-counter);
-    counter-increment: message-counter;
-    position: absolute;
-    left: -20px;
-    top: 8px;
-    background-color: var(--bg-quaternary);
-    color: var(--text-primary);
-    border-radius: 50%;
-    width: 16px;
-    height: 16px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 10px;
-}
 
-.message-list::before {
-    counter-reset: message-counter;
-}
 
 .input-section {
     padding: 15px;
@@ -615,52 +609,271 @@ body {
 
 .timing-wrapper {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+    flex-direction: column;
+    gap: 8px;
     background-color: var(--bg-tertiary);
-    padding: 10px 12px;
+    padding: 12px;
     border-radius: 6px;
     border: 1px solid var(--border-secondary);
 }
 
-.timing-wrapper label {
+.timer-controls-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.timer-controls-row label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.timer-buttons {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.timer-btn {
+    background: none;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-quaternary);
+    cursor: pointer;
+    padding: 6px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.timer-btn:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+}
+
+
+.timer-btn:focus {
+    outline: none;
+}
+
+.timer-btn i {
+    width: 16px;
+    height: 16px;
+}
+
+.timer-display-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.timer-display {
+    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    user-select: none;
+    transition: color 0.2s ease;
+}
+
+.timer-display.active {
+    color: var(--accent-warning);
+}
+
+.timer-display.expired {
+    color: var(--accent-error);
+    opacity: 0.7;
+}
+
+.timer-edit-btn {
+    background: none;
+    border: none;
+    color: var(--text-quaternary);
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 4px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.timer-edit-btn:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+}
+
+.timer-edit-btn:focus {
+    outline: none;
+}
+
+.timer-edit-btn i {
+    width: 16px;
+    height: 16px;
+}
+
+.injection-status {
+    font-size: 15px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    color: var(--accent-error);
+    font-weight: 500;
+    font-style: italic;
+}
+
+.timer-waiting-status {
+    font-size: 15px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    color: var(--accent-warning);
+    font-weight: 500;
+    font-style: italic;
+}
+
+/* Timer edit dropdown styles */
+.timer-edit-dropdown {
+    position: fixed;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    z-index: 1000;
+    animation: dropdownFadeIn 0.15s ease-out;
+}
+
+.timer-edit-content {
+    padding: 12px;
+}
+
+.timer-edit-header {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+    text-align: center;
+}
+
+.timer-edit-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.timer-input-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.timer-input-row label {
     font-size: 12px;
     color: var(--text-secondary);
     font-weight: 500;
 }
 
-.duration-controls {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-}
-
-.duration-value {
-    width: 60px;
-    padding: 6px 8px;
-    background-color: var(--bg-primary);
+.timer-input {
+    padding: 8px 12px;
     border: 1px solid var(--border-secondary);
     border-radius: 4px;
+    background-color: var(--bg-secondary);
     color: var(--text-primary);
-    font-size: 12px;
+    font-family: inherit;
+    font-size: 14px;
+}
+
+.timer-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+}
+
+.timer-time-input {
+    padding: 8px 12px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 4px;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    font-size: 14px;
+    width: 120px;
     text-align: center;
 }
 
-.duration-unit {
-    padding: 6px 8px;
-    background-color: var(--bg-primary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 4px;
-    color: var(--text-primary);
-    font-size: 12px;
-    cursor: pointer;
-}
-
-.duration-value:focus,
-.duration-unit:focus {
+.timer-time-input:focus {
     outline: none;
     border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+}
+
+.timer-quick-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+}
+
+.timer-quick-btn {
+    padding: 4px 8px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 4px;
+    background-color: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    min-width: 40px;
+}
+
+.timer-quick-btn:hover {
+    background-color: var(--accent-primary);
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
+}
+
+.timer-quick-btn:active {
+    transform: translateY(1px);
+}
+
+.timer-edit-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.timer-edit-btn-action {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.timer-edit-btn-action:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.3);
+}
+
+.timer-save-btn {
+    background-color: var(--accent-primary);
+    color: white;
+}
+
+.timer-save-btn:hover {
+    background-color: var(--accent-secondary);
+}
+
+.timer-cancel-btn {
+    background-color: var(--bg-quaternary);
+    color: var(--text-secondary);
+}
+
+.timer-cancel-btn:hover {
+    background-color: var(--text-quaternary);
 }
 
 #message-input {

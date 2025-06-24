@@ -66,13 +66,37 @@
                         </div>
                     </div>
                 </div>
+
+                <div class="timer-section">
+                    <div class="timing-wrapper">
+                        <div class="timer-controls-row">
+                            <label>Auto-inject at</label>
+                            <div class="timer-buttons">
+                                <button type="button" id="timer-stop-btn" class="timer-btn timer-stop" title="Stop timer" style="display: none;">
+                                    <i data-lucide="square"></i>
+                                </button>
+                                <button type="button" id="timer-play-pause-btn" class="timer-btn" title="Start/Pause timer">
+                                    <i data-lucide="play"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="timer-display-row">
+                            <div class="timer-display" id="timer-display">00:00:00</div>
+                            <button type="button" id="timer-edit-btn" class="timer-edit-btn" title="Edit timer">
+                                <i data-lucide="edit-3"></i>
+                            </button>
+                            <span id="timer-waiting-status" class="timer-waiting-status" style="display: none;">Waiting...</span>
+                            <span id="injection-status" class="injection-status" style="display: none;">Injecting...</span>
+                        </div>
+                    </div>
+                </div>
                 
                 <div class="queued-messages">
                     <div class="section-header">
                         <span class="queue-title">Message Queue</span>
                         <div class="queue-actions">
-                            <button class="icon-btn" id="inject-now-btn" title="Inject all ready messages now">
-                                <i data-lucide="play"></i>
+                            <button class="icon-btn" id="inject-now-btn" title="Inject next message now">
+                                <i data-lucide="arrow-left-from-line"></i>
                             </button>
                             <button class="icon-btn" id="clear-queue-header-btn" title="Clear all queued messages">
                                 <i data-lucide="trash-2"></i>
@@ -91,17 +115,6 @@
                             <button type="button" id="send-btn" class="send-button" title="Add message to queue (Enter)">
                                 <i data-lucide="send-horizontal"></i>
                             </button>
-                        </div>
-                        <div class="timing-wrapper">
-                            <label for="duration-input">Execute in:</label>
-                            <div class="duration-controls">
-                                <input type="number" id="duration-input" min="1" value="5" class="duration-value" title="Duration for message execution">
-                                <select id="duration-unit" class="duration-unit" title="Time unit for message execution">
-                                    <option value="seconds">seconds</option>
-                                    <option value="minutes">minutes</option>
-                                    <option value="hours">hours</option>
-                                </select>
-                            </div>
                         </div>
                     </div>
                     <div class="auto-controls">
