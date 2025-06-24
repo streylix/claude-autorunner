@@ -482,6 +482,14 @@ body {
     border-left: 3px solid var(--accent-primary);
 }
 
+.message-item.injecting {
+    border-left: 3px solid var(--accent-magenta);
+}
+
+.message-item.command {
+    border-left: 3px solid var(--accent-success);
+}
+
 .message-content {
     flex: 1;
     margin-right: 8px;
@@ -939,6 +947,35 @@ body {
 
 .auto-controls {
     margin-top: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.hotkey-btn {
+    background: none;
+    border: 1px solid var(--border-secondary);
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 4px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+}
+
+.hotkey-btn:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+    border-color: var(--border-primary);
+}
+
+.hotkey-btn i {
+    width: 14px;
+    height: 14px;
 }
 
 .auto-continue-info {
@@ -1530,6 +1567,84 @@ body {
 #clear-log-btn i {
     width: 16px;
     height: 16px;
+}
+
+/* Hotkey Dropdown */
+.hotkey-dropdown {
+    position: fixed;
+    display: none;
+    z-index: 1001;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    min-width: 200px;
+    max-width: 280px;
+}
+
+.hotkey-dropdown.show {
+    display: block;
+    animation: dropdownFadeIn 0.15s ease-out;
+}
+
+.hotkey-dropdown-content {
+    padding: 8px 0;
+}
+
+.hotkey-dropdown-header {
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border-primary);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.hotkey-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.hotkey-item {
+    background: none;
+    border: none;
+    padding: 8px 16px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background-color 0.2s;
+    text-align: left;
+}
+
+.hotkey-item:hover {
+    background-color: var(--bg-tertiary);
+}
+
+.hotkey-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+}
+
+.hotkey-desc {
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+/* Drag and Drop for Message Queue */
+.message-item.dragging {
+    opacity: 0.6;
+    transform: rotate(2deg);
+}
+
+.message-item.drag-over {
+    border-top: 2px solid var(--accent-primary);
+}
+
+.message-list.drag-active {
+    background-color: var(--bg-quaternary);
 }
 
  

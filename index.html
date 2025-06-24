@@ -123,6 +123,9 @@
                             <span class="checkmark"></span>
                             Auto-continue on prompts
                         </label>
+                        <button type="button" class="hotkey-btn" id="hotkey-btn" title="Insert hotkeys/commands">
+                            <i data-lucide="keyboard"></i>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -206,6 +209,41 @@
                     <button class="cancel-btn" id="usage-limit-no">No thanks</button>
                     <button class="save-btn" id="usage-limit-yes">Sure <span id="usage-countdown">10</span>s</button>
                 </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Hotkey Dropdown -->
+    <div id="hotkey-dropdown" class="hotkey-dropdown">
+        <div class="hotkey-dropdown-content">
+            <div class="hotkey-dropdown-header">
+                <span>Terminal Commands</span>
+            </div>
+            <div class="hotkey-list">
+                <button type="button" class="hotkey-item" data-command="^C">
+                    <span class="hotkey-label">Ctrl+C</span>
+                    <span class="hotkey-desc">Interrupt</span>
+                </button>
+                <button type="button" class="hotkey-item" data-command="^Z">
+                    <span class="hotkey-label">Ctrl+Z</span>
+                    <span class="hotkey-desc">Suspend</span>
+                </button>
+                <button type="button" class="hotkey-item" data-command="^D">
+                    <span class="hotkey-label">Ctrl+D</span>
+                    <span class="hotkey-desc">EOF</span>
+                </button>
+                <button type="button" class="hotkey-item" data-command="\x1b">
+                    <span class="hotkey-label">Esc</span>
+                    <span class="hotkey-desc">Escape</span>
+                </button>
+                <button type="button" class="hotkey-item" data-command="\r">
+                    <span class="hotkey-label">Enter</span>
+                    <span class="hotkey-desc">Execute</span>
+                </button>
+                <button type="button" class="hotkey-item" data-command="\t">
+                    <span class="hotkey-label">Tab</span>
+                    <span class="hotkey-desc">Complete</span>
+                </button>
             </div>
         </div>
     </div>

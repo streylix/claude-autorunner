@@ -64,9 +64,19 @@ class TerminalGUI {
         this.timerInterval = null;
         this.timerExpired = false;
         this.injectionInProgress = false;
+        this.currentTypeInterval = null;
         
         // Message editing state
         this.editingMessageId = null;
+        this.currentlyInjectingMessageId = null;
+        
+        // Terminal status scanning system
+        this.terminalScanInterval = null;
+        this.currentTerminalStatus = {
+            isRunning: false,
+            isPrompting: false,
+            lastUpdate: Date.now()
+        };
         
         // Load preferences FIRST so we have saved directory before starting terminal
         this.loadAllPreferences();
@@ -77,6 +87,7 @@ class TerminalGUI {
         this.updateStatusDisplay();
         this.setTerminalStatusDisplay(''); // Initialize with default status
         this.updateTimerUI(); // Initialize timer UI after loading preferences
+        this.startTerminalStatusScanning(); // Start the continuous terminal scanning
     }
 
     initializeLucideIcons() {
@@ -245,10 +256,9 @@ class TerminalGUI {
         ipcRenderer.on('terminal-data', (event, data) => {
             this.terminal.write(data);
             this.updateTerminalOutput(data);
-            this.detectDirectoryChange(data);
             this.detectAutoContinuePrompt(data);
             this.detectUsageLimit(data);
-            this.updateTerminalStatus(); // Call after lastTerminalOutput is updated
+            // Terminal status is now handled by continuous scanning system
             this.handleTerminalOutput();
         });
 
@@ -305,6 +315,24 @@ class TerminalGUI {
             }
         });
 
+        // Hotkey button listener
+        document.getElementById('hotkey-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.toggleHotkeyDropdown(e);
+        });
+
+        // Hotkey dropdown item listeners
+        document.addEventListener('click', (e) => {
+            const hotkeyItem = e.target.closest('.hotkey-item');
+            if (hotkeyItem) {
+                const command = hotkeyItem.getAttribute('data-command');
+                this.insertHotkey(command);
+                this.hideHotkeyDropdown();
+            } else if (!e.target.closest('#hotkey-dropdown') && !e.target.closest('#hotkey-btn')) {
+                this.hideHotkeyDropdown();
+            }
+        });
+
         // New timer system event listeners
         document.getElementById('timer-play-pause-btn').addEventListener('click', () => {
             this.toggleTimer();
@@ -314,6 +342,8 @@ class TerminalGUI {
             const stopBtn = document.getElementById('timer-stop-btn');
             if (stopBtn.classList.contains('timer-refresh')) {
                 this.resetTimer();
+            } else if (stopBtn.classList.contains('timer-cancel-injection')) {
+                this.cancelSequentialInjection();
             } else {
                 this.stopTimer();
             }
@@ -443,6 +473,25 @@ class TerminalGUI {
         this.messageQueue.forEach((message, index) => {
             const messageElement = document.createElement('div');
             messageElement.className = 'message-item';
+            messageElement.draggable = true;
+            messageElement.dataset.messageId = message.id;
+            messageElement.dataset.index = index;
+            
+            // Add injecting class if this message is currently being processed
+            if (message.id === this.currentlyInjectingMessageId) {
+                messageElement.classList.add('injecting');
+            }
+            
+            // Add command class if this message contains commands
+            if (this.isCommandMessage(message.content)) {
+                messageElement.classList.add('command');
+            }
+
+            // Add drag and drop event listeners
+            messageElement.addEventListener('dragstart', (e) => this.handleDragStart(e));
+            messageElement.addEventListener('dragover', (e) => this.handleDragOver(e));
+            messageElement.addEventListener('drop', (e) => this.handleDrop(e));
+            messageElement.addEventListener('dragend', (e) => this.handleDragEnd(e));
             
             const content = document.createElement('div');
             content.className = 'message-content';
@@ -700,7 +749,13 @@ class TerminalGUI {
         const timerIsSet = this.timerHours > 0 || this.timerMinutes > 0 || this.timerSeconds > 0;
         const timerAtZero = this.timerHours === 0 && this.timerMinutes === 0 && this.timerSeconds === 0;
         
-        if (this.timerActive || (timerIsSet && !timerAtZero)) {
+        if (this.injectionInProgress) {
+            // Show cancel button during injection
+            stopBtn.style.display = 'flex';
+            stopBtn.innerHTML = '<i data-lucide="square"></i>';
+            stopBtn.title = 'Cancel injection';
+            stopBtn.className = 'timer-btn timer-cancel-injection';
+        } else if (this.timerActive || (timerIsSet && !timerAtZero)) {
             // Show stop button when timer is active or set to non-zero value
             stopBtn.style.display = 'flex';
             stopBtn.innerHTML = '<i data-lucide="square"></i>';
@@ -1034,10 +1089,11 @@ class TerminalGUI {
         this.updateTimerUI();
         this.logAction(`Timer expired - starting sequential injection of ${this.messageQueue.length} messages`, 'success');
         
-        this.processNextQueuedMessage();
+        // Start with first message (no 30-second delay for first message)
+        this.processNextQueuedMessage(true);
     }
 
-    processNextQueuedMessage() {
+    processNextQueuedMessage(isFirstMessage = false) {
         if (this.messageQueue.length === 0) {
             this.injectionInProgress = false;
             this.timerExpired = false; // Reset timer expired state when injection completes
@@ -1050,11 +1106,24 @@ class TerminalGUI {
         // Reset safety check count for each new message
         this.safetyCheckCount = 0;
         
-        // Start safety checks for the next message
-        this.performSafetyChecks(() => {
-            // Safety checks passed - inject the message
-            this.injectMessageAndContinueQueue();
-        });
+        if (isFirstMessage) {
+            // No delay for first message - start safety checks immediately
+            this.logAction('Starting safety checks for first message (no delay)', 'info');
+            this.performSafetyChecks(() => {
+                // Safety checks passed - inject the message
+                this.injectMessageAndContinueQueue();
+            });
+        } else {
+            // Add mandatory 30-second delay for subsequent messages
+            this.logAction('Waiting 30 seconds before injection safety checks as required', 'info');
+            setTimeout(() => {
+                // Start safety checks for the next message after 30-second delay
+                this.performSafetyChecks(() => {
+                    // Safety checks passed - inject the message
+                    this.injectMessageAndContinueQueue();
+                });
+            }, 30000); // 30-second delay for subsequent messages
+        }
     }
 
     injectMessageAndContinueQueue() {
@@ -1066,7 +1135,10 @@ class TerminalGUI {
         const message = this.messageQueue.shift();
         this.saveMessageQueue(); // Save queue changes to localStorage
         this.isInjecting = true;
-        this.setTerminalStatusDisplay('injecting');
+        this.injectionInProgress = true; // Set this to true for manual injection too
+        this.currentlyInjectingMessageId = message.id; // Track which message is being injected
+        this.updateTerminalStatusIndicator(); // Use new status system
+        this.updateMessageList(); // Update UI to show injecting state
         
         this.logAction(`Sequential injection: "${message.content}"`, 'success');
         
@@ -1080,22 +1152,49 @@ class TerminalGUI {
             setTimeout(() => {
                 ipcRenderer.send('terminal-input', '\r');
                 this.isInjecting = false;
-                this.setTerminalStatusDisplay('');
+                this.injectionInProgress = false; // Clear this too
+                this.currentlyInjectingMessageId = null; // Clear injecting message tracking
+                this.updateTerminalStatusIndicator(); // Use new status system
+                this.updateMessageList(); // Update UI to clear injecting state
                 
-                // Continue with next message after a short delay
-                setTimeout(() => {
-                    this.processNextQueuedMessage();
-                }, 1000);
+                // Continue with next message after a short delay (only for timer-based injection)
+                if (this.timerExpired) {
+                    setTimeout(() => {
+                        this.processNextQueuedMessage();
+                    }, 1000);
+                } else {
+                    this.logAction('Manual injection complete - stopped after one message', 'info');
+                }
                 
             }, 200);
         });
     }
 
     cancelSequentialInjection() {
+        // Stop all injection processes
         this.injectionInProgress = false;
         this.timerExpired = false;
         this.safetyCheckCount = 0;
+        this.isInjecting = false;
+        this.currentlyInjectingMessageId = null; // Clear injecting message tracking
+        
+        // Clear any pending safety check timeouts
+        if (this.safetyCheckInterval) {
+            clearInterval(this.safetyCheckInterval);
+            this.safetyCheckInterval = null;
+        }
+        
+        // Clear any in-progress typing
+        if (this.currentTypeInterval) {
+            clearInterval(this.currentTypeInterval);
+            this.currentTypeInterval = null;
+        }
+        
+        // Update UI and status
         this.updateTimerUI();
+        this.setTerminalStatusDisplay('');
+        this.updateMessageList(); // Update UI to clear injecting state
+        
         this.logAction(`Sequential injection cancelled - ${this.messageQueue.length} messages remaining in queue`, 'warning');
     }
 
@@ -1119,15 +1218,16 @@ class TerminalGUI {
             return;
         }
         
-        // Safety check 2: No 'esc to interrupt' in terminal
-        if (this.lastTerminalOutput.toLowerCase().includes('esc to interrupt')) {
+        // Safety check 2: Simple scan for blocking conditions
+        const terminalStatus = this.scanTerminalStatus();
+        
+        if (terminalStatus.isRunning) {
             this.logAction(`Safety check failed - 'esc to interrupt' detected (attempt ${this.safetyCheckCount})`, 'warning');
             this.retrySafetyCheck(callback);
             return;
         }
         
-        // Safety check 3: No Claude prompt
-        if (this.lastTerminalOutput.toLowerCase().includes('no, and tell claude what to do differently')) {
+        if (terminalStatus.isPrompting) {
             this.logAction(`Safety check failed - Claude prompt detected (attempt ${this.safetyCheckCount})`, 'warning');
             this.retrySafetyCheck(callback);
             return;
@@ -1138,21 +1238,80 @@ class TerminalGUI {
         callback();
     }
 
-    retrySafetyCheck(callback) {
-        // Don't stop after 3 attempts - keep trying with increasing delays
-        let retryDelay;
-        if (this.safetyCheckCount <= 3) {
-            retryDelay = 200; // First 3 attempts: 200ms delay
-        } else if (this.safetyCheckCount <= 10) {
-            retryDelay = 1000; // Next 7 attempts: 1 second delay
-        } else if (this.safetyCheckCount <= 20) {
-            retryDelay = 2000; // Next 10 attempts: 2 second delay
+    startTerminalStatusScanning() {
+        // Start continuous scanning every 10ms
+        this.terminalScanInterval = setInterval(() => {
+            this.scanAndUpdateTerminalStatus();
+        }, 10);
+    }
+
+    stopTerminalStatusScanning() {
+        if (this.terminalScanInterval) {
+            clearInterval(this.terminalScanInterval);
+            this.terminalScanInterval = null;
+        }
+    }
+
+    scanAndUpdateTerminalStatus() {
+        // Get last 2000 characters from terminal output (recent and responsive)
+        const recentOutput = this.lastTerminalOutput.slice(-2000);
+        
+        // More precise detection - look for patterns that indicate current state
+        // Simple detection - just check if the text is present
+        const isRunning = recentOutput.includes('esc to interrupt');
+        const isPrompting = recentOutput.includes('No, and tell Claude what to do differently');
+        
+        // Update current status
+        const statusChanged = (this.currentTerminalStatus.isRunning !== isRunning || 
+                             this.currentTerminalStatus.isPrompting !== isPrompting);
+        
+        this.currentTerminalStatus = {
+            isRunning: isRunning,
+            isPrompting: isPrompting,
+            lastUpdate: Date.now()
+        };
+        
+        // Update status display if status changed
+        if (statusChanged) {
+            this.updateTerminalStatusIndicator();
+        }
+    }
+
+    updateTerminalStatusIndicator() {
+        if (this.isInjecting) {
+            this.setTerminalStatusDisplay('injecting');
+        } else if (this.currentTerminalStatus.isRunning) {
+            this.setTerminalStatusDisplay('running');
+        } else if (this.currentTerminalStatus.isPrompting) {
+            this.setTerminalStatusDisplay('prompted');
         } else {
-            retryDelay = 5000; // After 20 attempts: 5 second delay
+            this.setTerminalStatusDisplay('');
+        }
+    }
+
+    scanTerminalStatus() {
+        // Return current cached status (updated every 10ms)
+        return {
+            isRunning: this.currentTerminalStatus.isRunning,
+            isPrompting: this.currentTerminalStatus.isPrompting
+        };
+    }
+
+    retrySafetyCheck(callback) {
+        // Use more conservative delays to ensure safety
+        let retryDelay;
+        if (this.safetyCheckCount <= 5) {
+            retryDelay = 3000; // First 5 attempts: 3 second delay
+        } else if (this.safetyCheckCount <= 15) {
+            retryDelay = 5000; // Next 10 attempts: 5 second delay
+        } else if (this.safetyCheckCount <= 30) {
+            retryDelay = 10000; // Next 15 attempts: 10 second delay
+        } else {
+            retryDelay = 15000; // After 30 attempts: 15 second delay
         }
         
-        // Log less frequently to avoid spam
-        if (this.safetyCheckCount % 5 === 0) {
+        // Log more frequently since delays are longer
+        if (this.safetyCheckCount % 3 === 0) {
             this.logAction(`Still waiting for safe injection conditions (attempt ${this.safetyCheckCount}) - retrying in ${retryDelay/1000}s`, 'info');
         }
         
@@ -1172,7 +1331,7 @@ class TerminalGUI {
         const topMessage = this.messageQueue[0];
         this.logAction(`Force injecting top message: "${topMessage.content}"`, 'info');
         
-        // Start safety checks for immediate injection
+        // Start safety checks for immediate injection (no delay for manual injection)
         this.performSafetyChecks(() => {
             // All safety checks passed - inject the message immediately
             this.injectMessageAndContinueQueue();
@@ -1217,8 +1376,60 @@ class TerminalGUI {
     }
 
     typeMessage(message, callback) {
+        // Check if message contains escape sequences that should be sent directly
+        const escapePatterns = [
+            { pattern: /\^C/g, replacement: '\x03' },   // Ctrl+C (ETX - End of Text)
+            { pattern: /\^Z/g, replacement: '\x1a' },   // Ctrl+Z (SUB - Substitute)  
+            { pattern: /\^D/g, replacement: '\x04' },   // Ctrl+D (EOT - End of Transmission)
+            { pattern: /\\x1b/g, replacement: '\x1b' }, // Escape
+            { pattern: /\\r/g, replacement: '\r' },     // Return
+            { pattern: /\\t/g, replacement: '\t' },     // Tab
+        ];
+        
+        // Check if message contains any escape sequences
+        let hasEscapeSequences = false;
+        let processedMessage = message;
+        
+        for (const { pattern, replacement } of escapePatterns) {
+            if (pattern.test(processedMessage)) {
+                hasEscapeSequences = true;
+                processedMessage = processedMessage.replace(pattern, replacement);
+            }
+        }
+        
+        // If message contains escape sequences, send directly without typing
+        if (hasEscapeSequences) {
+            this.logAction(`Sending control sequence: ${message}`, 'success');
+            
+            // If message contains multiple control characters, send them with delays
+            const controlChars = processedMessage.split('');
+            let charIndex = 0;
+            
+            const sendNext = () => {
+                if (charIndex < controlChars.length) {
+                    ipcRenderer.send('terminal-input', controlChars[charIndex]);
+                    charIndex++;
+                    
+                    // Add 10ms delay between control characters
+                    setTimeout(sendNext, 10);
+                } else {
+                    if (callback) callback();
+                }
+            };
+            
+            sendNext();
+            return;
+        }
+        
+        // Otherwise, type character by character as normal
         let index = 0;
         const typeInterval = setInterval(() => {
+            // Check if injection was cancelled
+            if (!this.injectionInProgress) {
+                clearInterval(typeInterval);
+                return;
+            }
+            
             if (index < message.length) {
                 ipcRenderer.send('terminal-input', message[index]);
                 index++;
@@ -1227,6 +1438,9 @@ class TerminalGUI {
                 if (callback) callback();
             }
         }, 50); // 50ms between characters for realistic typing speed
+        
+        // Store reference for potential cancellation
+        this.currentTypeInterval = typeInterval;
     }
 
     detectAutoContinuePrompt(data) {
@@ -1361,78 +1575,7 @@ class TerminalGUI {
         }, 1000); // Wait 1 second for terminal to process
     }
 
-    detectDirectoryChange(data) {
-        // Enhanced directory detection from terminal output
-        const lines = data.split(/\r?\n/);
-        let detectedDir = null;
-        
-        // Process lines to find directory information
-        for (const line of lines) {
-            // Clean the line of ANSI escape codes and extra whitespace
-            const cleanLine = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
-            
-            if (!cleanLine) continue;
-            
-            // Pattern 1: Common shell prompts with directory in format: user@host:path$ or similar
-            const promptWithPath = cleanLine.match(/.*?[:\s]([~\/][^\s$#>]*)\s*[$#>%]\s*$/);
-            
-            // Pattern 2: Bare directory path at start of line
-            const barePathMatch = cleanLine.match(/^([~\/][^\s]+)\s*$/);
-            
-            // Pattern 3: pwd command output
-            const pwdMatch = cleanLine.match(/^([~\/][^\s]*?)$/);
-            
-            // Pattern 4: Common zsh/bash prompts like "➜ directoryname" 
-            const zshMatch = cleanLine.match(/[➜▶]\s+([^\s]+)/);
-            
-            // Pattern 5: Fish shell style prompts
-            const fishMatch = cleanLine.match(/.*\s([~\/][^\s]*)\s*>/);
-            
-            if (promptWithPath && promptWithPath[1]) {
-                detectedDir = promptWithPath[1];
-                break;
-            } else if (zshMatch && zshMatch[1] && zshMatch[1] !== '~') {
-                // For zsh prompts, the directory name is often just the basename
-                // We need to be more careful here to avoid false positives
-                const dirName = zshMatch[1];
-                if (dirName.includes('/') || this.currentDirectory.endsWith('/' + dirName)) {
-                    detectedDir = dirName.includes('/') ? dirName : this.currentDirectory;
-                }
-            } else if (fishMatch && fishMatch[1]) {
-                detectedDir = fishMatch[1];
-                break;
-            } else if (barePathMatch && barePathMatch[1] && barePathMatch[1].length > 2) {
-                detectedDir = barePathMatch[1];
-                break;
-            } else if (pwdMatch && pwdMatch[1] && pwdMatch[1].startsWith('/') && pwdMatch[1].length > 1) {
-                detectedDir = pwdMatch[1];
-                break;
-            }
-        }
-        
-        // Only update if we found a directory and it's different from current
-        if (detectedDir && detectedDir !== this.currentDirectory) {
-            // Expand ~ to home directory if needed
-            if (detectedDir === '~') {
-                detectedDir = process.env.HOME || `/Users/${process.env.USER}`;
-            } else if (detectedDir.startsWith('~/')) {
-                detectedDir = detectedDir.replace('~', process.env.HOME || `/Users/${process.env.USER}`);
-            }
-            
-            // Validate that this looks like a real directory path
-            if (detectedDir.startsWith('/') && detectedDir.length > 1 && detectedDir !== this.currentDirectory) {
-                this.currentDirectory = detectedDir;
-                
-                // Save to preferences
-                this.preferences.currentDirectory = detectedDir;
-                this.saveAllPreferences();
-                
-                // Update UI
-                this.updateStatusDisplay();
-                this.logAction(`Directory detected and updated to: ${detectedDir}`, 'info');
-            }
-        }
-    }
+
 
     detectUsageLimit(data) {
         // Check for "Approaching usage limit" message and parse the reset time
@@ -1601,32 +1744,6 @@ class TerminalGUI {
         this.saveAllPreferences();
     }
 
-    updateTerminalStatus() {
-        let newStatus = '';
-        
-        if (this.isInjecting) {
-            newStatus = 'injecting';
-        } else {
-            // Check for status indicators in recent output (case-insensitive)
-            const recentOutput = this.lastTerminalOutput.toLowerCase();
-            
-            if (recentOutput.includes('esc to interrupt')) {
-                newStatus = 'running';
-            } else if (recentOutput.includes('no, and tell claude what to do differently')) {
-                newStatus = 'prompted';
-            } else if (recentOutput.includes('processing') || recentOutput.includes('thinking') || recentOutput.includes('working')) {
-                newStatus = 'running';
-            } else if (recentOutput.includes('$') || recentOutput.includes('➜') || recentOutput.includes('#')) {
-                newStatus = ''; // Ready state
-            }
-        }
-        
-        // Only update if status actually changed
-        if (newStatus !== this.terminalStatus) {
-            this.terminalStatus = newStatus;
-            this.setTerminalStatusDisplay(newStatus);
-        }
-    }
 
     setTerminalStatusDisplay(status) {
         const statusElement = document.getElementById('terminal-status');
@@ -2094,8 +2211,6 @@ class TerminalGUI {
         } else {
             this.updateTimerUI();
         }
-
-        this.logAction(`Auto-synced timer: ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')} until usage limit reset`, 'info');
     }
 
     setUsageLimitResetTime(resetTime) {
@@ -2169,6 +2284,140 @@ class TerminalGUI {
         if (this.lastTerminalOutput.length > 5000) {
             this.lastTerminalOutput = this.lastTerminalOutput.slice(-5000);
         }
+    }
+
+    // Hotkey dropdown functionality
+    toggleHotkeyDropdown(event) {
+        const dropdown = document.getElementById('hotkey-dropdown');
+        const button = document.getElementById('hotkey-btn');
+        
+        if (dropdown.classList.contains('show')) {
+            this.hideHotkeyDropdown();
+        } else {
+            this.showHotkeyDropdown(button);
+        }
+    }
+
+    showHotkeyDropdown(buttonElement) {
+        const dropdown = document.getElementById('hotkey-dropdown');
+        const rect = buttonElement.getBoundingClientRect();
+        
+        // Show dropdown first to get its dimensions
+        dropdown.classList.add('show');
+        
+        // Get dropdown dimensions after it's visible
+        const dropdownRect = dropdown.getBoundingClientRect();
+        
+        // Position dropdown so bottom-right corner touches top-left of button
+        dropdown.style.left = `${rect.left - dropdownRect.width}px`;
+        dropdown.style.top = `${rect.top - dropdownRect.height}px`;
+    }
+
+    hideHotkeyDropdown() {
+        const dropdown = document.getElementById('hotkey-dropdown');
+        dropdown.classList.remove('show');
+    }
+
+    insertHotkey(command) {
+        const input = document.getElementById('message-input');
+        const currentValue = input.value;
+        const cursorPos = input.selectionStart;
+        
+        // Insert command at cursor position
+        const beforeCursor = currentValue.substring(0, cursorPos);
+        const afterCursor = currentValue.substring(cursorPos);
+        const newValue = beforeCursor + command + afterCursor;
+        
+        input.value = newValue;
+        input.focus();
+        
+        // Set cursor position after inserted command
+        const newCursorPos = cursorPos + command.length;
+        input.setSelectionRange(newCursorPos, newCursorPos);
+        
+        this.logAction(`Inserted hotkey: ${command}`, 'info');
+    }
+
+    // Command detection for styling
+    isCommandMessage(content) {
+        // Common command patterns
+        const commandPatterns = [
+            /^\^[A-Z]/,  // Ctrl commands like ^C, ^Z
+            /\\x1b/,     // Escape sequences
+            /\\r/,       // Return/Enter
+            /\\t/,       // Tab
+            /\r\n|\n|\r/, // Line breaks
+            /^(ls|cd|pwd|cat|grep|find|ps|kill|top|htop|vim|nano|git|npm|yarn|docker|curl|wget)/i, // Common terminal commands
+        ];
+        
+        return commandPatterns.some(pattern => pattern.test(content));
+    }
+
+    // Drag and drop functionality
+    handleDragStart(e) {
+        e.dataTransfer.setData('text/plain', '');
+        this.draggedElement = e.target;
+        this.draggedIndex = parseInt(e.target.dataset.index);
+        e.target.classList.add('dragging');
+        
+        // Add active class to message list
+        document.getElementById('message-list').classList.add('drag-active');
+    }
+
+    handleDragOver(e) {
+        e.preventDefault();
+        const target = e.target.closest('.message-item');
+        if (target && target !== this.draggedElement) {
+            // Remove drag-over class from all items
+            document.querySelectorAll('.message-item').forEach(item => {
+                item.classList.remove('drag-over');
+            });
+            
+            target.classList.add('drag-over');
+        }
+    }
+
+    handleDrop(e) {
+        e.preventDefault();
+        const target = e.target.closest('.message-item');
+        if (target && target !== this.draggedElement) {
+            const targetIndex = parseInt(target.dataset.index);
+            this.reorderMessage(this.draggedIndex, targetIndex);
+        }
+        
+        this.cleanupDragState();
+    }
+
+    handleDragEnd(e) {
+        this.cleanupDragState();
+    }
+
+    cleanupDragState() {
+        // Remove all drag-related classes
+        document.querySelectorAll('.message-item').forEach(item => {
+            item.classList.remove('dragging', 'drag-over');
+        });
+        
+        document.getElementById('message-list').classList.remove('drag-active');
+        this.draggedElement = null;
+        this.draggedIndex = null;
+    }
+
+    reorderMessage(fromIndex, toIndex) {
+        if (fromIndex === toIndex) return;
+        
+        // Remove the dragged message from its current position
+        const [movedMessage] = this.messageQueue.splice(fromIndex, 1);
+        
+        // Insert it at the new position
+        this.messageQueue.splice(toIndex, 0, movedMessage);
+        
+        // Save and update UI
+        this.saveMessageQueue();
+        this.updateMessageList();
+        this.updateStatusDisplay();
+        
+        this.logAction(`Reordered message: "${movedMessage.content.substring(0, 30)}..." from position ${fromIndex + 1} to ${toIndex + 1}`, 'info');
     }
 }
 
