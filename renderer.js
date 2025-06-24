@@ -89,6 +89,7 @@ class TerminalGUI {
         this.setTerminalStatusDisplay(''); // Initialize with default status
         this.updateTimerUI(); // Initialize timer UI after loading preferences
         this.startTerminalStatusScanning(); // Start the continuous terminal scanning
+        this.setupPriorityModeSettings(); // Initialize macOS priority mode settings
     }
 
     initializeLucideIcons() {
@@ -301,7 +302,7 @@ class TerminalGUI {
         });
 
         document.getElementById('inject-now-btn').addEventListener('click', () => {
-            this.injectMessages();
+            this.manualInjectNextMessage();
         });
 
         // Auto-continue checkbox listener
@@ -1514,6 +1515,40 @@ class TerminalGUI {
             this.injectMessageAndContinueQueue();
         });
     }
+
+    manualInjectNextMessage() {
+        if (this.messageQueue.length === 0) {
+            this.logAction('No messages in queue to inject', 'warning');
+            return;
+        }
+
+        // Get the first message in the queue
+        const message = this.messageQueue[0];
+        this.logAction(`Manual injection started: "${message.content.substring(0, 50)}..."`, 'info');
+        
+        // Use the existing typeMessage method which handles control sequences properly
+        this.typeMessage(message.content, () => {
+            // Send Enter after typing (unless it's a control sequence that doesn't need it)
+            const hasControlSequence = /(\^[A-Z]|\\x1b|\\r|\\t)/g.test(message.content);
+            
+            if (!hasControlSequence) {
+                setTimeout(() => {
+                    ipcRenderer.send('terminal-input', '\r');
+                }, 100);
+            }
+            
+            // Remove the injected message from queue
+            this.messageQueue.shift();
+            this.saveMessageQueue();
+            
+            // Update counters and UI
+            this.updateMessageList();
+            this.updateStatusDisplay();
+            this.injectionCount++;
+            
+            this.logAction(`Manual injection complete: "${message.content.substring(0, 50)}..."`, 'success');
+        });
+    }
     
     processMessageBatch(messages) {
         if (messages.length === 0 || this.isInjecting) return;
@@ -2642,6 +2677,27 @@ class TerminalGUI {
         
         this.logAction(`Reordered message: "${movedMessage.content.substring(0, 30)}..." from position ${fromIndex + 1} to ${toIndex + 1}`, 'info');
     }
+
+    // macOS Priority Mode Settings
+    async setupPriorityModeSettings() {
+        // Set platform class for CSS targeting
+        document.body.classList.add(`platform-${process.platform}`);
+        
+        // Only setup on macOS
+        if (process.platform !== 'darwin') {
+            return;
+        }
+
+        // Setup event listeners
+        this.setupPriorityModeEventListeners();
+        
+        this.logAction('macOS priority mode initialized - background operation enabled', 'success');
+    }
+
+    setupPriorityModeEventListeners() {
+        // No additional event listeners needed - priority mode is always active on macOS
+        this.logAction('Priority mode event listeners initialized', 'info');
+    }
 }
 
 // Initialize the application when DOM is loaded
@@ -2653,23 +2709,3 @@ document.addEventListener('DOMContentLoaded', () => {
         app.logAction('Application ready - all systems operational', 'success');
     }, 500);
 });
-
-// Handle window controls (NOTE: buttons removed, keeping for reference)
-document.querySelector('.control-button.close').addEventListener('click', () => {
-    window.close();
-});
-
-document.querySelector('.control-button.minimize').addEventListener('click', () => {
-    const { remote } = require('electron');
-    remote.getCurrentWindow().minimize();
-});
-
-document.querySelector('.control-button.maximize').addEventListener('click', () => {
-    const { remote } = require('electron');
-    const win = remote.getCurrentWindow();
-    if (win.isMaximized()) {
-        win.unmaximize();
-    } else {
-        win.maximize();
-    }
-}); 

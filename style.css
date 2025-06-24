@@ -1752,5 +1752,101 @@ body {
     color: var(--text-primary);
 }
 
+/* macOS Priority Mode Styles */
+#macos-priority-settings {
+    border-top: 1px solid var(--border-primary);
+    padding-top: 15px;
+    margin-top: 15px;
+}
 
- 
+.setting-subgroup {
+    margin-left: 20px;
+    margin-bottom: 15px;
+}
+
+.setting-buttons {
+    display: flex;
+    gap: 10px;
+    margin: 15px 0;
+}
+
+.setting-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.setting-btn:hover {
+    background-color: var(--bg-quaternary);
+    border-color: var(--accent-primary);
+}
+
+.setting-btn-danger {
+    border-color: var(--accent-error);
+    color: var(--accent-error);
+}
+
+.setting-btn-danger:hover {
+    background-color: var(--accent-error);
+    color: var(--text-primary);
+}
+
+.setting-btn i {
+    width: 16px;
+    height: 16px;
+}
+
+.priority-status {
+    margin-top: 15px;
+    padding: 12px;
+    background-color: var(--bg-secondary);
+    border-radius: 6px;
+    border: 1px solid var(--border-primary);
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.status-indicator:last-child {
+    margin-bottom: 0;
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--text-quaternary);
+}
+
+.status-dot.status-active {
+    background-color: var(--accent-success);
+}
+
+.status-dot.status-inactive {
+    background-color: var(--accent-error);
+}
+
+.status-dot.status-warning {
+    background-color: var(--accent-warning);
+}
+
+/* Hide macOS settings on non-macOS platforms */
+.platform-windows #macos-priority-settings,
+.platform-linux #macos-priority-settings {
+    display: none;
+}
