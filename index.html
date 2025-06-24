@@ -109,12 +109,20 @@
                 </div>
                 
                 <div class="input-section">
-                    <div class="input-container">
+                    <div class="input-container" id="drop-zone">
                         <div class="input-wrapper">
                             <textarea id="message-input" placeholder="Type your command here..." rows="3" title="Enter command to add to message queue"></textarea>
-                            <button type="button" id="send-btn" class="send-button" title="Add message to queue (Enter)">
-                                <i data-lucide="send-horizontal"></i>
-                            </button>
+                            <div class="input-actions">
+                                <button type="button" id="send-btn" class="send-button" title="Add message to queue (Enter)">
+                                    <i data-lucide="send-horizontal"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="drop-overlay" id="drop-overlay" style="display: none;">
+                            <div class="drop-content">
+                                <i data-lucide="upload"></i>
+                                <span>Drop files here to add to queue</span>
+                            </div>
                         </div>
                     </div>
                     <div class="auto-controls">
@@ -131,6 +139,9 @@
             </div>
         </div>
     </div>
+    
+    <!-- Hidden file input for manual file selection -->
+    <input type="file" id="file-input" style="display: none;" accept="image/*,text/*" multiple>
     
     <!-- Settings Modal -->
     <div id="settings-modal" class="modal">

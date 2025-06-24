@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const pty = require('node-pty');
 const os = require('os');
+const fs = require('fs').promises;
 
 let mainWindow;
 let ptyProcess;
@@ -145,6 +146,99 @@ function setupIpcHandlers() {
     } catch (error) {
       console.error('Error in show-directory-dialog handler:', error);
       throw error;
+    }
+  });
+
+  // File handling for drag & drop
+  ipcMain.handle('handle-file-drop', async (event, files) => {
+    try {
+      const results = [];
+      const importedDir = path.join(__dirname, 'imported-files');
+      
+      // Ensure imported-files directory exists
+      try {
+        await fs.access(importedDir);
+      } catch {
+        await fs.mkdir(importedDir, { recursive: true });
+      }
+      
+      for (const file of files) {
+        const fileName = path.basename(file.path);
+        const fileExt = path.extname(fileName);
+        const baseName = path.basename(fileName, fileExt);
+        const timestamp = Date.now();
+        const uniqueName = `${baseName}_${timestamp}${fileExt}`;
+        const destinationPath = path.join(importedDir, uniqueName);
+        
+        // Copy file to imported directory
+        await fs.copyFile(file.path, destinationPath);
+        
+        results.push({
+          originalName: fileName,
+          newName: uniqueName,
+          destinationPath: destinationPath,
+          relativePath: `./imported-files/${uniqueName}`,
+          size: file.size,
+          type: file.type
+        });
+      }
+      
+      return { success: true, files: results };
+    } catch (error) {
+      console.error('Error handling file drop:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Save screenshot from clipboard
+  ipcMain.handle('save-screenshot', async (event, imageData) => {
+    try {
+      const importedDir = path.join(__dirname, 'imported-files');
+      
+      // Ensure imported-files directory exists
+      try {
+        await fs.access(importedDir);
+      } catch {
+        await fs.mkdir(importedDir, { recursive: true });
+      }
+      
+      const timestamp = Date.now();
+      const fileName = `screenshot_${timestamp}.png`;
+      const filePath = path.join(importedDir, fileName);
+      
+      // Convert base64 to buffer and save
+      const buffer = Buffer.from(imageData.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+      await fs.writeFile(filePath, buffer);
+      
+      return {
+        success: true,
+        fileName: fileName,
+        filePath: filePath,
+        relativePath: `./imported-files/${fileName}`
+      };
+    } catch (error) {
+      console.error('Error saving screenshot:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Get file information
+  ipcMain.handle('get-file-info', async (event, filePath) => {
+    try {
+      const stats = await fs.stat(filePath);
+      const fileName = path.basename(filePath);
+      
+      return {
+        success: true,
+        name: fileName,
+        size: stats.size,
+        modified: stats.mtime,
+        isFile: stats.isFile(),
+        isDirectory: stats.isDirectory()
+      };
+    } catch (error) {
+      console.error('Error getting file info:', error);
+      return { success: false, error: error.message };
     }
   });
 } 

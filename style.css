@@ -493,6 +493,9 @@ body {
 .message-content {
     flex: 1;
     margin-right: 8px;
+    word-wrap: break-word;
+    word-break: break-all;
+    white-space: pre-wrap;
 }
 
 .message-meta {
@@ -605,6 +608,15 @@ body {
 .input-wrapper {
     position: relative;
     margin-bottom: 12px;
+}
+
+.input-actions {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    display: flex;
+    gap: 4px;
+    align-items: center;
 }
 
 .send-button {
@@ -926,7 +938,7 @@ body {
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
     border-radius: 6px;
-    padding: 10px 45px 10px 12px;
+    padding: 10px 80px 10px 12px;
     color: var(--text-primary);
     font-family: inherit;
     font-size: 12px;
@@ -1646,5 +1658,99 @@ body {
 .message-list.drag-active {
     background-color: var(--bg-quaternary);
 }
+
+/* File Drop Zone Styles */
+/* .input-container {
+    position: relative;
+} */
+
+/* .input-wrapper {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+} */
+
+/* .input-actions {
+    display: flex;
+    flex-direction: row;
+    gap: 4px;
+    align-items: flex-end;
+} */
+
+.drop-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 122, 204, 0.1);
+    border: 2px dashed var(--accent-primary);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+}
+
+.drop-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--accent-primary);
+    font-weight: 500;
+}
+
+.drop-content i {
+    width: 32px;
+    height: 32px;
+}
+
+
+
+/* File attachment indicators */
+.message-item.has-attachment {
+    border-left: 3px solid var(--accent-secondary);
+}
+
+.message-item .file-attachment {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    padding: 4px 8px;
+    background-color: var(--bg-quaternary);
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.file-attachment .file-icon {
+    width: 14px;
+    height: 14px;
+    color: var(--accent-secondary);
+}
+
+.file-attachment .file-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-attachment .remove-file {
+    padding: 2px;
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    border-radius: 2px;
+}
+
+.file-attachment .remove-file:hover {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
 
  

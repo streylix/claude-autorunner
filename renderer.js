@@ -27,6 +27,7 @@ class TerminalGUI {
         this.terminalStatus = '';
         this.currentResetTime = null;
         this.statusUpdateTimeout = null;
+        this.isDragging = false; // Track drag state to prevent stuttering
         this.preferences = {
             autoscrollEnabled: true,
             autoscrollDelay: 3000,
@@ -416,6 +417,120 @@ class TerminalGUI {
             }
         });
 
+        // File drag and drop event listeners
+        const dropZone = document.getElementById('drop-zone');
+        const dropOverlay = document.getElementById('drop-overlay');
+        const fileInput = document.getElementById('file-input');
+
+        let dragCounter = 0; // Track drag enter/leave to prevent flickering
+
+        // Prevent default drag behaviors on the drop zone
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, this.preventDefaults, false);
+            document.body.addEventListener(eventName, this.preventDefaults, false);
+        });
+
+        // Handle drag enter/leave with counter to prevent flickering
+        dropZone.addEventListener('dragenter', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter++;
+            if (dragCounter === 1) {
+                this.highlight(dropOverlay);
+            }
+        }, false);
+
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter--;
+            if (dragCounter === 0) {
+                this.unhighlight(dropOverlay);
+            }
+        }, false);
+
+        // Handle dragover without changing visibility
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = 'copy';
+        }, false);
+
+        // Handle dropped files
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter = 0;
+            this.unhighlight(dropOverlay);
+            this.handleFileDrop(e);
+        }, false);
+
+        // Handle manual file selection through hidden input
+        fileInput.addEventListener('change', (e) => this.handleFileSelection(e), false);
+
+        // File import button click handler (if present)
+        const fileImportBtn = document.getElementById('file-import-btn');
+        if (fileImportBtn) {
+            fileImportBtn.addEventListener('click', () => {
+                fileInput.click();
+            });
+        }
+
+    }
+
+    highlight(dropOverlay) {
+        this.isDragging = true;
+        dropOverlay.style.display = 'flex';
+    }
+
+    unhighlight(dropOverlay) {
+        this.isDragging = false;
+        dropOverlay.style.display = 'none';
+    }
+
+    async handleFileDrop(e) {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        
+        if (files.length > 0) {
+            this.logAction(`Processing ${files.length} dropped file(s)`, 'info');
+            await this.processFiles(files);
+        }
+    }
+
+    async handleFileSelection(e) {
+        const files = e.target.files;
+        
+        if (files.length > 0) {
+            this.logAction(`Processing ${files.length} selected file(s)`, 'info');
+            await this.processFiles(files);
+        }
+    }
+
+    async processFiles(files) {
+        try {
+            // Get current message input
+            const messageInput = document.getElementById('message-input');
+            const currentText = messageInput.value;
+            
+            // Use original file paths directly and surround with quotes
+            const filePaths = Array.from(files).map(file => `'${file.path || file.name}'`);
+            const fileText = filePaths.join(' ');
+            
+            // Add files to current input with proper spacing
+            const separator = currentText && !currentText.endsWith(' ') ? ' ' : '';
+            messageInput.value = currentText + separator + fileText;
+            
+            // Focus on the input and place cursor at end
+            messageInput.focus();
+            messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+            
+            const fileNames = Array.from(files).map(file => file.name);
+            this.logAction(`Added ${files.length} file(s) to current message: ${fileNames.join(', ')}`, 'success');
+        } catch (error) {
+            console.error('Error processing files:', error);
+            this.logAction(`Error processing files: ${error.message}`, 'error');
+        }
     }
 
     addMessageToQueue() {
@@ -426,12 +541,12 @@ class TerminalGUI {
             const message = {
                 id: this.messageIdCounter++,
                 content: content,
-                processedContent: content, // Store processed version
+                processedContent: content,
                 timestamp: Date.now()
             };
             
             this.messageQueue.push(message);
-            this.saveMessageQueue(); // Save to localStorage
+            this.saveMessageQueue();
             this.updateMessageList();
             this.updateStatusDisplay();
             input.value = '';
@@ -448,7 +563,6 @@ class TerminalGUI {
             this.updateMessage(this.editingMessageId, content);
             this.cancelEdit();
         } else if (!content && this.editingMessageId) {
-            // If content is empty, delete the message
             this.deleteMessage(this.editingMessageId);
             this.cancelEdit();
         }
@@ -458,7 +572,7 @@ class TerminalGUI {
         if (this.messageQueue.length > 0) {
             const count = this.messageQueue.length;
             this.messageQueue = [];
-            this.saveMessageQueue(); // Save to localStorage
+            this.saveMessageQueue();
             this.updateMessageList();
             this.updateStatusDisplay();
             
@@ -477,17 +591,14 @@ class TerminalGUI {
             messageElement.dataset.messageId = message.id;
             messageElement.dataset.index = index;
             
-            // Add injecting class if this message is currently being processed
             if (message.id === this.currentlyInjectingMessageId) {
                 messageElement.classList.add('injecting');
             }
             
-            // Add command class if this message contains commands
             if (this.isCommandMessage(message.content)) {
                 messageElement.classList.add('command');
             }
 
-            // Add drag and drop event listeners
             messageElement.addEventListener('dragstart', (e) => this.handleDragStart(e));
             messageElement.addEventListener('dragover', (e) => this.handleDragOver(e));
             messageElement.addEventListener('drop', (e) => this.handleDrop(e));
@@ -511,7 +622,6 @@ class TerminalGUI {
             const actions = document.createElement('div');
             actions.className = 'message-actions';
             
-            // Edit button
             const editBtn = document.createElement('button');
             editBtn.className = 'message-edit-btn';
             editBtn.innerHTML = '<i data-lucide="edit-3"></i>';
@@ -521,7 +631,6 @@ class TerminalGUI {
                 this.editMessage(message.id);
             });
             
-            // Delete button
             const deleteBtn = document.createElement('button');
             deleteBtn.className = 'message-delete-btn';
             deleteBtn.innerHTML = '<i data-lucide="trash-2"></i>';
@@ -538,7 +647,6 @@ class TerminalGUI {
             messageList.appendChild(messageElement);
         });
         
-        // Reinitialize icons for new elements
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
         }
@@ -549,11 +657,10 @@ class TerminalGUI {
         if (index !== -1) {
             const deletedMessage = this.messageQueue[index];
             this.messageQueue.splice(index, 1);
-            this.saveMessageQueue(); // Save to localStorage
+            this.saveMessageQueue();
             this.updateMessageList();
             this.updateStatusDisplay();
             
-            // Log the action instead of writing to terminal
             this.logAction(`Deleted message: "${deletedMessage.content}"`, 'warning');
         }
     }
@@ -565,16 +672,13 @@ class TerminalGUI {
             input.value = message.content;
             input.focus();
             
-            // Store the editing state
             this.editingMessageId = messageId;
             
-            // Update the send button to show edit mode
             const sendBtn = document.getElementById('send-btn');
             sendBtn.innerHTML = '<i data-lucide="check"></i>';
             sendBtn.title = 'Update message (Enter)';
             sendBtn.classList.add('editing-mode');
             
-            // Reinitialize icons to ensure they render
             if (typeof lucide !== 'undefined') {
                 lucide.createIcons();
             }
@@ -589,9 +693,8 @@ class TerminalGUI {
             const oldContent = this.messageQueue[index].content;
             this.messageQueue[index].content = newContent;
             this.messageQueue[index].processedContent = newContent;
-            // Keep original timestamp
             
-            this.saveMessageQueue(); // Save to localStorage
+            this.saveMessageQueue();
             this.updateMessageList();
             this.updateStatusDisplay();
             
@@ -604,13 +707,11 @@ class TerminalGUI {
         const input = document.getElementById('message-input');
         input.value = '';
         
-        // Reset send button
         const sendBtn = document.getElementById('send-btn');
         sendBtn.innerHTML = '<i data-lucide="send-horizontal"></i>';
         sendBtn.title = 'Add message to queue (Enter)';
         sendBtn.classList.remove('editing-mode');
         
-        // Reinitialize icons to ensure they render
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
         }
@@ -1095,6 +1196,7 @@ class TerminalGUI {
 
     processNextQueuedMessage(isFirstMessage = false) {
         if (this.messageQueue.length === 0) {
+            // Sequential injection is complete - reset all states
             this.injectionInProgress = false;
             this.timerExpired = false; // Reset timer expired state when injection completes
             this.safetyCheckCount = 0; // Reset safety check count
@@ -1113,17 +1215,17 @@ class TerminalGUI {
                 // Safety checks passed - inject the message
                 this.injectMessageAndContinueQueue();
             });
-        } else {
-            // Add mandatory 30-second delay for subsequent messages
-            this.logAction('Waiting 30 seconds before injection safety checks as required', 'info');
-            setTimeout(() => {
-                // Start safety checks for the next message after 30-second delay
-                this.performSafetyChecks(() => {
-                    // Safety checks passed - inject the message
-                    this.injectMessageAndContinueQueue();
-                });
-            }, 30000); // 30-second delay for subsequent messages
-        }
+                 } else {
+             // Wait for terminal to be in ready state ('...') for 5 seconds consistently
+            //  this.logAction('Waiting for terminal to be ready for 5 seconds before next injection', 'info');
+             this.waitForStableReadyState(() => {
+                 // Terminal has been ready for 5 seconds - start safety checks
+                 this.performSafetyChecks(() => {
+                     // Safety checks passed - inject the message
+                     this.injectMessageAndContinueQueue();
+                 });
+             });
+         }
     }
 
     injectMessageAndContinueQueue() {
@@ -1135,7 +1237,7 @@ class TerminalGUI {
         const message = this.messageQueue.shift();
         this.saveMessageQueue(); // Save queue changes to localStorage
         this.isInjecting = true;
-        this.injectionInProgress = true; // Set this to true for manual injection too
+        // Keep injectionInProgress true throughout the entire sequence
         this.currentlyInjectingMessageId = message.id; // Track which message is being injected
         this.updateTerminalStatusIndicator(); // Use new status system
         this.updateMessageList(); // Update UI to show injecting state
@@ -1152,7 +1254,7 @@ class TerminalGUI {
             setTimeout(() => {
                 ipcRenderer.send('terminal-input', '\r');
                 this.isInjecting = false;
-                this.injectionInProgress = false; // Clear this too
+                // Don't reset injectionInProgress here - keep it true for the entire sequence
                 this.currentlyInjectingMessageId = null; // Clear injecting message tracking
                 this.updateTerminalStatusIndicator(); // Use new status system
                 this.updateMessageList(); // Update UI to clear injecting state
@@ -1163,6 +1265,8 @@ class TerminalGUI {
                         this.processNextQueuedMessage();
                     }, 1000);
                 } else {
+                    // Manual injection complete - reset all states
+                    this.injectionInProgress = false;
                     this.logAction('Manual injection complete - stopped after one message', 'info');
                 }
                 
@@ -1192,10 +1296,46 @@ class TerminalGUI {
         
         // Update UI and status
         this.updateTimerUI();
-        this.setTerminalStatusDisplay('');
+        this.updateTerminalStatusIndicator(); // Use proper status update
         this.updateMessageList(); // Update UI to clear injecting state
         
         this.logAction(`Sequential injection cancelled - ${this.messageQueue.length} messages remaining in queue`, 'warning');
+    }
+
+    // Add emergency reset function for stuck states
+    forceResetInjectionState() {
+        this.logAction('Force resetting injection state - clearing all flags', 'warning');
+        
+        // Clear all injection-related flags
+        this.injectionInProgress = false;
+        this.timerExpired = false;
+        this.safetyCheckCount = 0;
+        this.isInjecting = false;
+        this.currentlyInjectingMessageId = null;
+        this.timerActive = false;
+        
+        // Clear all intervals and timeouts
+        if (this.safetyCheckInterval) {
+            clearInterval(this.safetyCheckInterval);
+            this.safetyCheckInterval = null;
+        }
+        
+        if (this.currentTypeInterval) {
+            clearInterval(this.currentTypeInterval);
+            this.currentTypeInterval = null;
+        }
+        
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+            this.timerInterval = null;
+        }
+        
+        // Update all UI elements
+        this.updateTimerUI();
+        this.updateTerminalStatusIndicator();
+        this.updateMessageList();
+        
+        this.logAction('Injection state reset complete', 'success');
     }
 
     // Old scheduling system removed - now using timer-based injection
@@ -1253,17 +1393,54 @@ class TerminalGUI {
     }
 
     scanAndUpdateTerminalStatus() {
-        // Get last 2000 characters from terminal output (recent and responsive)
-        const recentOutput = this.lastTerminalOutput.slice(-2000);
+        // Get recent terminal output from multiple sources for better accuracy
+        let recentOutput = '';
         
-        // More precise detection - look for patterns that indicate current state
-        // Simple detection - just check if the text is present
-        const isRunning = recentOutput.includes('esc to interrupt');
+        // Try to get output from terminal buffer if available
+        if (this.terminal && this.terminal.buffer && this.terminal.buffer.active) {
+            try {
+                // Get last 20 lines from terminal buffer
+                const buffer = this.terminal.buffer.active;
+                const endLine = buffer.baseY + buffer.cursorY;
+                const startLine = Math.max(0, endLine - 20);
+                
+                let bufferOutput = '';
+                for (let i = startLine; i <= endLine; i++) {
+                    const line = buffer.getLine(i);
+                    if (line) {
+                        bufferOutput += line.translateToString(true) + '\n';
+                    }
+                }
+                recentOutput = bufferOutput;
+            } catch (error) {
+                // Fallback to lastTerminalOutput if buffer reading fails
+                recentOutput = this.lastTerminalOutput.slice(-2000);
+            }
+        } else {
+            // Fallback to lastTerminalOutput
+            recentOutput = this.lastTerminalOutput.slice(-2000);
+        }
+        
+        // Better detection patterns for running state
+        // Look for "esc to interrupt" specifically, not just "to interrupt)" which can match false positives
+        const isRunning = recentOutput.includes('esc to interrupt') || 
+                         recentOutput.includes('(esc to interrupt)') ||
+                         recentOutput.includes('ESC to interrupt');
+        
         const isPrompting = recentOutput.includes('No, and tell Claude what to do differently');
         
         // Update current status
         const statusChanged = (this.currentTerminalStatus.isRunning !== isRunning || 
                              this.currentTerminalStatus.isPrompting !== isPrompting);
+        
+        // Debug logging for status changes
+        if (statusChanged) {
+            const newStatus = isRunning ? 'running' : (isPrompting ? 'prompting' : 'ready');
+            const oldStatus = this.currentTerminalStatus.isRunning ? 'running' : 
+                             (this.currentTerminalStatus.isPrompting ? 'prompting' : 'ready');
+
+            
+        }
         
         this.currentTerminalStatus = {
             isRunning: isRunning,
@@ -1774,11 +1951,9 @@ class TerminalGUI {
     }
 
     updateStatusDisplay() {
-        // Update individual status elements
         const directoryElement = document.getElementById('current-directory');
         const tooltipElement = document.getElementById('directory-tooltip');
         
-        // Update both the display text and tooltip
         directoryElement.childNodes[0].textContent = this.currentDirectory;
         tooltipElement.textContent = this.currentDirectory;
         
@@ -1966,63 +2141,46 @@ class TerminalGUI {
         try {
             localStorage.setItem('terminalGUIPreferences', JSON.stringify(this.preferences));
         } catch (error) {
-            console.error('Error saving preferences:', error);
+            console.error('Failed to save preferences:', error);
         }
     }
 
-    // Legacy method for compatibility
-    loadSettings() {
-        this.loadAllPreferences();
-    }
-
-    saveSettings() {
-        this.saveAllPreferences();
-    }
-
-    // Action Log Methods
     logAction(message, type = 'info') {
         const timestamp = new Date().toLocaleTimeString();
-        const logEntry = {
-            time: timestamp,
+        this.actionLog.push({
+            timestamp: timestamp,
             message: message,
-            type: type,
-            id: Date.now()
-        };
+            type: type
+        });
         
-        this.actionLog.push(logEntry);
-        this.updateActionLogDisplay();
-        
-        // Keep log size manageable
         if (this.actionLog.length > 100) {
             this.actionLog = this.actionLog.slice(-100);
         }
+        
+        this.updateActionLogDisplay();
     }
-    
+
     updateActionLogDisplay() {
         const logContainer = document.getElementById('action-log');
-        
-        // Clear existing content
         logContainer.innerHTML = '';
         
-        // Add all log entries
-        this.actionLog.forEach(entry => {
+        this.actionLog.slice(-20).forEach(entry => {
             const logItem = document.createElement('div');
             logItem.className = `log-item log-${entry.type}`;
             
-            const timeSpan = document.createElement('span');
-            timeSpan.className = 'log-time';
-            timeSpan.textContent = `[${entry.time}]`;
+            const timeElement = document.createElement('span');
+            timeElement.className = 'log-time';
+            timeElement.textContent = `[${entry.timestamp}]`;
             
-            const messageSpan = document.createElement('span');
-            messageSpan.className = 'log-message';
-            messageSpan.textContent = entry.message;
+            const messageElement = document.createElement('span');
+            messageElement.className = 'log-message';
+            messageElement.textContent = entry.message;
             
-            logItem.appendChild(timeSpan);
-            logItem.appendChild(messageSpan);
+            logItem.appendChild(timeElement);
+            logItem.appendChild(messageElement);
             logContainer.appendChild(logItem);
         });
         
-        // Auto-scroll to bottom
         logContainer.scrollTop = logContainer.scrollHeight;
     }
     
@@ -2351,6 +2509,71 @@ class TerminalGUI {
         ];
         
         return commandPatterns.some(pattern => pattern.test(content));
+    }
+
+    // Smart waiting system for auto-injection
+    waitForStableReadyState(callback) {
+        const requiredStableDuration = 5000; // 5 seconds
+        const checkInterval = 10; // 10ms
+        let stableStartTime = null;
+        let checkCount = 0;
+        
+        const checkStatus = () => {
+            checkCount++;
+            
+            // Check if injection sequence was cancelled entirely
+            // Only cancel if both conditions are false (more conservative)
+            if (!this.injectionInProgress && !this.timerExpired) {
+                this.logAction('Stable ready state waiting cancelled - injection sequence stopped', 'warning');
+                return;
+            }
+            
+            // Log status for debugging
+            // if (checkCount % 100 === 0) {
+            //     this.logAction(`Status check: injectionInProgress=${this.injectionInProgress}, timerExpired=${this.timerExpired}, isRunning=${this.currentTerminalStatus.isRunning}, isPrompting=${this.currentTerminalStatus.isPrompting}, isInjecting=${this.isInjecting}`, 'debug');
+            // }
+            
+            // Get current terminal status
+            const isReady = !this.currentTerminalStatus.isRunning && 
+                           !this.currentTerminalStatus.isPrompting && 
+                           !this.isInjecting;
+            
+            if (isReady) {
+                // Terminal is ready
+                if (stableStartTime === null) {
+                    // Just became ready - start timing
+                    stableStartTime = Date.now();
+                    this.logAction('Terminal became ready - starting 5-second stability timer', 'info');
+                } else {
+                    // Check if we've been stable long enough
+                    const stableDuration = Date.now() - stableStartTime;
+                    if (stableDuration >= requiredStableDuration) {
+                        this.logAction(`Terminal stable for ${stableDuration}ms - proceeding with injection`, 'success');
+                        callback();
+                        return;
+                    }
+                }
+                
+                // Log progress every 500ms (50 checks)
+                if (checkCount % 50 === 0) {
+                    const elapsed = stableStartTime ? Date.now() - stableStartTime : 0;
+                }
+            } else {
+                // Terminal is not ready - reset timer
+                if (stableStartTime !== null) {
+                    const wasStableFor = Date.now() - stableStartTime;
+                    this.logAction(`Terminal no longer ready (was stable for ${wasStableFor}ms) - restarting timer`, 'warning');
+                    stableStartTime = null;
+                    checkCount = 0; // Reset check count when restarting
+                }
+            }
+            
+            // Continue checking
+            setTimeout(checkStatus, checkInterval);
+        };
+        
+        // Start checking
+        checkStatus();
     }
 
     // Drag and drop functionality
