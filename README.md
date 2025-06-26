@@ -45,7 +45,7 @@ A sophisticated desktop application that provides an interactive terminal with i
 
 ### Prerequisites
 - **Node.js** (v16 or higher) - [Download from nodejs.org](https://nodejs.org/)
-- **macOS** (for Priority Mode features) or other platforms for basic functionality
+- Cross-platform compatibility (Windows, macOS, Linux)
 
 ### Quick Start
 ```bash
@@ -107,18 +107,11 @@ npm run build
 - Test sounds before applying with the preview button
 - Sounds play when auto-injection processes complete
 
-#### **macOS Priority Mode** (macOS only)
-- **Background Operation**: App continues running when minimized
-- **Sleep Prevention**: Prevents system sleep during active timers
-- **Hidden Startup**: Auto-start at login without showing window
-- **Smart Dock Management**: Dock icon adapts to window state
-
 ### 🎛️ **Settings & Customization**
 
 Access comprehensive settings through the gear icon:
 - **Theme Selection**: Dark, Light (Catppuccin Latte), or System
 - **Audio Settings**: Enable/disable sounds and select sound effects
-- **Priority Mode**: Configure macOS system integration features
 - **Automation Settings**: Set keyword blocking rules and safety limits
 
 ## 🏗️ Technical Architecture
@@ -134,8 +127,8 @@ Access comprehensive settings through the gear icon:
 #### **Main Process (`main.js`)**
 - Electron main process handling window lifecycle and system integration
 - IPC (Inter-Process Communication) bridge between renderer and shell
-- macOS system integration (dock, sleep prevention, startup)
 - Terminal process management using node-pty
+- File handling for drag-and-drop imports and screenshot saving
 
 #### **Renderer Process (`renderer.js`)**
 - `TerminalGUI` class managing entire application state and logic
@@ -215,11 +208,6 @@ sudo apt-get install build-essential python3
 - Check system audio permissions and output device
 - Verify audio settings in application Settings modal
 
-**Priority Mode issues (macOS)**
-- Grant necessary system permissions in Security & Privacy
-- Check "Background App Refresh" settings
-- Verify login items permissions for auto-start
-
 **File import not working**
 - Check `imported-files/` directory permissions
 - Verify drag-and-drop browser security settings
@@ -230,9 +218,7 @@ sudo apt-get install build-essential python3
 This application requires several system permissions for full functionality:
 - **Terminal Access** - For shell process spawning and command execution
 - **File System Access** - For file import and organization
-- **Audio System** - For completion sound notifications  
-- **System Events** (macOS) - For Priority Mode and background operation
-- **Login Items** (macOS) - For auto-start functionality
+- **Audio System** - For completion sound notifications
 
 ## 📄 License
 

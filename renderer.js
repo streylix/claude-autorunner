@@ -101,7 +101,6 @@ class TerminalGUI {
         this.setTerminalStatusDisplay(''); // Initialize with default status
         this.updateTimerUI(); // Initialize timer UI after loading preferences
         this.startTerminalStatusScanning(); // Start the continuous terminal scanning
-        this.setupPriorityModeSettings(); // Initialize macOS priority mode settings
     }
 
     initializeLucideIcons() {
@@ -2771,26 +2770,6 @@ class TerminalGUI {
         this.logAction(`Reordered message: "${movedMessage.content.substring(0, 30)}..." from position ${fromIndex + 1} to ${toIndex + 1}`, 'info');
     }
 
-    // macOS Priority Mode Settings
-    async setupPriorityModeSettings() {
-        // Set platform class for CSS targeting
-        document.body.classList.add(`platform-${process.platform}`);
-        
-        // Only setup on macOS
-        if (process.platform !== 'darwin') {
-            return;
-        }
-
-        // Setup event listeners
-        this.setupPriorityModeEventListeners();
-        
-        this.logAction('macOS priority mode initialized - background operation enabled', 'success');
-    }
-
-    setupPriorityModeEventListeners() {
-        // No additional event listeners needed - priority mode is always active on macOS
-        this.logAction('Priority mode event listeners initialized', 'info');
-    }
 
     // Sound Effects Methods
     async populateSoundEffects() {
