@@ -1850,3 +1850,53 @@ body {
 .platform-linux #macos-priority-settings {
     display: none;
 }
+
+/* Sound Effects Settings */
+.sound-selection-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-top: 4px;
+}
+
+.sound-selection-row .setting-select {
+    flex: 1;
+    height: 36px;
+}
+
+.setting-btn-small {
+    padding: 6px 12px;
+    font-size: 12px;
+    min-width: auto;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.setting-btn-small i {
+    width: 14px;
+    height: 14px;
+    margin-right: 4px;
+}
+
+#sound-selection-group {
+    margin-top: 4px;
+    margin-left: 30px;
+    opacity: 0.5;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+}
+
+#sound-selection-group.enabled {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.setting-subgroup .setting-label {
+    margin-bottom: 4px;
+}
+
+.setting-subgroup .setting-description {
+    margin-top: 4px;
+}

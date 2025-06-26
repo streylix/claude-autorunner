@@ -182,6 +182,35 @@
                     </select>
                     <p class="setting-description">Time to wait before auto-scrolling after user interaction.</p>
                 </div>
+                
+                <div class="setting-group">
+                    <label class="setting-label">
+                        <input type="checkbox" id="completion-sound-enabled">
+                        <span class="setting-title">Completion Sound Effect</span>
+                    </label>
+                    <p class="setting-description">Play a sound effect when auto-injection process completes.</p>
+                    
+                    <div class="setting-subgroup" id="sound-selection-group">
+                        <label class="setting-label">
+                            <span class="setting-title">Sound Effect</span>
+                        </label>
+                        <div class="sound-selection-row">
+                            <select id="completion-sound-select" class="setting-select">
+                                <option value="">None</option>
+                                <option value="completion_beep.wav">Completion Beep</option>
+                                <option value="success_chime.wav">Success Chime</option>
+                                <option value="gentle_ping.wav">Gentle Ping</option>
+                                <option value="notification_bell.wav">Notification Bell</option>
+                                <option value="completion_chord.wav">Completion Chord</option>
+                            </select>
+                            <button type="button" id="test-sound-btn" class="setting-btn setting-btn-small">
+                                <i data-lucide="volume-2"></i>
+                                Test
+                            </button>
+                        </div>
+                        <p class="setting-description">Select a sound effect to play when injection completes.</p>
+                    </div>
+                </div>
                 <div class="setting-group">
                     <label class="setting-label">
                         <span class="setting-title">Claude Prompt Keyword Blocking</span>

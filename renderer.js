@@ -49,7 +49,10 @@ class TerminalGUI {
             // Add message queue persistence
             messageQueue: [],
             // Add directory persistence
-            currentDirectory: null
+            currentDirectory: null,
+            // Add sound effects preferences
+            completionSoundEnabled: false,
+            completionSoundFile: 'completion_beep.wav'
         };
         this.usageLimitSyncInterval = null;
         this.usageLimitResetTime = null;
@@ -78,6 +81,10 @@ class TerminalGUI {
             isPrompting: false,
             lastUpdate: Date.now()
         };
+        
+        // Terminal idle tracking for completion sound
+        this.terminalIdleTimer = null;
+        this.terminalIdleStartTime = null;
         
         // Load preferences FIRST so we have saved directory before starting terminal
         this.loadAllPreferences();
@@ -409,6 +416,24 @@ class TerminalGUI {
             if (e.key === 'Enter') {
                 this.addKeywordRule();
             }
+        });
+
+        // Sound effects controls
+        document.getElementById('completion-sound-enabled').addEventListener('change', (e) => {
+            this.preferences.completionSoundEnabled = e.target.checked;
+            this.saveAllPreferences();
+            this.updateSoundSettingsVisibility();
+            this.logAction(`Completion sound ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+        });
+
+        document.getElementById('completion-sound-select').addEventListener('change', (e) => {
+            this.preferences.completionSoundFile = e.target.value;
+            this.saveAllPreferences();
+            this.logAction(`Completion sound changed to: ${e.target.value || 'None'}`, 'info');
+        });
+
+        document.getElementById('test-sound-btn').addEventListener('click', () => {
+            this.testCompletionSound();
         });
 
         // System theme change listener
@@ -1203,6 +1228,10 @@ class TerminalGUI {
             this.safetyCheckCount = 0; // Reset safety check count
             this.updateTimerUI();
             this.logAction('Sequential injection completed - all messages processed', 'success');
+            
+            // Play completion sound effect
+            this.onAutoInjectionComplete();
+            
             return;
         }
         
@@ -1363,7 +1392,7 @@ class TerminalGUI {
         const terminalStatus = this.scanTerminalStatus();
         
         if (terminalStatus.isRunning) {
-            this.logAction(`Safety check failed - 'esc to interrupt' detected (attempt ${this.safetyCheckCount})`, 'warning');
+            this.logAction(`Safety check failed - running process detected (attempt ${this.safetyCheckCount})`, 'warning');
             this.retrySafetyCheck(callback);
             return;
         }
@@ -1424,15 +1453,46 @@ class TerminalGUI {
         
         // Better detection patterns for running state
         // Look for "esc to interrupt" specifically, not just "to interrupt)" which can match false positives
+        // Also check for "offline)" which can appear instead of "esc to interrupt" but indicates the same running state
         const isRunning = recentOutput.includes('esc to interrupt') || 
                          recentOutput.includes('(esc to interrupt)') ||
-                         recentOutput.includes('ESC to interrupt');
+                         recentOutput.includes('ESC to interrupt') ||
+                         recentOutput.includes('offline)');
         
         const isPrompting = recentOutput.includes('No, and tell Claude what to do differently');
         
         // Update current status
         const statusChanged = (this.currentTerminalStatus.isRunning !== isRunning || 
                              this.currentTerminalStatus.isPrompting !== isPrompting);
+        
+        // Check for terminal idle state (in '...' state with empty queue)
+        const isIdle = this.terminalStatus === '...' || this.terminalStatus.includes('...');
+        const isQueueEmpty = this.messageQueue.length === 0;
+        
+        if (isIdle && isQueueEmpty && !this.isInjecting) {
+            // Start idle timer if not already started
+            if (!this.terminalIdleStartTime) {
+                this.terminalIdleStartTime = Date.now();
+            }
+            
+            // Check if idle for 5 seconds
+            const idleTime = Date.now() - this.terminalIdleStartTime;
+            if (idleTime >= 5000 && !this.terminalIdleTimer) {
+                // Set a flag to prevent repeated triggers
+                this.terminalIdleTimer = setTimeout(() => {
+                    this.playCompletionSound();
+                    this.logAction('Completion sound played - terminal idle for 5 seconds with empty queue', 'info');
+                    this.terminalIdleTimer = null;
+                }, 100);
+            }
+        } else {
+            // Reset idle tracking when terminal is active or queue has messages
+            this.terminalIdleStartTime = null;
+            if (this.terminalIdleTimer) {
+                clearTimeout(this.terminalIdleTimer);
+                this.terminalIdleTimer = null;
+            }
+        }
         
         // Debug logging for status changes
         if (statusChanged) {
@@ -1657,7 +1717,8 @@ class TerminalGUI {
 
     detectAutoContinuePrompt(data) {
         // Check for blocking conditions for message injection
-        const hasEscToInterrupt = this.lastTerminalOutput.includes("esc to interrupt");
+        const hasEscToInterrupt = this.lastTerminalOutput.includes("esc to interrupt") || 
+                                 this.lastTerminalOutput.includes("offline)");
         const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
         
         // Handle keyword blocking specifically for Claude prompts (only if auto-continue is enabled)
@@ -1714,7 +1775,7 @@ class TerminalGUI {
                 this.scheduleNextInjection();
             }
         } else if (!previouslyBlocked && this.injectionBlocked) {
-            let reason = hasEscToInterrupt ? 'esc to interrupt detected' : `keyword "${keywordBlockResult.keyword}" detected`;
+            let reason = hasEscToInterrupt ? 'running process detected' : `keyword "${keywordBlockResult.keyword}" detected`;
             this.logAction(`Message injection blocked - ${reason}`, 'warning');
             // Cancel any pending injection
             if (this.injectionTimer) {
@@ -1791,20 +1852,20 @@ class TerminalGUI {
 
     detectUsageLimit(data) {
         // Check for "Approaching usage limit" message and parse the reset time
-        const approachingMatch = data.match(/Approaching usage limit · resets at (\d{1,2})(am|pm)/i);
-        if (approachingMatch) {
-            const resetHour = parseInt(approachingMatch[1]);
-            const ampm = approachingMatch[2].toLowerCase();
-            const resetTimeString = `${resetHour}${ampm}`;
+        // const approachingMatch = data.match(/Approaching usage limit · resets at (\d{1,2})(am|pm)/i);
+        // if (approachingMatch) {
+        //     const resetHour = parseInt(approachingMatch[1]);
+        //     const ampm = approachingMatch[2].toLowerCase();
+        //     const resetTimeString = `${resetHour}${ampm}`;
             
-            // Check if we've already shown modal for this specific reset time
-            const lastShownResetTime = localStorage.getItem('usageLimitModalLastResetTime');
+        //     // Check if we've already shown modal for this specific reset time
+        //     const lastShownResetTime = localStorage.getItem('usageLimitModalLastResetTime');
             
-            if (lastShownResetTime !== resetTimeString) {
-                this.showUsageLimitModal(resetHour, ampm);
-                localStorage.setItem('usageLimitModalLastResetTime', resetTimeString);
-            }
-        }
+        //     if (lastShownResetTime !== resetTimeString) {
+        //         this.showUsageLimitModal(resetHour, ampm);
+        //         localStorage.setItem('usageLimitModalLastResetTime', resetTimeString);
+        //     }
+        // }
         
         // Also check for "Claude usage limit reached" message and parse the reset time
         const reachedMatch = data.match(/Claude usage limit reached\. Your limit will reset at (\d{1,2})(am|pm)/i);
@@ -2158,11 +2219,18 @@ class TerminalGUI {
             document.getElementById('auto-continue').checked = this.autoContinueEnabled;
             document.getElementById('theme-select').value = this.preferences.theme;
             
+            // Update sound settings UI
+            document.getElementById('completion-sound-enabled').checked = this.preferences.completionSoundEnabled;
+            document.getElementById('completion-sound-select').value = this.preferences.completionSoundFile;
+            
             // Apply theme
             this.applyTheme(this.preferences.theme);
             
             // Update keyword rules display
             this.updateKeywordRulesDisplay();
+            
+            // Update sound settings visibility
+            this.updateSoundSettingsVisibility();
             
             // Load saved usage limit reset time and start auto-sync if available
             this.loadUsageLimitResetTime();
@@ -2697,6 +2765,58 @@ class TerminalGUI {
     setupPriorityModeEventListeners() {
         // No additional event listeners needed - priority mode is always active on macOS
         this.logAction('Priority mode event listeners initialized', 'info');
+    }
+
+    // Sound Effects Methods
+    updateSoundSettingsVisibility() {
+        const soundGroup = document.getElementById('sound-selection-group');
+        const isEnabled = document.getElementById('completion-sound-enabled').checked;
+        
+        if (isEnabled) {
+            soundGroup.classList.add('enabled');
+        } else {
+            soundGroup.classList.remove('enabled');
+        }
+    }
+
+    testCompletionSound() {
+        const soundFile = document.getElementById('completion-sound-select').value;
+        if (!soundFile) {
+            this.logAction('No sound file selected', 'warning');
+            return;
+        }
+        
+        this.playCompletionSound(soundFile);
+        this.logAction(`Testing sound: ${soundFile}`, 'info');
+    }
+
+    playCompletionSound(filename = null) {
+        if (!this.preferences.completionSoundEnabled) {
+            return;
+        }
+        
+        const soundFile = filename || this.preferences.completionSoundFile;
+        if (!soundFile) {
+            return;
+        }
+        
+        try {
+            const audio = new Audio(`./soundeffects/${soundFile}`);
+            audio.volume = 0.5; // Set volume to 50%
+            audio.play().catch(error => {
+                console.error('Error playing sound:', error);
+                this.logAction(`Error playing sound: ${error.message}`, 'error');
+            });
+        } catch (error) {
+            console.error('Error creating audio:', error);
+            this.logAction(`Error creating audio: ${error.message}`, 'error');
+        }
+    }
+
+    onAutoInjectionComplete() {
+        // Play completion sound if enabled
+        this.playCompletionSound();
+        this.logAction('Auto-injection process completed', 'success');
     }
 }
 
