@@ -1847,3 +1847,70 @@ body {
 .setting-subgroup .setting-description {
     margin-top: 4px;
 }
+
+/* Message History Modal Styles */
+.history-controls {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.history-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.history-empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-tertiary);
+}
+
+.history-empty p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.4;
+}
+
+.history-item {
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 12px;
+    position: relative;
+}
+
+.history-item:last-child {
+    margin-bottom: 0;
+}
+
+.history-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+.history-item-date {
+    font-weight: 500;
+}
+
+.history-item-content {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    padding: 8px;
+    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    color: var(--text-primary);
+    max-height: 120px;
+    overflow-y: auto;
+}

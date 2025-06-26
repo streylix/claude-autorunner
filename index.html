@@ -95,6 +95,9 @@
                     <div class="section-header">
                         <span class="queue-title">Message Queue</span>
                         <div class="queue-actions">
+                            <button class="icon-btn" id="message-history-btn" title="View message history">
+                                <i data-lucide="history"></i>
+                            </button>
                             <button class="icon-btn" id="inject-now-btn" title="Inject next message now">
                                 <i data-lucide="arrow-left-from-line"></i>
                             </button>
@@ -238,6 +241,29 @@
                 <div class="usage-limit-actions">
                     <button class="cancel-btn" id="usage-limit-no">No thanks</button>
                     <button class="save-btn" id="usage-limit-yes">Sure <span id="usage-countdown">10</span>s</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Message History Modal -->
+    <div id="message-history-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Message History</h3>
+                <button class="modal-close" id="message-history-close" title="Close history">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="history-controls">
+                    <button class="setting-btn" id="clear-history-btn" title="Clear all history">
+                        <i data-lucide="trash-2"></i>
+                        Clear History
+                    </button>
+                </div>
+                <div class="history-list" id="history-list">
+                    <div class="history-empty">
+                        <p>No message history yet. Messages will appear here after they are successfully injected.</p>
+                    </div>
                 </div>
             </div>
         </div>

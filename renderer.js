@@ -52,7 +52,9 @@ class TerminalGUI {
             currentDirectory: null,
             // Add sound effects preferences
             completionSoundEnabled: false,
-            completionSoundFile: 'completion_beep.wav'
+            completionSoundFile: 'completion_beep.wav',
+            // Add message history
+            messageHistory: []
         };
         this.usageLimitSyncInterval = null;
         this.usageLimitResetTime = null;
@@ -85,6 +87,9 @@ class TerminalGUI {
         // Terminal idle tracking for completion sound
         this.terminalIdleTimer = null;
         this.terminalIdleStartTime = null;
+        
+        // Message history tracking
+        this.messageHistory = [];
         
         // Initialize the application asynchronously
         this.initialize();
@@ -384,6 +389,27 @@ class TerminalGUI {
         document.getElementById('settings-modal').addEventListener('click', (e) => {
             if (e.target.id === 'settings-modal') {
                 this.closeSettingsModal();
+            }
+        });
+
+        // Message history modal listeners
+        document.getElementById('message-history-btn').addEventListener('click', () => {
+            this.openMessageHistoryModal();
+        });
+
+        document.getElementById('message-history-close').addEventListener('click', () => {
+            this.closeMessageHistoryModal();
+        });
+
+        document.getElementById('message-history-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'message-history-modal') {
+                this.closeMessageHistoryModal();
+            }
+        });
+
+        document.getElementById('clear-history-btn').addEventListener('click', () => {
+            if (confirm('Are you sure you want to clear all message history? This cannot be undone.')) {
+                this.clearMessageHistory();
             }
         });
 
@@ -750,6 +776,38 @@ class TerminalGUI {
     saveMessageQueue() {
         this.preferences.messageQueue = this.messageQueue;
         this.saveAllPreferences();
+    }
+
+    saveToMessageHistory(message) {
+        const historyItem = {
+            id: Date.now() + Math.random(),
+            content: message.content || message.processedContent,
+            timestamp: new Date().toISOString(),
+            injectedAt: new Date().toLocaleString()
+        };
+        
+        // Add to beginning of array (most recent first)
+        this.messageHistory.unshift(historyItem);
+        
+        // Keep only last 100 messages to prevent localStorage from getting too large
+        if (this.messageHistory.length > 100) {
+            this.messageHistory = this.messageHistory.slice(0, 100);
+        }
+        
+        // Save to preferences
+        this.preferences.messageHistory = this.messageHistory;
+        this.saveAllPreferences();
+    }
+
+    loadMessageHistory() {
+        this.messageHistory = this.preferences.messageHistory || [];
+    }
+
+    clearMessageHistory() {
+        this.messageHistory = [];
+        this.preferences.messageHistory = [];
+        this.saveAllPreferences();
+        this.updateHistoryModal();
     }
 
     // New timer system functions
@@ -1281,6 +1339,7 @@ class TerminalGUI {
         // Type the message
         this.typeMessage(message.processedContent, () => {
             this.injectionCount++;
+            this.saveToMessageHistory(message); // Save to history after successful injection
             this.updateStatusDisplay();
             this.updateMessageList();
             
@@ -1583,6 +1642,7 @@ class TerminalGUI {
             this.updateMessageList();
             this.updateStatusDisplay();
             this.injectionCount++;
+            this.saveToMessageHistory(message); // Save to history after successful injection
             
             this.logAction(`Manual injection complete: "${message.content.substring(0, 50)}..."`, 'success');
         });
@@ -1603,6 +1663,7 @@ class TerminalGUI {
                 
                 this.typeMessage(message.processedContent, () => {
                     this.injectionCount++;
+                    this.saveToMessageHistory(message); // Save to history after successful injection
                     this.updateStatusDisplay();
                     
                     setTimeout(() => {
@@ -2203,6 +2264,47 @@ class TerminalGUI {
         modal.classList.remove('show');
     }
 
+    openMessageHistoryModal() {
+        const modal = document.getElementById('message-history-modal');
+        modal.classList.add('show');
+        this.updateHistoryModal();
+    }
+
+    closeMessageHistoryModal() {
+        const modal = document.getElementById('message-history-modal');
+        modal.classList.remove('show');
+    }
+
+    updateHistoryModal() {
+        const historyList = document.getElementById('history-list');
+        
+        if (this.messageHistory.length === 0) {
+            historyList.innerHTML = `
+                <div class="history-empty">
+                    <p>No message history yet. Messages will appear here after they are successfully injected.</p>
+                </div>
+            `;
+            return;
+        }
+
+        const historyHTML = this.messageHistory.map(item => `
+            <div class="history-item">
+                <div class="history-item-header">
+                    <span class="history-item-date">${item.injectedAt}</span>
+                </div>
+                <div class="history-item-content">${this.escapeHtml(item.content)}</div>
+            </div>
+        `).join('');
+
+        historyList.innerHTML = historyHTML;
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
     async loadAllPreferences() {
         try {
             const saved = JSON.parse(localStorage.getItem('terminalGUIPreferences') || '{}');
@@ -2227,6 +2329,11 @@ class TerminalGUI {
             if (this.preferences.messageQueue && Array.isArray(this.preferences.messageQueue)) {
                 this.messageQueue = this.preferences.messageQueue;
                 this.updateMessageList();
+            }
+            
+            // Load saved message history
+            if (this.preferences.messageHistory && Array.isArray(this.preferences.messageHistory)) {
+                this.messageHistory = this.preferences.messageHistory;
             }
             
             // Load saved directory
