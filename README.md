@@ -1,110 +1,239 @@
-# Terminal GUI with Message Queuing
+# Terminal GUI with Advanced Automation
 
-A modern desktop application that provides an interactive terminal with a message queuing system for automated command injection at specified times.
+A sophisticated desktop application that provides an interactive terminal with intelligent message queuing, automation features, and macOS system integration for scheduled command execution and workflow automation.
 
-## Features
+## ✨ Key Features
 
-- **Interactive Terminal**: Full-featured terminal that matches macOS/VS Code/Cursor terminal functionality
-- **Message Queuing**: Add commands to a queue for automatic execution
-- **Time-based Injection**: Schedule messages to be sent at specific times
-- **FIFO Processing**: Messages are processed in first-in-first-out order
-- **Auto-agree Mode**: Automatically continue processing queued messages
-- **Real-time Status**: Track current directory, injection count, and queue status
-- **Modern UI**: Dark theme matching popular terminal applications
+### 🖥️ **Advanced Terminal Interface**
+- Full-featured terminal emulation using xterm.js with modern theming
+- Smart terminal status detection (running, prompting, idle)
+- Directory change tracking and current working directory display
+- Auto-scrolling with user interaction pause/resume
+- Terminal command hotkey shortcuts (Ctrl+C, Ctrl+Z, Ctrl+D, etc.)
 
-## Installation
+### ⏰ **Intelligent Message Queuing System**
+- Time-based message injection with precise scheduling
+- FIFO (First-In-First-Out) processing with drag-and-drop reordering
+- Auto-continue mode with smart keyword blocking
+- Claude prompt detection and intelligent response handling
+- Usage limit detection with automatic queue resumption
+- Safety checks to prevent infinite loops
 
-1. **Install Node.js** (if not already installed):
-   - Download from [nodejs.org](https://nodejs.org/)
-   - Or use Homebrew: `brew install node`
+### 🔊 **Audio Feedback System**
+- Completion sound notifications when auto-injection processes finish
+- Half-Life 2 themed sound effects collection
+- Customizable sound selection with preview functionality
+- Terminal idle state detection for accurate completion timing
+- Sound settings with enable/disable toggle
 
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
+### 📁 **File Management & Import**
+- Drag-and-drop file import with visual overlay animations
+- Screenshot capture from clipboard with automatic saving
+- Automatic file organization in `imported-files` directory
+- File metadata tracking (names, sizes, types, timestamps)
+- Visual file attachment indicators in message queue
 
-3. **Run the application**:
-   ```bash
-   npm start
-   ```
+### 🎨 **Modern UI/UX**
+- Multiple theme support: Dark, Light (Catppuccin Latte), System
+- Responsive layout with adaptive sidebar sizing
+- Comprehensive settings modal with organized sections
+- Real-time action logging with timestamped sidebar
+- Visual status indicators with color-coded states
+- Drag-to-adjust timer interface
 
-## Usage
+## 🚀 Installation & Setup
 
-### Basic Operations
+### Prerequisites
+- **Node.js** (v16 or higher) - [Download from nodejs.org](https://nodejs.org/)
+- **macOS** (for Priority Mode features) or other platforms for basic functionality
 
-1. **Terminal Usage**:
-   - The left panel contains a fully interactive terminal
-   - Use it like any standard terminal (zsh/bash)
-   - All standard terminal features are supported
-
-2. **Adding Messages to Queue**:
-   - Enter commands in the "input container" textarea
-   - Click "Add to Queue" to add them to the message queue
-   - Messages appear in the "[queued messages]" section
-
-3. **Setting Execution Time**:
-   - Set the date and time when messages should be injected
-   - The system will wait until that exact time to start processing
-
-4. **Message Injection**:
-   - Messages are automatically typed into the terminal at the scheduled time
-   - Each message is sent with realistic typing speed
-   - Messages are processed in FIFO (first-in-first-out) order
-
-### Advanced Features
-
-- **Auto Agree**: When enabled, the system automatically continues processing all queued messages
-- **Queue Management**: Clear the entire queue with the "Clear Queue" button
-- **Status Monitoring**: The top section shows current directory, injection count, and queue size
-
-## Architecture
-
-- **Electron**: Desktop application framework
-- **node-pty**: Terminal process spawning and management
-- **xterm.js**: Terminal emulator in the browser
-- **IPC**: Inter-process communication between main and renderer processes
-
-## File Structure
-
-```
-├── main.js          # Main Electron process
-├── renderer.js      # Renderer process (UI logic)
-├── index.html       # Application HTML structure
-├── style.css        # Application styling
-├── package.json     # Dependencies and scripts
-└── README.md        # This file
-```
-
-## Development
-
-To run in development mode with debugging enabled:
-
+### Quick Start
 ```bash
+# Clone or download the repository
+# Navigate to the project directory
+
+# Install dependencies and rebuild native modules
+npm install
+
+# Start the application
+npm start
+```
+
+### Development Mode
+```bash
+# Run with debugging enabled
 npm run dev
-```
 
-To build for distribution:
-
-```bash
+# Build for distribution
 npm run build
 ```
 
-## Troubleshooting
+## 📖 Usage Guide
 
-### Terminal not starting
-- Ensure you have proper shell permissions
-- Check that your default shell is accessible
-- Try running with administrator privileges if needed
+### 🔧 **Basic Operations**
 
-### Dependencies not installing
-- Make sure you have Python and build tools installed for native modules
-- On macOS: `xcode-select --install`
-- On Ubuntu: `sudo apt-get install build-essential`
+1. **Terminal Interaction**:
+   - Full interactive terminal in the left panel (supports zsh/bash/cmd)
+   - All standard terminal features work (tab completion, history, etc.)
+   - Real-time status updates show current directory and terminal state
 
-### Permission issues
-- Grant necessary permissions to the application
-- Check terminal access permissions in System Preferences (macOS)
+2. **Message Queue Management**:
+   - Type commands in the input textarea and click "Add to Queue"
+   - Drag messages to reorder them in the queue
+   - Set precise execution times using the date/time picker
+   - Use "Clear Queue" to remove all pending messages
 
-## License
+3. **Automated Execution**:
+   - Messages are typed into terminal with realistic character-by-character simulation
+   - Smart detection of command completion triggers next message
+   - Auto-continue mode processes entire queue without user intervention
 
-MIT License - feel free to use and modify as needed. 
+### ⚡ **Advanced Features**
+
+#### **Hotkey Shortcuts**
+- Click the hotkey dropdown for quick access to common terminal commands
+- Includes Ctrl+C (interrupt), Ctrl+Z (suspend), Ctrl+D (EOF), and more
+- Hotkeys are inserted at cursor position in the message input
+
+#### **File Import System**
+- **Drag & Drop**: Drop files directly onto the interface to import them
+- **Screenshot Capture**: Use Cmd+Shift+4 → Cmd+V to paste screenshots
+- Files are automatically organized in the `imported-files` directory
+- Visual indicators show which messages have attached files
+
+#### **Audio Notifications**
+- Enable completion sounds in Settings for audio feedback
+- Choose from Half-Life 2 themed sound effects
+- Test sounds before applying with the preview button
+- Sounds play when auto-injection processes complete
+
+#### **macOS Priority Mode** (macOS only)
+- **Background Operation**: App continues running when minimized
+- **Sleep Prevention**: Prevents system sleep during active timers
+- **Hidden Startup**: Auto-start at login without showing window
+- **Smart Dock Management**: Dock icon adapts to window state
+
+### 🎛️ **Settings & Customization**
+
+Access comprehensive settings through the gear icon:
+- **Theme Selection**: Dark, Light (Catppuccin Latte), or System
+- **Audio Settings**: Enable/disable sounds and select sound effects
+- **Priority Mode**: Configure macOS system integration features
+- **Automation Settings**: Set keyword blocking rules and safety limits
+
+## 🏗️ Technical Architecture
+
+### **Core Technologies**
+- **Electron** - Desktop application framework with Node.js integration
+- **node-pty** - Pseudo terminal for cross-platform shell process spawning
+- **xterm.js** - Full-featured terminal emulator with addon support
+- **Lucide Icons** - Modern icon library for UI elements
+
+### **Key Components**
+
+#### **Main Process (`main.js`)**
+- Electron main process handling window lifecycle and system integration
+- IPC (Inter-Process Communication) bridge between renderer and shell
+- macOS system integration (dock, sleep prevention, startup)
+- Terminal process management using node-pty
+
+#### **Renderer Process (`renderer.js`)**
+- `TerminalGUI` class managing entire application state and logic
+- xterm.js terminal emulation with FitAddon and WebLinksAddon
+- Message queuing system with intelligent processing
+- File import system with drag-and-drop support
+- Audio system integration for completion notifications
+
+#### **UI Structure (`index.html` + `style.css`)**
+- Split-pane layout: terminal (left) and control sidebar (right)
+- Responsive design with theme system support
+- Settings modal with organized configuration sections
+- Action log sidebar for real-time activity tracking
+
+### **Data Flow Architecture**
+```
+User Input → Message Queue → Timer System → Auto-injection → Terminal
+     ↓              ↓             ↓              ↓           ↓
+File Import → Queue Display → Status Updates → Audio → Command Execution
+```
+
+## 📁 Project Structure
+
+```
+├── main.js              # Electron main process & system integration
+├── renderer.js          # TerminalGUI class & application logic  
+├── index.html           # Application UI structure & layout
+├── style.css            # Styling, themes & responsive design
+├── package.json         # Dependencies, scripts & metadata
+├── run.sh              # Interactive testing script
+├── soundeffects/       # Audio files for completion notifications
+├── imported-files/     # Auto-organized imported file storage
+├── .cursor/rules/      # Development environment rules
+└── README.md           # This documentation
+```
+
+## 🔧 Development
+
+### **Available Scripts**
+```bash
+npm start           # Production mode
+npm run dev         # Development mode with debugging
+npm run build       # Build for distribution  
+npm run rebuild     # Rebuild native modules
+./run.sh           # Interactive testing (required before task completion)
+```
+
+### **Development Notes**
+- Uses `nodeIntegration: true` for full Node.js access in renderer
+- IPC communication for terminal data exchange
+- Real-time status monitoring with terminal state detection
+- Modular component architecture for easy feature extension
+
+## 🚨 Troubleshooting
+
+### **Installation Issues**
+```bash
+# If native modules fail to build
+npm run rebuild
+
+# On macOS if build tools missing
+xcode-select --install
+
+# On Linux if build essentials missing  
+sudo apt-get install build-essential python3
+```
+
+### **Runtime Issues**
+
+**Terminal not starting**
+- Verify shell permissions and default shell accessibility
+- Check terminal access in System Preferences (macOS)
+- Run with elevated privileges if needed
+
+**Audio not working**
+- Ensure sound files exist in `soundeffects/` directory
+- Check system audio permissions and output device
+- Verify audio settings in application Settings modal
+
+**Priority Mode issues (macOS)**
+- Grant necessary system permissions in Security & Privacy
+- Check "Background App Refresh" settings
+- Verify login items permissions for auto-start
+
+**File import not working**
+- Check `imported-files/` directory permissions
+- Verify drag-and-drop browser security settings
+- Ensure sufficient disk space for file copies
+
+## 🛡️ Security & Permissions
+
+This application requires several system permissions for full functionality:
+- **Terminal Access** - For shell process spawning and command execution
+- **File System Access** - For file import and organization
+- **Audio System** - For completion sound notifications  
+- **System Events** (macOS) - For Priority Mode and background operation
+- **Login Items** (macOS) - For auto-start functionality
+
+## 📄 License
+
+MIT License - Open source and free to modify for personal and commercial use. 

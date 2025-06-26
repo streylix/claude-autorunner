@@ -86,8 +86,13 @@ class TerminalGUI {
         this.terminalIdleTimer = null;
         this.terminalIdleStartTime = null;
         
+        // Initialize the application asynchronously
+        this.initialize();
+    }
+
+    async initialize() {
         // Load preferences FIRST so we have saved directory before starting terminal
-        this.loadAllPreferences();
+        await this.loadAllPreferences();
         
         this.initializeTerminal();
         this.setupEventListeners();
@@ -1465,34 +1470,8 @@ class TerminalGUI {
         const statusChanged = (this.currentTerminalStatus.isRunning !== isRunning || 
                              this.currentTerminalStatus.isPrompting !== isPrompting);
         
-        // Check for terminal idle state (in '...' state with empty queue)
-        const isIdle = this.terminalStatus === '...' || this.terminalStatus.includes('...');
-        const isQueueEmpty = this.messageQueue.length === 0;
-        
-        if (isIdle && isQueueEmpty && !this.isInjecting) {
-            // Start idle timer if not already started
-            if (!this.terminalIdleStartTime) {
-                this.terminalIdleStartTime = Date.now();
-            }
-            
-            // Check if idle for 5 seconds
-            const idleTime = Date.now() - this.terminalIdleStartTime;
-            if (idleTime >= 5000 && !this.terminalIdleTimer) {
-                // Set a flag to prevent repeated triggers
-                this.terminalIdleTimer = setTimeout(() => {
-                    this.playCompletionSound();
-                    this.logAction('Completion sound played - terminal idle for 5 seconds with empty queue', 'info');
-                    this.terminalIdleTimer = null;
-                }, 100);
-            }
-        } else {
-            // Reset idle tracking when terminal is active or queue has messages
-            this.terminalIdleStartTime = null;
-            if (this.terminalIdleTimer) {
-                clearTimeout(this.terminalIdleTimer);
-                this.terminalIdleTimer = null;
-            }
-        }
+        // Completion sound logic has been moved to checkCompletionSoundTrigger()
+        // This ensures proper state transition detection from 'running' to idle
         
         // Debug logging for status changes
         if (statusChanged) {
@@ -2022,6 +2001,10 @@ class TerminalGUI {
         const statusElement = document.getElementById('terminal-status');
         if (!statusElement) return;
         
+        // Store previous status for completion sound logic
+        const previousStatus = this.terminalStatus;
+        this.terminalStatus = status || '...';
+        
         // Clear all classes
         statusElement.className = 'terminal-status';
         
@@ -2043,6 +2026,46 @@ class TerminalGUI {
                 // Show default status
                 statusElement.className = 'terminal-status';
                 statusElement.textContent = '...';
+        }
+        
+        // Check for completion sound trigger: running -> idle transition
+        this.checkCompletionSoundTrigger(previousStatus, this.terminalStatus);
+    }
+
+    checkCompletionSoundTrigger(previousStatus, currentStatus) {
+        // Trigger completion sound when transitioning from 'running' to idle ('...')
+        if (previousStatus === 'running' && (currentStatus === '...' || currentStatus === '')) {
+            // Start idle timer for completion sound
+            if (!this.terminalIdleStartTime) {
+                this.terminalIdleStartTime = Date.now();
+            }
+            
+            // Clear any existing timer
+            if (this.terminalIdleTimer) {
+                clearTimeout(this.terminalIdleTimer);
+            }
+            
+            this.terminalIdleTimer = setTimeout(() => {
+                // Double-check conditions before playing sound
+                const isQueueEmpty = this.messageQueue.length === 0;
+                const isStillIdle = (this.terminalStatus === '...' || this.terminalStatus === '');
+                
+                if (isQueueEmpty && isStillIdle && !this.isInjecting) {
+                    this.playCompletionSound();
+                } else {
+                    this.logAction('Completion sound cancelled - conditions changed', 'info');
+                }
+                
+                this.terminalIdleTimer = null;
+                this.terminalIdleStartTime = null;
+            }, 100);
+        } else {
+            // Reset idle tracking when not transitioning from running to idle
+            if (this.terminalIdleTimer) {
+                clearTimeout(this.terminalIdleTimer);
+                this.terminalIdleTimer = null;
+            }
+            this.terminalIdleStartTime = null;
         }
     }
 
@@ -2170,10 +2193,10 @@ class TerminalGUI {
         }
     }
 
-    openSettingsModal() {
+    async openSettingsModal() {
         const modal = document.getElementById('settings-modal');
         modal.classList.add('show');
-        this.loadAllPreferences();
+        await this.loadAllPreferences();
     }
 
     closeSettingsModal() {
@@ -2181,7 +2204,7 @@ class TerminalGUI {
         modal.classList.remove('show');
     }
 
-    loadAllPreferences() {
+    async loadAllPreferences() {
         try {
             const saved = JSON.parse(localStorage.getItem('terminalGUIPreferences') || '{}');
             
@@ -2221,7 +2244,6 @@ class TerminalGUI {
             
             // Update sound settings UI
             document.getElementById('completion-sound-enabled').checked = this.preferences.completionSoundEnabled;
-            document.getElementById('completion-sound-select').value = this.preferences.completionSoundFile;
             
             // Apply theme
             this.applyTheme(this.preferences.theme);
@@ -2231,6 +2253,9 @@ class TerminalGUI {
             
             // Update sound settings visibility
             this.updateSoundSettingsVisibility();
+            
+            // Populate sound effects from soundeffects folder
+            await this.populateSoundEffects();
             
             // Load saved usage limit reset time and start auto-sync if available
             this.loadUsageLimitResetTime();
@@ -2768,6 +2793,50 @@ class TerminalGUI {
     }
 
     // Sound Effects Methods
+    async populateSoundEffects() {
+        try {
+            const result = await ipcRenderer.invoke('get-sound-effects');
+            const select = document.getElementById('completion-sound-select');
+            
+            // Store current selection to restore it after populating
+            const currentSelection = this.preferences.completionSoundFile;
+            
+            // Clear existing options
+            select.innerHTML = '';
+            
+            // Add "None" option
+            const noneOption = document.createElement('option');
+            noneOption.value = '';
+            noneOption.textContent = 'None';
+            select.appendChild(noneOption);
+            
+            if (result.success && result.files.length > 0) {
+                // Add sound files as options
+                result.files.forEach(file => {
+                    const option = document.createElement('option');
+                    option.value = file;
+                    // Create a friendly display name (remove extension and format)
+                    const displayName = file.replace(/\.[^/.]+$/, '') // Remove extension
+                        .replace(/[-_]/g, ' ') // Replace hyphens/underscores with spaces
+                        .replace(/\b\w/g, l => l.toUpperCase()); // Capitalize words
+                    option.textContent = displayName;
+                    select.appendChild(option);
+                });
+                
+                this.logAction(`Loaded ${result.files.length} sound effects`, 'info');
+            } else {
+                this.logAction('No sound effects found', 'warning');
+            }
+            
+            // Restore the previously selected sound file
+            select.value = currentSelection;
+            
+        } catch (error) {
+            console.error('Error populating sound effects:', error);
+            this.logAction(`Error loading sound effects: ${error.message}`, 'error');
+        }
+    }
+
     updateSoundSettingsVisibility() {
         const soundGroup = document.getElementById('sound-selection-group');
         const isEnabled = document.getElementById('completion-sound-enabled').checked;

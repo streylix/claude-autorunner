@@ -1760,7 +1760,7 @@ body {
 }
 
 .setting-subgroup {
-    margin-left: 20px;
+    /* margin-left: 20px; */
     margin-bottom: 15px;
 }
 
@@ -1856,12 +1856,12 @@ body {
     display: flex;
     gap: 10px;
     align-items: center;
-    margin-top: 4px;
 }
 
 .sound-selection-row .setting-select {
     flex: 1;
     height: 36px;
+    margin-bottom: 8px;
 }
 
 .setting-btn-small {
@@ -1882,7 +1882,6 @@ body {
 
 #sound-selection-group {
     margin-top: 4px;
-    margin-left: 30px;
     opacity: 0.5;
     pointer-events: none;
     transition: opacity 0.2s ease;

@@ -385,4 +385,23 @@ function setupIpcHandlers() {
       return { success: false, error: error.message };
     }
   });
+
+  // Get sound effects files
+  ipcMain.handle('get-sound-effects', async () => {
+    try {
+      const soundEffectsDir = path.join(__dirname, 'soundeffects');
+      const files = await fs.readdir(soundEffectsDir);
+      
+      // Filter for audio files only
+      const audioFiles = files.filter(file => {
+        const ext = path.extname(file).toLowerCase();
+        return ['.wav', '.mp3', '.ogg', '.m4a', '.aac'].includes(ext);
+      });
+      
+      return { success: true, files: audioFiles };
+    } catch (error) {
+      console.error('Error reading sound effects directory:', error);
+      return { success: false, error: error.message, files: [] };
+    }
+  });
 } 
