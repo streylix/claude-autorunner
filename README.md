@@ -1,6 +1,6 @@
-# Terminal GUI with Advanced Automation
+# Claude Code Auto-Injector
 
-A sophisticated desktop application that provides an interactive terminal with intelligent message queuing, automation features, and macOS system integration for scheduled command execution and workflow automation.
+A sophisticated desktop application that provides an interactive terminal with intelligent message queuing, automation features, and system integration for scheduled command execution and workflow automation.
 
 ## ✨ Key Features
 
