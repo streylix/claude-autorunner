@@ -3011,7 +3011,25 @@ class TerminalGUI {
     // Sound Effects Methods
     async populateSoundEffects() {
         try {
-            const result = await ipcRenderer.invoke('get-sound-effects');
+            // Retry logic to handle race condition with main process startup
+            let result;
+            let retries = 0;
+            const maxRetries = 5;
+            
+            while (retries < maxRetries) {
+                try {
+                    result = await ipcRenderer.invoke('get-sound-effects');
+                    break;
+                } catch (error) {
+                    if (error.message.includes('No handler registered') && retries < maxRetries - 1) {
+                        retries++;
+                        await new Promise(resolve => setTimeout(resolve, 100 * retries)); // Exponential backoff
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+            
             const select = document.getElementById('completion-sound-select');
             
             // Store current selection to restore it after populating
