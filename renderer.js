@@ -177,6 +177,9 @@ class TerminalGUI {
 
         // Start terminal process in saved directory (or default if none saved)
         ipcRenderer.send('terminal-start', savedDirectory);
+        
+        // Add flag to track if we need to detect initial directory
+        this.needsInitialDirectoryDetection = !savedDirectory;
 
         // Handle window resize
         window.addEventListener('resize', () => {
@@ -277,6 +280,7 @@ class TerminalGUI {
             this.updateTerminalOutput(data);
             this.detectAutoContinuePrompt(data);
             this.detectUsageLimit(data);
+            this.detectDirectoryFromOutput(data);
             // Terminal status is now handled by continuous scanning system
             this.handleTerminalOutput();
         });
@@ -2269,6 +2273,16 @@ class TerminalGUI {
         if (this.autoscrollEnabled && !this.userInteracting) {
             this.scrollToBottom();
         }
+        
+        // Trigger initial directory detection if needed
+        if (this.needsInitialDirectoryDetection && (this.lastTerminalOutput.includes('$') || this.lastTerminalOutput.includes('%'))) {
+            // Wait a bit for shell to be ready, then send PWD command
+            setTimeout(() => {
+                if (this.needsInitialDirectoryDetection) {
+                    ipcRenderer.send('terminal-input', 'pwd\n');
+                }
+            }, 500);
+        }
     }
 
     handleScroll() {
@@ -2732,6 +2746,65 @@ class TerminalGUI {
         // Keep only recent output (last 5000 characters) for safety checks
         if (this.lastTerminalOutput.length > 5000) {
             this.lastTerminalOutput = this.lastTerminalOutput.slice(-5000);
+        }
+    }
+
+    detectDirectoryFromOutput(data) {
+        // Clean data of ANSI escape sequences for better parsing
+        const cleanData = data.replace(/\x1B\[[0-9;]*[JKmsu]/g, '');
+        
+        // Look for directory paths in various formats
+        const directoryPatterns = [
+            // PWD command output - standalone directory path
+            /^(\/[^\s\n\r]+)$/gm,
+            // PWD command output - directory path at start of line
+            /^(\/[^\s\n\r]*[^\s\n\r.])\s*$/gm,
+            // Shell prompts with directory (zsh, bash common patterns)
+            /[\s\[\(]([\/~][^\s\]\)\n\r$]+)[\s\]\)$%]/g,
+            // PS1 prompts with directory
+            /([\/~][^\s\n\r$%]+)[\s]*[$%]/g,
+            // After 'cd' command execution
+            /cd\s+([^\s\n\r]+)/g
+        ];
+        
+        for (const pattern of directoryPatterns) {
+            const matches = cleanData.matchAll(pattern);
+            for (const match of matches) {
+                let dirPath = match[1];
+                
+                // Clean up the path
+                dirPath = dirPath.trim();
+                
+                // Skip if it looks like a command, file extension, or other false positive
+                if (dirPath.includes('.') && !dirPath.startsWith('/') && !dirPath.startsWith('~')) {
+                    continue;
+                }
+                
+                // Skip very short paths or paths with suspicious characters
+                if (dirPath.length < 2 || dirPath.includes('|') || dirPath.includes(';')) {
+                    continue;
+                }
+                
+                // Skip common false positives
+                if (dirPath.includes('--') || dirPath.includes('==') || dirPath.match(/^\d+$/)) {
+                    continue;
+                }
+                
+                // Validate path format
+                if (!dirPath.startsWith('/') && !dirPath.startsWith('~')) {
+                    continue;
+                }
+                
+                // Update directory if it's different from current
+                if (dirPath !== this.currentDirectory) {
+                    this.currentDirectory = dirPath;
+                    this.updateStatusDisplay();
+                    this.savePreferences();
+                    this.logAction(`Directory changed to: ${dirPath}`, 'info');
+                    this.needsInitialDirectoryDetection = false;
+                    return;
+                }
+            }
         }
     }
 
