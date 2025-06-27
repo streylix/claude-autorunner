@@ -334,6 +334,19 @@ class TerminalGUI {
             }
         });
         
+        // Global keyboard shortcut for manual injection (Ctrl+Shift+I)
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'I') {
+                e.preventDefault();
+                try {
+                    this.manualInjectNextMessage();
+                    this.logAction('Manual injection triggered via keyboard shortcut (Ctrl+Shift+I)', 'info');
+                } catch (error) {
+                    this.logAction(`Keyboard shortcut injection error: ${error.message}`, 'error');
+                }
+            }
+        });
+        
         // Add auto-resize functionality to message input
         messageInput.addEventListener('input', () => {
             this.autoResizeMessageInput(messageInput);
@@ -359,8 +372,26 @@ class TerminalGUI {
             this.clearQueue();
         });
 
-        document.getElementById('inject-now-btn').addEventListener('click', () => {
-            this.manualInjectNextMessage();
+        document.getElementById('inject-now-btn').addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // Add visual feedback
+            const btn = e.target.closest('#inject-now-btn');
+            if (btn) {
+                btn.style.transform = 'scale(0.95)';
+                setTimeout(() => {
+                    btn.style.transform = '';
+                }, 100);
+            }
+            
+            // Call manual injection with error handling
+            try {
+                this.manualInjectNextMessage();
+            } catch (error) {
+                this.logAction(`Manual injection button error: ${error.message}`, 'error');
+                console.error('Manual injection error:', error);
+            }
         });
 
         // Auto-continue checkbox listener
@@ -1831,15 +1862,23 @@ class TerminalGUI {
             return;
         }
 
-        // Check if we're already injecting something
-        if (this.isInjecting || this.injectionInProgress) {
-            this.logAction('Manual injection blocked - another injection is in progress', 'warning');
-            return;
-        }
-
         // Get the first message in the queue
         const message = this.messageQueue[0];
-        this.logAction(`Manual injection started: "${message.content.substring(0, 50)}..."`, 'info');
+        this.logAction(`Manual injection started (bypassing safety checks): "${message.content.substring(0, 50)}..."`, 'info');
+        
+        // Force reset any existing injection state for manual injection
+        if (this.isInjecting || this.injectionInProgress) {
+            this.logAction('Force-resetting injection state for manual injection', 'warning');
+            this.isInjecting = false;
+            this.injectionInProgress = false;
+            this.currentlyInjectingMessageId = null;
+            
+            // Clear any pending type intervals
+            if (this.currentTypeInterval) {
+                clearInterval(this.currentTypeInterval);
+                this.currentTypeInterval = null;
+            }
+        }
         
         // Set injection state
         this.isInjecting = true;
@@ -1847,34 +1886,81 @@ class TerminalGUI {
         this.currentlyInjectingMessageId = message.id;
         this.updateMessageList(); // Update UI to show injecting state
         
-        // Use the existing typeMessage method which handles control sequences properly
-        this.typeMessage(message.content, () => {
-            // Send Enter after typing (unless it's a control sequence that doesn't need it)
-            const hasControlSequence = /(\^[A-Z]|\\x1b|\\r|\\t)/g.test(message.content);
+        // Create a robust typing function that handles all cases
+        const performManualInjection = () => {
+            // Create a completion handler to avoid code duplication
+            const completeInjection = (method = 'standard') => {
+                // Remove the injected message from queue
+                this.messageQueue.shift();
+                this.saveMessageQueue();
+                
+                // Update counters and UI
+                this.injectionCount++;
+                this.saveToMessageHistory(message);
+                
+                // Reset injection state
+                this.isInjecting = false;
+                this.injectionInProgress = false;
+                this.currentlyInjectingMessageId = null;
+                this.updateMessageList();
+                this.updateStatusDisplay();
+                
+                this.logAction(`Manual injection complete via ${method}: "${message.content.substring(0, 50)}..."`, 'success');
+            };
             
-            if (!hasControlSequence) {
-                setTimeout(() => {
-                    ipcRenderer.send('terminal-input', '\r');
-                }, 100);
+            // Set a timeout to ensure injection doesn't hang
+            const injectionTimeout = setTimeout(() => {
+                this.logAction('Manual injection timed out, forcing completion', 'warning');
+                completeInjection('timeout');
+            }, 30000); // 30 second timeout
+            
+            try {
+                // Use the existing typeMessage method which handles control sequences properly
+                this.typeMessage(message.content, () => {
+                    clearTimeout(injectionTimeout);
+                    
+                    // Send Enter after typing (unless it's a control sequence that doesn't need it)
+                    const hasControlSequence = /(\^[A-Z]|\\x1b|\\r|\\t)/g.test(message.content);
+                    
+                    if (!hasControlSequence) {
+                        setTimeout(() => {
+                            ipcRenderer.send('terminal-input', '\r');
+                        }, 100);
+                    }
+                    
+                    completeInjection('typeMessage');
+                });
+            } catch (error) {
+                clearTimeout(injectionTimeout);
+                
+                // Fallback: direct input if typeMessage fails
+                this.logAction(`TypeMessage failed, using direct input: ${error.message}`, 'warning');
+                try {
+                    ipcRenderer.send('terminal-input', message.content);
+                    
+                    // Send Enter if not a control sequence
+                    const hasControlSequence = /(\^[A-Z]|\\x1b|\\r|\\t)/g.test(message.content);
+                    if (!hasControlSequence) {
+                        setTimeout(() => {
+                            ipcRenderer.send('terminal-input', '\r');
+                        }, 100);
+                    }
+                    
+                    completeInjection('directInput');
+                } catch (fallbackError) {
+                    this.logAction(`Manual injection failed completely: ${fallbackError.message}`, 'error');
+                    
+                    // Reset state even on failure
+                    this.isInjecting = false;
+                    this.injectionInProgress = false;
+                    this.currentlyInjectingMessageId = null;
+                    this.updateMessageList();
+                }
             }
-            
-            // Remove the injected message from queue
-            this.messageQueue.shift();
-            this.saveMessageQueue();
-            
-            // Update counters and UI
-            this.injectionCount++;
-            this.saveToMessageHistory(message); // Save to history after successful injection
-            
-            // Reset injection state
-            this.isInjecting = false;
-            this.injectionInProgress = false;
-            this.currentlyInjectingMessageId = null;
-            this.updateMessageList();
-            this.updateStatusDisplay();
-            
-            this.logAction(`Manual injection complete: "${message.content.substring(0, 50)}..."`, 'success');
-        });
+        };
+        
+        // Execute immediately without safety checks for manual injection
+        performManualInjection();
     }
     
     processMessageBatch(messages) {
