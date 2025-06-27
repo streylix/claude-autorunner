@@ -6,6 +6,7 @@ const fs = require('fs').promises;
 
 let mainWindow;
 let ptyProcess;
+let dataFilePath;
 
 function getIcon() {
   const fs = require('fs');
@@ -14,11 +15,11 @@ function getIcon() {
   const iconOptions = [];
   
   if (process.platform === 'darwin') {
-    iconOptions.push('icon.png', 'icon.icns');
+    iconOptions.push('logo.png', 'icon.icns');
   } else if (process.platform === 'win32') {
-    iconOptions.push('icon.ico', 'icon.png');
+    iconOptions.push('icon.ico', 'logo.png');
   } else {
-    iconOptions.push('icon.png', 'icon.icns');
+    iconOptions.push('logo.png', 'icon.icns');
   }
   
   for (const iconFile of iconOptions) {
@@ -37,6 +38,42 @@ function getIcon() {
   return undefined;
 }
 
+function initDataStorage() {
+  try {
+    // Create data file in app data directory for persistence
+    const userDataPath = app.getPath('userData');
+    dataFilePath = path.join(userDataPath, 'terminal-gui-data.json');
+    
+    console.log('Data storage initialized at:', dataFilePath);
+  } catch (error) {
+    console.error('Failed to initialize data storage:', error);
+  }
+}
+
+async function readDataFile() {
+  try {
+    const data = await fs.readFile(dataFilePath, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    // File doesn't exist or is invalid, return default structure
+    return {
+      settings: {},
+      messages: [],
+      messageHistory: [],
+      appState: {}
+    };
+  }
+}
+
+async function writeDataFile(data) {
+  try {
+    await fs.writeFile(dataFilePath, JSON.stringify(data, null, 2), 'utf8');
+    return true;
+  } catch (error) {
+    console.error('Failed to write data file:', error);
+    return false;
+  }
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -55,6 +92,11 @@ function createWindow() {
   });
 
   mainWindow.loadFile('index.html');
+  
+  // Open DevTools in development
+  if (process.argv.includes('--dev')) {
+    mainWindow.webContents.openDevTools();
+  }
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
@@ -70,24 +112,17 @@ function createWindow() {
 
 
 app.whenReady().then(() => {
+  initDataStorage();
   createWindow();
   
   // Set dock icon (macOS specific)
   if (process.platform === 'darwin') {
     try {
-      const pngIconPath = path.join(__dirname, 'icon.png');
-      try { console.log('Setting dock icon from:', pngIconPath); } catch (e) { /* ignore */ }
-      app.dock.setIcon(pngIconPath);
+      const logoIconPath = path.join(__dirname, 'logo.png');
+      try { console.log('Setting dock icon from:', logoIconPath); } catch (e) { /* ignore */ }
+      app.dock.setIcon(logoIconPath);
     } catch (error) {
-      try { console.error('Failed to set PNG dock icon:', error); } catch (e) { /* ignore */ }
-      // Fallback to ICNS if PNG fails
-      try {
-        const icnsIconPath = path.join(__dirname, 'icon.icns');
-        try { console.log('Fallback to ICNS icon:', icnsIconPath); } catch (e) { /* ignore */ }
-        app.dock.setIcon(icnsIconPath);
-      } catch (icnsError) {
-        try { console.error('Failed to set ICNS dock icon:', icnsError); } catch (e) { /* ignore */ }
-      }
+      try { console.error('Failed to set logo dock icon:', error); } catch (e) { /* ignore */ }
     }
   }
   
@@ -107,8 +142,10 @@ app.on('activate', () => {
 function setupIpcHandlers() {
   // Terminal handling
   ipcMain.on('terminal-start', (event, startDirectory = null) => {
+    console.log('Received terminal-start request, startDirectory:', startDirectory);
     const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/zsh';
     const cwd = startDirectory || process.cwd();
+    console.log('Starting terminal with shell:', shell, 'cwd:', cwd);
     
     ptyProcess = pty.spawn(shell, [], {
       name: 'xterm-color',
@@ -117,8 +154,10 @@ function setupIpcHandlers() {
       cwd: cwd,
       env: process.env
     });
+    console.log('Terminal process spawned successfully');
 
     ptyProcess.onData((data) => {
+      console.log('Terminal data received, sending to renderer:', data.length, 'bytes');
       event.reply('terminal-data', data);
     });
 
@@ -137,6 +176,11 @@ function setupIpcHandlers() {
     if (ptyProcess) {
       ptyProcess.resize(cols, rows);
     }
+  });
+
+  // Get current working directory
+  ipcMain.on('get-cwd', (event) => {
+    event.reply('cwd-response', process.cwd());
   });
 
   // Change terminal working directory
@@ -360,4 +404,201 @@ function setupIpcHandlers() {
       return { success: false, error: error.message };
     }
   });
-} 
+
+  // Data file operations
+  ipcMain.handle('db-get-setting', async (event, key) => {
+    try {
+      const data = await readDataFile();
+      return data.settings[key] || null;
+    } catch (error) {
+      console.error('Error getting setting:', error);
+      return null;
+    }
+  });
+
+  ipcMain.handle('db-set-setting', async (event, key, value) => {
+    try {
+      const data = await readDataFile();
+      data.settings[key] = value;
+      return await writeDataFile(data);
+    } catch (error) {
+      console.error('Error setting setting:', error);
+      return false;
+    }
+  });
+
+  ipcMain.handle('db-get-all-settings', async () => {
+    try {
+      const data = await readDataFile();
+      return data.settings;
+    } catch (error) {
+      console.error('Error getting all settings:', error);
+      return {};
+    }
+  });
+
+  ipcMain.handle('db-get-messages', async () => {
+    try {
+      const data = await readDataFile();
+      return data.messages || [];
+    } catch (error) {
+      console.error('Error getting messages:', error);
+      return [];
+    }
+  });
+
+  ipcMain.handle('db-save-message', async (event, message) => {
+    try {
+      const data = await readDataFile();
+      // Remove existing message with same ID if it exists
+      data.messages = data.messages.filter(m => m.message_id !== message.id);
+      // Add the message
+      data.messages.push({
+        message_id: message.id,
+        content: message.content,
+        processed_content: message.processedContent,
+        execute_at: message.executeAt,
+        created_at: message.createdAt,
+        status: message.status || 'pending'
+      });
+      return await writeDataFile(data);
+    } catch (error) {
+      console.error('Error saving message:', error);
+      return false;
+    }
+  });
+
+  ipcMain.handle('db-delete-message', async (event, messageId) => {
+    try {
+      const data = await readDataFile();
+      data.messages = data.messages.filter(m => m.message_id !== messageId);
+      return await writeDataFile(data);
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      return false;
+    }
+  });
+
+  ipcMain.handle('db-clear-messages', async () => {
+    try {
+      const data = await readDataFile();
+      data.messages = [];
+      return await writeDataFile(data);
+    } catch (error) {
+      console.error('Error clearing messages:', error);
+      return false;
+    }
+  });
+
+  ipcMain.handle('db-save-message-history', async (event, historyItem) => {
+    try {
+      const data = await readDataFile();
+      data.messageHistory.unshift(historyItem);
+      // Keep only last 100 items
+      if (data.messageHistory.length > 100) {
+        data.messageHistory = data.messageHistory.slice(0, 100);
+      }
+      return await writeDataFile(data);
+    } catch (error) {
+      console.error('Error saving message history:', error);
+      return false;
+    }
+  });
+
+  ipcMain.handle('db-get-message-history', async () => {
+    try {
+      const data = await readDataFile();
+      return data.messageHistory || [];
+    } catch (error) {
+      console.error('Error getting message history:', error);
+      return [];
+    }
+  });
+
+  ipcMain.handle('db-get-app-state', async (event, key) => {
+    try {
+      const data = await readDataFile();
+      return data.appState[key] || null;
+    } catch (error) {
+      console.error('Error getting app state:', error);
+      return null;
+    }
+  });
+
+  ipcMain.handle('db-set-app-state', async (event, key, value) => {
+    try {
+      const data = await readDataFile();
+      data.appState[key] = value;
+      return await writeDataFile(data);
+    } catch (error) {
+      console.error('Error setting app state:', error);
+      return false;
+    }
+  });
+
+  // Migration helper
+  ipcMain.handle('db-migrate-localstorage', async (event, localStorageData) => {
+    try {
+      const data = await readDataFile();
+      
+      // Migrate preferences
+      if (localStorageData.terminalGUIPreferences) {
+        const preferences = JSON.parse(localStorageData.terminalGUIPreferences);
+        
+        // Migrate settings
+        Object.keys(preferences).forEach(key => {
+          if (key === 'messageQueue' || key === 'messageHistory') return; // Handle separately
+          data.settings[key] = JSON.stringify(preferences[key]);
+        });
+        
+        // Migrate message queue
+        if (preferences.messageQueue && Array.isArray(preferences.messageQueue)) {
+          data.messages = preferences.messageQueue.map(message => ({
+            message_id: message.id,
+            content: message.content,
+            processed_content: message.processedContent || message.content,
+            execute_at: message.executeAt,
+            created_at: message.createdAt || message.timestamp,
+            status: 'pending'
+          }));
+        }
+        
+        // Migrate message history
+        if (preferences.messageHistory && Array.isArray(preferences.messageHistory)) {
+          data.messageHistory = preferences.messageHistory;
+        }
+      }
+      
+      // Migrate other localStorage items
+      Object.keys(localStorageData).forEach(key => {
+        if (key !== 'terminalGUIPreferences') {
+          data.appState[key] = localStorageData[key];
+        }
+      });
+      
+      const success = await writeDataFile(data);
+      return { success };
+    } catch (error) {
+      console.error('Error migrating localStorage:', error);
+      return { success: false, error: error.message };
+    }
+  });
+}
+
+// App event handlers
+app.whenReady().then(() => {
+  initDataStorage();
+  createWindow();
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
+}); 

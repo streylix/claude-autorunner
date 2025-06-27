@@ -157,6 +157,11 @@ body {
     -webkit-app-region: drag;
 }
 
+/* Disable window dragging for content areas to allow message dragging
+.main-content {
+    -webkit-app-region: no-drag;
+} */
+
 .header-left {
     flex: 1;
 }
@@ -480,6 +485,19 @@ body {
     justify-content: space-between;
     align-items: flex-start;
     border-left: 3px solid var(--accent-primary);
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.message-item:active {
+    cursor: grabbing;
+}
+
+.message-item:hover {
+    /* transform: translateY(-1px); */
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .message-item.injecting {
@@ -498,6 +516,26 @@ body {
     white-space: pre-wrap;
 }
 
+/* In-place editing styles */
+.message-content.editing {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--accent-primary);
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin: -6px -8px -6px 0;
+    outline: none;
+    font-family: inherit;
+    font-size: inherit;
+    color: var(--text-primary);
+    resize: none;
+    min-height: 40px;
+    line-height: 1.4;
+}
+
+.message-content.editing:focus {
+    box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+}
+
 .message-meta {
     font-size: 10px;
     color: var(--text-tertiary);
@@ -513,10 +551,12 @@ body {
     gap: 4px;
     opacity: 0;
     transition: opacity 0.2s;
+    pointer-events: none;
 }
 
 .message-item:hover .message-actions {
     opacity: 1;
+    pointer-events: auto;
 }
 
 .message-edit-btn {
@@ -934,7 +974,7 @@ body {
 
 #message-input {
     width: 100%;
-    height: 80px;
+    height: auto;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
     border-radius: 6px;
@@ -945,7 +985,8 @@ body {
     resize: none;
     line-height: 1.4;
     min-height: 80px;
-    max-height: 80px;
+    max-height: 300px;
+    overflow-y: auto;
 }
 
 #message-input::placeholder {
@@ -1957,4 +1998,29 @@ body {
     color: var(--text-primary);
     max-height: 120px;
     overflow-y: auto;
+}
+
+.undo-btn {
+    background: var(--bg-quaternary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 6px;
+    font-size: 12px;
+    transition: all 0.2s ease;
+}
+
+.undo-btn:hover {
+    background: var(--accent-primary);
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
+}
+
+.undo-btn i {
+    width: 14px;
+    height: 14px;
 }

@@ -2,7 +2,7 @@
 .cursor
 package-lock.json
 
-*.png
+
 run.sh
 
 dist/

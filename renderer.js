@@ -75,6 +75,7 @@ class TerminalGUI {
         
         // Message editing state
         this.editingMessageId = null;
+        this.originalEditContent = null;
         this.currentlyInjectingMessageId = null;
         
         // Terminal status scanning system
@@ -97,15 +98,31 @@ class TerminalGUI {
     }
 
     async initialize() {
-        // Load preferences FIRST so we have saved directory before starting terminal
-        await this.loadAllPreferences();
-        
-        this.initializeTerminal();
-        this.setupEventListeners();
-        this.initializeLucideIcons();
-        this.updateStatusDisplay();
-        this.setTerminalStatusDisplay(''); // Initialize with default status
-        this.updateTimerUI(); // Initialize timer UI after loading preferences
+        try {
+            console.log('Starting app initialization...');
+            
+            // Load preferences FIRST so we have saved directory before starting terminal
+            console.log('Loading preferences...');
+            await this.loadAllPreferences();
+            console.log('Preferences loaded successfully');
+            
+            console.log('Initializing terminal...');
+            this.initializeTerminal();
+            console.log('Terminal initialized');
+            
+            console.log('Setting up event listeners...');
+            this.setupEventListeners();
+            console.log('Event listeners set up');
+            
+            this.initializeLucideIcons();
+            this.updateStatusDisplay();
+            this.setTerminalStatusDisplay(''); // Initialize with default status
+            this.updateTimerUI(); // Initialize timer UI after loading preferences
+            
+            console.log('App initialization completed successfully');
+        } catch (error) {
+            console.error('Error during app initialization:', error);
+        }
         this.startTerminalStatusScanning(); // Start the continuous terminal scanning
     }
 
@@ -168,6 +185,8 @@ class TerminalGUI {
 
         // Load saved directory before starting terminal (preferences already loaded in constructor)
         const savedDirectory = this.preferences.currentDirectory;
+        console.log('Starting terminal with saved directory:', savedDirectory);
+        
         if (savedDirectory) {
             this.currentDirectory = savedDirectory;
             this.logAction(`Starting terminal in saved directory: ${savedDirectory}`, 'info');
@@ -176,10 +195,14 @@ class TerminalGUI {
         }
 
         // Start terminal process in saved directory (or default if none saved)
+        console.log('Sending terminal-start IPC message...');
         ipcRenderer.send('terminal-start', savedDirectory);
         
-        // Add flag to track if we need to detect initial directory
-        this.needsInitialDirectoryDetection = !savedDirectory;
+        // Get initial directory from main process if none saved
+        if (!savedDirectory) {
+            console.log('Requesting current working directory...');
+            ipcRenderer.send('get-cwd');
+        }
 
         // Handle window resize
         window.addEventListener('resize', () => {
@@ -276,6 +299,7 @@ class TerminalGUI {
     setupEventListeners() {
         // IPC listeners for terminal data
         ipcRenderer.on('terminal-data', (event, data) => {
+            console.log('Received terminal data:', data);
             this.terminal.write(data);
             this.updateTerminalOutput(data);
             this.detectAutoContinuePrompt(data);
@@ -289,28 +313,41 @@ class TerminalGUI {
             this.terminal.write('\r\n\x1b[31mTerminal process exited\x1b[0m\r\n');
         });
 
+        ipcRenderer.on('cwd-response', (event, cwd) => {
+            this.currentDirectory = cwd;
+            this.updateStatusDisplay();
+            this.savePreferences();
+            this.logAction(`Set directory to: ${cwd}`, 'info');
+        });
+
         // UI event listeners
         document.getElementById('send-btn').addEventListener('click', () => {
-            if (this.editingMessageId) {
-                this.handleMessageUpdate();
-            } else {
-                this.addMessageToQueue();
-            }
+            this.addMessageToQueue();
         });
 
         // Handle Enter key in message input
-        document.getElementById('message-input').addEventListener('keydown', (e) => {
+        const messageInput = document.getElementById('message-input');
+        messageInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                if (this.editingMessageId) {
-                    this.handleMessageUpdate();
-                } else {
-                    this.addMessageToQueue();
-                }
-            } else if (e.key === 'Escape' && this.editingMessageId) {
-                e.preventDefault();
-                this.cancelEdit();
+                this.addMessageToQueue();
             }
+        });
+        
+        // Add auto-resize functionality to message input
+        messageInput.addEventListener('input', () => {
+            this.autoResizeMessageInput(messageInput);
+        });
+        
+        // Add focus event to enable auto-resize
+        messageInput.addEventListener('focus', () => {
+            this.autoResizeMessageInput(messageInput);
+        });
+        
+        // Add blur event to reset to default height when not focused
+        messageInput.addEventListener('blur', () => {
+            messageInput.style.height = '80px'; // Reset to minimum height
+            messageInput.style.overflowY = 'hidden';
         });
 
         // Directory click handler
@@ -603,16 +640,34 @@ class TerminalGUI {
         }
     }
 
+    generateMessageId() {
+        return this.messageIdCounter++;
+    }
+
+    validateMessageIds() {
+        // Debug function to check for duplicate IDs
+        const ids = this.messageQueue.map(m => m.id);
+        const uniqueIds = new Set(ids);
+        if (ids.length !== uniqueIds.size) {
+            console.error('Duplicate message IDs detected:', ids);
+            console.error('Message queue:', this.messageQueue);
+        }
+        return ids.length === uniqueIds.size;
+    }
+
     addMessageToQueue() {
         const input = document.getElementById('message-input');
         const content = input.value.trim();
         
         if (content) {
+            const now = Date.now();
             const message = {
-                id: this.messageIdCounter++,
+                id: this.generateMessageId(),
                 content: content,
                 processedContent: content,
-                timestamp: Date.now()
+                executeAt: now,
+                createdAt: now,
+                timestamp: now // For compatibility
             };
             
             this.messageQueue.push(message);
@@ -620,6 +675,9 @@ class TerminalGUI {
             this.updateMessageList();
             this.updateStatusDisplay();
             input.value = '';
+            
+            // Reset input height after clearing
+            this.autoResizeMessageInput(input);
             
             this.logAction(`Added message to queue: "${content}"`, 'info');
         }
@@ -661,6 +719,8 @@ class TerminalGUI {
             messageElement.dataset.messageId = message.id;
             messageElement.dataset.index = index;
             
+            console.log('Created message element:', messageElement.draggable, messageElement.dataset);
+            
             if (message.id === this.currentlyInjectingMessageId) {
                 messageElement.classList.add('injecting');
             }
@@ -669,10 +729,27 @@ class TerminalGUI {
                 messageElement.classList.add('command');
             }
 
-            messageElement.addEventListener('dragstart', (e) => this.handleDragStart(e));
-            messageElement.addEventListener('dragover', (e) => this.handleDragOver(e));
-            messageElement.addEventListener('drop', (e) => this.handleDrop(e));
-            messageElement.addEventListener('dragend', (e) => this.handleDragEnd(e));
+            messageElement.addEventListener('dragstart', (e) => {
+                console.log('dragstart event listener called');
+                this.handleDragStart(e);
+            });
+            messageElement.addEventListener('dragover', (e) => {
+                console.log('dragover on individual message element');
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                this.handleDragOver(e);
+            });
+            messageElement.addEventListener('drop', (e) => {
+                console.log('drop on individual message element');
+                e.preventDefault();
+                this.handleDrop(e);
+            });
+            messageElement.addEventListener('dragend', (e) => {
+                console.log('dragend event listener called');
+                this.handleDragEnd(e);
+            });
+            
+            console.log('Added drag event listeners to message element');
             
             const content = document.createElement('div');
             content.className = 'message-content';
@@ -681,7 +758,9 @@ class TerminalGUI {
             const meta = document.createElement('div');
             meta.className = 'message-meta';
             
-            const timestamp = new Date(message.timestamp).toLocaleTimeString();
+            // Use timestamp, createdAt, or current time as fallback
+            const messageTime = message.timestamp || message.createdAt || Date.now();
+            const timestamp = new Date(messageTime).toLocaleTimeString();
             const timeStamp = document.createElement('span');
             timeStamp.className = 'message-timestamp';
             timeStamp.textContent = `Added at ${timestamp}`;
@@ -736,24 +815,107 @@ class TerminalGUI {
     }
 
     editMessage(messageId) {
+        // Cancel any existing edit first
+        this.cancelEdit();
+        
         const message = this.messageQueue.find(m => m.id === messageId);
-        if (message) {
-            const input = document.getElementById('message-input');
-            input.value = message.content;
-            input.focus();
-            
-            this.editingMessageId = messageId;
-            
-            const sendBtn = document.getElementById('send-btn');
-            sendBtn.innerHTML = '<i data-lucide="check"></i>';
-            sendBtn.title = 'Update message (Enter)';
-            sendBtn.classList.add('editing-mode');
-            
-            if (typeof lucide !== 'undefined') {
-                lucide.createIcons();
-            }
-            
-            this.logAction(`Editing message: "${message.content}"`, 'info');
+        if (!message) return;
+        
+        // Find the message element in the DOM
+        const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
+        if (!messageElement) return;
+        
+        const contentElement = messageElement.querySelector('.message-content');
+        if (!contentElement) return;
+        
+        // Store original content for cancellation
+        this.editingMessageId = messageId;
+        this.originalEditContent = message.content; // Use data model, not DOM
+        
+        // Create textarea for editing
+        const textarea = document.createElement('textarea');
+        textarea.value = message.content; // Use data model, not DOM
+        textarea.className = 'message-content editing';
+        textarea.style.width = '100%';
+        textarea.style.height = 'auto';
+        
+        // Replace content with textarea
+        contentElement.style.display = 'none';
+        contentElement.parentNode.insertBefore(textarea, contentElement);
+        
+        // Focus textarea at the end of text
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+        
+        // Auto-resize textarea to fit content
+        this.autoResizeTextarea(textarea);
+        
+        // Add event listeners for saving/canceling
+        textarea.addEventListener('keydown', (e) => this.handleInPlaceEditKeydown(e, messageId, textarea, contentElement));
+        textarea.addEventListener('blur', () => this.saveInPlaceEdit(messageId, textarea, contentElement));
+        textarea.addEventListener('input', () => this.autoResizeTextarea(textarea));
+        
+        this.logAction(`Editing message: "${message.content}"`, 'info');
+    }
+
+    handleInPlaceEditKeydown(e, messageId, textarea, contentElement) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            this.saveInPlaceEdit(messageId, textarea, contentElement);
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            this.cancelInPlaceEdit(textarea, contentElement);
+        }
+    }
+    
+    saveInPlaceEdit(messageId, textarea, contentElement) {
+        const newContent = textarea.value.trim();
+        
+        if (newContent && newContent !== this.originalEditContent) {
+            // Update the message
+            this.updateMessage(messageId, newContent);
+        } else if (!newContent) {
+            // Delete message if empty
+            this.deleteMessage(messageId);
+            return; // Don't restore UI since message is deleted
+        }
+        
+        // Restore the original UI by regenerating the message list
+        this.updateMessageList();
+        this.editingMessageId = null;
+        this.originalEditContent = null;
+    }
+    
+    cancelInPlaceEdit(textarea, contentElement) {
+        // Restore original content by regenerating the message list
+        this.updateMessageList();
+        this.editingMessageId = null;
+        this.originalEditContent = null;
+    }
+    
+    
+    autoResizeTextarea(textarea) {
+        textarea.style.height = 'auto';
+        textarea.style.height = Math.max(40, textarea.scrollHeight) + 'px';
+    }
+
+    autoResizeMessageInput(textarea) {
+        // Use actual CSS min/max height values
+        const minHeight = 80; // Matches CSS min-height
+        const maxHeight = 300; // Matches CSS max-height
+        
+        // Reset height to auto to get accurate scrollHeight
+        textarea.style.height = 'auto';
+        
+        // Calculate new height within bounds
+        const newHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+        textarea.style.height = newHeight + 'px';
+        
+        // Add scrollbar if content exceeds max height
+        if (textarea.scrollHeight > maxHeight) {
+            textarea.style.overflowY = 'auto';
+        } else {
+            textarea.style.overflowY = 'hidden';
         }
     }
 
@@ -773,44 +935,65 @@ class TerminalGUI {
     }
 
     cancelEdit() {
+        if (this.editingMessageId) {
+            // Find any active in-place editing and cancel it
+            const editingTextarea = document.querySelector('.message-content.editing');
+            if (editingTextarea) {
+                const contentElement = editingTextarea.nextElementSibling;
+                if (contentElement && this.originalEditContent) {
+                    this.cancelInPlaceEdit(editingTextarea, contentElement);
+                }
+            }
+        }
+        
+        // Reset editing state
         this.editingMessageId = null;
-        const input = document.getElementById('message-input');
-        input.value = '';
-        
-        const sendBtn = document.getElementById('send-btn');
-        sendBtn.innerHTML = '<i data-lucide="send-horizontal"></i>';
-        sendBtn.title = 'Add message to queue (Enter)';
-        sendBtn.classList.remove('editing-mode');
-        
-        if (typeof lucide !== 'undefined') {
-            lucide.createIcons();
+        this.originalEditContent = null;
+    }
+
+    async saveMessageQueue() {
+        try {
+            // Clear existing messages in database
+            await ipcRenderer.invoke('db-clear-messages');
+            
+            // Save each message to database
+            for (const message of this.messageQueue) {
+                await ipcRenderer.invoke('db-save-message', message);
+            }
+        } catch (error) {
+            console.error('Failed to save message queue:', error);
         }
     }
 
-    saveMessageQueue() {
-        this.preferences.messageQueue = this.messageQueue;
-        this.saveAllPreferences();
-    }
-
-    saveToMessageHistory(message) {
-        const historyItem = {
-            id: Date.now() + Math.random(),
-            content: message.content || message.processedContent,
-            timestamp: new Date().toISOString(),
-            injectedAt: new Date().toLocaleString()
-        };
-        
-        // Add to beginning of array (most recent first)
-        this.messageHistory.unshift(historyItem);
-        
-        // Keep only last 100 messages to prevent localStorage from getting too large
-        if (this.messageHistory.length > 100) {
-            this.messageHistory = this.messageHistory.slice(0, 100);
+    async saveToMessageHistory(message) {
+        try {
+            const historyItem = {
+                content: message.content || message.processedContent,
+                timestamp: Date.now()
+            };
+            
+            // Save to database
+            await ipcRenderer.invoke('db-save-message-history', historyItem);
+            
+            // Update local array for UI (add id for compatibility)
+            const localHistoryItem = {
+                id: Date.now() + Math.random(),
+                content: historyItem.content,
+                timestamp: new Date().toISOString(),
+                injectedAt: new Date().toLocaleString()
+            };
+            
+            this.messageHistory.unshift(localHistoryItem);
+            
+            // Keep only last 100 messages in memory
+            if (this.messageHistory.length > 100) {
+                this.messageHistory = this.messageHistory.slice(0, 100);
+            }
+            
+            this.updateMessageHistoryDisplay();
+        } catch (error) {
+            console.error('Failed to save message history:', error);
         }
-        
-        // Save to preferences
-        this.preferences.messageHistory = this.messageHistory;
-        this.saveAllPreferences();
     }
 
     loadMessageHistory() {
@@ -1956,12 +2139,20 @@ class TerminalGUI {
             const resetTimeString = `${resetHour}${ampm}`;
             
             // Check if we've already shown modal for this specific reset time
-            const lastShownResetTime = localStorage.getItem('usageLimitModalLastResetTime');
+            this.checkAndShowUsageLimitModal(resetTimeString, resetHour, ampm);
+        }
+    }
+
+    async checkAndShowUsageLimitModal(resetTimeString, resetHour, ampm) {
+        try {
+            const lastShownResetTime = await ipcRenderer.invoke('db-get-app-state', 'usageLimitModalLastResetTime');
             
             if (lastShownResetTime !== resetTimeString) {
                 this.showUsageLimitModal(resetHour, ampm);
-                localStorage.setItem('usageLimitModalLastResetTime', resetTimeString);
+                await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTime', resetTimeString);
             }
+        } catch (error) {
+            console.error('Error checking usage limit modal state:', error);
         }
     }
 
@@ -2274,15 +2465,6 @@ class TerminalGUI {
             this.scrollToBottom();
         }
         
-        // Trigger initial directory detection if needed
-        if (this.needsInitialDirectoryDetection && (this.lastTerminalOutput.includes('$') || this.lastTerminalOutput.includes('%'))) {
-            // Wait a bit for shell to be ready, then send PWD command
-            setTimeout(() => {
-                if (this.needsInitialDirectoryDetection) {
-                    ipcRenderer.send('terminal-input', 'pwd\n');
-                }
-            }, 500);
-        }
     }
 
     handleScroll() {
@@ -2362,12 +2544,48 @@ class TerminalGUI {
             <div class="history-item">
                 <div class="history-item-header">
                     <span class="history-item-date">${item.injectedAt}</span>
+                    <button class="undo-btn" onclick="terminalGUI.undoFromHistory('${item.id}')" title="Add back to queue">
+                        <i data-lucide="undo-2"></i>
+                    </button>
                 </div>
                 <div class="history-item-content">${this.escapeHtml(item.content)}</div>
             </div>
         `).join('');
 
         historyList.innerHTML = historyHTML;
+        
+        // Initialize Lucide icons for the new buttons
+        lucide.createIcons();
+    }
+
+    undoFromHistory(historyId) {
+        const historyItem = this.messageHistory.find(item => item.id === historyId);
+        if (!historyItem) {
+            this.logAction('History item not found', 'error');
+            return;
+        }
+
+        // Create a new message for the queue
+        const now = Date.now();
+        const newMessage = {
+            id: this.generateMessageId(),
+            content: historyItem.content,
+            processedContent: historyItem.content,
+            executeAt: now,
+            createdAt: now,
+            timestamp: now // For compatibility
+        };
+
+        // Add to the end of the queue
+        this.messageQueue.push(newMessage);
+        this.saveMessageQueue();
+        this.updateMessageList();
+        this.updateStatusDisplay();
+
+        this.logAction(`Message restored from history: "${historyItem.content.substring(0, 50)}..."`, 'info');
+        
+        // Close the history modal
+        this.closeMessageHistoryModal();
     }
 
     escapeHtml(text) {
@@ -2378,34 +2596,56 @@ class TerminalGUI {
 
     async loadAllPreferences() {
         try {
-            const saved = JSON.parse(localStorage.getItem('terminalGUIPreferences') || '{}');
+            // Migrate localStorage data if it exists and database is empty
+            await this.checkAndMigrateLocalStorageData();
             
-            // Merge with defaults
-            this.preferences = {
-                ...this.preferences,
-                ...saved
-            };
+            // Load all settings from database
+            const dbSettings = await ipcRenderer.invoke('db-get-all-settings');
             
-            // Apply to UI and instance variables
-            this.autoscrollEnabled = this.preferences.autoscrollEnabled;
-            this.autoscrollDelay = this.preferences.autoscrollDelay;
-            this.autoContinueEnabled = this.preferences.autoContinueEnabled;
+            // Parse settings and merge with defaults
+            Object.keys(dbSettings).forEach(key => {
+                try {
+                    this.preferences[key] = JSON.parse(dbSettings[key]);
+                } catch (error) {
+                    this.preferences[key] = dbSettings[key];
+                }
+            });
+            
+            // Apply to UI and instance variables  
+            this.autoscrollEnabled = this.preferences.autoscrollEnabled !== undefined ? this.preferences.autoscrollEnabled : true;
+            this.autoscrollDelay = this.preferences.autoscrollDelay || 3000;
+            this.autoContinueEnabled = this.preferences.autoContinueEnabled || false;
             
             // Load saved timer values
             this.timerHours = this.preferences.timerHours || 0;
             this.timerMinutes = this.preferences.timerMinutes || 0;
             this.timerSeconds = this.preferences.timerSeconds || 0;
             
-            // Load saved message queue
-            if (this.preferences.messageQueue && Array.isArray(this.preferences.messageQueue)) {
-                this.messageQueue = this.preferences.messageQueue;
-                this.updateMessageList();
+            // Load message queue from database
+            const dbMessages = await ipcRenderer.invoke('db-get-messages');
+            this.messageQueue = dbMessages.map(msg => ({
+                id: msg.message_id,
+                content: msg.content,
+                processedContent: msg.processed_content,
+                executeAt: msg.execute_at,
+                createdAt: msg.created_at,
+                timestamp: msg.created_at // For compatibility
+            }));
+            
+            // Synchronize messageIdCounter to avoid duplicate IDs
+            if (this.messageQueue.length > 0) {
+                this.messageIdCounter = Math.max(...this.messageQueue.map(m => m.id)) + 1;
             }
             
-            // Load saved message history
-            if (this.preferences.messageHistory && Array.isArray(this.preferences.messageHistory)) {
-                this.messageHistory = this.preferences.messageHistory;
-            }
+            this.updateMessageList();
+            this.validateMessageIds(); // Debug: Check for ID conflicts after loading
+            
+            // Load message history from database
+            const dbHistory = await ipcRenderer.invoke('db-get-message-history');
+            this.messageHistory = dbHistory.map(item => ({
+                content: item.content,
+                timestamp: item.timestamp
+            }));
             
             // Load saved directory
             if (this.preferences.currentDirectory) {
@@ -2413,17 +2653,25 @@ class TerminalGUI {
                 this.updateStatusDisplay();
             }
             
-            // Update UI elements
-            document.getElementById('autoscroll-enabled').checked = this.autoscrollEnabled;
-            document.getElementById('autoscroll-delay').value = this.autoscrollDelay;
-            document.getElementById('auto-continue').checked = this.autoContinueEnabled;
-            document.getElementById('theme-select').value = this.preferences.theme;
+            // Update UI elements safely
+            const autoscrollEnabledEl = document.getElementById('autoscroll-enabled');
+            if (autoscrollEnabledEl) autoscrollEnabledEl.checked = this.autoscrollEnabled;
+            
+            const autoscrollDelayEl = document.getElementById('autoscroll-delay');
+            if (autoscrollDelayEl) autoscrollDelayEl.value = this.autoscrollDelay;
+            
+            const autoContinueEl = document.getElementById('auto-continue');
+            if (autoContinueEl) autoContinueEl.checked = this.autoContinueEnabled;
+            
+            const themeSelectEl = document.getElementById('theme-select');
+            if (themeSelectEl) themeSelectEl.value = this.preferences.theme || 'dark';
             
             // Update sound settings UI
-            document.getElementById('completion-sound-enabled').checked = this.preferences.completionSoundEnabled;
+            const completionSoundEl = document.getElementById('completion-sound-enabled');
+            if (completionSoundEl) completionSoundEl.checked = this.preferences.completionSoundEnabled || false;
             
             // Apply theme
-            this.applyTheme(this.preferences.theme);
+            this.applyTheme(this.preferences.theme || 'dark');
             
             // Update keyword rules display
             this.updateKeywordRulesDisplay();
@@ -2435,18 +2683,54 @@ class TerminalGUI {
             await this.populateSoundEffects();
             
             // Load saved usage limit reset time and start auto-sync if available
-            this.loadUsageLimitResetTime();
+            await this.loadUsageLimitResetTime();
             
+            this.logAction('Preferences loaded successfully from database', 'success');
         } catch (error) {
             console.error('Error loading preferences:', error);
+            this.logAction('Failed to load preferences - using defaults', 'error');
         }
     }
 
-    saveAllPreferences() {
+    async saveAllPreferences() {
         try {
-            localStorage.setItem('terminalGUIPreferences', JSON.stringify(this.preferences));
+            // Save each preference to database
+            for (const [key, value] of Object.entries(this.preferences)) {
+                if (key === 'messageQueue' || key === 'messageHistory') continue; // Handle separately
+                await ipcRenderer.invoke('db-set-setting', key, JSON.stringify(value));
+            }
         } catch (error) {
             console.error('Failed to save preferences:', error);
+        }
+    }
+
+    async checkAndMigrateLocalStorageData() {
+        try {
+            // Check if localStorage has data
+            const localStorageData = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                localStorageData[key] = localStorage.getItem(key);
+            }
+            
+            // Check if database has any settings
+            const dbSettings = await ipcRenderer.invoke('db-get-all-settings');
+            
+            // If localStorage has data but database is empty, migrate
+            if (Object.keys(localStorageData).length > 0 && Object.keys(dbSettings).length === 0) {
+                this.logAction('Migrating data from localStorage to database...', 'info');
+                const result = await ipcRenderer.invoke('db-migrate-localstorage', localStorageData);
+                
+                if (result.success) {
+                    this.logAction('Data migration completed successfully', 'success');
+                    // Clear localStorage after successful migration
+                    localStorage.clear();
+                } else {
+                    this.logAction(`Data migration failed: ${result.error}`, 'error');
+                }
+            }
+        } catch (error) {
+            console.error('Error during migration check:', error);
         }
     }
 
@@ -2641,7 +2925,7 @@ class TerminalGUI {
         }
     }
 
-    updateSyncedTimer() {
+    async updateSyncedTimer() {
         if (!this.usageLimitResetTime || !this.autoSyncEnabled) {
             return;
         }
@@ -2652,7 +2936,7 @@ class TerminalGUI {
         if (timeDiff <= 0) {
             this.logAction('Usage limit reset time reached - sync completed', 'success');
             this.stopUsageLimitSync();
-            localStorage.removeItem('usageLimitResetTime');
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitResetTime', '');
             return;
         }
 
@@ -2676,37 +2960,45 @@ class TerminalGUI {
         }
     }
 
-    setUsageLimitResetTime(resetTime) {
-        this.usageLimitResetTime = resetTime;
-        
-        // Save to localStorage
-        localStorage.setItem('usageLimitResetTime', resetTime.getTime().toString());
-        
-        // Start sync if auto-sync is enabled
-        if (this.autoSyncEnabled) {
-            this.startUsageLimitSync();
+    async setUsageLimitResetTime(resetTime) {
+        try {
+            this.usageLimitResetTime = resetTime;
+            
+            // Save to database
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitResetTime', resetTime.getTime().toString());
+            
+            // Start sync if auto-sync is enabled
+            if (this.autoSyncEnabled) {
+                this.startUsageLimitSync();
+            }
+        } catch (error) {
+            console.error('Failed to save usage limit reset time:', error);
         }
     }
 
-    loadUsageLimitResetTime() {
-        const savedResetTime = localStorage.getItem('usageLimitResetTime');
-        if (savedResetTime) {
-            const resetTime = new Date(parseInt(savedResetTime));
-            const now = new Date();
-            
-            // Only use if it's in the future
-            if (resetTime.getTime() > now.getTime()) {
-                this.usageLimitResetTime = resetTime;
-                this.logAction(`Loaded saved usage limit reset time: ${resetTime.toLocaleTimeString()}`, 'info');
+    async loadUsageLimitResetTime() {
+        try {
+            const savedResetTime = await ipcRenderer.invoke('db-get-app-state', 'usageLimitResetTime');
+            if (savedResetTime) {
+                const resetTime = new Date(parseInt(savedResetTime));
+                const now = new Date();
                 
-                // Start auto-sync if enabled
-                if (this.autoSyncEnabled) {
-                    this.startUsageLimitSync();
+                // Only use if it's in the future
+                if (resetTime.getTime() > now.getTime()) {
+                    this.usageLimitResetTime = resetTime;
+                    this.logAction(`Loaded saved usage limit reset time: ${resetTime.toLocaleTimeString()}`, 'info');
+                    
+                    // Start auto-sync if enabled
+                    if (this.autoSyncEnabled) {
+                        this.startUsageLimitSync();
+                    }
+                } else {
+                    // Remove expired reset time
+                    await ipcRenderer.invoke('db-set-app-state', 'usageLimitResetTime', '');
                 }
-            } else {
-                // Remove expired reset time
-                localStorage.removeItem('usageLimitResetTime');
             }
+        } catch (error) {
+            console.error('Failed to load usage limit reset time:', error);
         }
     }
 
@@ -2801,7 +3093,6 @@ class TerminalGUI {
                     this.updateStatusDisplay();
                     this.savePreferences();
                     this.logAction(`Directory changed to: ${dirPath}`, 'info');
-                    this.needsInitialDirectoryDetection = false;
                     return;
                 }
             }
@@ -2941,6 +3232,7 @@ class TerminalGUI {
     }
 
     // Drag and drop functionality
+    // Drag and drop functionality
     handleDragStart(e) {
         e.dataTransfer.setData('text/plain', '');
         this.draggedElement = e.target;
@@ -3039,6 +3331,7 @@ class TerminalGUI {
         }
     }
 
+
     async restoreLocalStorage() {
         try {
             const result = await ipcRenderer.invoke('restore-localstorage');
@@ -3056,24 +3349,24 @@ class TerminalGUI {
                 );
                 
                 if (confirmRestore) {
-                    // Clear current localStorage
-                    localStorage.clear();
+                    // Migrate the backup data to database
+                    const migrationResult = await ipcRenderer.invoke('db-migrate-localstorage', backupData.localStorage);
                     
-                    // Restore from backup
-                    Object.keys(backupData.localStorage).forEach(key => {
-                        localStorage.setItem(key, backupData.localStorage[key]);
-                    });
-                    
-                    this.logAction(`LocalStorage restored from backup (${backupData.timestamp})`, 'info');
-                    this.showNotification('Restore successful!', 'Data restored. Reloading application...', 'success');
-                    
-                    // Reload the application to apply restored settings
-                    setTimeout(() => {
-                        location.reload();
-                    }, 2000);
+                    if (migrationResult.success) {
+                        this.logAction(`Database restored from backup (${backupData.timestamp})`, 'info');
+                        this.showNotification('Restore successful!', 'Data restored. Reloading application...', 'success');
+                        
+                        // Reload the application to apply restored settings
+                        setTimeout(() => {
+                            location.reload();
+                        }, 2000);
+                    } else {
+                        this.logAction(`Failed to restore to database: ${migrationResult.error}`, 'error');
+                        this.showNotification('Restore failed', migrationResult.error, 'error');
+                    }
                 }
             } else {
-                this.logAction(`Failed to restore localStorage: ${result.error}`, 'error');
+                this.logAction(`Failed to restore database: ${result.error}`, 'error');
                 this.showNotification('Restore failed', result.error, 'error');
             }
         } catch (error) {
@@ -3205,10 +3498,10 @@ class TerminalGUI {
 
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    const app = new TerminalGUI();
+    window.terminalGUI = new TerminalGUI();
     
     // Add initial log message after app is fully initialized
     setTimeout(() => {
-        app.logAction('Application ready - all systems operational', 'success');
+        window.terminalGUI.logAction('Application ready - all systems operational', 'success');
     }, 500);
 });
