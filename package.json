@@ -3,25 +3,42 @@
   "version": "1.0.0",
   "description": "Interactive terminal with message queuing system",
   "main": "main.js",
-  "scripts": {
-    "start": "electron .",
-    "dev": "electron . --dev",
-    "build": "electron-builder",
-    "rebuild": "npx electron-rebuild",
-    "postinstall": "npx electron-rebuild"
-  },
+  "author": "Terminal GUI",
+  "license": "MIT",
   "keywords": [
     "terminal",
     "gui",
     "queue",
     "automation"
   ],
-  "author": "Terminal GUI",
-  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder"
+  },
+  "build": {
+    "appId": "com.terminal.gui",
+    "productName": "Terminal GUI",
+    "mac": {
+      "icon": "icon.icns"
+    },
+    "win": {
+      "icon": "icon.ico"
+    },
+    "linux": {
+      "icon": "icon.png"
+    },
+    "files": [
+      "**/*",
+      "!node_modules/.cache"
+    ],
+    "directories": {
+      "buildResources": "."
+    }
+  },
   "devDependencies": {
     "electron": "^27.0.0",
-    "electron-builder": "^24.6.4",
-    "electron-rebuild": "^3.2.9"
+    "electron-builder": "^24.6.4"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

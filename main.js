@@ -21,6 +21,7 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#2d2d2d',
     show: false,
+    icon: path.join(__dirname, process.platform === 'darwin' ? 'icon.icns' : process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
   });
 
   mainWindow.loadFile('index.html');
@@ -40,6 +41,11 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow();
+  
+  // Set dock icon (macOS specific)
+  if (process.platform === 'darwin') {
+    app.dock.setIcon(path.join(__dirname, 'icon.icns'));
+  }
   
   // Register IPC handlers after app is ready
   setupIpcHandlers();
@@ -258,6 +264,56 @@ function setupIpcHandlers() {
     } catch (error) {
       console.error('Error reading sound effects directory:', error);
       return { success: false, error: error.message, files: [] };
+    }
+  });
+
+  // Backup localStorage to desktop
+  ipcMain.handle('backup-localstorage', async (event, localStorageData) => {
+    try {
+      const desktopPath = path.join(os.homedir(), 'Desktop');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const backupFileName = `terminal-gui-backup-${timestamp}.json`;
+      const backupPath = path.join(desktopPath, backupFileName);
+      
+      const backupData = {
+        timestamp: new Date().toISOString(),
+        localStorage: localStorageData
+      };
+      
+      await fs.writeFile(backupPath, JSON.stringify(backupData, null, 2));
+      
+      return { success: true, filePath: backupPath };
+    } catch (error) {
+      console.error('Error creating localStorage backup:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Restore localStorage from backup file
+  ipcMain.handle('restore-localstorage', async (event) => {
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Select localStorage Backup File',
+        defaultPath: path.join(os.homedir(), 'Desktop'),
+        filters: [
+          { name: 'JSON Files', extensions: ['json'] },
+          { name: 'All Files', extensions: ['*'] }
+        ],
+        properties: ['openFile']
+      });
+      
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false, canceled: true };
+      }
+      
+      const backupPath = result.filePaths[0];
+      const backupContent = await fs.readFile(backupPath, 'utf8');
+      const backupData = JSON.parse(backupContent);
+      
+      return { success: true, data: backupData };
+    } catch (error) {
+      console.error('Error restoring localStorage backup:', error);
+      return { success: false, error: error.message };
     }
   });
 } 

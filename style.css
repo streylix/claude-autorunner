@@ -1828,6 +1828,16 @@ body {
     margin-right: 4px;
 }
 
+.backup-controls {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.backup-controls .setting-btn {
+    flex: 1;
+}
+
 #sound-selection-group {
     margin-top: 4px;
     opacity: 0.5;

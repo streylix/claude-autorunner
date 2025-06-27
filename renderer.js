@@ -24,6 +24,7 @@ class TerminalGUI {
         this.autoContinueActive = false;
         this.autoContinueRetryCount = 0;
         this.keywordBlockingActive = false;
+        this.trustPromptActive = false;
         this.terminalStatus = '';
         this.currentResetTime = null;
         this.statusUpdateTimeout = null;
@@ -38,7 +39,7 @@ class TerminalGUI {
             keywordRules: [
                 {
                     id: "claude_credit_example",
-                    keyword: "🤖 Generated with",
+                    keyword: "[Claude Code]",
                     response: "do not credit yourself"
                 }
             ],
@@ -434,6 +435,15 @@ class TerminalGUI {
         // Keyword blocking controls
         document.getElementById('add-keyword-btn').addEventListener('click', () => {
             this.addKeywordRule();
+        });
+
+        // Backup/Restore controls
+        document.getElementById('backup-localstorage-btn').addEventListener('click', () => {
+            this.backupLocalStorage();
+        });
+
+        document.getElementById('restore-localstorage-btn').addEventListener('click', () => {
+            this.restoreLocalStorage();
         });
 
         document.getElementById('new-keyword').addEventListener('keydown', (e) => {
@@ -1343,7 +1353,8 @@ class TerminalGUI {
             this.updateStatusDisplay();
             this.updateMessageList();
             
-            // Send Enter key
+            // Send Enter key with random delay for human-like behavior
+            const enterDelay = this.getRandomDelay(150, 300);
             setTimeout(() => {
                 ipcRenderer.send('terminal-input', '\r');
                 this.isInjecting = false;
@@ -1354,16 +1365,17 @@ class TerminalGUI {
                 
                 // Continue with next message after a short delay (only for timer-based injection)
                 if (this.timerExpired) {
+                    const nextMessageDelay = this.getRandomDelay(800, 1200);
                     setTimeout(() => {
                         this.processNextQueuedMessage();
-                    }, 1000);
+                    }, nextMessageDelay);
                 } else {
                     // Manual injection complete - reset all states
                     this.injectionInProgress = false;
                     this.logAction('Manual injection complete - stopped after one message', 'info');
                 }
                 
-            }, 200);
+            }, enterDelay);
         });
     }
 
@@ -1772,23 +1784,27 @@ class TerminalGUI {
                 
                 // Wait and inject custom response if provided
                 if (keywordBlockResult.response) {
+                    const responseDelay = this.getRandomDelay(700, 1000);
                     setTimeout(() => {
                         this.logAction(`Injecting custom response: "${keywordBlockResult.response}"`, 'info');
                         this.typeMessage(keywordBlockResult.response, () => {
+                            const enterDelay = this.getRandomDelay(150, 350);
                             setTimeout(() => {
                                 ipcRenderer.send('terminal-input', '\r');
                                 // Reset keyword blocking flag
+                                const resetDelay = this.getRandomDelay(800, 1200);
                                 setTimeout(() => {
                                     this.keywordBlockingActive = false;
-                                }, 1000);
-                            }, 200);
+                                }, resetDelay);
+                            }, enterDelay);
                         });
-                    }, 800);
+                    }, responseDelay);
                 } else {
                     // Just Esc without response
+                    const resetDelay = this.getRandomDelay(800, 1200);
                     setTimeout(() => {
                         this.keywordBlockingActive = false;
-                    }, 1000);
+                    }, resetDelay);
                 }
                 return; // Exit early, don't process auto-continue
             }
@@ -1828,6 +1844,21 @@ class TerminalGUI {
         
         // Check for prompts that should trigger auto-continue
         const hasGeneralPrompt = /Do you want to proceed\?/i.test(this.lastTerminalOutput);
+        const hasTrustPrompt = this.lastTerminalOutput.includes('Do you trust the files in this folder?');
+        
+        // Handle trust prompt - inject enter with random delay
+        if (hasTrustPrompt && !this.trustPromptActive) {
+            this.trustPromptActive = true;
+            const delay = this.getRandomDelay(1000, 2000); // 1-2 seconds
+            this.logAction(`Trust prompt detected - auto-injecting enter in ${delay}ms`, 'info');
+            
+            setTimeout(() => {
+                ipcRenderer.send('terminal-input', '\r');
+                this.trustPromptActive = false;
+            }, delay);
+            
+            return; // Exit early to avoid other auto-continue processing
+        }
         
         // Auto-continue for Claude prompt or general prompts
         if (hasClaudePrompt || hasGeneralPrompt) {
@@ -1855,10 +1886,14 @@ class TerminalGUI {
         this.autoContinueRetryCount++;
         this.logAction(`Auto-continue attempt #${this.autoContinueRetryCount} for ${promptType}`, 'info');
         
-        // Send Enter key
-        ipcRenderer.send('terminal-input', '\r');
+        // Send Enter key with small random delay for human-like behavior
+        const enterDelay = this.getRandomDelay(50, 150);
+        setTimeout(() => {
+            ipcRenderer.send('terminal-input', '\r');
+        }, enterDelay);
         
         // Wait for terminal to process, then check if we need to continue
+        const checkDelay = 1000 + this.getRandomDelay(0, 300); // 1-1.3 seconds
         setTimeout(() => {
             if (this.autoContinueActive) {
                 // Check if prompt text is still present in recent output
@@ -1884,10 +1919,13 @@ class TerminalGUI {
                     this.lastTerminalOutput = '';
                 }
             }
-        }, 1000); // Wait 1 second for terminal to process
+        }, checkDelay);
     }
 
-
+    // Helper function to generate random delays for more human-like behavior
+    getRandomDelay(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
 
     detectUsageLimit(data) {
         // Check for "Approaching usage limit" message and parse the reset time
@@ -1965,6 +2003,24 @@ class TerminalGUI {
             resetTimeSpan.textContent = `${minutes}m`;
         }
         
+        // Add 'continue' message to top of queue if there are items in queue
+        if (this.messageQueue.length > 0) {
+            const continueMessage = {
+                id: this.generateMessageId(),
+                content: '\r', // Enter key to continue current prompt
+                executeAt: Date.now(), // Execute immediately
+                createdAt: Date.now()
+            };
+            
+            // Add to the beginning of the queue
+            this.messageQueue.unshift(continueMessage);
+            this.saveMessageQueue();
+            this.updateMessageList();
+            this.updateStatusDisplay();
+            
+            this.logAction('Added continue message to handle current prompt before queue processing', 'info');
+        }
+
         // Show modal and start progress bar animation
         modal.classList.add('show');
         setTimeout(() => {
@@ -2133,8 +2189,9 @@ class TerminalGUI {
         const directoryElement = document.getElementById('current-directory');
         const tooltipElement = document.getElementById('directory-tooltip');
         
-        directoryElement.childNodes[0].textContent = this.currentDirectory;
-        tooltipElement.textContent = this.currentDirectory;
+        const displayDirectory = this.currentDirectory || 'Loading...';
+        directoryElement.childNodes[0].textContent = displayDirectory;
+        tooltipElement.textContent = displayDirectory;
         
         document.getElementById('injection-count').textContent = this.injectionCount;
         document.getElementById('queue-count').textContent = this.messageQueue.length;
@@ -2877,6 +2934,79 @@ class TerminalGUI {
         this.logAction(`Reordered message: "${movedMessage.content.substring(0, 30)}..." from position ${fromIndex + 1} to ${toIndex + 1}`, 'info');
     }
 
+    // LocalStorage Backup/Restore Methods
+    async backupLocalStorage() {
+        try {
+            // Get all localStorage data
+            const localStorageData = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                localStorageData[key] = localStorage.getItem(key);
+            }
+            
+            const result = await ipcRenderer.invoke('backup-localstorage', localStorageData);
+            
+            if (result.success) {
+                this.logAction(`LocalStorage backed up to: ${result.filePath}`, 'info');
+                this.showNotification('Backup successful!', `Data saved to ${result.filePath}`, 'success');
+            } else {
+                this.logAction(`Failed to backup localStorage: ${result.error}`, 'error');
+                this.showNotification('Backup failed', result.error, 'error');
+            }
+        } catch (error) {
+            this.logAction(`Error during backup: ${error.message}`, 'error');
+            this.showNotification('Backup error', error.message, 'error');
+        }
+    }
+
+    async restoreLocalStorage() {
+        try {
+            const result = await ipcRenderer.invoke('restore-localstorage');
+            
+            if (result.canceled) {
+                return; // User canceled the file dialog
+            }
+            
+            if (result.success && result.data) {
+                const backupData = result.data;
+                
+                // Confirm with user before restoring
+                const confirmRestore = confirm(
+                    `This will replace your current settings with backup from ${backupData.timestamp}. Continue?`
+                );
+                
+                if (confirmRestore) {
+                    // Clear current localStorage
+                    localStorage.clear();
+                    
+                    // Restore from backup
+                    Object.keys(backupData.localStorage).forEach(key => {
+                        localStorage.setItem(key, backupData.localStorage[key]);
+                    });
+                    
+                    this.logAction(`LocalStorage restored from backup (${backupData.timestamp})`, 'info');
+                    this.showNotification('Restore successful!', 'Data restored. Reloading application...', 'success');
+                    
+                    // Reload the application to apply restored settings
+                    setTimeout(() => {
+                        location.reload();
+                    }, 2000);
+                }
+            } else {
+                this.logAction(`Failed to restore localStorage: ${result.error}`, 'error');
+                this.showNotification('Restore failed', result.error, 'error');
+            }
+        } catch (error) {
+            this.logAction(`Error during restore: ${error.message}`, 'error');
+            this.showNotification('Restore error', error.message, 'error');
+        }
+    }
+
+    showNotification(title, message, type = 'info') {
+        // Simple notification system - could be enhanced with toast notifications
+        const prefix = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
+        alert(`${prefix} ${title}\n\n${message}`);
+    }
 
     // Sound Effects Methods
     async populateSoundEffects() {
@@ -2890,11 +3020,11 @@ class TerminalGUI {
             // Clear existing options
             select.innerHTML = '';
             
-            // Add "None" option
-            const noneOption = document.createElement('option');
-            noneOption.value = '';
-            noneOption.textContent = 'None';
-            select.appendChild(noneOption);
+            // Add "Hl2 beep" as default option
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = 'Hl2 beep';
+            select.appendChild(defaultOption);
             
             if (result.success && result.files.length > 0) {
                 // Add sound files as options
