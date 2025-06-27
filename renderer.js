@@ -2232,7 +2232,7 @@ class TerminalGUI {
         if (this.messageQueue.length > 0) {
             const continueMessage = {
                 id: this.generateMessageId(),
-                content: '\r', // Enter key to continue current prompt
+                content: '\\r', // Enter key to continue current prompt (escaped for proper handling)
                 executeAt: Date.now(), // Execute immediately
                 createdAt: Date.now()
             };
