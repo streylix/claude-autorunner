@@ -712,6 +712,19 @@ class TerminalGUI {
         const messageList = document.getElementById('message-list');
         messageList.innerHTML = '';
         
+        // Add drag and drop event listeners to the message list container for better event handling
+        if (!messageList.hasAttribute('data-drag-listeners-added')) {
+            messageList.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                this.handleDragOver(e);
+            });
+            messageList.addEventListener('drop', (e) => {
+                e.preventDefault();
+                this.handleDrop(e);
+            });
+            messageList.setAttribute('data-drag-listeners-added', 'true');
+        }
+        
         this.messageQueue.forEach((message, index) => {
             const messageElement = document.createElement('div');
             messageElement.className = 'message-item';
@@ -1818,9 +1831,21 @@ class TerminalGUI {
             return;
         }
 
+        // Check if we're already injecting something
+        if (this.isInjecting || this.injectionInProgress) {
+            this.logAction('Manual injection blocked - another injection is in progress', 'warning');
+            return;
+        }
+
         // Get the first message in the queue
         const message = this.messageQueue[0];
         this.logAction(`Manual injection started: "${message.content.substring(0, 50)}..."`, 'info');
+        
+        // Set injection state
+        this.isInjecting = true;
+        this.injectionInProgress = true;
+        this.currentlyInjectingMessageId = message.id;
+        this.updateMessageList(); // Update UI to show injecting state
         
         // Use the existing typeMessage method which handles control sequences properly
         this.typeMessage(message.content, () => {
@@ -1838,10 +1863,15 @@ class TerminalGUI {
             this.saveMessageQueue();
             
             // Update counters and UI
-            this.updateMessageList();
-            this.updateStatusDisplay();
             this.injectionCount++;
             this.saveToMessageHistory(message); // Save to history after successful injection
+            
+            // Reset injection state
+            this.isInjecting = false;
+            this.injectionInProgress = false;
+            this.currentlyInjectingMessageId = null;
+            this.updateMessageList();
+            this.updateStatusDisplay();
             
             this.logAction(`Manual injection complete: "${message.content.substring(0, 50)}..."`, 'success');
         });
@@ -2864,9 +2894,37 @@ class TerminalGUI {
             return { blocked: false };
         }
         
+        // Ensure we have terminal output to check
+        if (!this.lastTerminalOutput || this.lastTerminalOutput.trim() === '') {
+            return { blocked: false };
+        }
+        
         // Find the ╭ character which marks the start of the current Claude prompt area
         const claudePromptStart = this.lastTerminalOutput.lastIndexOf("╭");
         if (claudePromptStart === -1) {
+            // Fallback: check the last 1000 characters if no ╭ found
+            const fallbackArea = this.lastTerminalOutput.slice(-1000);
+            const hasClaudePrompt = fallbackArea.includes("No, and tell Claude what to do differently");
+            if (!hasClaudePrompt) {
+                return { blocked: false };
+            }
+            
+            // Use fallback area for keyword checking
+            for (const rule of this.preferences.keywordRules) {
+                if (!rule.keyword || rule.keyword.trim() === '') continue;
+                
+                const keywordLower = rule.keyword.toLowerCase().trim();
+                const fallbackAreaLower = fallbackArea.toLowerCase();
+                
+                if (fallbackAreaLower.includes(keywordLower)) {
+                    console.log(`Keyword "${rule.keyword}" found in fallback Claude prompt area!`);
+                    return {
+                        blocked: true,
+                        keyword: rule.keyword,
+                        response: rule.response || ''
+                    };
+                }
+            }
             return { blocked: false };
         }
         
@@ -2884,7 +2942,9 @@ class TerminalGUI {
         
         // Look for keywords only in the current prompt area (from ╭ to end)
         for (const rule of this.preferences.keywordRules) {
-            const keywordLower = rule.keyword.toLowerCase();
+            if (!rule.keyword || rule.keyword.trim() === '') continue;
+            
+            const keywordLower = rule.keyword.toLowerCase().trim();
             const promptAreaLower = currentPromptArea.toLowerCase();
             
             if (promptAreaLower.includes(keywordLower)) {
@@ -2892,7 +2952,7 @@ class TerminalGUI {
                 return {
                     blocked: true,
                     keyword: rule.keyword,
-                    response: rule.response
+                    response: rule.response || ''
                 };
             }
         }
@@ -3234,20 +3294,34 @@ class TerminalGUI {
     // Drag and drop functionality
     // Drag and drop functionality
     handleDragStart(e) {
+        // Ensure we get the message item element
+        const messageItem = e.target.closest('.message-item');
+        if (!messageItem) return;
+        
         e.dataTransfer.setData('text/plain', '');
-        this.draggedElement = e.target;
-        this.draggedIndex = parseInt(e.target.dataset.index);
-        e.target.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        
+        this.draggedElement = messageItem;
+        this.draggedIndex = parseInt(messageItem.dataset.index);
+        this.isDragging = true;
+        
+        messageItem.classList.add('dragging');
         
         // Add active class to message list
         document.getElementById('message-list').classList.add('drag-active');
         
         // Add drag-mode class to sidebar to expand message queue
         document.querySelector('.sidebar').classList.add('drag-mode');
+        
+        console.log('Drag started:', this.draggedIndex);
     }
 
     handleDragOver(e) {
         e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        
+        if (!this.isDragging) return;
+        
         const target = e.target.closest('.message-item');
         if (target && target !== this.draggedElement) {
             // Remove drag-over class from all items
@@ -3261,9 +3335,14 @@ class TerminalGUI {
 
     handleDrop(e) {
         e.preventDefault();
+        e.stopPropagation();
+        
+        if (!this.isDragging) return;
+        
         const target = e.target.closest('.message-item');
         if (target && target !== this.draggedElement) {
             const targetIndex = parseInt(target.dataset.index);
+            console.log('Dropping at:', targetIndex);
             this.reorderMessage(this.draggedIndex, targetIndex);
         }
         
@@ -3287,6 +3366,9 @@ class TerminalGUI {
         
         this.draggedElement = null;
         this.draggedIndex = null;
+        this.isDragging = false;
+        
+        console.log('Drag state cleaned up');
     }
 
     reorderMessage(fromIndex, toIndex) {
