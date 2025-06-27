@@ -2949,6 +2949,9 @@ class TerminalGUI {
         
         // Add active class to message list
         document.getElementById('message-list').classList.add('drag-active');
+        
+        // Add drag-mode class to sidebar to expand message queue
+        document.querySelector('.sidebar').classList.add('drag-mode');
     }
 
     handleDragOver(e) {
@@ -2986,6 +2989,10 @@ class TerminalGUI {
         });
         
         document.getElementById('message-list').classList.remove('drag-active');
+        
+        // Remove drag-mode class from sidebar to restore normal layout
+        document.querySelector('.sidebar').classList.remove('drag-mode');
+        
         this.draggedElement = null;
         this.draggedIndex = null;
     }

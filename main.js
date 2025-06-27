@@ -25,15 +25,15 @@ function getIcon() {
     const iconPath = path.join(__dirname, iconFile);
     try {
       if (fs.existsSync(iconPath)) {
-        console.log('Using icon:', iconPath);
+        try { console.log('Using icon:', iconPath); } catch (e) { /* ignore */ }
         return iconPath;
       }
     } catch (error) {
-      console.warn('Error checking icon:', iconPath, error.message);
+      try { console.warn('Error checking icon:', iconPath, error.message); } catch (e) { /* ignore */ }
     }
   }
   
-  console.warn('No suitable icon found, using default');
+  try { console.warn('No suitable icon found, using default'); } catch (e) { /* ignore */ }
   return undefined;
 }
 
@@ -76,17 +76,17 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin') {
     try {
       const pngIconPath = path.join(__dirname, 'icon.png');
-      console.log('Setting dock icon from:', pngIconPath);
+      try { console.log('Setting dock icon from:', pngIconPath); } catch (e) { /* ignore */ }
       app.dock.setIcon(pngIconPath);
     } catch (error) {
-      console.error('Failed to set PNG dock icon:', error);
+      try { console.error('Failed to set PNG dock icon:', error); } catch (e) { /* ignore */ }
       // Fallback to ICNS if PNG fails
       try {
         const icnsIconPath = path.join(__dirname, 'icon.icns');
-        console.log('Fallback to ICNS icon:', icnsIconPath);
+        try { console.log('Fallback to ICNS icon:', icnsIconPath); } catch (e) { /* ignore */ }
         app.dock.setIcon(icnsIconPath);
       } catch (icnsError) {
-        console.error('Failed to set ICNS dock icon:', icnsError);
+        try { console.error('Failed to set ICNS dock icon:', icnsError); } catch (e) { /* ignore */ }
       }
     }
   }
@@ -178,7 +178,7 @@ function setupIpcHandlers() {
       
       return { success: true };
     } catch (error) {
-      console.error('Error changing terminal directory:', error);
+      try { console.error('Error changing terminal directory:', error); } catch (e) { /* ignore */ }
       return { success: false, error: error.message };
     }
   });
@@ -194,7 +194,7 @@ function setupIpcHandlers() {
       
       return result;
     } catch (error) {
-      console.error('Error in show-directory-dialog handler:', error);
+      try { console.error('Error in show-directory-dialog handler:', error); } catch (e) { /* ignore */ }
       throw error;
     }
   });
@@ -235,7 +235,7 @@ function setupIpcHandlers() {
       
       return { success: true, files: results };
     } catch (error) {
-      console.error('Error handling file drop:', error);
+      try { console.error('Error handling file drop:', error); } catch (e) { /* ignore */ }
       return { success: false, error: error.message };
     }
   });
@@ -267,7 +267,7 @@ function setupIpcHandlers() {
         relativePath: `./imported-files/${fileName}`
       };
     } catch (error) {
-      console.error('Error saving screenshot:', error);
+      try { console.error('Error saving screenshot:', error); } catch (e) { /* ignore */ }
       return { success: false, error: error.message };
     }
   });
@@ -287,7 +287,7 @@ function setupIpcHandlers() {
         isDirectory: stats.isDirectory()
       };
     } catch (error) {
-      console.error('Error getting file info:', error);
+      try { console.error('Error getting file info:', error); } catch (e) { /* ignore */ }
       return { success: false, error: error.message };
     }
   });
@@ -306,7 +306,7 @@ function setupIpcHandlers() {
       
       return { success: true, files: audioFiles };
     } catch (error) {
-      console.error('Error reading sound effects directory:', error);
+      try { console.error('Error reading sound effects directory:', error); } catch (e) { /* ignore */ }
       return { success: false, error: error.message, files: [] };
     }
   });
@@ -328,7 +328,7 @@ function setupIpcHandlers() {
       
       return { success: true, filePath: backupPath };
     } catch (error) {
-      console.error('Error creating localStorage backup:', error);
+      try { console.error('Error creating localStorage backup:', error); } catch (e) { /* ignore */ }
       return { success: false, error: error.message };
     }
   });
@@ -356,7 +356,7 @@ function setupIpcHandlers() {
       
       return { success: true, data: backupData };
     } catch (error) {
-      console.error('Error restoring localStorage backup:', error);
+      try { console.error('Error restoring localStorage backup:', error); } catch (e) { /* ignore */ }
       return { success: false, error: error.message };
     }
   });

@@ -1659,6 +1659,40 @@ body {
     background-color: var(--bg-quaternary);
 }
 
+/* Expand message queue during drag operations */
+.sidebar.drag-mode .queued-messages {
+    flex: 3; /* Grow significantly during drag */
+    transition: flex 0.3s ease;
+}
+
+.sidebar.drag-mode .important-details {
+    flex: 0.3; /* Shrink status section */
+    min-height: 80px; /* Maintain minimum height */
+    transition: flex 0.3s ease;
+}
+
+.sidebar.drag-mode .timer-section {
+    flex: 0.3; /* Shrink timer section */
+    min-height: 60px; /* Maintain minimum height */
+    transition: flex 0.3s ease;
+}
+
+/* Default flex values for normal mode */
+.sidebar .important-details {
+    flex: none; /* Default auto sizing */
+    transition: flex 0.3s ease;
+}
+
+.sidebar .timer-section {
+    flex: none; /* Default auto sizing */  
+    transition: flex 0.3s ease;
+}
+
+.sidebar .queued-messages {
+    flex: 1; /* Default flex grow */
+    transition: flex 0.3s ease;
+}
+
 /* File Drop Zone Styles */
 /* .input-container {
     position: relative;
