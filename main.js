@@ -7,6 +7,36 @@ const fs = require('fs').promises;
 let mainWindow;
 let ptyProcess;
 
+function getIcon() {
+  const fs = require('fs');
+  
+  // Try different icon formats based on platform
+  const iconOptions = [];
+  
+  if (process.platform === 'darwin') {
+    iconOptions.push('icon.png', 'icon.icns');
+  } else if (process.platform === 'win32') {
+    iconOptions.push('icon.ico', 'icon.png');
+  } else {
+    iconOptions.push('icon.png', 'icon.icns');
+  }
+  
+  for (const iconFile of iconOptions) {
+    const iconPath = path.join(__dirname, iconFile);
+    try {
+      if (fs.existsSync(iconPath)) {
+        console.log('Using icon:', iconPath);
+        return iconPath;
+      }
+    } catch (error) {
+      console.warn('Error checking icon:', iconPath, error.message);
+    }
+  }
+  
+  console.warn('No suitable icon found, using default');
+  return undefined;
+}
+
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -21,7 +51,7 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#2d2d2d',
     show: false,
-    icon: path.join(__dirname, process.platform === 'darwin' ? 'icon.icns' : process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
+    icon: getIcon(),
   });
 
   mainWindow.loadFile('index.html');
@@ -44,7 +74,21 @@ app.whenReady().then(() => {
   
   // Set dock icon (macOS specific)
   if (process.platform === 'darwin') {
-    app.dock.setIcon(path.join(__dirname, 'icon.icns'));
+    try {
+      const pngIconPath = path.join(__dirname, 'icon.png');
+      console.log('Setting dock icon from:', pngIconPath);
+      app.dock.setIcon(pngIconPath);
+    } catch (error) {
+      console.error('Failed to set PNG dock icon:', error);
+      // Fallback to ICNS if PNG fails
+      try {
+        const icnsIconPath = path.join(__dirname, 'icon.icns');
+        console.log('Fallback to ICNS icon:', icnsIconPath);
+        app.dock.setIcon(icnsIconPath);
+      } catch (icnsError) {
+        console.error('Failed to set ICNS dock icon:', icnsError);
+      }
+    }
   }
   
   // Register IPC handlers after app is ready
