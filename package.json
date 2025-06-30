@@ -1,9 +1,9 @@
 {
-  "name": "terminal-gui",
+  "name": "auto-injector",
   "version": "1.0.0",
-  "description": "Interactive terminal with message queuing system",
+  "description": "Automated message injection terminal with queuing system",
   "main": "main.js",
-  "author": "Terminal GUI",
+  "author": "Auto-Injector",
   "license": "MIT",
   "keywords": [
     "terminal",
@@ -17,8 +17,8 @@
     "build": "electron-builder"
   },
   "build": {
-    "appId": "com.terminal.gui",
-    "productName": "Terminal GUI",
+    "appId": "com.auto.injector",
+    "productName": "Auto-Injector",
     "mac": {
       "icon": "icon.icns"
     },

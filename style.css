@@ -753,6 +753,16 @@ body {
     height: 16px;
 }
 
+.timer-btn.paused {
+    color: var(--accent-warning);
+    background-color: var(--bg-tertiary);
+}
+
+.timer-btn.paused:hover {
+    color: var(--accent-warning);
+    background-color: var(--bg-quaternary);
+}
+
 .timer-display-row {
     display: flex;
     align-items: center;
@@ -1062,11 +1072,11 @@ body {
 }
 
 .xterm .xterm-viewport {
-    background-color: transparent !important;
+    background-color: var(--terminal-bg) !important;
 }
 
 .xterm .xterm-screen {
-    background-color: transparent !important;
+    background-color: var(--terminal-bg) !important;
 }
 
 /* Scrollbar styling */
@@ -1903,15 +1913,6 @@ body {
     margin-right: 4px;
 }
 
-.backup-controls {
-    display: flex;
-    gap: 8px;
-    margin-top: 8px;
-}
-
-.backup-controls .setting-btn {
-    flex: 1;
-}
 
 #sound-selection-group {
     margin-top: 4px;
@@ -2024,3 +2025,4 @@ body {
     width: 14px;
     height: 14px;
 }
+

@@ -71,7 +71,12 @@ class TerminalGUI {
         this.timerInterval = null;
         this.timerExpired = false;
         this.injectionInProgress = false;
+        this.injectionPaused = false;
+        this.pausedMessageContent = null;
+        this.pausedMessageIndex = 0;
         this.currentTypeInterval = null;
+        this.usageLimitModalShowing = false;
+        this.usageLimitWaiting = false;
         
         // Message editing state
         this.editingMessageId = null;
@@ -92,6 +97,7 @@ class TerminalGUI {
         
         // Message history tracking
         this.messageHistory = [];
+        
         
         // Initialize the application asynchronously
         this.initialize();
@@ -118,6 +124,7 @@ class TerminalGUI {
             this.updateStatusDisplay();
             this.setTerminalStatusDisplay(''); // Initialize with default status
             this.updateTimerUI(); // Initialize timer UI after loading preferences
+            
             
             console.log('App initialization completed successfully');
         } catch (error) {
@@ -155,13 +162,15 @@ class TerminalGUI {
         const terminalContainer = document.getElementById('terminal-container');
         this.terminal.open(terminalContainer);
         
-        // Fit terminal to container
-        this.fitAddon.fit();
+        // Fit terminal to container - add delay to ensure container is rendered
+        setTimeout(() => {
+            this.fitAddon.fit();
+        }, 10);
         
         // Ensure terminal starts at bottom on initialization
         setTimeout(() => {
             this.scrollToBottom();
-        }, 50);
+        }, 100);
 
         // Handle terminal input
         this.terminal.onData((data) => {
@@ -298,13 +307,12 @@ class TerminalGUI {
 
     setupEventListeners() {
         // IPC listeners for terminal data
-        ipcRenderer.on('terminal-data', (event, data) => {
+        ipcRenderer.on('terminal-data', async (event, data) => {
             console.log('Received terminal data:', data);
             this.terminal.write(data);
             this.updateTerminalOutput(data);
             this.detectAutoContinuePrompt(data);
-            this.detectUsageLimit(data);
-            this.detectDirectoryFromOutput(data);
+            await this.detectUsageLimit(data);
             // Terminal status is now handled by continuous scanning system
             this.handleTerminalOutput();
         });
@@ -426,7 +434,7 @@ class TerminalGUI {
 
         // New timer system event listeners
         document.getElementById('timer-play-pause-btn').addEventListener('click', () => {
-            this.toggleTimer();
+            this.toggleTimerOrInjection();
         });
 
         document.getElementById('timer-stop-btn').addEventListener('click', () => {
@@ -510,13 +518,7 @@ class TerminalGUI {
         });
 
         // Backup/Restore controls
-        document.getElementById('backup-localstorage-btn').addEventListener('click', () => {
-            this.backupLocalStorage();
-        });
-
-        document.getElementById('restore-localstorage-btn').addEventListener('click', () => {
-            this.restoreLocalStorage();
-        });
+        // New backup system event listeners
 
         document.getElementById('new-keyword').addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
@@ -690,7 +692,8 @@ class TerminalGUI {
         const input = document.getElementById('message-input');
         const content = input.value.trim();
         
-        if (content) {
+        // Validate content is not empty or just whitespace
+        if (this.isValidMessageContent(content)) {
             const now = Date.now();
             const message = {
                 id: this.generateMessageId(),
@@ -996,17 +999,32 @@ class TerminalGUI {
     }
 
     async saveMessageQueue() {
-        try {
-            // Clear existing messages in database
-            await ipcRenderer.invoke('db-clear-messages');
-            
-            // Save each message to database
-            for (const message of this.messageQueue) {
-                await ipcRenderer.invoke('db-save-message', message);
+        const maxRetries = 3;
+        let retries = 0;
+        
+        while (retries < maxRetries) {
+            try {
+                // Atomically save entire message queue to prevent data loss
+                const success = await ipcRenderer.invoke('db-save-message-queue', this.messageQueue);
+                if (success) {
+                    return; // Success, exit function
+                } else {
+                    console.error(`Failed to save message queue - database operation failed (attempt ${retries + 1}/${maxRetries})`);
+                }
+            } catch (error) {
+                console.error(`Failed to save message queue (attempt ${retries + 1}/${maxRetries}):`, error);
             }
-        } catch (error) {
-            console.error('Failed to save message queue:', error);
+            
+            retries++;
+            if (retries < maxRetries) {
+                // Wait before retrying (exponential backoff)
+                await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, retries)));
+            }
         }
+        
+        // All retries failed
+        this.logAction(`Failed to save message queue after ${maxRetries} attempts`, 'error');
+        console.error('All attempts to save message queue failed - data may be lost on app restart');
     }
 
     async saveToMessageHistory(message) {
@@ -1018,6 +1036,7 @@ class TerminalGUI {
             
             // Save to database
             await ipcRenderer.invoke('db-save-message-history', historyItem);
+            
             
             // Update local array for UI (add id for compatibility)
             const localHistoryItem = {
@@ -1060,6 +1079,20 @@ class TerminalGUI {
         }
     }
 
+    toggleTimerOrInjection() {
+        // If injection is in progress, handle injection pause/resume
+        if (this.injectionInProgress) {
+            if (this.injectionPaused) {
+                this.resumeInjectionExecution();
+            } else {
+                this.pauseInjectionExecution();
+            }
+        } else {
+            // Otherwise, handle timer pause/resume
+            this.toggleTimer();
+        }
+    }
+
     startTimer() {
         if (this.timerHours === 0 && this.timerMinutes === 0 && this.timerSeconds === 0) {
             this.logAction('Cannot start timer - time not set', 'warning');
@@ -1070,8 +1103,13 @@ class TerminalGUI {
         this.timerExpired = false;
         this.updateTimerUI();
         
-        this.timerInterval = setInterval(() => {
-            this.decrementTimer();
+        this.timerInterval = setInterval(async () => {
+            try {
+                await this.decrementTimer();
+            } catch (error) {
+                console.error('Error in decrementTimer:', error);
+                this.logAction('Timer error: ' + error.message, 'error');
+            }
         }, 1000);
         
         this.logAction('Timer started', 'info');
@@ -1091,6 +1129,7 @@ class TerminalGUI {
         this.timerActive = false;
         this.timerExpired = false;
         this.injectionInProgress = false;
+        this.usageLimitWaiting = false;
         this.timerHours = 0;
         this.timerMinutes = 0;
         this.timerSeconds = 0;
@@ -1104,7 +1143,7 @@ class TerminalGUI {
         this.logAction('Timer stopped and reset', 'info');
     }
 
-    decrementTimer() {
+    async decrementTimer() {
         if (this.timerSeconds > 0) {
             this.timerSeconds--;
         } else if (this.timerMinutes > 0) {
@@ -1122,6 +1161,44 @@ class TerminalGUI {
                 clearInterval(this.timerInterval);
                 this.timerInterval = null;
             }
+            
+            // If we were waiting for usage limit reset, clear the waiting state
+            if (this.usageLimitWaiting) {
+                this.usageLimitWaiting = false;
+                this.logAction('Usage limit reset time reached - resuming auto injection', 'success');
+                
+                // Clear the saved reset time state to allow fresh detection cycles
+                // This prevents re-processing old usage limit messages from terminal buffer
+                try {
+                    await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTime', null);
+                } catch (error) {
+                    console.error('Error clearing usage limit timer state:', error);
+                }
+                
+                // Automatically add 'continue' to message queue when usage limit resets
+                const continueContent = 'continue';
+                
+                // Validate the continue message (safety check)
+                if (this.isValidMessageContent(continueContent)) {
+                    const continueMessage = {
+                        id: this.generateMessageId(),
+                        content: continueContent,
+                        executeAt: Date.now(),
+                        createdAt: Date.now()
+                    };
+                    
+                    // Add to the beginning of the queue (highest priority)
+                    this.messageQueue.unshift(continueMessage);
+                    this.saveMessageQueue();
+                    this.updateMessageList();
+                    this.updateStatusDisplay();
+                    
+                    this.logAction('Auto-added continue message after usage limit reset', 'info');
+                } else {
+                    this.logAction('Failed to add continue message - validation failed', 'error');
+                }
+            }
+            
             this.updateTimerUI();
             this.startSequentialInjection();
             return;
@@ -1133,6 +1210,13 @@ class TerminalGUI {
 
     updateTimerDisplay() {
         const display = document.getElementById('timer-display');
+        
+        // Show "Waiting..." when usage limit modal is active
+        if (this.usageLimitModalShowing) {
+            display.textContent = 'Waiting...';
+            return;
+        }
+        
         const hours = String(this.timerHours).padStart(2, '0');
         const minutes = String(this.timerMinutes).padStart(2, '0');
         const seconds = String(this.timerSeconds).padStart(2, '0');
@@ -1165,13 +1249,27 @@ class TerminalGUI {
         // When timer is at 00:00:00 and not injecting, it goes back to grey (no additional classes)
         
         // Update play/pause button
-        if (this.timerActive) {
+        if (this.injectionInProgress) {
+            // During injection, show pause/resume for injection execution
+            if (this.injectionPaused) {
+                playPauseBtn.innerHTML = '<i data-lucide="play"></i>';
+                playPauseBtn.classList.add('paused');
+                playPauseBtn.classList.remove('active');
+                playPauseBtn.title = 'Resume injection execution';
+            } else {
+                playPauseBtn.innerHTML = '<i data-lucide="pause"></i>';
+                playPauseBtn.classList.add('active');
+                playPauseBtn.classList.remove('paused');
+                playPauseBtn.title = 'Pause injection execution';
+            }
+        } else if (this.timerActive) {
             playPauseBtn.innerHTML = '<i data-lucide="pause"></i>';
             playPauseBtn.classList.add('active');
+            playPauseBtn.classList.remove('paused');
             playPauseBtn.title = 'Pause timer';
         } else {
             playPauseBtn.innerHTML = '<i data-lucide="play"></i>';
-            playPauseBtn.classList.remove('active');
+            playPauseBtn.classList.remove('active', 'paused');
             playPauseBtn.title = 'Start timer';
         }
         
@@ -1515,19 +1613,33 @@ class TerminalGUI {
             return;
         }
         
+        // State recovery: if we're already in an injection state but stuck, reset it
+        if (this.injectionInProgress && !this.isInjecting) {
+            this.logAction('Detected stuck injection state - recovering', 'warning');
+            this.injectionInProgress = false;
+            this.isInjecting = false;
+            this.safetyCheckCount = 0;
+        }
+        
         this.injectionInProgress = true;
         this.updateTimerUI();
-        this.logAction(`Timer expired - starting sequential injection of ${this.messageQueue.length} messages`, 'success');
+        this.logAction(`Timer expired - starting sequential injection of ${this.messageQueue.length} messages (timerExpired=${this.timerExpired}, usageLimitWaiting=${this.usageLimitWaiting})`, 'success');
         
         // Start with first message (no 30-second delay for first message)
         this.processNextQueuedMessage(true);
     }
 
     processNextQueuedMessage(isFirstMessage = false) {
+        this.logAction(`DEBUG: processNextQueuedMessage called - isFirstMessage=${isFirstMessage}, queueLength=${this.messageQueue.length}, injectionInProgress=${this.injectionInProgress}, timerExpired=${this.timerExpired}`, 'debug');
+        
         if (this.messageQueue.length === 0) {
             // Sequential injection is complete - reset all states
             this.injectionInProgress = false;
-            this.timerExpired = false; // Reset timer expired state when injection completes
+            // Only reset timerExpired if we're not waiting for usage limit reset
+            // This prevents breaking waitForStableReadyState after timer expiration
+            if (!this.usageLimitWaiting) {
+                this.timerExpired = false; // Reset timer expired state when injection completes normally
+            }
             this.safetyCheckCount = 0; // Reset safety check count
             this.updateTimerUI();
             this.logAction('Sequential injection completed - all messages processed', 'success');
@@ -1550,11 +1662,13 @@ class TerminalGUI {
             });
                  } else {
              // Wait for terminal to be in ready state ('...') for 5 seconds consistently
-            //  this.logAction('Waiting for terminal to be ready for 5 seconds before next injection', 'info');
+             this.logAction('DEBUG: Waiting for terminal to be ready for 5 seconds before next injection', 'debug');
              this.waitForStableReadyState(() => {
                  // Terminal has been ready for 5 seconds - start safety checks
+                 this.logAction('DEBUG: Terminal ready state achieved, starting safety checks', 'debug');
                  this.performSafetyChecks(() => {
                      // Safety checks passed - inject the message
+                     this.logAction('DEBUG: Safety checks passed, injecting message', 'debug');
                      this.injectMessageAndContinueQueue();
                  });
              });
@@ -1562,12 +1676,15 @@ class TerminalGUI {
     }
 
     injectMessageAndContinueQueue() {
+        this.logAction('DEBUG: injectMessageAndContinueQueue STARTED', 'debug');
         if (this.messageQueue.length === 0) {
+            this.logAction('DEBUG: No messages in queue, calling processNextQueuedMessage', 'debug');
             this.processNextQueuedMessage();
             return;
         }
         
         const message = this.messageQueue.shift();
+        this.logAction(`DEBUG: Injecting message: "${message.content}" (id: ${message.id})`, 'debug');
         this.saveMessageQueue(); // Save queue changes to localStorage
         this.isInjecting = true;
         // Keep injectionInProgress true throughout the entire sequence
@@ -1638,6 +1755,34 @@ class TerminalGUI {
         this.logAction(`Sequential injection cancelled - ${this.messageQueue.length} messages remaining in queue`, 'warning');
     }
 
+    pauseInProgressInjection() {
+        if (this.injectionInProgress) {
+            // Pause all injection processes but keep the queue intact
+            this.injectionInProgress = false;
+            this.isInjecting = false;
+            this.currentlyInjectingMessageId = null;
+            
+            // Clear any pending safety check timeouts
+            if (this.safetyCheckInterval) {
+                clearInterval(this.safetyCheckInterval);
+                this.safetyCheckInterval = null;
+            }
+            
+            // Clear any in-progress typing
+            if (this.currentTypeInterval) {
+                clearInterval(this.currentTypeInterval);
+                this.currentTypeInterval = null;
+            }
+            
+            // Update UI to show waiting state
+            this.updateTimerUI();
+            this.updateTerminalStatusIndicator();
+            this.updateMessageList();
+            
+            this.logAction('Injection paused due to usage limit modal - waiting for user choice', 'info');
+        }
+    }
+
     // Add emergency reset function for stuck states
     forceResetInjectionState() {
         this.logAction('Force resetting injection state - clearing all flags', 'warning');
@@ -1674,10 +1819,100 @@ class TerminalGUI {
         this.logAction('Injection state reset complete', 'success');
     }
 
+    // Pause execution during injection (preserves current typing position)
+    pauseInjectionExecution() {
+        if (!this.injectionInProgress) {
+            this.logAction('Cannot pause - no injection in progress', 'warning');
+            return false;
+        }
+
+        this.injectionPaused = true;
+        this.logAction('Injection execution paused', 'info');
+        this.updateTimerUI();
+        return true;
+    }
+
+    // Resume execution from where it was paused
+    resumeInjectionExecution() {
+        if (!this.injectionInProgress) {
+            this.logAction('Cannot resume - no injection in progress', 'warning');
+            return false;
+        }
+
+        if (!this.injectionPaused) {
+            this.logAction('Injection is not paused', 'warning');
+            return false;
+        }
+
+        this.injectionPaused = false;
+        this.logAction('Injection execution resumed', 'info');
+        this.updateTimerUI();
+
+        // If we were in the middle of typing a message, continue from where we left off
+        if (this.pausedMessageContent && this.pausedMessageIndex >= 0) {
+            this.continueTypingFromPause();
+        }
+        
+        return true;
+    }
+
+    // Continue typing a message from where it was paused
+    continueTypingFromPause() {
+        const message = this.pausedMessageContent;
+        let index = this.pausedMessageIndex;
+        
+        // Clear pause state
+        this.pausedMessageContent = null;
+        this.pausedMessageIndex = 0;
+        
+        const typeInterval = setInterval(() => {
+            // Check if injection was cancelled or paused again
+            if (!this.injectionInProgress) {
+                clearInterval(typeInterval);
+                return;
+            }
+            
+            if (this.injectionPaused) {
+                clearInterval(typeInterval);
+                // Store pause state again
+                this.pausedMessageContent = message;
+                this.pausedMessageIndex = index;
+                this.currentTypeInterval = null;
+                return;
+            }
+            
+            if (index < message.length) {
+                ipcRenderer.send('terminal-input', message[index]);
+                index++;
+            } else {
+                clearInterval(typeInterval);
+                
+                // Message completed, continue with normal flow
+                const enterDelay = this.getRandomDelay(300, 800);
+                setTimeout(() => {
+                    ipcRenderer.send('terminal-input', '\r');
+                    this.isInjecting = false;
+                    this.currentlyInjectingMessageId = null;
+                    
+                    // Continue with next message if timer expired
+                    if (this.timerExpired) {
+                        const nextMessageDelay = this.getRandomDelay(800, 1200);
+                        setTimeout(() => {
+                            this.processNextQueuedMessage();
+                        }, nextMessageDelay);
+                    }
+                }, enterDelay);
+            }
+        }, 50);
+        
+        this.currentTypeInterval = typeInterval;
+    }
+
     // Old scheduling system removed - now using timer-based injection
 
     // Safety check functions for the new system
     performSafetyChecks(callback) {
+        this.logAction('DEBUG: performSafetyChecks STARTED', 'debug');
         this.safetyCheckCount = 0;
         
         // Start the safety check cycle
@@ -1686,6 +1921,7 @@ class TerminalGUI {
 
     runSafetyCheck(callback) {
         this.safetyCheckCount++;
+        this.logAction(`DEBUG: runSafetyCheck attempt ${this.safetyCheckCount} - isInjecting=${this.isInjecting}`, 'debug');
         
         // Safety check 1: Not already injecting
         if (this.isInjecting) {
@@ -1696,6 +1932,7 @@ class TerminalGUI {
         
         // Safety check 2: Simple scan for blocking conditions
         const terminalStatus = this.scanTerminalStatus();
+        this.logAction(`DEBUG: Terminal status - isRunning=${terminalStatus.isRunning}, isPrompting=${terminalStatus.isPrompting}`, 'debug');
         
         if (terminalStatus.isRunning) {
             this.logAction(`Safety check failed - running process detected (attempt ${this.safetyCheckCount})`, 'warning');
@@ -1710,7 +1947,7 @@ class TerminalGUI {
         }
         
         // All safety checks passed
-        this.logAction(`Safety checks passed (attempt ${this.safetyCheckCount}) - proceeding with injection`, 'success');
+        this.logAction(`DEBUG: Safety checks passed (attempt ${this.safetyCheckCount}) - proceeding with injection`, 'success');
         callback();
     }
 
@@ -1816,6 +2053,13 @@ class TerminalGUI {
     }
 
     retrySafetyCheck(callback) {
+        // Add timeout for safety checks to prevent infinite retries
+        if (this.safetyCheckCount > 50) {
+            this.logAction(`DEBUG: Safety check TIMEOUT after ${this.safetyCheckCount} attempts - forcing injection`, 'warning');
+            callback();
+            return;
+        }
+        
         // Use more conservative delays to ensure safety
         let retryDelay;
         if (this.safetyCheckCount <= 5) {
@@ -2056,6 +2300,16 @@ class TerminalGUI {
                 return;
             }
             
+            // Check if injection was paused
+            if (this.injectionPaused) {
+                clearInterval(typeInterval);
+                // Store pause state
+                this.pausedMessageContent = message;
+                this.pausedMessageIndex = index;
+                this.currentTypeInterval = null;
+                return;
+            }
+            
             if (index < message.length) {
                 ipcRenderer.send('terminal-input', message[index]);
                 index++;
@@ -2230,7 +2484,7 @@ class TerminalGUI {
         return Math.floor(Math.random() * (max - min + 1)) + min;
     }
 
-    detectUsageLimit(data) {
+    async detectUsageLimit(data) {
         // Check for "Approaching usage limit" message and parse the reset time
         // const approachingMatch = data.match(/Approaching usage limit · resets at (\d{1,2})(am|pm)/i);
         // if (approachingMatch) {
@@ -2254,8 +2508,76 @@ class TerminalGUI {
             const ampm = reachedMatch[2].toLowerCase();
             const resetTimeString = `${resetHour}${ampm}`;
             
+            // Set timer to exact reset time and pause injection
+            await this.setTimerToUsageLimitReset(resetHour, ampm);
+            
             // Check if we've already shown modal for this specific reset time
             this.checkAndShowUsageLimitModal(resetTimeString, resetHour, ampm);
+        }
+    }
+
+    async setTimerToUsageLimitReset(resetHour, ampm) {
+        const resetTimeString = `${resetHour}${ampm}`;
+        
+        try {
+            // Check if we've already set timer for this reset time
+            const lastTimerResetTime = await ipcRenderer.invoke('db-get-app-state', 'usageLimitTimerLastResetTime');
+            
+            if (lastTimerResetTime === resetTimeString) {
+                console.log(`Timer already set for reset time ${resetTimeString}, skipping duplicate update`);
+                return;
+            }
+            
+            // Calculate time until reset
+            const now = new Date();
+            const resetTime = new Date();
+            
+            // Convert to 24-hour format
+            let hour24 = resetHour;
+            if (ampm === 'pm' && resetHour !== 12) {
+                hour24 += 12;
+            } else if (ampm === 'am' && resetHour === 12) {
+                hour24 = 0;
+            }
+            
+            resetTime.setHours(hour24, 0, 0, 0);
+            
+            // If reset time is in the past, it's tomorrow
+            if (resetTime <= now) {
+                resetTime.setDate(resetTime.getDate() + 1);
+            }
+            
+            const timeDiff = resetTime.getTime() - now.getTime();
+            const totalSeconds = Math.max(1, Math.floor(timeDiff / 1000));
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+            
+            // Stop auto injection and set timer
+            this.pauseInProgressInjection();
+            this.usageLimitWaiting = true;
+            
+            // Set timer values
+            this.timerHours = hours;
+            this.timerMinutes = minutes;
+            this.timerSeconds = seconds;
+            this.timerExpired = false;
+            
+            // Start timer if not already active
+            if (!this.timerActive) {
+                this.startTimer();
+            } else {
+                this.updateTimerUI();
+            }
+            
+            // Save this reset time to prevent duplicate timer updates
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTime', resetTimeString);
+            
+            this.logAction(`Usage limit detected - timer set to reset at ${resetHour}${ampm} (${hours}h ${minutes}m ${seconds}s)`, 'warning');
+        } catch (error) {
+            console.error('Error checking/setting usage limit timer state:', error);
+            // Fallback to original behavior if database operations fail
+            this.logAction(`Error tracking timer state, proceeding with timer update for ${resetHour}${ampm}`, 'error');
         }
     }
 
@@ -2273,6 +2595,10 @@ class TerminalGUI {
     }
 
     showUsageLimitModal(resetHour, ampm) {
+        // Set flag that modal is showing and pause injection
+        this.usageLimitModalShowing = true;
+        this.pauseInProgressInjection();
+        
         const modal = document.getElementById('usage-limit-modal');
         const progressBar = modal.querySelector('.usage-limit-progress-bar');
         const resetTimeSpan = document.getElementById('reset-time');
@@ -2318,7 +2644,7 @@ class TerminalGUI {
         if (this.messageQueue.length > 0) {
             const continueMessage = {
                 id: this.generateMessageId(),
-                content: '\\r', // Enter key to continue current prompt (escaped for proper handling)
+                content: 'continue', // Enter key to continue current prompt (escaped for proper handling)
                 executeAt: Date.now(), // Execute immediately
                 createdAt: Date.now()
             };
@@ -2371,9 +2697,10 @@ class TerminalGUI {
         const modal = document.getElementById('usage-limit-modal');
         const progressBar = modal.querySelector('.usage-limit-progress-bar');
         
-        // Hide modal
+        // Hide modal and clear flag
         modal.classList.remove('show');
         progressBar.classList.remove('active');
+        this.usageLimitModalShowing = false;
         
         // Log the choice and auto-fill form if user chose to queue
         if (queue) {
@@ -2382,6 +2709,15 @@ class TerminalGUI {
             this.autoFillExecuteInForm();
         } else {
             this.logAction('Usage limit detected - Continuing normally', 'info');
+        }
+        
+        // Resume injection if there are messages queued and timer was expired
+        if (this.timerExpired && this.messageQueue.length > 0) {
+            this.logAction('Resuming injection after usage limit modal closed', 'info');
+            this.startSequentialInjection();
+        } else {
+            // Update UI to reflect current state
+            this.updateTimerUI();
         }
     }
 
@@ -2625,7 +2961,6 @@ class TerminalGUI {
     async openSettingsModal() {
         const modal = document.getElementById('settings-modal');
         modal.classList.add('show');
-        await this.loadAllPreferences();
     }
 
     closeSettingsModal() {
@@ -2642,6 +2977,26 @@ class TerminalGUI {
     closeMessageHistoryModal() {
         const modal = document.getElementById('message-history-modal');
         modal.classList.remove('show');
+    }
+
+    // Message validation utility
+    isValidMessageContent(content) {
+        return content && typeof content === 'string' && content.trim().length > 0;
+    }
+
+    // Generic modal utility functions
+    showModal(modalId) {
+        const modal = document.getElementById(modalId);
+        if (modal) {
+            modal.classList.add('show');
+        }
+    }
+
+    closeModal(modalId) {
+        const modal = document.getElementById(modalId);
+        if (modal) {
+            modal.classList.remove('show');
+        }
     }
 
     updateHistoryModal() {
@@ -2681,12 +3036,19 @@ class TerminalGUI {
             return;
         }
 
+        // Validate content is not empty or just whitespace
+        const content = (historyItem.content || '').trim();
+        if (!this.isValidMessageContent(content)) {
+            this.logAction('Cannot restore empty message from history', 'warning');
+            return;
+        }
+
         // Create a new message for the queue
         const now = Date.now();
         const newMessage = {
             id: this.generateMessageId(),
-            content: historyItem.content,
-            processedContent: historyItem.content,
+            content: content,
+            processedContent: content,
             executeAt: now,
             createdAt: now,
             timestamp: now // For compatibility
@@ -2808,6 +3170,12 @@ class TerminalGUI {
         }
     }
 
+    async savePreferences() {
+        // Update preferences object with current values before saving
+        this.preferences.currentDirectory = this.currentDirectory;
+        await this.saveAllPreferences();
+    }
+
     async saveAllPreferences() {
         try {
             // Save each preference to database
@@ -2815,6 +3183,7 @@ class TerminalGUI {
                 if (key === 'messageQueue' || key === 'messageHistory') continue; // Handle separately
                 await ipcRenderer.invoke('db-set-setting', key, JSON.stringify(value));
             }
+            
         } catch (error) {
             console.error('Failed to save preferences:', error);
         }
@@ -3092,11 +3461,12 @@ class TerminalGUI {
         const minutes = Math.floor((totalSeconds % 3600) / 60);
         const seconds = totalSeconds % 60;
 
-        // Set the timer and auto-start it
+        // Set the timer and auto-start it with usage limit waiting state
         this.timerHours = hours;
         this.timerMinutes = minutes;
         this.timerSeconds = seconds;
         this.timerExpired = false;
+        this.usageLimitWaiting = true;
         
         // Start the timer if not already active
         if (!this.timerActive) {
@@ -3187,63 +3557,6 @@ class TerminalGUI {
         }
     }
 
-    detectDirectoryFromOutput(data) {
-        // Clean data of ANSI escape sequences for better parsing
-        const cleanData = data.replace(/\x1B\[[0-9;]*[JKmsu]/g, '');
-        
-        // Look for directory paths in various formats
-        const directoryPatterns = [
-            // PWD command output - standalone directory path
-            /^(\/[^\s\n\r]+)$/gm,
-            // PWD command output - directory path at start of line
-            /^(\/[^\s\n\r]*[^\s\n\r.])\s*$/gm,
-            // Shell prompts with directory (zsh, bash common patterns)
-            /[\s\[\(]([\/~][^\s\]\)\n\r$]+)[\s\]\)$%]/g,
-            // PS1 prompts with directory
-            /([\/~][^\s\n\r$%]+)[\s]*[$%]/g,
-            // After 'cd' command execution
-            /cd\s+([^\s\n\r]+)/g
-        ];
-        
-        for (const pattern of directoryPatterns) {
-            const matches = cleanData.matchAll(pattern);
-            for (const match of matches) {
-                let dirPath = match[1];
-                
-                // Clean up the path
-                dirPath = dirPath.trim();
-                
-                // Skip if it looks like a command, file extension, or other false positive
-                if (dirPath.includes('.') && !dirPath.startsWith('/') && !dirPath.startsWith('~')) {
-                    continue;
-                }
-                
-                // Skip very short paths or paths with suspicious characters
-                if (dirPath.length < 2 || dirPath.includes('|') || dirPath.includes(';')) {
-                    continue;
-                }
-                
-                // Skip common false positives
-                if (dirPath.includes('--') || dirPath.includes('==') || dirPath.match(/^\d+$/)) {
-                    continue;
-                }
-                
-                // Validate path format
-                if (!dirPath.startsWith('/') && !dirPath.startsWith('~')) {
-                    continue;
-                }
-                
-                // Update directory if it's different from current
-                if (dirPath !== this.currentDirectory) {
-                    this.currentDirectory = dirPath;
-                    this.updateStatusDisplay();
-                    this.savePreferences();
-                    this.logAction(`Directory changed to: ${dirPath}`, 'info');
-                    return;
-                }
-            }
-        }
-    }
 
     // Hotkey dropdown functionality
     toggleHotkeyDropdown(event) {
@@ -3314,25 +3627,36 @@ class TerminalGUI {
 
     // Smart waiting system for auto-injection
     waitForStableReadyState(callback) {
+        this.logAction('DEBUG: waitForStableReadyState STARTED', 'debug');
         const requiredStableDuration = 5000; // 5 seconds
         const checkInterval = 10; // 10ms
+        const maxWaitTime = 60000; // 60 seconds timeout
         let stableStartTime = null;
         let checkCount = 0;
+        const startTime = Date.now();
         
         const checkStatus = () => {
             checkCount++;
             
+            // Check for timeout
+            const elapsedTime = Date.now() - startTime;
+            if (elapsedTime > maxWaitTime) {
+                this.logAction(`DEBUG: waitForStableReadyState TIMEOUT after ${elapsedTime}ms - forcing injection`, 'warning');
+                callback();
+                return;
+            }
+            
             // Check if injection sequence was cancelled entirely
-            // Only cancel if both conditions are false (more conservative)
-            if (!this.injectionInProgress && !this.timerExpired) {
-                this.logAction('Stable ready state waiting cancelled - injection sequence stopped', 'warning');
+            // Only cancel if injection was explicitly stopped AND we're not in a timer sequence
+            if (!this.injectionInProgress && !this.timerExpired && !this.usageLimitWaiting) {
+                this.logAction('DEBUG: waitForStableReadyState CANCELLED - injection sequence stopped', 'warning');
                 return;
             }
             
             // Log status for debugging
-            // if (checkCount % 100 === 0) {
-            //     this.logAction(`Status check: injectionInProgress=${this.injectionInProgress}, timerExpired=${this.timerExpired}, isRunning=${this.currentTerminalStatus.isRunning}, isPrompting=${this.currentTerminalStatus.isPrompting}, isInjecting=${this.isInjecting}`, 'debug');
-            // }
+            if (checkCount % 100 === 0) {
+                this.logAction(`DEBUG waitForStableReadyState: injectionInProgress=${this.injectionInProgress}, timerExpired=${this.timerExpired}, isRunning=${this.currentTerminalStatus.isRunning}, isPrompting=${this.currentTerminalStatus.isPrompting}, isInjecting=${this.isInjecting}`, 'debug');
+            }
             
             // Get current terminal status
             const isReady = !this.currentTerminalStatus.isRunning && 
@@ -3349,7 +3673,7 @@ class TerminalGUI {
                     // Check if we've been stable long enough
                     const stableDuration = Date.now() - stableStartTime;
                     if (stableDuration >= requiredStableDuration) {
-                        this.logAction(`Terminal stable for ${stableDuration}ms - proceeding with injection`, 'success');
+                        this.logAction(`DEBUG: waitForStableReadyState COMPLETED - Terminal stable for ${stableDuration}ms - proceeding with injection`, 'success');
                         callback();
                         return;
                     }
@@ -3474,74 +3798,6 @@ class TerminalGUI {
         this.logAction(`Reordered message: "${movedMessage.content.substring(0, 30)}..." from position ${fromIndex + 1} to ${toIndex + 1}`, 'info');
     }
 
-    // LocalStorage Backup/Restore Methods
-    async backupLocalStorage() {
-        try {
-            // Get all localStorage data
-            const localStorageData = {};
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                localStorageData[key] = localStorage.getItem(key);
-            }
-            
-            const result = await ipcRenderer.invoke('backup-localstorage', localStorageData);
-            
-            if (result.success) {
-                this.logAction(`LocalStorage backed up to: ${result.filePath}`, 'info');
-                this.showNotification('Backup successful!', `Data saved to ${result.filePath}`, 'success');
-            } else {
-                this.logAction(`Failed to backup localStorage: ${result.error}`, 'error');
-                this.showNotification('Backup failed', result.error, 'error');
-            }
-        } catch (error) {
-            this.logAction(`Error during backup: ${error.message}`, 'error');
-            this.showNotification('Backup error', error.message, 'error');
-        }
-    }
-
-
-    async restoreLocalStorage() {
-        try {
-            const result = await ipcRenderer.invoke('restore-localstorage');
-            
-            if (result.canceled) {
-                return; // User canceled the file dialog
-            }
-            
-            if (result.success && result.data) {
-                const backupData = result.data;
-                
-                // Confirm with user before restoring
-                const confirmRestore = confirm(
-                    `This will replace your current settings with backup from ${backupData.timestamp}. Continue?`
-                );
-                
-                if (confirmRestore) {
-                    // Migrate the backup data to database
-                    const migrationResult = await ipcRenderer.invoke('db-migrate-localstorage', backupData.localStorage);
-                    
-                    if (migrationResult.success) {
-                        this.logAction(`Database restored from backup (${backupData.timestamp})`, 'info');
-                        this.showNotification('Restore successful!', 'Data restored. Reloading application...', 'success');
-                        
-                        // Reload the application to apply restored settings
-                        setTimeout(() => {
-                            location.reload();
-                        }, 2000);
-                    } else {
-                        this.logAction(`Failed to restore to database: ${migrationResult.error}`, 'error');
-                        this.showNotification('Restore failed', migrationResult.error, 'error');
-                    }
-                }
-            } else {
-                this.logAction(`Failed to restore database: ${result.error}`, 'error');
-                this.showNotification('Restore failed', result.error, 'error');
-            }
-        } catch (error) {
-            this.logAction(`Error during restore: ${error.message}`, 'error');
-            this.showNotification('Restore error', error.message, 'error');
-        }
-    }
 
     showNotification(title, message, type = 'info') {
         // Simple notification system - could be enhanced with toast notifications

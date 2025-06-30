@@ -8,6 +8,7 @@ let mainWindow;
 let ptyProcess;
 let dataFilePath;
 
+
 function getIcon() {
   const fs = require('fs');
   
@@ -42,11 +43,11 @@ function initDataStorage() {
   try {
     // Create data file in app data directory for persistence
     const userDataPath = app.getPath('userData');
-    dataFilePath = path.join(userDataPath, 'terminal-gui-data.json');
+    dataFilePath = path.join(userDataPath, 'auto-injector-data.json');
     
-    console.log('Data storage initialized at:', dataFilePath);
+    try { console.log('Data storage initialized at:', dataFilePath); } catch (e) { /* ignore */ }
   } catch (error) {
-    console.error('Failed to initialize data storage:', error);
+    try { console.error('Failed to initialize data storage:', error); } catch (e) { /* ignore */ }
   }
 }
 
@@ -70,10 +71,11 @@ async function writeDataFile(data) {
     await fs.writeFile(dataFilePath, JSON.stringify(data, null, 2), 'utf8');
     return true;
   } catch (error) {
-    console.error('Failed to write data file:', error);
+    try { console.error('Failed to write data file:', error); } catch (e) { /* ignore */ }
     return false;
   }
 }
+
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -142,10 +144,10 @@ app.on('activate', () => {
 function setupIpcHandlers() {
   // Terminal handling
   ipcMain.on('terminal-start', (event, startDirectory = null) => {
-    console.log('Received terminal-start request, startDirectory:', startDirectory);
+    try { console.log('Received terminal-start request, startDirectory:', startDirectory); } catch (e) { /* ignore */ }
     const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/zsh';
     const cwd = startDirectory || process.cwd();
-    console.log('Starting terminal with shell:', shell, 'cwd:', cwd);
+    try { console.log('Starting terminal with shell:', shell, 'cwd:', cwd); } catch (e) { /* ignore */ }
     
     ptyProcess = pty.spawn(shell, [], {
       name: 'xterm-color',
@@ -154,10 +156,10 @@ function setupIpcHandlers() {
       cwd: cwd,
       env: process.env
     });
-    console.log('Terminal process spawned successfully');
+    try { console.log('Terminal process spawned successfully'); } catch (e) { /* ignore */ }
 
     ptyProcess.onData((data) => {
-      console.log('Terminal data received, sending to renderer:', data.length, 'bytes');
+      try { console.log('Terminal data received, sending to renderer:', data.length, 'bytes'); } catch (e) { /* ignore */ }
       event.reply('terminal-data', data);
     });
 
@@ -360,7 +362,7 @@ function setupIpcHandlers() {
     try {
       const desktopPath = path.join(os.homedir(), 'Desktop');
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const backupFileName = `terminal-gui-backup-${timestamp}.json`;
+      const backupFileName = `auto-injector-backup-${timestamp}.json`;
       const backupPath = path.join(desktopPath, backupFileName);
       
       const backupData = {
@@ -411,7 +413,7 @@ function setupIpcHandlers() {
       const data = await readDataFile();
       return data.settings[key] || null;
     } catch (error) {
-      console.error('Error getting setting:', error);
+      try { console.error('Error getting setting:', error); } catch (e) { /* ignore */ }
       return null;
     }
   });
@@ -422,7 +424,7 @@ function setupIpcHandlers() {
       data.settings[key] = value;
       return await writeDataFile(data);
     } catch (error) {
-      console.error('Error setting setting:', error);
+      try { console.error('Error setting setting:', error); } catch (e) { /* ignore */ }
       return false;
     }
   });
@@ -432,7 +434,7 @@ function setupIpcHandlers() {
       const data = await readDataFile();
       return data.settings;
     } catch (error) {
-      console.error('Error getting all settings:', error);
+      try { console.error('Error getting all settings:', error); } catch (e) { /* ignore */ }
       return {};
     }
   });
@@ -442,7 +444,7 @@ function setupIpcHandlers() {
       const data = await readDataFile();
       return data.messages || [];
     } catch (error) {
-      console.error('Error getting messages:', error);
+      try { console.error('Error getting messages:', error); } catch (e) { /* ignore */ }
       return [];
     }
   });
@@ -463,7 +465,7 @@ function setupIpcHandlers() {
       });
       return await writeDataFile(data);
     } catch (error) {
-      console.error('Error saving message:', error);
+      try { console.error('Error saving message:', error); } catch (e) { /* ignore */ }
       return false;
     }
   });
@@ -474,7 +476,7 @@ function setupIpcHandlers() {
       data.messages = data.messages.filter(m => m.message_id !== messageId);
       return await writeDataFile(data);
     } catch (error) {
-      console.error('Error deleting message:', error);
+      try { console.error('Error deleting message:', error); } catch (e) { /* ignore */ }
       return false;
     }
   });
@@ -485,7 +487,27 @@ function setupIpcHandlers() {
       data.messages = [];
       return await writeDataFile(data);
     } catch (error) {
-      console.error('Error clearing messages:', error);
+      try { console.error('Error clearing messages:', error); } catch (e) { /* ignore */ }
+      return false;
+    }
+  });
+
+  // Atomic message queue save - replaces entire message array
+  ipcMain.handle('db-save-message-queue', async (event, messages) => {
+    try {
+      const data = await readDataFile();
+      // Atomically replace entire message queue
+      data.messages = messages.map(message => ({
+        message_id: message.id,
+        content: message.content,
+        processed_content: message.processedContent,
+        execute_at: message.executeAt,
+        created_at: message.createdAt,
+        status: message.status || 'pending'
+      }));
+      return await writeDataFile(data);
+    } catch (error) {
+      try { console.error('Error saving message queue:', error); } catch (e) { /* ignore */ }
       return false;
     }
   });
@@ -500,7 +522,7 @@ function setupIpcHandlers() {
       }
       return await writeDataFile(data);
     } catch (error) {
-      console.error('Error saving message history:', error);
+      try { console.error('Error saving message history:', error); } catch (e) { /* ignore */ }
       return false;
     }
   });
@@ -510,7 +532,7 @@ function setupIpcHandlers() {
       const data = await readDataFile();
       return data.messageHistory || [];
     } catch (error) {
-      console.error('Error getting message history:', error);
+      try { console.error('Error getting message history:', error); } catch (e) { /* ignore */ }
       return [];
     }
   });
@@ -520,7 +542,7 @@ function setupIpcHandlers() {
       const data = await readDataFile();
       return data.appState[key] || null;
     } catch (error) {
-      console.error('Error getting app state:', error);
+      try { console.error('Error getting app state:', error); } catch (e) { /* ignore */ }
       return null;
     }
   });
@@ -531,7 +553,7 @@ function setupIpcHandlers() {
       data.appState[key] = value;
       return await writeDataFile(data);
     } catch (error) {
-      console.error('Error setting app state:', error);
+      try { console.error('Error setting app state:', error); } catch (e) { /* ignore */ }
       return false;
     }
   });
@@ -579,16 +601,18 @@ function setupIpcHandlers() {
       const success = await writeDataFile(data);
       return { success };
     } catch (error) {
-      console.error('Error migrating localStorage:', error);
+      try { console.error('Error migrating localStorage:', error); } catch (e) { /* ignore */ }
       return { success: false, error: error.message };
     }
   });
+
 }
 
 // App event handlers
 app.whenReady().then(() => {
   initDataStorage();
   createWindow();
+  
 });
 
 app.on('window-all-closed', () => {
@@ -601,4 +625,6 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
-}); 
+});
+
+ 

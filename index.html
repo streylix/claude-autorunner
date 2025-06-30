@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Terminal GUI</title>
+    <title>Auto-Injector</title>
     <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css">
     <link rel="stylesheet" href="style.css">
     <script src="node_modules/lucide/dist/umd/lucide.js"></script>
@@ -12,7 +12,7 @@
     <div class="app-container">
         <div class="header">
             <div class="header-left"></div>
-            <div class="title">Terminal GUI</div>
+            <div class="title">Auto-Injector</div>
         </div>
 
         <div class="main-content">
@@ -26,7 +26,7 @@
                 <div class="action-log-content" id="action-log">
                     <div class="log-item log-info">
                         <span class="log-time">[startup]</span>
-                        <span class="log-message">Terminal GUI initialized</span>
+                        <span class="log-message">Auto-Injector initialized</span>
                     </div>
                 </div>
             </div>
@@ -227,22 +227,6 @@
                     </div>
                 </div>
                 
-                <div class="setting-group">
-                    <label class="setting-label">
-                        <span class="setting-title">Data Backup & Restore</span>
-                    </label>
-                    <p class="setting-description">Backup your settings and message history to desktop, or restore from a previous backup.</p>
-                    <div class="backup-controls">
-                        <button type="button" id="backup-localstorage-btn" class="setting-btn">
-                            <i data-lucide="download"></i>
-                            Backup Data
-                        </button>
-                        <button type="button" id="restore-localstorage-btn" class="setting-btn">
-                            <i data-lucide="upload"></i>
-                            Restore Data
-                        </button>
-                    </div>
-                </div>
                 
             </div>
         </div>
@@ -253,7 +237,7 @@
         <div class="modal-content usage-limit-modal">
             <div class="usage-limit-progress-bar"></div>
             <div class="modal-body usage-limit-body">
-                <h3>You're nearing your limit</h3>
+                <h3>You've hit your limit</h3>
                 <p class="usage-limit-subtitle">Queue messages for <span id="reset-time"></span>?</p>
                 <div class="usage-limit-actions">
                     <button class="cancel-btn" id="usage-limit-no">No thanks</button>
@@ -286,6 +270,8 @@
         </div>
     </div>
     
+
+
     <!-- Hotkey Dropdown -->
     <div id="hotkey-dropdown" class="hotkey-dropdown">
         <div class="hotkey-dropdown-content">
