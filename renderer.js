@@ -17,6 +17,7 @@ class TerminalGUI {
         
         this.messageQueue = [];
         this.injectionTimer = null;
+        this.schedulingInProgress = false; // Prevent concurrent scheduling calls
         this.injectionCount = 0;
         this.currentlyInjectingMessages = new Set(); // Track messages being injected per terminal
         this.currentlyInjectingTerminals = new Set(); // Track which terminals are currently injecting
@@ -108,6 +109,7 @@ class TerminalGUI {
             isPrompting: false,
             lastUpdate: Date.now()
         };
+        this.terminalStatuses = new Map(); // Per-terminal status tracking
         
         // Terminal idle tracking for completion sound
         this.terminalIdleTimer = null;
@@ -259,6 +261,13 @@ class TerminalGUI {
         };
         
         this.terminals.set(id, terminalData);
+        
+        // Initialize status tracking for this terminal
+        this.terminalStatuses.set(id, {
+            isRunning: false,
+            isPrompting: false,
+            lastUpdate: Date.now()
+        });
         
         // Open terminal in container
         const terminalContainer = document.querySelector(`[data-terminal-container="${id}"]`);
@@ -419,7 +428,7 @@ class TerminalGUI {
     setupEventListeners() {
         // IPC listeners for terminal data (updated for multi-terminal)
         ipcRenderer.on('terminal-data', async (event, data) => {
-            const terminalId = data.terminalId || 1;
+            const terminalId = data.terminalId != null ? data.terminalId : 1;
             const terminalData = this.terminals.get(terminalId);
             
             if (terminalData) {
@@ -438,7 +447,7 @@ class TerminalGUI {
         });
 
         ipcRenderer.on('terminal-exit', (event, data) => {
-            const terminalId = data.terminalId || 1;
+            const terminalId = data.terminalId != null ? data.terminalId : 1;
             const terminalData = this.terminals.get(terminalId);
             
             if (terminalData) {
@@ -447,7 +456,7 @@ class TerminalGUI {
         });
 
         ipcRenderer.on('cwd-response', (event, data) => {
-            const terminalId = data.terminalId || 1;
+            const terminalId = data.terminalId != null ? data.terminalId : 1;
             const terminalData = this.terminals.get(terminalId);
             
             if (terminalData) {
@@ -2297,14 +2306,29 @@ class TerminalGUI {
     }
 
     scanAndUpdateTerminalStatus() {
+        // Scan all terminals, not just the active one
+        this.terminals.forEach((terminalData, terminalId) => {
+            this.scanSingleTerminalStatus(terminalId, terminalData);
+        });
+        
+        // Update the global status for backward compatibility (active terminal only)
+        if (this.activeTerminalId && this.terminalStatuses.has(this.activeTerminalId)) {
+            const activeStatus = this.terminalStatuses.get(this.activeTerminalId);
+            this.currentTerminalStatus.isRunning = activeStatus.isRunning;
+            this.currentTerminalStatus.isPrompting = activeStatus.isPrompting;
+            this.currentTerminalStatus.lastUpdate = activeStatus.lastUpdate;
+        }
+    }
+
+    scanSingleTerminalStatus(terminalId, terminalData) {
         // Get recent terminal output from multiple sources for better accuracy
         let recentOutput = '';
         
         // Try to get output from terminal buffer if available
-        if (this.terminal && this.terminal.buffer && this.terminal.buffer.active) {
+        if (terminalData.terminal && terminalData.terminal.buffer && terminalData.terminal.buffer.active) {
             try {
                 // Get last 20 lines from terminal buffer
-                const buffer = this.terminal.buffer.active;
+                const buffer = terminalData.terminal.buffer.active;
                 const endLine = buffer.baseY + buffer.cursorY;
                 const startLine = Math.max(0, endLine - 20);
                 
@@ -2317,17 +2341,15 @@ class TerminalGUI {
                 }
                 recentOutput = bufferOutput;
             } catch (error) {
-                // Fallback to lastTerminalOutput if buffer reading fails
-                recentOutput = this.lastTerminalOutput.slice(-2000);
+                // Fallback to terminalData.lastOutput if buffer reading fails
+                recentOutput = terminalData.lastOutput.slice(-2000);
             }
         } else {
-            // Fallback to lastTerminalOutput
-            recentOutput = this.lastTerminalOutput.slice(-2000);
+            // Fallback to terminal's lastOutput
+            recentOutput = terminalData.lastOutput.slice(-2000);
         }
         
         // Better detection patterns for running state
-        // Look for "esc to interrupt" specifically, not just "to interrupt)" which can match false positives
-        // Also check for "offline)" which can appear instead of "esc to interrupt" but indicates the same running state
         const isRunning = recentOutput.includes('esc to interrupt') || 
                          recentOutput.includes('(esc to interrupt)') ||
                          recentOutput.includes('ESC to interrupt') ||
@@ -2335,32 +2357,35 @@ class TerminalGUI {
         
         const isPrompting = recentOutput.includes('No, and tell Claude what to do differently');
         
-        // Update current status
-        const statusChanged = (this.currentTerminalStatus.isRunning !== isRunning || 
-                             this.currentTerminalStatus.isPrompting !== isPrompting);
-        
-        // Completion sound logic has been moved to checkCompletionSoundTrigger()
-        // This ensures proper state transition detection from 'running' to idle
-        
-        // Debug logging for status changes
-        if (statusChanged) {
-            const newStatus = isRunning ? 'running' : (isPrompting ? 'prompting' : 'ready');
-            const oldStatus = this.currentTerminalStatus.isRunning ? 'running' : 
-                             (this.currentTerminalStatus.isPrompting ? 'prompting' : 'ready');
-
-            
-        }
-        
-        this.currentTerminalStatus = {
-            isRunning: isRunning,
-            isPrompting: isPrompting,
+        // Get current status for this terminal
+        const currentStatus = this.terminalStatuses.get(terminalId) || {
+            isRunning: false,
+            isPrompting: false,
             lastUpdate: Date.now()
         };
         
-        // Update status display if status changed
+        // Update status for this terminal
+        const statusChanged = (currentStatus.isRunning !== isRunning || 
+                             currentStatus.isPrompting !== isPrompting);
+        
         if (statusChanged) {
-            this.updateTerminalStatusIndicator();
+            const newStatus = isRunning ? 'running' : (isPrompting ? 'prompting' : 'ready');
+            const oldStatus = currentStatus.isRunning ? 'running' : 
+                             (currentStatus.isPrompting ? 'prompting' : 'ready');
+            
+            // Debug logging for status changes
+            this.logAction(`Terminal ${terminalId} status changed: ${oldStatus} → ${newStatus}`, 'info');
         }
+        
+        // Update the terminal's status
+        this.terminalStatuses.set(terminalId, {
+            isRunning: isRunning,
+            isPrompting: isPrompting,
+            lastUpdate: Date.now()
+        });
+        
+        // Update terminal status display
+        this.updateTerminalStatusIndicator();
     }
 
     updateTerminalStatusIndicator() {
@@ -2375,17 +2400,21 @@ class TerminalGUI {
             // Check if this terminal is currently injecting
             const isInjectingToThisTerminal = Array.from(this.currentlyInjectingMessages).some(messageId => {
                 const message = this.messageQueue.find(m => m.id === messageId);
-                return message && (message.terminalId || this.activeTerminalId) === terminalId;
+                return message && (message.terminalId != null ? message.terminalId : this.activeTerminalId) === terminalId;
             });
             
             if (isInjectingToThisTerminal) {
                 this.setTerminalStatusDisplay('injecting', terminalId);
-            } else if (terminalId === this.activeTerminalId && this.currentTerminalStatus.isRunning) {
-                this.setTerminalStatusDisplay('running', terminalId);
-            } else if (terminalId === this.activeTerminalId && this.currentTerminalStatus.isPrompting) {
-                this.setTerminalStatusDisplay('prompted', terminalId);
             } else {
-                this.setTerminalStatusDisplay('', terminalId);
+                // Use per-terminal status instead of just active terminal
+                const terminalStatus = this.terminalStatuses.get(terminalId);
+                if (terminalStatus && terminalStatus.isRunning) {
+                    this.setTerminalStatusDisplay('running', terminalId);
+                } else if (terminalStatus && terminalStatus.isPrompting) {
+                    this.setTerminalStatusDisplay('prompted', terminalId);
+                } else {
+                    this.setTerminalStatusDisplay('', terminalId);
+                }
             }
         });
     }
@@ -2558,7 +2587,7 @@ class TerminalGUI {
         
         this.isInjecting = true;
         // Set injecting status for the terminal that will receive the first message
-        const firstMessageTerminalId = messages[0].terminalId || this.activeTerminalId;
+        const firstMessageTerminalId = messages[0].terminalId != null ? messages[0].terminalId : this.activeTerminalId;
         this.setTerminalStatusDisplay('injecting', firstMessageTerminalId);
         let index = 0;
         
@@ -2593,6 +2622,12 @@ class TerminalGUI {
     }
 
     scheduleNextInjection() {
+        // Prevent concurrent scheduling calls
+        if (this.schedulingInProgress) {
+            return;
+        }
+        this.schedulingInProgress = true;
+        
         // Clear any existing timer
         if (this.injectionTimer) {
             clearTimeout(this.injectionTimer);
@@ -2601,6 +2636,7 @@ class TerminalGUI {
         
         // Don't schedule if no messages
         if (this.messageQueue.length === 0) {
+            this.schedulingInProgress = false;
             return;
         }
         
@@ -2615,7 +2651,7 @@ class TerminalGUI {
         const now = Date.now();
         
         this.messageQueue.forEach(message => {
-            const terminalId = message.terminalId || this.activeTerminalId;
+            const terminalId = message.terminalId != null ? message.terminalId : this.activeTerminalId;
             const terminalData = this.terminals.get(terminalId);
             
             // Skip if terminal doesn't exist or is busy
@@ -2649,7 +2685,7 @@ class TerminalGUI {
         
         // Schedule next check for remaining messages
         const remainingMessages = this.messageQueue.filter(message => {
-            const terminalId = message.terminalId || this.activeTerminalId;
+            const terminalId = message.terminalId != null ? message.terminalId : this.activeTerminalId;
             return !messagesByTerminal.has(terminalId);
         });
         
@@ -2664,15 +2700,19 @@ class TerminalGUI {
             
             const delay = Math.max(100, nextMessage.executeAt - now); // Minimum 100ms delay
             this.injectionTimer = setTimeout(() => {
+                this.schedulingInProgress = false; // Clear flag before recursive call
                 this.scheduleNextInjection();
             }, delay);
         }
+        
+        // Clear the scheduling flag
+        this.schedulingInProgress = false;
     }
 
     processMessage(message) {
         if (!message) return;
         
-        const terminalId = message.terminalId || this.activeTerminalId;
+        const terminalId = message.terminalId != null ? message.terminalId : this.activeTerminalId;
         const terminalData = this.terminals.get(terminalId);
         
         if (!terminalData) {
@@ -4438,74 +4478,53 @@ class TerminalGUI {
         // Check if terminal is currently injecting
         const isInjectingToThisTerminal = Array.from(this.currentlyInjectingMessages).some(messageId => {
             const message = this.messageQueue.find(m => m.id === messageId);
-            return message && (message.terminalId || this.activeTerminalId) === terminalId;
+            return message && (message.terminalId != null ? message.terminalId : this.activeTerminalId) === terminalId;
         });
 
         if (isInjectingToThisTerminal) return false;
 
-        // For non-active terminals, we can only check if they're injecting
-        // Terminal status scanning only works for the active terminal
-        const isActiveTerminal = terminalId === this.activeTerminalId;
-        
-        if (isActiveTerminal) {
-            // For active terminal, use full status check
-            const isTerminalReady = !this.currentTerminalStatus.isRunning && 
-                                   !this.currentTerminalStatus.isPrompting && 
-                                   !this.isInjecting &&
-                                   !this.injectionPaused &&
-                                   !this.injectionBlocked;
-
-            if (!isTerminalReady) {
-                // Terminal not ready - reset stability timer
-                this.terminalStabilityTimers.delete(terminalId);
-                return false;
-            }
-
-            // Terminal is ready - check stability duration
-            const now = Date.now();
-            const stableStartTime = this.terminalStabilityTimers.get(terminalId);
-
-            if (!stableStartTime) {
-                // Just became ready - start timing
-                this.terminalStabilityTimers.set(terminalId, now);
-                this.logAction(`Terminal ${terminalId} became ready - starting 5-second stability timer`, 'info');
-                return false;
-            }
-
-            // Check if stable long enough
-            const stableDuration = now - stableStartTime;
-            const requiredStableDuration = 5000; // 5 seconds
-
-            if (stableDuration >= requiredStableDuration) {
-                this.logAction(`Terminal ${terminalId} stable for ${stableDuration}ms - ready for injection`, 'success');
-                return true;
-            }
-
-            return false;
-        } else {
-            // For inactive terminals, we can't check running/prompted status
-            // but we still enforce the 5-second stability requirement
-            const now = Date.now();
-            const stableStartTime = this.terminalStabilityTimers.get(terminalId);
-
-            if (!stableStartTime) {
-                // Start timing for inactive terminal
-                this.terminalStabilityTimers.set(terminalId, now);
-                this.logAction(`Terminal ${terminalId} (inactive) - starting 5-second stability timer`, 'info');
-                return false;
-            }
-
-            // Check if stable long enough
-            const stableDuration = now - stableStartTime;
-            const requiredStableDuration = 5000; // 5 seconds
-
-            if (stableDuration >= requiredStableDuration) {
-                this.logAction(`Terminal ${terminalId} (inactive) stable for ${stableDuration}ms - ready for injection`, 'success');
-                return true;
-            }
-
+        // Now we can check all terminals, not just the active one
+        // Get the specific terminal's status
+        const terminalStatus = this.terminalStatuses.get(terminalId);
+        if (!terminalStatus) {
+            // Terminal status not yet initialized
             return false;
         }
+        
+        // Check if terminal is ready for injection
+        const isTerminalReady = !terminalStatus.isRunning && 
+                               !terminalStatus.isPrompting && 
+                               !this.isInjecting &&
+                               !this.injectionPaused &&
+                               !this.injectionBlocked;
+
+        if (!isTerminalReady) {
+            // Terminal not ready - reset stability timer
+            this.terminalStabilityTimers.delete(terminalId);
+            return false;
+        }
+
+        // Terminal is ready - check stability duration
+        const now = Date.now();
+        const stableStartTime = this.terminalStabilityTimers.get(terminalId);
+
+        if (!stableStartTime) {
+            // Just became ready - start timing
+            this.terminalStabilityTimers.set(terminalId, now);
+            this.logAction(`Terminal ${terminalId} became ready - starting 5-second stability timer`, 'info');
+            return false;
+        }
+
+        // Check if stable long enough
+        const stableDuration = now - stableStartTime;
+        const requiredStableDuration = 5000; // 5 seconds
+
+        if (stableDuration >= requiredStableDuration) {
+            this.logAction(`Terminal ${terminalId} stable for ${stableDuration}ms - ready for injection`, 'success');
+            return true;
+        }
+
+        return false;
     }
 
     // Drag and drop functionality
@@ -4829,7 +4848,7 @@ class TerminalGUI {
         
         // Remove any messages assigned to this terminal from the queue
         this.messageQueue = this.messageQueue.filter(message => {
-            const messageTerminalId = message.terminalId || this.activeTerminalId;
+            const messageTerminalId = message.terminalId != null ? message.terminalId : this.activeTerminalId;
             return messageTerminalId !== terminalId;
         });
         this.displayMessages();
