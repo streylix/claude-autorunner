@@ -107,26 +107,68 @@ class TerminalGUI {
         this.powerSaveBlockerActive = false;
         this.backgroundServiceActive = false;
         
+        // Add global console error protection to prevent EIO crashes
+        this.setupConsoleErrorProtection();
+        
         // Initialize the application asynchronously
         this.initialize();
     }
 
+    setupConsoleErrorProtection() {
+        // Wrap console methods to prevent EIO crashes
+        const originalConsole = {
+            log: console.log,
+            warn: console.warn,
+            error: console.error
+        };
+        
+        const safeConsole = (method, originalMethod) => {
+            return (...args) => {
+                try {
+                    originalMethod.apply(console, args);
+                } catch (error) {
+                    // Silently ignore console errors to prevent EIO crashes
+                    // The error is likely due to stream issues, not our code
+                }
+            };
+        };
+        
+        // Replace console methods with safe versions
+        console.log = safeConsole('log', originalConsole.log);
+        console.warn = safeConsole('warn', originalConsole.warn);
+        console.error = safeConsole('error', originalConsole.error);
+        
+        // Throttle console usage to prevent overwhelming
+        this.lastConsoleOutput = {};
+        const throttleMs = 100; // Limit console output to once per 100ms per type
+        
+        const throttledConsole = (method, originalMethod) => {
+            return (...args) => {
+                const now = Date.now();
+                if (!this.lastConsoleOutput[method] || now - this.lastConsoleOutput[method] > throttleMs) {
+                    this.lastConsoleOutput[method] = now;
+                    try {
+                        originalMethod.apply(console, args);
+                    } catch (error) {
+                        // Silently ignore console errors
+                    }
+                }
+            };
+        };
+        
+        // Apply throttling to reduce console spam
+        console.log = throttledConsole('log', originalConsole.log);
+        console.warn = throttledConsole('warn', originalConsole.warn);
+        console.error = throttledConsole('error', originalConsole.error);
+    }
+
     async initialize() {
         try {
-            console.log('Starting app initialization...');
-            
             // Load preferences FIRST so we have saved directory before starting terminal
-            console.log('Loading preferences...');
             await this.loadAllPreferences();
-            console.log('Preferences loaded successfully');
             
-            console.log('Initializing terminal...');
             this.initializeTerminal();
-            console.log('Terminal initialized');
-            
-            console.log('Setting up event listeners...');
             this.setupEventListeners();
-            console.log('Event listeners set up');
             
             this.initializeLucideIcons();
             this.updateStatusDisplay();
@@ -319,7 +361,6 @@ class TerminalGUI {
     setupEventListeners() {
         // IPC listeners for terminal data
         ipcRenderer.on('terminal-data', async (event, data) => {
-            console.log('Received terminal data:', data);
             this.terminal.write(data);
             this.updateTerminalOutput(data);
             this.detectAutoContinuePrompt(data);
@@ -466,6 +507,27 @@ class TerminalGUI {
         // Action log clear button
         document.getElementById('clear-log-btn').addEventListener('click', () => {
             this.clearActionLog();
+        });
+
+        // Search functionality for action log
+        const logSearchInput = document.getElementById('log-search');
+        const searchClearBtn = document.getElementById('search-clear-btn');
+        
+        logSearchInput.addEventListener('input', (e) => {
+            this.logDisplaySettings.searchTerm = e.target.value.trim();
+            this.logDisplaySettings.isSearching = this.logDisplaySettings.searchTerm.length > 0;
+            this.logDisplaySettings.displayedCount = 50; // Reset display count when searching
+            this.renderLogEntries();
+        });
+        
+        logSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                this.clearLogSearch();
+            }
+        });
+        
+        searchClearBtn.addEventListener('click', () => {
+            this.clearLogSearch();
         });
 
         // Settings modal listeners
@@ -815,26 +877,20 @@ class TerminalGUI {
             }
 
             messageElement.addEventListener('dragstart', (e) => {
-                console.log('dragstart event listener called');
                 this.handleDragStart(e);
             });
             messageElement.addEventListener('dragover', (e) => {
-                console.log('dragover on individual message element');
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'move';
                 this.handleDragOver(e);
             });
             messageElement.addEventListener('drop', (e) => {
-                console.log('drop on individual message element');
                 e.preventDefault();
                 this.handleDrop(e);
             });
             messageElement.addEventListener('dragend', (e) => {
-                console.log('dragend event listener called');
                 this.handleDragEnd(e);
             });
-            
-            console.log('Added drag event listeners to message element');
             
             const content = document.createElement('div');
             content.className = 'message-content';
@@ -1146,8 +1202,16 @@ class TerminalGUI {
             try {
                 await this.decrementTimer();
             } catch (error) {
-                console.error('Error in decrementTimer:', error);
-                this.logAction('Timer error: ' + error.message, 'error');
+                // Throttle error logging to prevent console spam
+                if (!this.lastTimerError || Date.now() - this.lastTimerError > 5000) {
+                    this.lastTimerError = Date.now();
+                    try {
+                        console.error('Error in decrementTimer:', error);
+                    } catch (consoleError) {
+                        // Ignore console errors to prevent EIO crashes
+                    }
+                    this.logAction('Timer error: ' + error.message, 'error');
+                }
             }
         }, 1000);
         
@@ -1206,6 +1270,7 @@ class TerminalGUI {
             
             // If we were waiting for usage limit reset, clear the waiting state
             if (this.usageLimitWaiting) {
+                this.logAction(`Timer expiration: clearing usageLimitWaiting. Current state - injectionInProgress: ${this.injectionInProgress}, queueLength: ${this.messageQueue.length}`, 'info');
                 this.usageLimitWaiting = false;
                 this.logAction('Usage limit reset time reached - resuming auto injection', 'success');
                 
@@ -1216,6 +1281,12 @@ class TerminalGUI {
                 } catch (error) {
                     console.error('Error clearing usage limit timer state:', error);
                 }
+                
+                // Comprehensively clear any stuck injection states when timer expires
+                this.isInjecting = false;
+                this.injectionInProgress = false;
+                this.currentlyInjectingMessageId = null;
+                this.safetyCheckCount = 0;
                 
                 // Explicitly update terminal status to clear any stuck "injecting" state
                 this.updateTerminalStatusIndicator();
@@ -1247,6 +1318,7 @@ class TerminalGUI {
             this.updateTimerUI();
             
             // Note: Timer expiration notification removed to prevent interrupting automated flow
+            this.logAction(`Timer expiration: about to call startSequentialInjection. Final state - injectionInProgress: ${this.injectionInProgress}, queueLength: ${this.messageQueue.length}, timerExpired: ${this.timerExpired}`, 'info');
             
             this.startSequentialInjection();
             return;
@@ -1661,13 +1733,29 @@ class TerminalGUI {
             return;
         }
         
-        // State recovery: if we're already in an injection state but stuck, reset it
+        // Enhanced state recovery: detect and fix various stuck state combinations
         if (this.injectionInProgress && !this.isInjecting) {
-            this.logAction('Detected stuck injection state - recovering', 'warning');
+            this.logAction('Detected stuck injection state (injectionInProgress without isInjecting) - recovering', 'warning');
             this.injectionInProgress = false;
             this.isInjecting = false;
             this.safetyCheckCount = 0;
         }
+        
+        // Additional recovery: if isInjecting is stuck true when starting new injection sequence
+        if (this.isInjecting && this.timerExpired && !this.usageLimitWaiting) {
+            this.logAction('Detected stuck isInjecting state - clearing for timer sequence', 'warning');
+            this.isInjecting = false;
+            this.currentlyInjectingMessageId = null;
+            this.safetyCheckCount = 0;
+        }
+        
+        // Additional recovery: if we're not in an injection state but timer expired, we should be injecting
+        if (!this.injectionInProgress && this.timerExpired && !this.usageLimitWaiting) {
+            this.logAction('Timer expired but injection not in progress - forcing start', 'warning');
+        }
+        
+        // Validate state BEFORE making any changes
+        this.validateInjectionState('startSequentialInjection-before');
         
         // Start power save blocker if enabled
         if (this.preferences.keepScreenAwake) {
@@ -1678,11 +1766,42 @@ class TerminalGUI {
         this.updateTimerUI();
         this.logAction(`Timer expired - starting sequential injection of ${this.messageQueue.length} messages (timerExpired=${this.timerExpired}, usageLimitWaiting=${this.usageLimitWaiting})`, 'success');
         
+        // Validate state after setting injection progress
+        this.validateInjectionState('startSequentialInjection-after');
+        
         // Start with first message (no 30-second delay for first message)
         this.processNextQueuedMessage(true);
     }
 
+    // State validation helper for debugging injection issues
+    validateInjectionState(context) {
+        const state = {
+            injectionInProgress: this.injectionInProgress,
+            isInjecting: this.isInjecting,
+            timerExpired: this.timerExpired,
+            usageLimitWaiting: this.usageLimitWaiting,
+            queueLength: this.messageQueue.length,
+            context: context
+        };
+        
+        this.logAction(`State validation [${context}]: ${JSON.stringify(state)}`, 'info');
+        
+        // Check for problematic state combinations
+        if (this.timerExpired && this.usageLimitWaiting) {
+            this.logAction('WARNING: Both timerExpired and usageLimitWaiting are true - potential conflict', 'warning');
+        }
+        
+        if (this.injectionInProgress && this.messageQueue.length === 0) {
+            this.logAction('WARNING: Injection in progress but queue is empty', 'warning');
+        }
+        
+        if (!this.injectionInProgress && this.isInjecting) {
+            this.logAction('WARNING: isInjecting true but injectionInProgress false - inconsistent state', 'warning');
+        }
+    }
+
     processNextQueuedMessage(isFirstMessage = false) {
+        this.validateInjectionState(`processNextQueuedMessage(isFirstMessage=${isFirstMessage})`);
         
         if (this.messageQueue.length === 0) {
             // Sequential injection is complete - reset all states
@@ -1730,6 +1849,7 @@ class TerminalGUI {
     }
 
     injectMessageAndContinueQueue() {
+        this.validateInjectionState('injectMessageAndContinueQueue');
         if (this.messageQueue.length === 0) {
             this.processNextQueuedMessage();
             return;
@@ -2274,7 +2394,6 @@ class TerminalGUI {
         const processNext = () => {
             if (index < messages.length) {
                 const message = messages[index];
-                console.log(`Processing batch message: ${message.content}`);
                 this.logAction(`Processing batch message: "${message.content}"`, 'info');
                 
                 this.typeMessage(message.processedContent, () => {
@@ -3358,45 +3477,142 @@ class TerminalGUI {
 
     logAction(message, type = 'info') {
         const timestamp = new Date().toLocaleTimeString();
-        this.actionLog.push({
+        const logEntry = {
+            id: Date.now() + Math.random(), // Unique ID for each log entry
             timestamp: timestamp,
             message: message,
-            type: type
-        });
+            type: type,
+            fullTimestamp: new Date().toISOString()
+        };
         
-        if (this.actionLog.length > 100) {
-            this.actionLog = this.actionLog.slice(-100);
+        this.actionLog.push(logEntry);
+        
+        // Keep unlimited logs in memory (remove the 100 entry limit)
+        // Only limit if memory becomes an issue (e.g., > 10000 entries)
+        if (this.actionLog.length > 10000) {
+            this.actionLog = this.actionLog.slice(-5000); // Keep last 5000 when cleaning up
         }
         
         this.updateActionLogDisplay();
     }
 
     updateActionLogDisplay() {
+        if (!this.logDisplaySettings) {
+            this.logDisplaySettings = {
+                searchTerm: '',
+                displayedCount: 50, // Start by showing last 50 entries
+                maxDisplayCount: 50,
+                isSearching: false
+            };
+        }
+        
+        this.renderLogEntries();
+    }
+    
+    renderLogEntries() {
         const logContainer = document.getElementById('action-log');
+        if (!logContainer) return;
+        
+        // Get filtered logs based on search
+        const filteredLogs = this.getFilteredLogs();
+        
+        // Determine how many entries to show
+        const entriesToShow = this.logDisplaySettings.isSearching 
+            ? filteredLogs.slice(0, 200) // Show more results when searching
+            : filteredLogs.slice(-this.logDisplaySettings.displayedCount); // Show recent entries normally
+        
+        // Clear container and render entries
         logContainer.innerHTML = '';
         
-        this.actionLog.slice(-20).forEach(entry => {
-            const logItem = document.createElement('div');
-            logItem.className = `log-item log-${entry.type}`;
-            
-            const timeElement = document.createElement('span');
-            timeElement.className = 'log-time';
-            timeElement.textContent = `[${entry.timestamp}]`;
-            
-            const messageElement = document.createElement('span');
-            messageElement.className = 'log-message';
-            messageElement.textContent = entry.message;
-            
-            logItem.appendChild(timeElement);
-            logItem.appendChild(messageElement);
+        // Add "Load more" button if there are more entries
+        if (!this.logDisplaySettings.isSearching && filteredLogs.length > this.logDisplaySettings.displayedCount) {
+            const loadMoreBtn = document.createElement('div');
+            loadMoreBtn.className = 'log-load-more';
+            loadMoreBtn.innerHTML = `
+                <button class="load-more-btn">
+                    Load ${Math.min(50, filteredLogs.length - this.logDisplaySettings.displayedCount)} more entries
+                    (${filteredLogs.length - this.logDisplaySettings.displayedCount} remaining)
+                </button>
+            `;
+            loadMoreBtn.querySelector('.load-more-btn').addEventListener('click', () => {
+                this.logDisplaySettings.displayedCount += 50;
+                this.renderLogEntries();
+            });
+            logContainer.appendChild(loadMoreBtn);
+        }
+        
+        // Render log entries
+        entriesToShow.forEach(entry => {
+            const logItem = this.createLogElement(entry);
             logContainer.appendChild(logItem);
         });
         
-        logContainer.scrollTop = logContainer.scrollHeight;
+        // Auto-scroll to bottom only if not searching and showing recent entries
+        if (!this.logDisplaySettings.isSearching) {
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+    }
+    
+    createLogElement(entry) {
+        const logItem = document.createElement('div');
+        logItem.className = `log-item log-${entry.type}`;
+        logItem.dataset.logId = entry.id;
+        
+        const timeElement = document.createElement('span');
+        timeElement.className = 'log-time';
+        timeElement.textContent = `[${entry.timestamp}]`;
+        
+        const messageElement = document.createElement('span');
+        messageElement.className = 'log-message';
+        
+        // Highlight search terms if searching
+        if (this.logDisplaySettings.searchTerm && this.logDisplaySettings.isSearching) {
+            messageElement.innerHTML = this.highlightSearchTerm(entry.message, this.logDisplaySettings.searchTerm);
+        } else {
+            messageElement.textContent = entry.message;
+        }
+        
+        logItem.appendChild(timeElement);
+        logItem.appendChild(messageElement);
+        
+        return logItem;
+    }
+    
+    getFilteredLogs() {
+        if (!this.logDisplaySettings.searchTerm || !this.logDisplaySettings.isSearching) {
+            return this.actionLog;
+        }
+        
+        const searchTerm = this.logDisplaySettings.searchTerm.toLowerCase();
+        return this.actionLog.filter(entry => 
+            entry.message.toLowerCase().includes(searchTerm) ||
+            entry.type.toLowerCase().includes(searchTerm) ||
+            entry.timestamp.toLowerCase().includes(searchTerm)
+        );
+    }
+    
+    highlightSearchTerm(text, searchTerm) {
+        const regex = new RegExp(`(${searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+        return text.replace(regex, '<mark class="search-highlight">$1</mark>');
+    }
+    
+    clearLogSearch() {
+        const logSearchInput = document.getElementById('log-search');
+        if (logSearchInput) {
+            logSearchInput.value = '';
+            this.logDisplaySettings.searchTerm = '';
+            this.logDisplaySettings.isSearching = false;
+            this.logDisplaySettings.displayedCount = 50;
+            this.renderLogEntries();
+        }
     }
     
     clearActionLog() {
         this.actionLog = [];
+        // Reset display settings
+        if (this.logDisplaySettings) {
+            this.logDisplaySettings.displayedCount = 50;
+        }
         this.updateActionLogDisplay();
         this.logAction('Action log cleared', 'info');
     }

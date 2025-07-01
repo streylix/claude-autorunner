@@ -257,7 +257,6 @@ function setupIpcHandlers() {
     try { console.log('Terminal process spawned successfully'); } catch (e) { /* ignore */ }
 
     ptyProcess.onData((data) => {
-      try { console.log('Terminal data received, sending to renderer:', data.length, 'bytes'); } catch (e) { /* ignore */ }
       event.reply('terminal-data', data);
     });
 
