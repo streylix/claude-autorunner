@@ -1998,7 +1998,7 @@ class TerminalGUI {
     injectMessageAndContinueQueue() {
         this.validateInjectionState('injectMessageAndContinueQueue');
         if (this.messageQueue.length === 0) {
-            this.processNextQueuedMessage();
+            this.scheduleNextInjection();
             return;
         }
         
@@ -2023,23 +2023,30 @@ class TerminalGUI {
             const enterDelay = this.getRandomDelay(150, 300);
             setTimeout(() => {
                 ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
-                this.isInjecting = false;
-                // Don't reset injectionInProgress here - keep it true for the entire sequence
-                this.currentlyInjectingMessageId = null; // Clear injecting message tracking
-                this.updateTerminalStatusIndicator(); // Use new status system
-                this.updateMessageList(); // Update UI to clear injecting state
                 
-                // Continue with next message after a short delay (only for timer-based injection)
-                if (this.timerExpired) {
-                    const nextMessageDelay = this.getRandomDelay(800, 1200);
-                    setTimeout(() => {
-                        this.processNextQueuedMessage();
-                    }, nextMessageDelay);
-                } else {
-                    // Manual injection complete - reset all states
-                    this.injectionInProgress = false;
-                    this.logAction('Manual injection complete - stopped after one message', 'info');
-                }
+                // Add post-injection delay to ensure command has time to start executing
+                // This prevents the next message from being injected too quickly
+                const postInjectionDelay = this.getRandomDelay(500, 800);
+                setTimeout(() => {
+                    this.isInjecting = false;
+                    // Don't reset injectionInProgress here - keep it true for the entire sequence
+                    this.currentlyInjectingMessageId = null; // Clear injecting message tracking
+                    this.updateTerminalStatusIndicator(); // Use new status system
+                    this.updateMessageList(); // Update UI to clear injecting state
+                    
+                    // Continue with next message after a short delay (only for timer-based injection)
+                    // Move this inside the post-injection delay to ensure proper sequencing
+                    if (this.timerExpired) {
+                        const nextMessageDelay = this.getRandomDelay(800, 1200);
+                        setTimeout(() => {
+                            this.scheduleNextInjection();
+                        }, nextMessageDelay);
+                    } else {
+                        // Manual injection complete - reset all states
+                        this.injectionInProgress = false;
+                        this.logAction('Manual injection complete - stopped after one message', 'info');
+                    }
+                }, postInjectionDelay);
                 
             }, enterDelay);
         });
@@ -2220,7 +2227,7 @@ class TerminalGUI {
                     if (this.timerExpired) {
                         const nextMessageDelay = this.getRandomDelay(800, 1200);
                         setTimeout(() => {
-                            this.processNextQueuedMessage();
+                            this.scheduleNextInjection();
                         }, nextMessageDelay);
                     }
                 }, enterDelay);
