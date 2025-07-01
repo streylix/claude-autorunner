@@ -55,7 +55,12 @@ class TerminalGUI {
             completionSoundEnabled: false,
             completionSoundFile: 'completion_beep.wav',
             // Add message history
-            messageHistory: []
+            messageHistory: [],
+            // Background service preferences
+            keepScreenAwake: true,
+            showSystemNotifications: true,
+            minimizeToTray: true,
+            startMinimized: false
         };
         this.usageLimitSyncInterval = null;
         this.usageLimitResetTime = null;
@@ -98,6 +103,9 @@ class TerminalGUI {
         // Message history tracking
         this.messageHistory = [];
         
+        // Background service state
+        this.powerSaveBlockerActive = false;
+        this.backgroundServiceActive = false;
         
         // Initialize the application asynchronously
         this.initialize();
@@ -125,6 +133,9 @@ class TerminalGUI {
             this.setTerminalStatusDisplay(''); // Initialize with default status
             this.updateTimerUI(); // Initialize timer UI after loading preferences
             
+            // Setup background service functionality
+            this.setupTrayEventListeners();
+            this.updateTrayBadge();
             
             console.log('App initialization completed successfully');
         } catch (error) {
@@ -550,6 +561,31 @@ class TerminalGUI {
             this.testCompletionSound();
         });
 
+        // Background service settings listeners
+        document.getElementById('keep-screen-awake').addEventListener('change', (e) => {
+            this.preferences.keepScreenAwake = e.target.checked;
+            this.saveAllPreferences();
+            this.logAction(`Keep screen awake ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+        });
+
+        document.getElementById('show-system-notifications').addEventListener('change', (e) => {
+            this.preferences.showSystemNotifications = e.target.checked;
+            this.saveAllPreferences();
+            this.logAction(`System notifications ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+        });
+
+        document.getElementById('minimize-to-tray').addEventListener('change', (e) => {
+            this.preferences.minimizeToTray = e.target.checked;
+            this.saveAllPreferences();
+            this.logAction(`Minimize to tray ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+        });
+
+        document.getElementById('start-minimized').addEventListener('change', (e) => {
+            this.preferences.startMinimized = e.target.checked;
+            this.saveAllPreferences();
+            this.logAction(`Start minimized ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+        });
+
         // System theme change listener
         window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
             if (this.preferences.theme === 'system') {
@@ -705,6 +741,7 @@ class TerminalGUI {
             };
             
             this.messageQueue.push(message);
+            this.updateTrayBadge();
             this.saveMessageQueue();
             this.updateMessageList();
             this.updateStatusDisplay();
@@ -734,6 +771,7 @@ class TerminalGUI {
         if (this.messageQueue.length > 0) {
             const count = this.messageQueue.length;
             this.messageQueue = [];
+            this.updateTrayBadge();
             this.saveMessageQueue();
             this.updateMessageList();
             this.updateStatusDisplay();
@@ -853,6 +891,7 @@ class TerminalGUI {
         if (index !== -1) {
             const deletedMessage = this.messageQueue[index];
             this.messageQueue.splice(index, 1);
+            this.updateTrayBadge();
             this.saveMessageQueue();
             this.updateMessageList();
             this.updateStatusDisplay();
@@ -1139,6 +1178,9 @@ class TerminalGUI {
             this.timerInterval = null;
         }
         
+        // Stop power save blocker when timer is stopped
+        this.stopPowerSaveBlocker();
+        
         this.updateTimerUI();
         this.logAction('Timer stopped and reset', 'info');
     }
@@ -1175,6 +1217,9 @@ class TerminalGUI {
                     console.error('Error clearing usage limit timer state:', error);
                 }
                 
+                // Explicitly update terminal status to clear any stuck "injecting" state
+                this.updateTerminalStatusIndicator();
+                
                 // Automatically add 'continue' to message queue when usage limit resets
                 const continueContent = 'continue';
                 
@@ -1200,6 +1245,9 @@ class TerminalGUI {
             }
             
             this.updateTimerUI();
+            
+            // Note: Timer expiration notification removed to prevent interrupting automated flow
+            
             this.startSequentialInjection();
             return;
         }
@@ -1607,7 +1655,7 @@ class TerminalGUI {
         }
     }
 
-    startSequentialInjection() {
+    async startSequentialInjection() {
         if (this.messageQueue.length === 0) {
             this.logAction('Timer expired but no messages to inject', 'warning');
             return;
@@ -1621,6 +1669,11 @@ class TerminalGUI {
             this.safetyCheckCount = 0;
         }
         
+        // Start power save blocker if enabled
+        if (this.preferences.keepScreenAwake) {
+            await this.startPowerSaveBlocker();
+        }
+        
         this.injectionInProgress = true;
         this.updateTimerUI();
         this.logAction(`Timer expired - starting sequential injection of ${this.messageQueue.length} messages (timerExpired=${this.timerExpired}, usageLimitWaiting=${this.usageLimitWaiting})`, 'success');
@@ -1630,7 +1683,6 @@ class TerminalGUI {
     }
 
     processNextQueuedMessage(isFirstMessage = false) {
-        this.logAction(`DEBUG: processNextQueuedMessage called - isFirstMessage=${isFirstMessage}, queueLength=${this.messageQueue.length}, injectionInProgress=${this.injectionInProgress}, timerExpired=${this.timerExpired}`, 'debug');
         
         if (this.messageQueue.length === 0) {
             // Sequential injection is complete - reset all states
@@ -1643,6 +1695,11 @@ class TerminalGUI {
             this.safetyCheckCount = 0; // Reset safety check count
             this.updateTimerUI();
             this.logAction('Sequential injection completed - all messages processed', 'success');
+            
+            // Stop power save blocker
+            this.stopPowerSaveBlocker();
+            
+
             
             // Play completion sound effect
             this.onAutoInjectionComplete();
@@ -1662,13 +1719,10 @@ class TerminalGUI {
             });
                  } else {
              // Wait for terminal to be in ready state ('...') for 5 seconds consistently
-             this.logAction('DEBUG: Waiting for terminal to be ready for 5 seconds before next injection', 'debug');
              this.waitForStableReadyState(() => {
                  // Terminal has been ready for 5 seconds - start safety checks
-                 this.logAction('DEBUG: Terminal ready state achieved, starting safety checks', 'debug');
                  this.performSafetyChecks(() => {
                      // Safety checks passed - inject the message
-                     this.logAction('DEBUG: Safety checks passed, injecting message', 'debug');
                      this.injectMessageAndContinueQueue();
                  });
              });
@@ -1676,15 +1730,12 @@ class TerminalGUI {
     }
 
     injectMessageAndContinueQueue() {
-        this.logAction('DEBUG: injectMessageAndContinueQueue STARTED', 'debug');
         if (this.messageQueue.length === 0) {
-            this.logAction('DEBUG: No messages in queue, calling processNextQueuedMessage', 'debug');
             this.processNextQueuedMessage();
             return;
         }
         
         const message = this.messageQueue.shift();
-        this.logAction(`DEBUG: Injecting message: "${message.content}" (id: ${message.id})`, 'debug');
         this.saveMessageQueue(); // Save queue changes to localStorage
         this.isInjecting = true;
         // Keep injectionInProgress true throughout the entire sequence
@@ -1746,6 +1797,9 @@ class TerminalGUI {
             clearInterval(this.currentTypeInterval);
             this.currentTypeInterval = null;
         }
+        
+        // Stop power save blocker
+        this.stopPowerSaveBlocker();
         
         // Update UI and status
         this.updateTimerUI();
@@ -1912,7 +1966,6 @@ class TerminalGUI {
 
     // Safety check functions for the new system
     performSafetyChecks(callback) {
-        this.logAction('DEBUG: performSafetyChecks STARTED', 'debug');
         this.safetyCheckCount = 0;
         
         // Start the safety check cycle
@@ -1921,7 +1974,6 @@ class TerminalGUI {
 
     runSafetyCheck(callback) {
         this.safetyCheckCount++;
-        this.logAction(`DEBUG: runSafetyCheck attempt ${this.safetyCheckCount} - isInjecting=${this.isInjecting}`, 'debug');
         
         // Safety check 1: Not already injecting
         if (this.isInjecting) {
@@ -1932,7 +1984,6 @@ class TerminalGUI {
         
         // Safety check 2: Simple scan for blocking conditions
         const terminalStatus = this.scanTerminalStatus();
-        this.logAction(`DEBUG: Terminal status - isRunning=${terminalStatus.isRunning}, isPrompting=${terminalStatus.isPrompting}`, 'debug');
         
         if (terminalStatus.isRunning) {
             this.logAction(`Safety check failed - running process detected (attempt ${this.safetyCheckCount})`, 'warning');
@@ -1947,7 +1998,7 @@ class TerminalGUI {
         }
         
         // All safety checks passed
-        this.logAction(`DEBUG: Safety checks passed (attempt ${this.safetyCheckCount}) - proceeding with injection`, 'success');
+        this.logAction(`Safety checks passed (attempt ${this.safetyCheckCount}) - proceeding with injection`, 'success');
         callback();
     }
 
@@ -2033,6 +2084,12 @@ class TerminalGUI {
     }
 
     updateTerminalStatusIndicator() {
+        // When waiting for usage limit reset, always show default "..." status
+        if (this.usageLimitWaiting) {
+            this.setTerminalStatusDisplay('');
+            return;
+        }
+        
         if (this.isInjecting) {
             this.setTerminalStatusDisplay('injecting');
         } else if (this.currentTerminalStatus.isRunning) {
@@ -2055,7 +2112,7 @@ class TerminalGUI {
     retrySafetyCheck(callback) {
         // Add timeout for safety checks to prevent infinite retries
         if (this.safetyCheckCount > 50) {
-            this.logAction(`DEBUG: Safety check TIMEOUT after ${this.safetyCheckCount} attempts - forcing injection`, 'warning');
+            this.logAction(`Safety check TIMEOUT after ${this.safetyCheckCount} attempts - forcing injection`, 'warning');
             callback();
             return;
         }
@@ -3056,6 +3113,7 @@ class TerminalGUI {
 
         // Add to the end of the queue
         this.messageQueue.push(newMessage);
+        this.updateTrayBadge();
         this.saveMessageQueue();
         this.updateMessageList();
         this.updateStatusDisplay();
@@ -3070,6 +3128,72 @@ class TerminalGUI {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    // Background service utility methods
+    async startPowerSaveBlocker() {
+        try {
+            if (!this.powerSaveBlockerActive) {
+                const result = await ipcRenderer.invoke('start-power-save-blocker');
+                if (result.success) {
+                    this.powerSaveBlockerActive = true;
+                    this.logAction('Power save blocker started - screen will stay awake during injection', 'info');
+                } else {
+                    this.logAction('Failed to start power save blocker: ' + result.error, 'error');
+                }
+            }
+        } catch (error) {
+            this.logAction('Error starting power save blocker: ' + error.message, 'error');
+        }
+    }
+
+    async stopPowerSaveBlocker() {
+        try {
+            if (this.powerSaveBlockerActive) {
+                const result = await ipcRenderer.invoke('stop-power-save-blocker');
+                if (result.success) {
+                    this.powerSaveBlockerActive = false;
+                    this.logAction('Power save blocker stopped - system can sleep normally', 'info');
+                } else {
+                    this.logAction('Failed to stop power save blocker: ' + result.error, 'error');
+                }
+            }
+        } catch (error) {
+            this.logAction('Error stopping power save blocker: ' + error.message, 'error');
+        }
+    }
+
+    setupTrayEventListeners() {
+        // Set up IPC listeners for tray events
+        ipcRenderer.on('tray-start-injection', () => {
+            this.logAction('Start injection triggered from tray', 'info');
+            if (this.messageQueue.length > 0) {
+                this.startSequentialInjection();
+            } else {
+                this.logAction('No messages in queue to inject', 'info');
+            }
+        });
+
+        ipcRenderer.on('tray-stop-injection', () => {
+            this.logAction('Stop injection triggered from tray', 'info');
+            this.cancelSequentialInjection();
+        });
+
+        this.logAction('Tray event listeners setup', 'info');
+    }
+
+    async updateTrayBadge() {
+        try {
+            const queueSize = this.messageQueue.length;
+            const result = await ipcRenderer.invoke('update-tray-badge', queueSize);
+            if (result.success) {
+                this.logAction(`Tray badge updated with queue size: ${queueSize}`, 'debug');
+            } else {
+                this.logAction('Failed to update tray badge: ' + result.error, 'error');
+            }
+        } catch (error) {
+            this.logAction('Error updating tray badge: ' + error.message, 'error');
+        }
     }
 
     async loadAllPreferences() {
@@ -3147,6 +3271,19 @@ class TerminalGUI {
             // Update sound settings UI
             const completionSoundEl = document.getElementById('completion-sound-enabled');
             if (completionSoundEl) completionSoundEl.checked = this.preferences.completionSoundEnabled || false;
+            
+            // Update background service settings UI
+            const keepScreenAwakeEl = document.getElementById('keep-screen-awake');
+            if (keepScreenAwakeEl) keepScreenAwakeEl.checked = this.preferences.keepScreenAwake || true;
+
+            const showSystemNotificationsEl = document.getElementById('show-system-notifications');
+            if (showSystemNotificationsEl) showSystemNotificationsEl.checked = this.preferences.showSystemNotifications || true;
+
+            const minimizeToTrayEl = document.getElementById('minimize-to-tray');
+            if (minimizeToTrayEl) minimizeToTrayEl.checked = this.preferences.minimizeToTray || true;
+
+            const startMinimizedEl = document.getElementById('start-minimized');
+            if (startMinimizedEl) startMinimizedEl.checked = this.preferences.startMinimized || false;
             
             // Apply theme
             this.applyTheme(this.preferences.theme || 'dark');
@@ -3627,7 +3764,6 @@ class TerminalGUI {
 
     // Smart waiting system for auto-injection
     waitForStableReadyState(callback) {
-        this.logAction('DEBUG: waitForStableReadyState STARTED', 'debug');
         const requiredStableDuration = 5000; // 5 seconds
         const checkInterval = 10; // 10ms
         const maxWaitTime = 60000; // 60 seconds timeout
@@ -3641,7 +3777,7 @@ class TerminalGUI {
             // Check for timeout
             const elapsedTime = Date.now() - startTime;
             if (elapsedTime > maxWaitTime) {
-                this.logAction(`DEBUG: waitForStableReadyState TIMEOUT after ${elapsedTime}ms - forcing injection`, 'warning');
+                this.logAction(`waitForStableReadyState TIMEOUT after ${elapsedTime}ms - forcing injection`, 'warning');
                 callback();
                 return;
             }
@@ -3649,13 +3785,8 @@ class TerminalGUI {
             // Check if injection sequence was cancelled entirely
             // Only cancel if injection was explicitly stopped AND we're not in a timer sequence
             if (!this.injectionInProgress && !this.timerExpired && !this.usageLimitWaiting) {
-                this.logAction('DEBUG: waitForStableReadyState CANCELLED - injection sequence stopped', 'warning');
+                this.logAction('waitForStableReadyState CANCELLED - injection sequence stopped', 'warning');
                 return;
-            }
-            
-            // Log status for debugging
-            if (checkCount % 100 === 0) {
-                this.logAction(`DEBUG waitForStableReadyState: injectionInProgress=${this.injectionInProgress}, timerExpired=${this.timerExpired}, isRunning=${this.currentTerminalStatus.isRunning}, isPrompting=${this.currentTerminalStatus.isPrompting}, isInjecting=${this.isInjecting}`, 'debug');
             }
             
             // Get current terminal status
@@ -3673,7 +3804,7 @@ class TerminalGUI {
                     // Check if we've been stable long enough
                     const stableDuration = Date.now() - stableStartTime;
                     if (stableDuration >= requiredStableDuration) {
-                        this.logAction(`DEBUG: waitForStableReadyState COMPLETED - Terminal stable for ${stableDuration}ms - proceeding with injection`, 'success');
+                        this.logAction(`Terminal stable for ${stableDuration}ms - proceeding with injection`, 'success');
                         callback();
                         return;
                     }
@@ -3796,13 +3927,6 @@ class TerminalGUI {
         this.updateStatusDisplay();
         
         this.logAction(`Reordered message: "${movedMessage.content.substring(0, 30)}..." from position ${fromIndex + 1} to ${toIndex + 1}`, 'info');
-    }
-
-
-    showNotification(title, message, type = 'info') {
-        // Simple notification system - could be enhanced with toast notifications
-        const prefix = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
-        alert(`${prefix} ${title}\n\n${message}`);
     }
 
     // Sound Effects Methods

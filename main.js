@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, powerSaveBlocker, Notification } = require('electron');
 const path = require('path');
 const pty = require('node-pty');
 const os = require('os');
@@ -7,6 +7,9 @@ const fs = require('fs').promises;
 let mainWindow;
 let ptyProcess;
 let dataFilePath;
+let tray = null;
+let powerSaveBlockerId = null;
+let isQuitting = false;
 
 
 function getIcon() {
@@ -77,6 +80,75 @@ async function writeDataFile(data) {
 }
 
 
+function createTray() {
+  const iconPath = getIcon() || path.join(__dirname, 'logo.png');
+  tray = new Tray(iconPath);
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Show/Hide Window',
+      click: () => {
+        if (mainWindow) {
+          if (mainWindow.isVisible()) {
+            mainWindow.hide();
+          } else {
+            mainWindow.show();
+            mainWindow.focus();
+          }
+        } else {
+          createWindow();
+        }
+      }
+    },
+    {
+      type: 'separator'
+    },
+    {
+      label: 'Start Injection',
+      click: () => {
+        if (mainWindow) {
+          mainWindow.webContents.send('tray-start-injection');
+        }
+      }
+    },
+    {
+      label: 'Stop Injection',
+      click: () => {
+        if (mainWindow) {
+          mainWindow.webContents.send('tray-stop-injection');
+        }
+      }
+    },
+    {
+      type: 'separator'
+    },
+    {
+      label: 'Quit',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]);
+
+  tray.setContextMenu(contextMenu);
+  tray.setToolTip('Auto-Injector');
+
+  // Handle tray click (show/hide window)
+  tray.on('click', () => {
+    if (mainWindow) {
+      if (mainWindow.isVisible()) {
+        mainWindow.hide();
+      } else {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    } else {
+      createWindow();
+    }
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -104,6 +176,17 @@ function createWindow() {
     mainWindow.show();
   });
 
+  // Handle window close - minimize to tray instead of quit
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+      
+      // Show notification on first minimize to tray
+      showNotification('Auto-Injector', 'App minimized to system tray. Click the tray icon to restore.');
+    }
+  });
+
   mainWindow.on('closed', () => {
     if (ptyProcess) {
       ptyProcess.kill();
@@ -113,8 +196,23 @@ function createWindow() {
 }
 
 
+function showNotification(title, body) {
+  try {
+    if (Notification.isSupported()) {
+      new Notification({
+        title: title,
+        body: body,
+        icon: getIcon()
+      }).show();
+    }
+  } catch (error) {
+    try { console.error('Error showing notification:', error); } catch (e) { /* ignore */ }
+  }
+}
+
 app.whenReady().then(() => {
   initDataStorage();
+  createTray();
   createWindow();
   
   // Set dock icon (macOS specific)
@@ -606,6 +704,79 @@ function setupIpcHandlers() {
     }
   });
 
+  // Power management IPC handlers
+  ipcMain.handle('start-power-save-blocker', async () => {
+    try {
+      if (powerSaveBlockerId === null) {
+        powerSaveBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+        try { console.log('Power save blocker started:', powerSaveBlockerId); } catch (e) { /* ignore */ }
+        return { success: true, id: powerSaveBlockerId };
+      }
+      return { success: true, id: powerSaveBlockerId };
+    } catch (error) {
+      try { console.error('Error starting power save blocker:', error); } catch (e) { /* ignore */ }
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('stop-power-save-blocker', async () => {
+    try {
+      if (powerSaveBlockerId !== null) {
+        powerSaveBlocker.stop(powerSaveBlockerId);
+        try { console.log('Power save blocker stopped:', powerSaveBlockerId); } catch (e) { /* ignore */ }
+        powerSaveBlockerId = null;
+        return { success: true };
+      }
+      return { success: true };
+    } catch (error) {
+      try { console.error('Error stopping power save blocker:', error); } catch (e) { /* ignore */ }
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('is-power-save-blocker-active', async () => {
+    try {
+      const isActive = powerSaveBlockerId !== null && powerSaveBlocker.isStarted(powerSaveBlockerId);
+      return { success: true, active: isActive };
+    } catch (error) {
+      try { console.error('Error checking power save blocker status:', error); } catch (e) { /* ignore */ }
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Notification IPC handlers
+  ipcMain.handle('show-notification', async (event, title, body, options = {}) => {
+    try {
+      showNotification(title, body);
+      return { success: true };
+    } catch (error) {
+      try { console.error('Error showing notification:', error); } catch (e) { /* ignore */ }
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Tray badge update (macOS/Windows)
+  ipcMain.handle('update-tray-badge', async (event, count) => {
+    try {
+      if (process.platform === 'darwin' && app.dock) {
+        if (count > 0) {
+          app.dock.setBadge(count.toString());
+        } else {
+          app.dock.setBadge('');
+        }
+      }
+      // Update tray tooltip with queue count
+      if (tray) {
+        const tooltip = count > 0 ? `Auto-Injector (${count} queued)` : 'Auto-Injector';
+        tray.setToolTip(tooltip);
+      }
+      return { success: true };
+    } catch (error) {
+      try { console.error('Error updating tray badge:', error); } catch (e) { /* ignore */ }
+      return { success: false, error: error.message };
+    }
+  });
+
 }
 
 // App event handlers
@@ -616,7 +787,9 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  // Don't quit when all windows are closed - keep running in tray
+  // Only quit if the user explicitly quits via tray menu
+  if (process.platform !== 'darwin' && isQuitting) {
     app.quit();
   }
 });
@@ -624,6 +797,20 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
+  }
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
+  
+  // Clean up power save blocker
+  if (powerSaveBlockerId !== null) {
+    try {
+      powerSaveBlocker.stop(powerSaveBlockerId);
+      powerSaveBlockerId = null;
+    } catch (error) {
+      try { console.error('Error stopping power save blocker on quit:', error); } catch (e) { /* ignore */ }
+    }
   }
 });
 
