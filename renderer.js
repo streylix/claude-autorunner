@@ -234,9 +234,9 @@ class TerminalGUI {
         // Create terminal instance
         const terminal = new Terminal({
             theme: this.getTerminalTheme(),
-            fontFamily: 'Monaco, Menlo, Consolas, monospace',
+            fontFamily: 'Menlo',
             fontSize: 13,
-            lineHeight: 1.2,
+            lineHeight: 1,
             cursorBlink: true,
             cursorStyle: 'block',
             scrollback: 1000,

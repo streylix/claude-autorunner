@@ -1347,7 +1347,7 @@ body {
 
 /* XTerm overrides */
 .xterm {
-    font-family: 'Monaco', 'Menlo', 'Consolas', monospace !important;
+    font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace !important;
 }
 
 .xterm .xterm-viewport {
