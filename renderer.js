@@ -23,6 +23,7 @@ class TerminalGUI {
         this.currentDirectory = null; // Will be set when terminal starts or directory is detected
         this.isInjecting = false;
         this.messageIdCounter = 1;
+        this.messageSequenceCounter = 0;
         this.autoContinueEnabled = false;
         this.lastTerminalOutput = '';
         this.autoscrollEnabled = true;
@@ -928,7 +929,8 @@ class TerminalGUI {
                 executeAt: now,
                 createdAt: now,
                 timestamp: now, // For compatibility
-                terminalId: this.activeTerminalId // Use currently selected terminal
+                terminalId: this.activeTerminalId, // Use currently selected terminal
+                sequence: ++this.messageSequenceCounter // Add sequence counter for proper ordering
             };
             
             this.messageQueue.push(message);
@@ -1445,7 +1447,8 @@ class TerminalGUI {
                         id: this.generateMessageId(),
                         content: continueContent,
                         executeAt: Date.now(),
-                        createdAt: Date.now()
+                        createdAt: Date.now(),
+                        sequence: ++this.messageSequenceCounter
                     };
                     
                     // Add to the beginning of the queue (highest priority)
@@ -2629,8 +2632,11 @@ class TerminalGUI {
             
             // Only consider messages that are ready to execute
             if (message.executeAt <= now) {
-                if (!messagesByTerminal.has(terminalId) || 
-                    message.executeAt < messagesByTerminal.get(terminalId).executeAt) {
+                const existingMessage = messagesByTerminal.get(terminalId);
+                if (!existingMessage || 
+                    message.executeAt < existingMessage.executeAt ||
+                    (message.executeAt === existingMessage.executeAt && 
+                     (message.sequence || 0) < (existingMessage.sequence || 0))) {
                     messagesByTerminal.set(terminalId, message);
                 }
             }
@@ -2650,9 +2656,12 @@ class TerminalGUI {
         });
         
         if (remainingMessages.length > 0) {
-            // Find the next earliest message
+            // Find the next earliest message (considering sequence for identical timestamps)
             const nextMessage = remainingMessages.reduce((earliest, current) => {
-                return current.executeAt < earliest.executeAt ? current : earliest;
+                if (current.executeAt < earliest.executeAt) return current;
+                if (current.executeAt > earliest.executeAt) return earliest;
+                // Same executeAt - use sequence counter
+                return (current.sequence || 0) < (earliest.sequence || 0) ? current : earliest;
             });
             
             const delay = Math.max(100, nextMessage.executeAt - now); // Minimum 100ms delay
@@ -2696,12 +2705,12 @@ class TerminalGUI {
         this.typeMessageToTerminal(message.processedContent, terminalId, () => {
             this.injectionCount++;
             this.saveToMessageHistory(message);
-            this.deleteMessage(message.id);
             this.updateStatusDisplay();
             
             setTimeout(() => {
                 ipcRenderer.send('terminal-input', { terminalId, data: '\r' });
                 this.currentlyInjectingMessages.delete(message.id);
+                this.deleteMessage(message.id); // Move message deletion to after injection cleanup
                 this.setTerminalStatusDisplay('', terminalId);
                 
                 // Schedule next injection
@@ -3180,7 +3189,8 @@ class TerminalGUI {
                 id: this.generateMessageId(),
                 content: 'continue', // Enter key to continue current prompt (escaped for proper handling)
                 executeAt: Date.now(), // Execute immediately
-                createdAt: Date.now()
+                createdAt: Date.now(),
+                sequence: ++this.messageSequenceCounter
             };
             
             // Add to the beginning of the queue
@@ -3592,7 +3602,8 @@ class TerminalGUI {
             processedContent: content,
             executeAt: now,
             createdAt: now,
-            timestamp: now // For compatibility
+            timestamp: now, // For compatibility
+            sequence: ++this.messageSequenceCounter
         };
 
         // Add to the end of the queue
