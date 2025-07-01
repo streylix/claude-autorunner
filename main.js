@@ -895,7 +895,7 @@ except Exception as e:
               if (result.error) {
                 reject(new Error(result.error));
               } else {
-                resolve(result.text || 'No speech detected');
+                resolve(result.text || '');
               }
             } catch (parseError) {
               reject(new Error(`Failed to parse transcription result: ${parseError.message}`));

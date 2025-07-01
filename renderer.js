@@ -604,11 +604,12 @@ class TerminalGUI {
             }
         });
 
-        // Auto-continue checkbox listener
-        document.getElementById('auto-continue').addEventListener('change', (e) => {
-            this.autoContinueEnabled = e.target.checked;
-            this.preferences.autoContinueEnabled = e.target.checked;
+        // Auto-continue button listener
+        document.getElementById('auto-continue-btn').addEventListener('click', (e) => {
+            this.autoContinueEnabled = !this.autoContinueEnabled;
+            this.preferences.autoContinueEnabled = this.autoContinueEnabled;
             this.saveAllPreferences();
+            this.updateAutoContinueButtonState();
             if (this.autoContinueEnabled) {
                 this.logAction('Auto-continue enabled - will respond to prompts', 'info');
             } else {
@@ -1049,7 +1050,7 @@ class TerminalGUI {
             // Send to main process for transcription
             const transcription = await ipcRenderer.invoke('transcribe-audio', audioBuffer);
             
-            if (transcription && transcription.trim()) {
+            if (transcription && transcription.trim() && transcription.trim() !== 'No speech detected') {
                 const messageInput = document.getElementById('message-input');
                 const currentValue = messageInput.value;
                 const newValue = currentValue ? `${currentValue} ${transcription}` : transcription;
@@ -1090,6 +1091,17 @@ class TerminalGUI {
         }
         
         lucide.createIcons();
+    }
+
+    updateAutoContinueButtonState() {
+        const autoContinueBtn = document.getElementById('auto-continue-btn');
+        if (autoContinueBtn) {
+            if (this.autoContinueEnabled) {
+                autoContinueBtn.classList.add('enabled');
+            } else {
+                autoContinueBtn.classList.remove('enabled');
+            }
+        }
     }
 
     handleMessageUpdate() {
@@ -3932,8 +3944,7 @@ class TerminalGUI {
             const autoscrollDelayEl = document.getElementById('autoscroll-delay');
             if (autoscrollDelayEl) autoscrollDelayEl.value = this.autoscrollDelay;
             
-            const autoContinueEl = document.getElementById('auto-continue');
-            if (autoContinueEl) autoContinueEl.checked = this.autoContinueEnabled;
+            this.updateAutoContinueButtonState();
             
             const themeSelectEl = document.getElementById('theme-select');
             if (themeSelectEl) themeSelectEl.value = this.preferences.theme || 'dark';

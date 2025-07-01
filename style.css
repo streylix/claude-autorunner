@@ -848,6 +848,10 @@ body {
     gap: 8px;
 }
 
+.textarea-container {
+    position: relative;
+}
+
 /* Terminal selector styles */
 .terminal-selector {
     margin-bottom: 8px;
@@ -899,7 +903,6 @@ body {
     position: absolute;
     bottom: 100%;
     left: 0;
-    right: 0;
     margin-bottom: 4px;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
@@ -907,18 +910,20 @@ body {
     box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.2);
     z-index: 1000;
     overflow: hidden;
-    min-width: 100px;
+    min-width: 120px;
+    width: auto;
 }
 
 .terminal-selector-item {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 10px;
+    padding: 6px 30px 6px 10px;
     cursor: pointer;
     transition: background-color 0.2s;
     position: relative;
-    font-size: 13px;
+    font-size: 12px;
+    white-space: nowrap;
 }
 
 .terminal-selector-item:hover {
@@ -943,7 +948,13 @@ body {
     justify-content: space-between;
 }
 
-.input-actions .terminal-selector {
+.left-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.left-controls .terminal-selector {
     margin-bottom: 0;
 }
 
@@ -951,6 +962,47 @@ body {
     display: flex;
     gap: 8px;
     align-items: center;
+}
+
+.auto-continue-btn {
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.auto-continue-btn:hover {
+    background-color: var(--bg-quaternary);
+    color: var(--text-primary);
+    transform: scale(1.05);
+}
+
+.auto-continue-btn:active {
+    transform: scale(0.95);
+}
+
+.auto-continue-btn.enabled {
+    background-color: #A7B0ED;
+    color: var(--text-primary);
+    border-color: #A7B0ED;
+}
+
+.auto-continue-btn.enabled:hover {
+    background-color: #9399E3;
+    border-color: #9399E3;
+}
+
+.auto-continue-btn i {
+    width: 16px;
+    height: 16px;
 }
 
 .voice-button {
@@ -1361,7 +1413,7 @@ body {
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
     border-radius: 6px;
-    padding: 12px;
+    padding: 12px 40px 12px 12px;
     color: var(--text-primary);
     font-family: inherit;
     font-size: 12px;
@@ -1389,29 +1441,36 @@ body {
 }
 
 .hotkey-btn {
-    background: none;
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background-color: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
-    color: var(--text-tertiary);
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
     cursor: pointer;
-    padding: 6px;
-    border-radius: 4px;
-    transition: all 0.2s;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    transition: all 0.2s;
+    color: var(--text-secondary);
+    z-index: 10;
 }
 
 .hotkey-btn:hover {
+    background-color: var(--bg-quaternary);
     color: var(--text-primary);
-    background-color: var(--bg-tertiary);
-    border-color: var(--border-primary);
+    transform: scale(1.05);
+}
+
+.hotkey-btn:active {
+    transform: scale(0.95);
 }
 
 .hotkey-btn i {
-    width: 14px;
-    height: 14px;
+    width: 12px;
+    height: 12px;
 }
 
 .auto-continue-info {
