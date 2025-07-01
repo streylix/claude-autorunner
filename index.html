@@ -133,21 +133,26 @@
                 <div class="input-section">
                     <div class="input-container" id="drop-zone">
                         <div class="input-wrapper">
-                            <div class="terminal-selector">
-                                <button class="terminal-selector-btn" id="terminal-selector-btn">
-                                    <span class="terminal-selector-dot" style="background-color: #007acc;"></span>
-                                    <span class="terminal-selector-text">Terminal 1</span>
-                                    <i data-lucide="chevron-down"></i>
-                                </button>
-                                <div class="terminal-selector-dropdown" id="terminal-selector-dropdown" style="display: none;">
-                                    <!-- Dropdown items will be dynamically generated -->
-                                </div>
-                            </div>
                             <textarea id="message-input" placeholder="Type your command here..." rows="3" title="Enter command to add to message queue"></textarea>
                             <div class="input-actions">
-                                <button type="button" id="send-btn" class="send-button" title="Add message to queue (Enter)">
-                                    <i data-lucide="send-horizontal"></i>
-                                </button>
+                                <div class="terminal-selector">
+                                    <button class="terminal-selector-btn" id="terminal-selector-btn">
+                                        <span class="terminal-selector-dot" style="background-color: #007acc;"></span>
+                                        <span class="terminal-selector-text">Terminal 1</span>
+                                        <i data-lucide="chevron-up"></i>
+                                    </button>
+                                    <div class="terminal-selector-dropdown" id="terminal-selector-dropdown" style="display: none;">
+                                        <!-- Dropdown items will be dynamically generated -->
+                                    </div>
+                                </div>
+                                <div class="button-group">
+                                    <button type="button" id="voice-btn" class="voice-button" title="Voice transcription">
+                                        <i data-lucide="mic"></i>
+                                    </button>
+                                    <button type="button" id="send-btn" class="send-button" title="Add message to queue (Enter)">
+                                        <i data-lucide="send-horizontal"></i>
+                                    </button>
+                                </div>
                             </div>
                         </div>
                         <div class="drop-overlay" id="drop-overlay" style="display: none;">

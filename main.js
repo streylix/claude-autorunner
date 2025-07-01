@@ -3,6 +3,7 @@ const path = require('path');
 const pty = require('node-pty');
 const os = require('os');
 const fs = require('fs').promises;
+// @xenova/transformers will be dynamically imported in the transcription handler
 
 let mainWindow;
 let ptyProcess; // Legacy single process support
@@ -842,6 +843,83 @@ function setupIpcHandlers() {
     } catch (error) {
       try { console.error('Error updating tray badge:', error); } catch (e) { /* ignore */ }
       return { success: false, error: error.message };
+    }
+  });
+
+  // Voice transcription handler using Python Whisper
+  ipcMain.handle('transcribe-audio', async (event, audioBuffer) => {
+    let tempAudioPath = null;
+    
+    try {
+      const { spawn } = require('child_process');
+      
+      // Create temporary file for audio
+      const tempDir = os.tmpdir();
+      tempAudioPath = path.join(tempDir, `audio_${Date.now()}.wav`);
+      
+      // Write audio buffer to temporary file
+      await fs.writeFile(tempAudioPath, audioBuffer);
+      
+      // Create Python script for transcription
+      const pythonScript = `
+import whisper
+import sys
+import json
+
+try:
+    model = whisper.load_model("tiny.en")
+    result = model.transcribe("${tempAudioPath}")
+    print(json.dumps({"text": result["text"].strip()}))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+`;
+      
+      // Run Python whisper transcription
+      const transcript = await new Promise((resolve, reject) => {
+        const python = spawn('python3', ['-c', pythonScript]);
+        let output = '';
+        let error = '';
+        
+        python.stdout.on('data', (data) => {
+          output += data.toString();
+        });
+        
+        python.stderr.on('data', (data) => {
+          error += data.toString();
+        });
+        
+        python.on('close', (code) => {
+          if (code === 0) {
+            try {
+              const result = JSON.parse(output.trim());
+              if (result.error) {
+                reject(new Error(result.error));
+              } else {
+                resolve(result.text || 'No speech detected');
+              }
+            } catch (parseError) {
+              reject(new Error(`Failed to parse transcription result: ${parseError.message}`));
+            }
+          } else {
+            reject(new Error(`Python script failed with code ${code}: ${error}`));
+          }
+        });
+      });
+      
+      return transcript;
+      
+    } catch (error) {
+      console.error('Transcription error:', error);
+      return `[Transcription failed: ${error.message}]`;
+    } finally {
+      // Clean up temporary file
+      if (tempAudioPath) {
+        try {
+          await fs.unlink(tempAudioPath);
+        } catch (cleanupError) {
+          console.warn('Failed to cleanup temp audio file:', cleanupError.message);
+        }
+      }
     }
   });
 

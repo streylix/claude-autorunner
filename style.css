@@ -843,6 +843,9 @@ body {
 .input-wrapper {
     position: relative;
     margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 /* Terminal selector styles */
@@ -852,18 +855,21 @@ body {
 }
 
 .terminal-selector-btn {
-    width: 100%;
+    width: auto;
+    min-width: 100px;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
+    gap: 4px;
+    padding: 0 10px;
+    height: 32px;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-primary);
-    border-radius: 6px;
+    border-radius: 16px;
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: 12px;
     cursor: pointer;
     transition: all 0.2s;
+    flex-shrink: 0;
 }
 
 .terminal-selector-btn:hover {
@@ -872,8 +878,8 @@ body {
 }
 
 .terminal-selector-dot {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
 }
@@ -884,23 +890,24 @@ body {
 }
 
 .terminal-selector-btn i {
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     color: var(--text-tertiary);
 }
 
 .terminal-selector-dropdown {
     position: absolute;
-    top: 100%;
+    bottom: 100%;
     left: 0;
     right: 0;
-    margin-top: 2px;
+    margin-bottom: 4px;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
-    border-radius: 4px;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    border-radius: 8px;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.2);
     z-index: 1000;
     overflow: hidden;
+    min-width: 100px;
 }
 
 .terminal-selector-item {
@@ -930,18 +937,104 @@ body {
 }
 
 .input-actions {
-    position: absolute;
-    right: 8px;
-    bottom: 8px;
     display: flex;
-    gap: 4px;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.input-actions .terminal-selector {
+    margin-bottom: 0;
+}
+
+.button-group {
+    display: flex;
+    gap: 8px;
     align-items: center;
 }
 
+.voice-button {
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+
+.voice-button:hover {
+    background-color: var(--bg-quaternary);
+    color: var(--text-primary);
+    transform: scale(1.05);
+}
+
+.voice-button:active {
+    transform: scale(0.95);
+}
+
+#voice-btn.recording {
+    background-color: #ff0000 !important;
+    color: #ffffff !important;
+    border: 3px solid #ff0000 !important;
+    transform: scale(1.1) !important;
+}
+
+#voice-btn.recording:hover {
+    background-color: #ff0000 !important;
+    color: #ffffff !important;
+    transform: scale(1.1) !important;
+}
+
+#voice-btn.processing {
+    background-color: #ffcc00 !important;
+    color: #000000 !important;
+    border: 3px solid #ffcc00 !important;
+}
+
+#voice-btn.processing:hover {
+    background-color: #ffcc00 !important;
+    color: #000000 !important;
+}
+
+.voice-button i {
+    width: 16px;
+    height: 16px;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
+@keyframes recording-pulse {
+    0% { 
+        box-shadow: 0 0 0 2px rgba(255, 95, 87, 0.4);
+        background-color: var(--accent-error);
+    }
+    50% { 
+        box-shadow: 0 0 0 6px rgba(255, 95, 87, 0.1);
+        background-color: #ff4136;
+    }
+    100% { 
+        box-shadow: 0 0 0 2px rgba(255, 95, 87, 0.4);
+        background-color: var(--accent-error);
+    }
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+
 .send-button {
-    position: absolute;
-    right: 8px;
-    bottom: 8px;
     background-color: var(--accent-primary);
     border: none;
     border-radius: 50%;
@@ -953,6 +1046,7 @@ body {
     justify-content: center;
     transition: all 0.2s;
     color: var(--text-primary);
+    flex-shrink: 0;
 }
 
 .send-button:hover {
@@ -1267,7 +1361,7 @@ body {
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
     border-radius: 6px;
-    padding: 10px 80px 10px 12px;
+    padding: 12px;
     color: var(--text-primary);
     font-family: inherit;
     font-size: 12px;

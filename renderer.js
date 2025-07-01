@@ -97,6 +97,11 @@ class TerminalGUI {
         this.usageLimitModalShowing = false;
         this.usageLimitWaiting = false;
         
+        // Voice recording state
+        this.isRecording = false;
+        this.mediaRecorder = null;
+        this.audioChunks = [];
+        
         // Message editing state
         this.editingMessageId = null;
         this.originalEditContent = null;
@@ -473,6 +478,11 @@ class TerminalGUI {
         // UI event listeners
         document.getElementById('send-btn').addEventListener('click', () => {
             this.addMessageToQueue();
+        });
+
+        // Voice transcription button
+        document.getElementById('voice-btn').addEventListener('click', () => {
+            this.toggleVoiceRecording();
         });
 
         // Handle Enter key in message input
@@ -958,6 +968,128 @@ class TerminalGUI {
             const terminalName = terminalData ? terminalData.name : `Terminal ${message.terminalId}`;
             this.logAction(`Added message to queue for ${terminalName}: "${content}"`, 'info');
         }
+    }
+
+    async toggleVoiceRecording() {
+        if (this.isRecording) {
+            this.stopRecording();
+        } else {
+            await this.startRecording();
+        }
+    }
+
+    async startRecording() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            
+            // Try to use WAV format if supported, otherwise use default
+            let options = {};
+            if (MediaRecorder.isTypeSupported('audio/wav')) {
+                options = { mimeType: 'audio/wav' };
+            } else if (MediaRecorder.isTypeSupported('audio/webm;codecs=pcm')) {
+                options = { mimeType: 'audio/webm;codecs=pcm' };
+            } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+                options = { mimeType: 'audio/webm' };
+            }
+            
+            this.mediaRecorder = new MediaRecorder(stream, options);
+            this.audioChunks = [];
+            
+            console.log('MediaRecorder format:', this.mediaRecorder.mimeType);
+            
+            this.mediaRecorder.ondataavailable = (event) => {
+                this.audioChunks.push(event.data);
+            };
+            
+            this.mediaRecorder.onstop = () => {
+                this.processRecording();
+            };
+            
+            this.mediaRecorder.start();
+            this.isRecording = true;
+            
+            // Set recording state directly 
+            const voiceBtn = document.getElementById('voice-btn');
+            voiceBtn.classList.remove('processing');
+            voiceBtn.classList.add('recording');
+            
+            this.logAction('Voice recording started', 'info');
+            
+        } catch (error) {
+            this.logAction(`Voice recording error: ${error.message}`, 'error');
+        }
+    }
+
+    stopRecording() {
+        if (this.mediaRecorder && this.isRecording) {
+            this.mediaRecorder.stop();
+            this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            this.isRecording = false;
+            
+            // Don't change button state here - processRecording will handle it
+            this.logAction('Voice recording stopped', 'info');
+        }
+    }
+
+    async processRecording() {
+        try {
+            const voiceBtn = document.getElementById('voice-btn');
+            voiceBtn.classList.remove('recording');
+            voiceBtn.classList.add('processing');
+            const icon = voiceBtn.querySelector('i');
+            if (icon) {
+                icon.setAttribute('data-lucide', 'loader');
+            }
+            lucide.createIcons();
+            
+            const audioBlob = new Blob(this.audioChunks, { type: this.mediaRecorder.mimeType });
+            const arrayBuffer = await audioBlob.arrayBuffer();
+            const audioBuffer = Buffer.from(arrayBuffer);
+            
+            // Send to main process for transcription
+            const transcription = await ipcRenderer.invoke('transcribe-audio', audioBuffer);
+            
+            if (transcription && transcription.trim()) {
+                const messageInput = document.getElementById('message-input');
+                const currentValue = messageInput.value;
+                const newValue = currentValue ? `${currentValue} ${transcription}` : transcription;
+                messageInput.value = newValue;
+                this.autoResizeMessageInput(messageInput);
+                this.logAction(`Voice transcribed: "${transcription}"`, 'success');
+            } else {
+                this.logAction('No speech detected in recording', 'warning');
+            }
+            
+        } catch (error) {
+            this.logAction(`Transcription error: ${error.message}`, 'error');
+        } finally {
+            // Clear processing state and return to normal
+            const voiceBtn = document.getElementById('voice-btn');
+            voiceBtn.classList.remove('processing', 'recording');
+            const icon = voiceBtn.querySelector('i');
+            if (icon) {
+                icon.setAttribute('data-lucide', 'mic');
+            }
+            lucide.createIcons();
+        }
+    }
+
+    updateVoiceButtonState() {
+        const voiceBtn = document.getElementById('voice-btn');
+        const icon = voiceBtn.querySelector('i');
+        
+        voiceBtn.classList.remove('recording', 'processing');
+        
+        if (icon) {
+            if (this.isRecording) {
+                voiceBtn.classList.add('recording');
+                icon.setAttribute('data-lucide', 'mic');
+            } else {
+                icon.setAttribute('data-lucide', 'mic');
+            }
+        }
+        
+        lucide.createIcons();
     }
 
     handleMessageUpdate() {
