@@ -5,11 +5,21 @@ const { WebLinksAddon } = require('@xterm/addon-web-links');
 
 class TerminalGUI {
     constructor() {
+        // Multi-terminal support
+        this.terminals = new Map(); // Map of terminal ID to terminal data
+        this.activeTerminalId = 1;
+        this.terminalIdCounter = 1;
+        this.terminalColors = ['#007acc', '#28ca42', '#ff5f57', '#ffbe2e', '#af52de', '#5ac8fa'];
+        
+        // Legacy single terminal references (will be updated to use active terminal)
         this.terminal = null;
         this.fitAddon = null;
+        
         this.messageQueue = [];
         this.injectionTimer = null;
         this.injectionCount = 0;
+        this.currentlyInjectingMessages = new Set(); // Track messages being injected per terminal
+        this.lastAssignedTerminalId = 0; // For round-robin terminal assignment
         this.currentDirectory = null; // Will be set when terminal starts or directory is detected
         this.isInjecting = false;
         this.messageIdCounter = 1;
@@ -194,8 +204,30 @@ class TerminalGUI {
     }
 
     initializeTerminal() {
+        // Initialize first terminal
+        this.createTerminal(1);
+        
+        // Set container to single terminal mode
+        const terminalsContainer = document.getElementById('terminals-container');
+        terminalsContainer.setAttribute('data-terminal-count', '1');
+        
+        // Update button visibility for initial state
+        this.updateTerminalButtonVisibility();
+        
+        // Initialize terminal dropdown
+        this.updateTerminalDropdowns();
+        
+        // Handle window resize for all terminals
+        window.addEventListener('resize', () => {
+            this.resizeAllTerminals();
+        });
+    }
+    
+    createTerminal(id) {
+        const color = this.terminalColors[(id - 1) % this.terminalColors.length];
+        
         // Create terminal instance
-        this.terminal = new Terminal({
+        const terminal = new Terminal({
             theme: this.getTerminalTheme(),
             fontFamily: 'Monaco, Menlo, Consolas, monospace',
             fontSize: 13,
@@ -207,68 +239,91 @@ class TerminalGUI {
         });
 
         // Add addons
-        this.fitAddon = new FitAddon();
-        this.terminal.loadAddon(this.fitAddon);
-        this.terminal.loadAddon(new WebLinksAddon());
+        const fitAddon = new FitAddon();
+        terminal.loadAddon(fitAddon);
+        terminal.loadAddon(new WebLinksAddon());
 
+        // Store terminal data
+        const terminalData = {
+            id,
+            terminal,
+            fitAddon,
+            color,
+            name: `Terminal ${id}`,
+            directory: this.preferences.currentDirectory || null,
+            lastOutput: '',
+            status: ''
+        };
+        
+        this.terminals.set(id, terminalData);
+        
         // Open terminal in container
-        const terminalContainer = document.getElementById('terminal-container');
-        this.terminal.open(terminalContainer);
-        
-        // Fit terminal to container - add delay to ensure container is rendered
-        setTimeout(() => {
-            this.fitAddon.fit();
-        }, 10);
-        
-        // Ensure terminal starts at bottom on initialization
-        setTimeout(() => {
-            this.scrollToBottom();
-        }, 100);
+        const terminalContainer = document.querySelector(`[data-terminal-container="${id}"]`);
+        if (terminalContainer) {
+            terminal.open(terminalContainer);
+            
+            // Fit terminal to container
+            setTimeout(() => {
+                fitAddon.fit();
+            }, 10);
+            
+            // Handle terminal input
+            terminal.onData((data) => {
+                ipcRenderer.send('terminal-input', { terminalId: id, data });
+            });
 
-        // Handle terminal input
-        this.terminal.onData((data) => {
-            ipcRenderer.send('terminal-input', data);
-        });
+            // Handle scroll events for autoscroll
+            setTimeout(() => {
+                const terminalViewport = terminalContainer.querySelector('.xterm-viewport');
+                if (terminalViewport) {
+                    terminalViewport.addEventListener('scroll', () => {
+                        if (id === this.activeTerminalId) {
+                            this.handleScroll();
+                        }
+                    });
+                }
+            }, 100);
 
-        // Handle scroll events for autoscroll (needs to be set after terminal is ready)
-        setTimeout(() => {
-            const terminalViewport = terminalContainer.querySelector('.xterm-viewport');
-            if (terminalViewport) {
-                terminalViewport.addEventListener('scroll', () => {
-                    this.handleScroll();
-                });
+            // Handle terminal resize
+            terminal.onResize(({ cols, rows }) => {
+                ipcRenderer.send('terminal-resize', { terminalId: id, cols, rows });
+            });
+        }
+        
+        // If this is the first terminal, set legacy references and start terminal process
+        if (id === 1) {
+            this.terminal = terminal;
+            this.fitAddon = fitAddon;
+            
+            // Load saved directory
+            const savedDirectory = this.preferences.currentDirectory;
+            console.log('Starting terminal with saved directory:', savedDirectory);
+            
+            if (savedDirectory) {
+                this.currentDirectory = savedDirectory;
+                terminalData.directory = savedDirectory;
+                this.logAction(`Starting terminal in saved directory: ${savedDirectory}`, 'info');
+            } else {
+                this.logAction('Starting terminal in default directory', 'info');
             }
-        }, 100);
 
-        // Handle terminal resize
-        this.terminal.onResize(({ cols, rows }) => {
-            ipcRenderer.send('terminal-resize', cols, rows);
-        });
-
-        // Load saved directory before starting terminal (preferences already loaded in constructor)
-        const savedDirectory = this.preferences.currentDirectory;
-        console.log('Starting terminal with saved directory:', savedDirectory);
-        
-        if (savedDirectory) {
-            this.currentDirectory = savedDirectory;
-            this.logAction(`Starting terminal in saved directory: ${savedDirectory}`, 'info');
-        } else {
-            this.logAction('Starting terminal in default directory', 'info');
+            // Start terminal process
+            console.log('Sending terminal-start IPC message...');
+            ipcRenderer.send('terminal-start', { terminalId: id, directory: savedDirectory });
+            
+            // Get initial directory from main process if none saved
+            if (!savedDirectory) {
+                console.log('Requesting current working directory...');
+                ipcRenderer.send('get-cwd', { terminalId: id });
+            }
         }
-
-        // Start terminal process in saved directory (or default if none saved)
-        console.log('Sending terminal-start IPC message...');
-        ipcRenderer.send('terminal-start', savedDirectory);
         
-        // Get initial directory from main process if none saved
-        if (!savedDirectory) {
-            console.log('Requesting current working directory...');
-            ipcRenderer.send('get-cwd');
-        }
-
-        // Handle window resize
-        window.addEventListener('resize', () => {
-            this.fitAddon.fit();
+        return terminalData;
+    }
+    
+    resizeAllTerminals() {
+        this.terminals.forEach((terminalData) => {
+            terminalData.fitAddon.fit();
         });
     }
 
@@ -359,25 +414,48 @@ class TerminalGUI {
     }
 
     setupEventListeners() {
-        // IPC listeners for terminal data
+        // IPC listeners for terminal data (updated for multi-terminal)
         ipcRenderer.on('terminal-data', async (event, data) => {
-            this.terminal.write(data);
-            this.updateTerminalOutput(data);
-            this.detectAutoContinuePrompt(data);
-            await this.detectUsageLimit(data);
-            // Terminal status is now handled by continuous scanning system
-            this.handleTerminalOutput();
+            const terminalId = data.terminalId || 1;
+            const terminalData = this.terminals.get(terminalId);
+            
+            if (terminalData) {
+                terminalData.terminal.write(data.content);
+                terminalData.lastOutput = data.content;
+                
+                // Update active terminal references
+                if (terminalId === this.activeTerminalId) {
+                    this.terminal = terminalData.terminal;
+                    this.updateTerminalOutput(data.content);
+                    this.detectAutoContinuePrompt(data.content);
+                    await this.detectUsageLimit(data.content);
+                    this.handleTerminalOutput();
+                }
+            }
         });
 
-        ipcRenderer.on('terminal-exit', () => {
-            this.terminal.write('\r\n\x1b[31mTerminal process exited\x1b[0m\r\n');
+        ipcRenderer.on('terminal-exit', (event, data) => {
+            const terminalId = data.terminalId || 1;
+            const terminalData = this.terminals.get(terminalId);
+            
+            if (terminalData) {
+                terminalData.terminal.write('\r\n\x1b[31mTerminal process exited\x1b[0m\r\n');
+            }
         });
 
-        ipcRenderer.on('cwd-response', (event, cwd) => {
-            this.currentDirectory = cwd;
-            this.updateStatusDisplay();
-            this.savePreferences();
-            this.logAction(`Set directory to: ${cwd}`, 'info');
+        ipcRenderer.on('cwd-response', (event, data) => {
+            const terminalId = data.terminalId || 1;
+            const terminalData = this.terminals.get(terminalId);
+            
+            if (terminalData) {
+                terminalData.directory = data.cwd;
+                if (terminalId === this.activeTerminalId) {
+                    this.currentDirectory = data.cwd;
+                    this.updateStatusDisplay();
+                    this.savePreferences();
+                    this.logAction(`Set directory to: ${data.cwd}`, 'info');
+                }
+            }
         });
 
         // UI event listeners
@@ -430,6 +508,56 @@ class TerminalGUI {
 
         document.getElementById('clear-queue-header-btn').addEventListener('click', () => {
             this.clearQueue();
+        });
+        
+        // Consolidated click event listener for all terminal-related interactions
+        document.addEventListener('click', (e) => {
+            // Handle close terminal button (highest priority)
+            if (e.target.closest('.close-terminal-btn')) {
+                e.preventDefault();
+                e.stopPropagation();
+                const terminalWrapper = e.target.closest('.terminal-wrapper');
+                if (terminalWrapper) {
+                    const terminalId = parseInt(terminalWrapper.getAttribute('data-terminal-id'));
+                    this.closeTerminal(terminalId);
+                }
+                return; // Stop processing other clicks
+            }
+            
+            // Handle add terminal button
+            if (e.target.closest('.add-terminal-btn')) {
+                this.addNewTerminal();
+                return;
+            }
+            
+            // Handle message options button
+            const optionsBtn = e.target.closest('.message-options-btn');
+            if (optionsBtn) {
+                e.stopPropagation();
+                const messageItem = optionsBtn.closest('.message-item');
+                if (messageItem) {
+                    this.showMessageTerminalDropdown(messageItem, optionsBtn);
+                }
+                return;
+            }
+            
+            // Handle terminal title editing
+            const terminalTitle = e.target.closest('.terminal-title.editable');
+            if (terminalTitle) {
+                this.startEditingTerminalTitle(terminalTitle);
+                return;
+            }
+            
+            // Handle terminal selector dropdown closing
+            if (!e.target.closest('.terminal-selector')) {
+                this.hideTerminalSelectorDropdown();
+            }
+        });
+        
+        // Terminal selector dropdown
+        document.getElementById('terminal-selector-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.toggleTerminalSelectorDropdown();
         });
 
         document.getElementById('inject-now-btn').addEventListener('click', (e) => {
@@ -799,7 +927,8 @@ class TerminalGUI {
                 processedContent: content,
                 executeAt: now,
                 createdAt: now,
-                timestamp: now // For compatibility
+                timestamp: now, // For compatibility
+                terminalId: this.activeTerminalId // Use currently selected terminal
             };
             
             this.messageQueue.push(message);
@@ -812,7 +941,9 @@ class TerminalGUI {
             // Reset input height after clearing
             this.autoResizeMessageInput(input);
             
-            this.logAction(`Added message to queue: "${content}"`, 'info');
+            const terminalData = this.terminals.get(message.terminalId);
+            const terminalName = terminalData ? terminalData.name : `Terminal ${message.terminalId}`;
+            this.logAction(`Added message to queue for ${terminalName}: "${content}"`, 'info');
         }
     }
 
@@ -875,6 +1006,14 @@ class TerminalGUI {
             if (this.isCommandMessage(message.content)) {
                 messageElement.classList.add('command');
             }
+            
+            // Set terminal color for message border
+            const terminalId = message.terminalId || 1;
+            const terminalData = this.terminals.get(terminalId);
+            if (terminalData) {
+                messageElement.style.setProperty('--terminal-color', terminalData.color);
+                messageElement.setAttribute('data-terminal-color', terminalData.color);
+            }
 
             messageElement.addEventListener('dragstart', (e) => {
                 this.handleDragStart(e);
@@ -930,8 +1069,14 @@ class TerminalGUI {
                 this.deleteMessage(message.id);
             });
             
+            const optionsBtn = document.createElement('button');
+            optionsBtn.className = 'message-options-btn';
+            optionsBtn.innerHTML = '<i data-lucide="more-horizontal"></i>';
+            optionsBtn.title = 'Message options';
+            
             actions.appendChild(editBtn);
             actions.appendChild(deleteBtn);
+            actions.appendChild(optionsBtn);
             messageElement.appendChild(content);
             messageElement.appendChild(actions);
             messageList.appendChild(messageElement);
@@ -1318,9 +1463,9 @@ class TerminalGUI {
             this.updateTimerUI();
             
             // Note: Timer expiration notification removed to prevent interrupting automated flow
-            this.logAction(`Timer expiration: about to call startSequentialInjection. Final state - injectionInProgress: ${this.injectionInProgress}, queueLength: ${this.messageQueue.length}, timerExpired: ${this.timerExpired}`, 'info');
+            this.logAction(`Timer expiration: about to call scheduleNextInjection. Final state - injectionInProgress: ${this.injectionInProgress}, queueLength: ${this.messageQueue.length}, timerExpired: ${this.timerExpired}`, 'info');
             
-            this.startSequentialInjection();
+            this.scheduleNextInjection();
             return;
         }
         
@@ -1727,6 +1872,8 @@ class TerminalGUI {
         }
     }
 
+    // REMOVED: Legacy sequential injection system - replaced with parallel injection
+    /*
     async startSequentialInjection() {
         if (this.messageQueue.length === 0) {
             this.logAction('Timer expired but no messages to inject', 'warning');
@@ -1875,7 +2022,7 @@ class TerminalGUI {
             // Send Enter key with random delay for human-like behavior
             const enterDelay = this.getRandomDelay(150, 300);
             setTimeout(() => {
-                ipcRenderer.send('terminal-input', '\r');
+                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
                 this.isInjecting = false;
                 // Don't reset injectionInProgress here - keep it true for the entire sequence
                 this.currentlyInjectingMessageId = null; // Clear injecting message tracking
@@ -1928,6 +2075,7 @@ class TerminalGUI {
         
         this.logAction(`Sequential injection cancelled - ${this.messageQueue.length} messages remaining in queue`, 'warning');
     }
+    */
 
     pauseInProgressInjection() {
         if (this.injectionInProgress) {
@@ -2056,7 +2204,7 @@ class TerminalGUI {
             }
             
             if (index < message.length) {
-                ipcRenderer.send('terminal-input', message[index]);
+                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: message[index] });
                 index++;
             } else {
                 clearInterval(typeInterval);
@@ -2064,7 +2212,7 @@ class TerminalGUI {
                 // Message completed, continue with normal flow
                 const enterDelay = this.getRandomDelay(300, 800);
                 setTimeout(() => {
-                    ipcRenderer.send('terminal-input', '\r');
+                    ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
                     this.isInjecting = false;
                     this.currentlyInjectingMessageId = null;
                     
@@ -2204,21 +2352,30 @@ class TerminalGUI {
     }
 
     updateTerminalStatusIndicator() {
-        // When waiting for usage limit reset, always show default "..." status
-        if (this.usageLimitWaiting) {
-            this.setTerminalStatusDisplay('');
-            return;
-        }
-        
-        if (this.isInjecting) {
-            this.setTerminalStatusDisplay('injecting');
-        } else if (this.currentTerminalStatus.isRunning) {
-            this.setTerminalStatusDisplay('running');
-        } else if (this.currentTerminalStatus.isPrompting) {
-            this.setTerminalStatusDisplay('prompted');
-        } else {
-            this.setTerminalStatusDisplay('');
-        }
+        // Update status for all terminals
+        this.terminals.forEach((terminalData, terminalId) => {
+            // When waiting for usage limit reset, always show default "..." status
+            if (this.usageLimitWaiting) {
+                this.setTerminalStatusDisplay('', terminalId);
+                return;
+            }
+            
+            // Check if this terminal is currently injecting
+            const isInjectingToThisTerminal = Array.from(this.currentlyInjectingMessages).some(messageId => {
+                const message = this.messageQueue.find(m => m.id === messageId);
+                return message && (message.terminalId || this.activeTerminalId) === terminalId;
+            });
+            
+            if (isInjectingToThisTerminal) {
+                this.setTerminalStatusDisplay('injecting', terminalId);
+            } else if (terminalId === this.activeTerminalId && this.currentTerminalStatus.isRunning) {
+                this.setTerminalStatusDisplay('running', terminalId);
+            } else if (terminalId === this.activeTerminalId && this.currentTerminalStatus.isPrompting) {
+                this.setTerminalStatusDisplay('prompted', terminalId);
+            } else {
+                this.setTerminalStatusDisplay('', terminalId);
+            }
+        });
     }
 
     scanTerminalStatus() {
@@ -2345,7 +2502,7 @@ class TerminalGUI {
                     
                     if (!hasControlSequence) {
                         setTimeout(() => {
-                            ipcRenderer.send('terminal-input', '\r');
+                            ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
                         }, 100);
                     }
                     
@@ -2357,13 +2514,13 @@ class TerminalGUI {
                 // Fallback: direct input if typeMessage fails
                 this.logAction(`TypeMessage failed, using direct input: ${error.message}`, 'warning');
                 try {
-                    ipcRenderer.send('terminal-input', message.content);
+                    ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: message.content });
                     
                     // Send Enter if not a control sequence
                     const hasControlSequence = /(\^[A-Z]|\\x1b|\\r|\\t)/g.test(message.content);
                     if (!hasControlSequence) {
                         setTimeout(() => {
-                            ipcRenderer.send('terminal-input', '\r');
+                            ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
                         }, 100);
                     }
                     
@@ -2388,7 +2545,9 @@ class TerminalGUI {
         if (messages.length === 0 || this.isInjecting) return;
         
         this.isInjecting = true;
-        this.setTerminalStatusDisplay('injecting');
+        // Set injecting status for the terminal that will receive the first message
+        const firstMessageTerminalId = messages[0].terminalId || this.activeTerminalId;
+        this.setTerminalStatusDisplay('injecting', firstMessageTerminalId);
         let index = 0;
         
         const processNext = () => {
@@ -2402,14 +2561,14 @@ class TerminalGUI {
                     this.updateStatusDisplay();
                     
                     setTimeout(() => {
-                        ipcRenderer.send('terminal-input', '\r');
+                        ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
                         index++;
                         
                         if (index < messages.length) {
                             setTimeout(processNext, 1000);
                         } else {
                             this.isInjecting = false;
-                            this.setTerminalStatusDisplay('');
+                            this.setTerminalStatusDisplay('', firstMessageTerminalId);
                             this.logAction('Batch injection completed successfully', 'success');
                             this.scheduleNextInjection(); // Schedule any remaining messages
                         }
@@ -2419,6 +2578,194 @@ class TerminalGUI {
         };
         
         processNext();
+    }
+
+    scheduleNextInjection() {
+        // Clear any existing timer
+        if (this.injectionTimer) {
+            clearTimeout(this.injectionTimer);
+            this.injectionTimer = null;
+        }
+        
+        // Don't schedule if no messages
+        if (this.messageQueue.length === 0) {
+            return;
+        }
+        
+        // Reset legacy injection flags to ensure new system can run
+        this.injectionInProgress = false;
+        
+        // Track which terminals are currently busy
+        const busyTerminals = new Set();
+        if (this.currentlyInjectingMessages) {
+            this.currentlyInjectingMessages.forEach(messageId => {
+                const message = this.messageQueue.find(m => m.id === messageId);
+                if (message) {
+                    const terminalId = message.terminalId || this.activeTerminalId;
+                    busyTerminals.add(terminalId);
+                }
+            });
+        }
+        
+        // Group available messages by terminal and find earliest for each terminal
+        const messagesByTerminal = new Map();
+        const now = Date.now();
+        
+        this.messageQueue.forEach(message => {
+            const terminalId = message.terminalId || this.activeTerminalId;
+            const terminalData = this.terminals.get(terminalId);
+            
+            // Skip if terminal doesn't exist or is busy
+            if (!terminalData || busyTerminals.has(terminalId)) {
+                return;
+            }
+            
+            // Only consider messages that are ready to execute
+            if (message.executeAt <= now) {
+                if (!messagesByTerminal.has(terminalId) || 
+                    message.executeAt < messagesByTerminal.get(terminalId).executeAt) {
+                    messagesByTerminal.set(terminalId, message);
+                }
+            }
+        });
+        
+        // Process all available messages simultaneously
+        if (messagesByTerminal.size > 0) {
+            messagesByTerminal.forEach(message => {
+                this.processMessage(message);
+            });
+        }
+        
+        // Schedule next check for remaining messages
+        const remainingMessages = this.messageQueue.filter(message => {
+            const terminalId = message.terminalId || this.activeTerminalId;
+            return !messagesByTerminal.has(terminalId);
+        });
+        
+        if (remainingMessages.length > 0) {
+            // Find the next earliest message
+            const nextMessage = remainingMessages.reduce((earliest, current) => {
+                return current.executeAt < earliest.executeAt ? current : earliest;
+            });
+            
+            const delay = Math.max(100, nextMessage.executeAt - now); // Minimum 100ms delay
+            this.injectionTimer = setTimeout(() => {
+                this.scheduleNextInjection();
+            }, delay);
+        }
+    }
+
+    processMessage(message) {
+        if (!message) return;
+        
+        const terminalId = message.terminalId || this.activeTerminalId;
+        const terminalData = this.terminals.get(terminalId);
+        
+        if (!terminalData) {
+            this.logAction(`Terminal ${terminalId} not found for message: "${message.content}"`, 'error');
+            this.deleteMessage(message.id);
+            this.scheduleNextInjection();
+            return;
+        }
+        
+        // Check if this terminal is already processing a message
+        if (this.currentlyInjectingMessages.has(message.id)) {
+            return;
+        }
+        
+        // Add to currently injecting set
+        this.currentlyInjectingMessages.add(message.id);
+        this.setTerminalStatusDisplay('injecting', terminalId);
+        
+        this.logAction(`Injecting to ${terminalData.name}: "${message.content}"`, 'info');
+        
+        // Switch to target terminal if it's the first injection or no active injections
+        if (this.currentlyInjectingMessages.size === 1) {
+            if (terminalId !== this.activeTerminalId) {
+                this.switchToTerminal(terminalId);
+            }
+        }
+        
+        this.typeMessageToTerminal(message.processedContent, terminalId, () => {
+            this.injectionCount++;
+            this.saveToMessageHistory(message);
+            this.deleteMessage(message.id);
+            this.updateStatusDisplay();
+            
+            setTimeout(() => {
+                ipcRenderer.send('terminal-input', { terminalId, data: '\r' });
+                this.currentlyInjectingMessages.delete(message.id);
+                this.setTerminalStatusDisplay('', terminalId);
+                
+                // Schedule next injection
+                this.scheduleNextInjection();
+            }, 200);
+        });
+    }
+
+    typeMessageToTerminal(message, terminalId, callback) {
+        // Check if message contains escape sequences that should be sent directly
+        const escapePatterns = [
+            { pattern: /\^C/g, replacement: '\x03' },   // Ctrl+C (ETX - End of Text)
+            { pattern: /\^Z/g, replacement: '\x1a' },   // Ctrl+Z (SUB - Substitute)  
+            { pattern: /\^D/g, replacement: '\x04' },   // Ctrl+D (EOT - End of Transmission)
+            { pattern: /\\x1b/g, replacement: '\x1b' }, // Escape
+            { pattern: /\\r/g, replacement: '\r' },     // Return
+            { pattern: /\\t/g, replacement: '\t' },     // Tab
+        ];
+        
+        // Check if message contains any escape sequences
+        let hasEscapeSequences = false;
+        let processedMessage = message;
+        
+        for (const { pattern, replacement } of escapePatterns) {
+            if (pattern.test(processedMessage)) {
+                hasEscapeSequences = true;
+                processedMessage = processedMessage.replace(pattern, replacement);
+            }
+        }
+        
+        // If message contains escape sequences, send directly without typing
+        if (hasEscapeSequences) {
+            this.logAction(`Sending control sequence to terminal ${terminalId}: ${message}`, 'success');
+            
+            // If message contains multiple control characters, send them with delays
+            const controlChars = processedMessage.split('');
+            let charIndex = 0;
+            
+            const sendNext = () => {
+                if (charIndex < controlChars.length) {
+                    ipcRenderer.send('terminal-input', { terminalId, data: controlChars[charIndex] });
+                    charIndex++;
+                    
+                    // Add 10ms delay between control characters
+                    setTimeout(sendNext, 10);
+                } else {
+                    if (callback) callback();
+                }
+            };
+            
+            sendNext();
+            return;
+        }
+        
+        // Otherwise, type character by character as normal
+        let index = 0;
+        const typeInterval = setInterval(() => {
+            // Check if injection was cancelled
+            if (!this.currentlyInjectingMessages || this.currentlyInjectingMessages.size === 0) {
+                clearInterval(typeInterval);
+                return;
+            }
+            
+            if (index < message.length) {
+                ipcRenderer.send('terminal-input', { terminalId, data: message[index] });
+                index++;
+            } else {
+                clearInterval(typeInterval);
+                if (callback) callback();
+            }
+        }, 50); // 50ms delay between characters
     }
 
     typeMessage(message, callback) {
@@ -2453,7 +2800,10 @@ class TerminalGUI {
             
             const sendNext = () => {
                 if (charIndex < controlChars.length) {
-                    ipcRenderer.send('terminal-input', controlChars[charIndex]);
+                    // Get terminal ID from the current message being injected
+                    const currentMessage = this.messageQueue.find(m => m.id === this.currentlyInjectingMessageId);
+                    const terminalId = currentMessage ? currentMessage.terminalId || 1 : this.activeTerminalId;
+                    ipcRenderer.send('terminal-input', { terminalId, data: controlChars[charIndex] });
                     charIndex++;
                     
                     // Add 10ms delay between control characters
@@ -2487,7 +2837,8 @@ class TerminalGUI {
             }
             
             if (index < message.length) {
-                ipcRenderer.send('terminal-input', message[index]);
+                // Use the active terminal for legacy typeMessage calls
+                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: message[index] });
                 index++;
             } else {
                 clearInterval(typeInterval);
@@ -2513,7 +2864,7 @@ class TerminalGUI {
                 this.logAction(`Keyword "${keywordBlockResult.keyword}" detected in Claude prompt - executing escape sequence`, 'warning');
                 
                 // Send Esc key to interrupt
-                ipcRenderer.send('terminal-input', '\x1b');
+                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\x1b' });
                 
                 // Wait and inject custom response if provided
                 if (keywordBlockResult.response) {
@@ -2523,7 +2874,7 @@ class TerminalGUI {
                         this.typeMessage(keywordBlockResult.response, () => {
                             const enterDelay = this.getRandomDelay(150, 350);
                             setTimeout(() => {
-                                ipcRenderer.send('terminal-input', '\r');
+                                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
                                 // Reset keyword blocking flag
                                 const resetDelay = this.getRandomDelay(800, 1200);
                                 setTimeout(() => {
@@ -2586,7 +2937,7 @@ class TerminalGUI {
             this.logAction(`Trust prompt detected - auto-injecting enter in ${delay}ms`, 'info');
             
             setTimeout(() => {
-                ipcRenderer.send('terminal-input', '\r');
+                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
                 this.trustPromptActive = false;
             }, delay);
             
@@ -2622,7 +2973,7 @@ class TerminalGUI {
         // Send Enter key with small random delay for human-like behavior
         const enterDelay = this.getRandomDelay(50, 150);
         setTimeout(() => {
-            ipcRenderer.send('terminal-input', '\r');
+            ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
         }, enterDelay);
         
         // Wait for terminal to process, then check if we need to continue
@@ -2890,7 +3241,7 @@ class TerminalGUI {
         // Resume injection if there are messages queued and timer was expired
         if (this.timerExpired && this.messageQueue.length > 0) {
             this.logAction('Resuming injection after usage limit modal closed', 'info');
-            this.startSequentialInjection();
+            this.scheduleNextInjection();
         } else {
             // Update UI to reflect current state
             this.updateTimerUI();
@@ -2936,39 +3287,46 @@ class TerminalGUI {
     }
 
 
-    setTerminalStatusDisplay(status) {
-        const statusElement = document.getElementById('terminal-status');
-        if (!statusElement) return;
-        
-        // Store previous status for completion sound logic
-        const previousStatus = this.terminalStatus;
-        this.terminalStatus = status || '...';
-        
-        // Clear all classes
-        statusElement.className = 'terminal-status';
-        
-        // Set new status
-        switch(status) {
-            case 'running':
-                statusElement.className = 'terminal-status visible running';
-                statusElement.textContent = 'Running';
-                break;
-            case 'prompted':
-                statusElement.className = 'terminal-status visible prompted';
-                statusElement.textContent = 'Prompted';
-                break;
-            case 'injecting':
-                statusElement.className = 'terminal-status visible injecting';
-                statusElement.textContent = 'Injecting';
-                break;
-            default:
-                // Show default status
-                statusElement.className = 'terminal-status';
-                statusElement.textContent = '...';
+    setTerminalStatusDisplay(status, terminalId = null) {
+        // If terminalId is provided, update specific terminal status
+        if (terminalId) {
+            const terminalData = this.terminals.get(terminalId);
+            if (terminalData) {
+                const previousStatus = terminalData.status;
+                terminalData.status = status || '...';
+                
+                const statusElement = document.querySelector(`[data-terminal-status="${terminalId}"]`);
+                if (statusElement) {
+                    // Clear all classes
+                    statusElement.className = 'terminal-status';
+                    
+                    // Set new status
+                    switch(status) {
+                        case 'running':
+                            statusElement.className = 'terminal-status visible running';
+                            statusElement.textContent = 'Running';
+                            break;
+                        case 'prompted':
+                            statusElement.className = 'terminal-status visible prompted';
+                            statusElement.textContent = 'Prompted';
+                            break;
+                        case 'injecting':
+                            statusElement.className = 'terminal-status visible injecting';
+                            statusElement.textContent = 'Injecting';
+                            break;
+                        default:
+                            statusElement.className = 'terminal-status';
+                            statusElement.textContent = '...';
+                    }
+                }
+                
+                // Check for completion sound trigger for this terminal
+                this.checkCompletionSoundTrigger(previousStatus, terminalData.status);
+            }
+        } else {
+            // Legacy support - update active terminal
+            this.setTerminalStatusDisplay(status, this.activeTerminalId);
         }
-        
-        // Check for completion sound trigger: running -> idle transition
-        this.checkCompletionSoundTrigger(previousStatus, this.terminalStatus);
     }
 
     checkCompletionSoundTrigger(previousStatus, currentStatus) {
@@ -3287,7 +3645,7 @@ class TerminalGUI {
         ipcRenderer.on('tray-start-injection', () => {
             this.logAction('Start injection triggered from tray', 'info');
             if (this.messageQueue.length > 0) {
-                this.startSequentialInjection();
+                this.scheduleNextInjection();
             } else {
                 this.logAction('No messages in queue to inject', 'info');
             }
@@ -4257,6 +4615,408 @@ class TerminalGUI {
         // Play completion sound if enabled
         this.playCompletionSound();
         this.logAction('Auto-injection process completed', 'success');
+    }
+    
+    // Multi-terminal management methods
+    addNewTerminal() {
+        const terminalCount = this.terminals.size;
+        if (terminalCount >= 4) {
+            this.logAction('Maximum of 4 terminals reached', 'warning');
+            return;
+        }
+        
+        this.terminalIdCounter++;
+        const newId = this.terminalIdCounter;
+        
+        // Create new terminal wrapper HTML
+        const terminalWrapper = document.createElement('div');
+        terminalWrapper.className = 'terminal-wrapper';
+        terminalWrapper.setAttribute('data-terminal-id', newId);
+        
+        const color = this.terminalColors[(newId - 1) % this.terminalColors.length];
+        
+        terminalWrapper.innerHTML = `
+            <div class="terminal-header">
+                <div class="terminal-title-wrapper">
+                    <button class="icon-btn close-terminal-btn" title="Close terminal">
+                        <i data-lucide="x"></i>
+                    </button>
+                    <span class="terminal-color-dot" style="background-color: ${color};"></span>
+                    <span class="terminal-title editable" contenteditable="false">Terminal ${newId}</span>
+                    <button class="icon-btn add-terminal-btn" title="Add new terminal" style="display: none;">
+                        <i data-lucide="plus"></i>
+                    </button>
+                </div>
+                <span class="terminal-status" data-terminal-status="${newId}"></span>
+            </div>
+            <div class="terminal-container" data-terminal-container="${newId}"></div>
+        `;
+        
+        // Add to container
+        const terminalsContainer = document.getElementById('terminals-container');
+        terminalsContainer.appendChild(terminalWrapper);
+        
+        // Update layout
+        terminalsContainer.setAttribute('data-terminal-count', terminalCount + 1);
+        
+        // Create terminal instance
+        const terminalData = this.createTerminal(newId);
+        
+        // Start terminal process
+        ipcRenderer.send('terminal-start', { terminalId: newId, directory: this.currentDirectory });
+        
+        // Update dropdowns
+        this.updateTerminalDropdowns();
+        
+        // Re-initialize Lucide icons for new elements
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+        
+        // Update button visibility
+        this.updateTerminalButtonVisibility();
+        
+        // Resize all terminals to fit new layout
+        setTimeout(() => {
+            this.resizeAllTerminals();
+        }, 100);
+        
+        this.logAction(`Added Terminal ${newId}`, 'info');
+    }
+    
+    updateTerminalButtonVisibility() {
+        const terminalCount = this.terminals.size;
+        
+        // Show/hide close buttons (show when more than 1 terminal)
+        const closeButtons = document.querySelectorAll('.close-terminal-btn');
+        closeButtons.forEach(btn => {
+            btn.style.display = terminalCount > 1 ? 'inline-flex' : 'none';
+        });
+        
+        // Show/hide add buttons (hide when 4 terminals, show on last terminal when 3 or fewer)
+        const addButtons = document.querySelectorAll('.add-terminal-btn');
+        addButtons.forEach(btn => {
+            btn.style.display = 'none'; // Hide all first
+        });
+        
+        // Show add button only on the last terminal if we have 3 or fewer terminals
+        if (terminalCount < 4) {
+            const terminalWrappers = document.querySelectorAll('.terminal-wrapper');
+            if (terminalWrappers.length > 0) {
+                const lastWrapper = terminalWrappers[terminalWrappers.length - 1];
+                const addBtn = lastWrapper.querySelector('.add-terminal-btn');
+                if (addBtn) {
+                    addBtn.style.display = 'inline-flex';
+                }
+            }
+        }
+    }
+    
+    closeTerminal(terminalId) {
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) {
+            this.logAction(`Terminal ${terminalId} not found`, 'error');
+            return;
+        }
+        
+        // Can't close the last remaining terminal
+        if (this.terminals.size <= 1) {
+            this.logAction('Cannot close the last terminal', 'warning');
+            return;
+        }
+        
+        // Remove any messages assigned to this terminal from the queue
+        this.messageQueue = this.messageQueue.filter(message => {
+            const messageTerminalId = message.terminalId || this.activeTerminalId;
+            return messageTerminalId !== terminalId;
+        });
+        this.displayMessages();
+        
+        // Notify main process to close terminal process
+        ipcRenderer.send('terminal-close', { terminalId });
+        
+        // Dispose of terminal
+        terminalData.terminal.dispose();
+        
+        // Remove from terminals map
+        this.terminals.delete(terminalId);
+        
+        // Remove DOM element
+        const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
+        if (terminalWrapper) {
+            terminalWrapper.remove();
+        }
+        
+        // If this was the active terminal, switch to another one
+        if (terminalId === this.activeTerminalId) {
+            const availableIds = Array.from(this.terminals.keys());
+            if (availableIds.length > 0) {
+                this.switchToTerminal(availableIds[0]);
+            }
+        }
+        
+        // Update button visibility
+        this.updateTerminalButtonVisibility();
+        
+        // Update container count
+        const terminalsContainer = document.getElementById('terminals-container');
+        terminalsContainer.setAttribute('data-terminal-count', this.terminals.size);
+        
+        // Resize remaining terminals to fit new layout
+        setTimeout(() => {
+            this.resizeAllTerminals();
+        }, 100);
+        
+        this.logAction(`Closed ${terminalData.name}`, 'info');
+    }
+    
+    toggleTerminalSelectorDropdown() {
+        const dropdown = document.getElementById('terminal-selector-dropdown');
+        const isVisible = dropdown.style.display !== 'none';
+        
+        if (isVisible) {
+            this.hideTerminalSelectorDropdown();
+        } else {
+            this.showTerminalSelectorDropdown();
+        }
+    }
+    
+    showTerminalSelectorDropdown() {
+        this.updateTerminalDropdowns();
+        const dropdown = document.getElementById('terminal-selector-dropdown');
+        dropdown.style.display = 'block';
+    }
+    
+    hideTerminalSelectorDropdown() {
+        const dropdown = document.getElementById('terminal-selector-dropdown');
+        dropdown.style.display = 'none';
+    }
+    
+    selectActiveTerminal(terminalId) {
+        // Use the main switchToTerminal function for consistency
+        this.switchToTerminal(terminalId);
+    }
+    
+    switchToTerminal(terminalId) {
+        console.log('switchToTerminal called with terminalId:', terminalId);
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) {
+            this.logAction(`Terminal ${terminalId} not found`, 'error');
+            return;
+        }
+        
+        console.log('Switching to terminal:', terminalData);
+        this.activeTerminalId = terminalId;
+        
+        // Update legacy references
+        this.terminal = terminalData.terminal;
+        this.fitAddon = terminalData.fitAddon;
+        this.currentDirectory = terminalData.directory;
+        
+        // Update UI
+        const selectorBtn = document.getElementById('terminal-selector-btn');
+        const selectorDot = selectorBtn.querySelector('.terminal-selector-dot');
+        const selectorText = selectorBtn.querySelector('.terminal-selector-text');
+        
+        console.log('Updating selector button:', selectorBtn, selectorDot, selectorText);
+        console.log('Setting color to:', terminalData.color, 'and text to:', terminalData.name);
+        
+        if (selectorDot) selectorDot.style.backgroundColor = terminalData.color;
+        if (selectorText) selectorText.textContent = terminalData.name;
+        
+        // Update dropdown to show new selection
+        this.updateTerminalDropdowns();
+        
+        this.updateStatusDisplay();
+        this.logAction(`Selected ${terminalData.name}`, 'info');
+    }
+    
+    updateTerminalDropdowns() {
+        // Update the terminal selector dropdown
+        const dropdown = document.getElementById('terminal-selector-dropdown');
+        if (!dropdown) return;
+        
+        // Clear existing items
+        dropdown.innerHTML = '';
+        
+        // Add items for each terminal
+        this.terminals.forEach((terminalData, terminalId) => {
+            const item = document.createElement('div');
+            item.className = 'terminal-selector-item';
+            if (terminalId === this.activeTerminalId) {
+                item.classList.add('selected');
+            }
+            
+            item.innerHTML = `
+                <span class="terminal-selector-dot" style="background-color: ${terminalData.color};"></span>
+                <span class="terminal-selector-text">${terminalData.name}</span>
+            `;
+            
+            item.addEventListener('click', () => {
+                console.log('Dropdown item clicked, switching to terminal:', terminalId);
+                this.switchToTerminal(terminalId);
+                this.hideTerminalSelectorDropdown();
+            });
+            
+            dropdown.appendChild(item);
+        });
+    }
+    
+    getNextTerminalForMessage() {
+        // Round-robin assignment across available terminals
+        const terminalIds = Array.from(this.terminals.keys()).sort();
+        
+        if (terminalIds.length === 0) {
+            return this.activeTerminalId || 1;
+        }
+        
+        if (terminalIds.length === 1) {
+            return terminalIds[0];
+        }
+        
+        // Find next terminal in round-robin fashion
+        const currentIndex = terminalIds.indexOf(this.lastAssignedTerminalId);
+        const nextIndex = (currentIndex + 1) % terminalIds.length;
+        this.lastAssignedTerminalId = terminalIds[nextIndex];
+        
+        // Removed debug log for cleaner output
+        
+        return this.lastAssignedTerminalId;
+    }
+    
+    startEditingTerminalTitle(titleElement) {
+        // Enable editing
+        titleElement.contentEditable = 'true';
+        titleElement.focus();
+        
+        // Select all text
+        const range = document.createRange();
+        range.selectNodeContents(titleElement);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        
+        // Save original value
+        const originalText = titleElement.textContent;
+        const terminalId = parseInt(titleElement.closest('.terminal-wrapper').getAttribute('data-terminal-id'));
+        
+        // Handle save on Enter or blur
+        const saveTitle = () => {
+            titleElement.contentEditable = 'false';
+            const newText = titleElement.textContent.trim();
+            
+            if (newText && newText !== originalText) {
+                const terminalData = this.terminals.get(terminalId);
+                if (terminalData) {
+                    terminalData.name = newText;
+                    this.updateTerminalDropdowns();
+                    
+                    // Update selector if this is the active terminal
+                    if (terminalId === this.activeTerminalId) {
+                        document.querySelector('.terminal-selector-text').textContent = newText;
+                    }
+                    
+                    this.logAction(`Renamed terminal to: ${newText}`, 'info');
+                }
+            } else if (!newText) {
+                titleElement.textContent = originalText;
+            }
+        };
+        
+        // Handle key events
+        titleElement.addEventListener('keydown', function handleKey(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                saveTitle();
+                titleElement.removeEventListener('keydown', handleKey);
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                titleElement.textContent = originalText;
+                titleElement.contentEditable = 'false';
+                titleElement.removeEventListener('keydown', handleKey);
+            }
+        });
+        
+        // Handle blur
+        titleElement.addEventListener('blur', function handleBlur() {
+            saveTitle();
+            titleElement.removeEventListener('blur', handleBlur);
+        }, { once: true });
+    }
+    
+    showMessageTerminalDropdown(messageItem, optionsBtn) {
+        // Remove any existing dropdown
+        const existingDropdown = document.querySelector('.message-terminal-dropdown');
+        if (existingDropdown) {
+            existingDropdown.remove();
+        }
+        
+        // Create dropdown
+        const dropdown = document.createElement('div');
+        dropdown.className = 'message-terminal-dropdown';
+        
+        const messageId = parseInt(messageItem.getAttribute('data-message-id'));
+        const message = this.messageQueue.find(m => m.id === messageId);
+        const currentTerminalId = message ? message.terminalId || 1 : 1;
+        
+        this.terminals.forEach((terminalData) => {
+            const item = document.createElement('div');
+            item.className = 'terminal-selector-item';
+            if (terminalData.id === currentTerminalId) {
+                item.classList.add('selected');
+            }
+            
+            item.innerHTML = `
+                <span class="terminal-selector-dot" style="background-color: ${terminalData.color};"></span>
+                <span>${terminalData.name}</span>
+            `;
+            
+            item.addEventListener('click', () => {
+                this.updateMessageTerminal(messageId, terminalData.id);
+                dropdown.remove();
+            });
+            
+            dropdown.appendChild(item);
+        });
+        
+        // Position dropdown
+        const btnRect = optionsBtn.getBoundingClientRect();
+        const messageRect = messageItem.getBoundingClientRect();
+        dropdown.style.position = 'absolute';
+        dropdown.style.top = (btnRect.bottom - messageRect.top) + 'px';
+        dropdown.style.right = '8px';
+        
+        messageItem.style.position = 'relative';
+        messageItem.appendChild(dropdown);
+        
+        // Close on outside click
+        setTimeout(() => {
+            document.addEventListener('click', function closeDropdown(e) {
+                if (!dropdown.contains(e.target) && e.target !== optionsBtn) {
+                    dropdown.remove();
+                    document.removeEventListener('click', closeDropdown);
+                }
+            });
+        }, 0);
+    }
+    
+    updateMessageTerminal(messageId, terminalId) {
+        const message = this.messageQueue.find(m => m.id === messageId);
+        if (!message) return;
+        
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) return;
+        
+        message.terminalId = terminalId;
+        
+        // Update message border color
+        const messageItem = document.querySelector(`[data-message-id="${messageId}"]`);
+        if (messageItem) {
+            messageItem.style.setProperty('--terminal-color', terminalData.color);
+            messageItem.setAttribute('data-terminal-color', terminalData.color);
+        }
+        
+        this.logAction(`Updated message to inject into ${terminalData.name}`, 'info');
     }
 }
 

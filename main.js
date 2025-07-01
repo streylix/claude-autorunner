@@ -5,7 +5,8 @@ const os = require('os');
 const fs = require('fs').promises;
 
 let mainWindow;
-let ptyProcess;
+let ptyProcess; // Legacy single process support
+const ptyProcesses = new Map(); // Map of terminal ID to pty process
 let dataFilePath;
 let tray = null;
 let powerSaveBlockerId = null;
@@ -188,6 +189,13 @@ function createWindow() {
   });
 
   mainWindow.on('closed', () => {
+    // Kill all terminal processes
+    ptyProcesses.forEach((process) => {
+      process.kill();
+    });
+    ptyProcesses.clear();
+    
+    // Kill legacy process if exists
     if (ptyProcess) {
       ptyProcess.kill();
     }
@@ -241,45 +249,106 @@ app.on('activate', () => {
 
 function setupIpcHandlers() {
   // Terminal handling
-  ipcMain.on('terminal-start', (event, startDirectory = null) => {
-    try { console.log('Received terminal-start request, startDirectory:', startDirectory); } catch (e) { /* ignore */ }
+  ipcMain.on('terminal-start', (event, options = {}) => {
+    const terminalId = options.terminalId || 1;
+    const startDirectory = options.directory || null;
+    
+    try { console.log('Received terminal-start request, terminalId:', terminalId, 'directory:', startDirectory); } catch (e) { /* ignore */ }
     const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/zsh';
     const cwd = startDirectory || process.cwd();
-    try { console.log('Starting terminal with shell:', shell, 'cwd:', cwd); } catch (e) { /* ignore */ }
+    try { console.log('Starting terminal', terminalId, 'with shell:', shell, 'cwd:', cwd); } catch (e) { /* ignore */ }
     
-    ptyProcess = pty.spawn(shell, [], {
+    const terminalProcess = pty.spawn(shell, [], {
       name: 'xterm-color',
       cols: 80,
       rows: 24,
       cwd: cwd,
       env: process.env
     });
-    try { console.log('Terminal process spawned successfully'); } catch (e) { /* ignore */ }
+    try { console.log('Terminal', terminalId, 'process spawned successfully'); } catch (e) { /* ignore */ }
 
-    ptyProcess.onData((data) => {
-      event.reply('terminal-data', data);
+    // Store in map
+    ptyProcesses.set(terminalId, terminalProcess);
+    
+    // Legacy support for terminal 1
+    if (terminalId === 1) {
+      ptyProcess = terminalProcess;
+    }
+
+    terminalProcess.onData((data) => {
+      event.reply('terminal-data', { terminalId, content: data });
     });
 
-    ptyProcess.onExit(() => {
-      event.reply('terminal-exit');
+    terminalProcess.onExit(() => {
+      event.reply('terminal-exit', { terminalId });
+      ptyProcesses.delete(terminalId);
+      if (terminalId === 1) {
+        ptyProcess = null;
+      }
     });
   });
 
-  ipcMain.on('terminal-input', (event, data) => {
-    if (ptyProcess) {
-      ptyProcess.write(data);
+  ipcMain.on('terminal-input', (event, options) => {
+    // Support both legacy format (string) and new format (object with terminalId)
+    if (typeof options === 'string') {
+      // Legacy format - use terminal 1
+      if (ptyProcess) {
+        ptyProcess.write(options);
+      }
+    } else {
+      // New format with terminal ID
+      const terminalId = options.terminalId || 1;
+      const data = options.data || '';
+      const terminalProcess = ptyProcesses.get(terminalId);
+      if (terminalProcess) {
+        terminalProcess.write(data);
+      }
     }
   });
 
-  ipcMain.on('terminal-resize', (event, cols, rows) => {
-    if (ptyProcess) {
-      ptyProcess.resize(cols, rows);
+  ipcMain.on('terminal-resize', (event, options) => {
+    // Support both legacy format and new format with terminalId
+    if (typeof options === 'object' && options.terminalId) {
+      const { terminalId, cols, rows } = options;
+      const terminalProcess = ptyProcesses.get(terminalId);
+      if (terminalProcess) {
+        terminalProcess.resize(cols, rows);
+      }
+    } else {
+      // Legacy format
+      const cols = arguments[1];
+      const rows = arguments[2];
+      if (ptyProcess) {
+        ptyProcess.resize(cols, rows);
+      }
+    }
+  });
+
+  ipcMain.on('terminal-close', (event, options) => {
+    const terminalId = options.terminalId;
+    const terminalProcess = ptyProcesses.get(terminalId);
+    
+    if (terminalProcess) {
+      terminalProcess.kill();
+      ptyProcesses.delete(terminalId);
+      
+      // Clear legacy reference if it's terminal 1
+      if (terminalId === 1) {
+        ptyProcess = null;
+      }
+      
+      try { 
+        console.log('Terminal', terminalId, 'process closed'); 
+      } catch (e) { 
+        /* ignore */ 
+      }
     }
   });
 
   // Get current working directory
-  ipcMain.on('get-cwd', (event) => {
-    event.reply('cwd-response', process.cwd());
+  ipcMain.on('get-cwd', (event, options = {}) => {
+    const terminalId = options.terminalId || 1;
+    event.reply('cwd-response', { terminalId, cwd: process.cwd() });
   });
 
   // Change terminal working directory

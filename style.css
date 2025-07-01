@@ -249,6 +249,157 @@ body {
     height: 100%;
 }
 
+/* Multi-terminal styles */
+.terminals-header {
+    height: 40px;
+    background-color: var(--bg-primary);
+    display: flex;
+    align-items: center;
+    padding: 0 15px;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.terminals-title-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.terminals-title {
+    font-size: 14px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.add-terminal-btn {
+    width: 24px;
+    height: 24px;
+    padding: 4px;
+}
+
+.add-terminal-btn i {
+    width: 16px;
+    height: 16px;
+}
+
+.close-terminal-btn {
+    width: 24px;
+    height: 24px;
+    padding: 4px;
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    margin-right: 4px;
+}
+
+.close-terminal-btn:hover {
+    background: var(--accent-error);
+    color: white;
+}
+
+.close-terminal-btn i {
+    width: 16px;
+    height: 16px;
+}
+
+.terminals-container {
+    flex: 1;
+    display: grid;
+    gap: 1px;
+    background-color: var(--border-primary);
+    overflow: hidden;
+    min-height: 0;
+    min-width: 0;
+}
+
+/* Terminal layout configurations */
+.terminals-container[data-terminal-count="1"] {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+}
+
+.terminals-container[data-terminal-count="2"] {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr;
+}
+
+.terminals-container[data-terminal-count="3"] {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.terminals-container[data-terminal-count="3"] .terminal-wrapper:first-child {
+    grid-column: 1 / -1;
+}
+
+.terminals-container[data-terminal-count="4"] {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.terminal-wrapper {
+    background-color: var(--bg-secondary);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.terminal-title-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.terminal-color-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.terminal-title.editable {
+    cursor: text;
+    padding: 2px 4px;
+    border-radius: 3px;
+    transition: background-color 0.2s;
+}
+
+.terminal-title.editable:hover {
+    background-color: var(--bg-tertiary);
+}
+
+.terminal-title.editable[contenteditable="true"] {
+    background-color: var(--bg-tertiary);
+    outline: none;
+    border: 1px solid var(--accent-primary);
+    padding: 1px 3px;
+}
+
+.terminal-container {
+    flex: 1;
+    padding: 10px;
+    overflow: hidden;
+    position: relative;
+    min-height: 0; /* Allow flex shrinking */
+    min-width: 0; /* Allow flex shrinking */
+}
+
+/* Ensure xterm.js properly fits container */
+.terminal-container .xterm {
+    height: 100% !important;
+    width: 100% !important;
+}
+
+.terminal-container .xterm-viewport {
+    width: 100% !important;
+}
+
 .sidebar {
     width: 400px;
     min-width: 400px;
@@ -491,6 +642,11 @@ body {
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
+/* Dynamic terminal color border */
+.message-item[data-terminal-color] {
+    border-left-color: var(--terminal-color);
+}
+
 .message-item:active {
     cursor: grabbing;
 }
@@ -632,6 +788,45 @@ body {
     height: 12px;
 }
 
+.message-options-btn {
+    background: none;
+    border: none;
+    color: var(--text-quaternary);
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 3px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+}
+
+.message-options-btn:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-quaternary);
+}
+
+.message-options-btn i {
+    width: 10px;
+    height: 10px;
+}
+
+.message-terminal-dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    z-index: 1000;
+    overflow: hidden;
+    min-width: 150px;
+}
+
 .execution-time {
     font-weight: 500;
     color: var(--accent-primary);
@@ -648,6 +843,90 @@ body {
 .input-wrapper {
     position: relative;
     margin-bottom: 12px;
+}
+
+/* Terminal selector styles */
+.terminal-selector {
+    margin-bottom: 8px;
+    position: relative;
+}
+
+.terminal-selector-btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.terminal-selector-btn:hover {
+    border-color: var(--border-secondary);
+    background-color: var(--bg-quaternary);
+}
+
+.terminal-selector-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.terminal-selector-text {
+    flex: 1;
+    text-align: left;
+}
+
+.terminal-selector-btn i {
+    width: 16px;
+    height: 16px;
+    color: var(--text-tertiary);
+}
+
+.terminal-selector-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 2px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    z-index: 1000;
+    overflow: hidden;
+}
+
+.terminal-selector-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    position: relative;
+    font-size: 13px;
+}
+
+.terminal-selector-item:hover {
+    background-color: var(--bg-quaternary);
+}
+
+.terminal-selector-item.selected::after {
+    content: '';
+    position: absolute;
+    right: 10px;
+    width: 14px;
+    height: 14px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23007acc' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'%3E%3C/polyline%3E%3C/svg%3E");
+    background-size: contain;
+    background-repeat: no-repeat;
 }
 
 .input-actions {
