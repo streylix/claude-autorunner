@@ -146,10 +146,13 @@ class TerminalStatus {
                          recentOutput.includes('ESC to interrupt') ||
                          recentOutput.includes('offline)');
 
+        // Check for ╭ character to trigger auto-continue analysis
+        const hasCornerChar = recentOutput.includes('╭');
         const isPrompting = recentOutput.includes('No, and tell Claude what to do differently');
 
         // Auto-continue prompt detection for this specific terminal
-        if (isPrompting && this.gui.autoContinueEnabled) {
+        // Check for either the ╭ character or the traditional prompt
+        if ((hasCornerChar || isPrompting) && this.gui.autoContinueEnabled) {
             this.gui.detectAutoContinuePrompt(recentOutput, terminalId);
         }
 
