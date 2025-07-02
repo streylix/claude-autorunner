@@ -127,11 +127,39 @@ class TerminalGUI {
         this.powerSaveBlockerActive = false;
         this.backgroundServiceActive = false;
         
+        // Initialize modular components
+        this.initializeModules();
+        
         // Add global console error protection to prevent EIO crashes
         this.setupConsoleErrorProtection();
         
         // Initialize the application asynchronously
         this.initialize();
+    }
+
+    initializeModules() {
+        // Initialize terminal management modules
+        this.terminalManager = new TerminalManager(this);
+        this.terminalStatus = new TerminalStatus(this);
+        this.terminalThemes = new TerminalThemes(this);
+        
+        // Delegate terminal management to modules
+        this.createTerminal = this.terminalManager.createTerminal.bind(this.terminalManager);
+        this.switchToTerminal = this.terminalManager.switchToTerminal.bind(this.terminalManager);
+        this.closeTerminal = this.terminalManager.closeTerminal.bind(this.terminalManager);
+        this.addNewTerminal = this.terminalManager.addNewTerminal.bind(this.terminalManager);
+        this.resizeAllTerminals = this.terminalManager.resizeAllTerminals.bind(this.terminalManager);
+        
+        // Delegate status management to modules
+        this.updateTerminalStatusIndicator = this.terminalStatus.updateTerminalStatusIndicator.bind(this.terminalStatus);
+        this.setTerminalStatusDisplay = this.terminalStatus.setTerminalStatusDisplay.bind(this.terminalStatus);
+        this.isTerminalStableAndReady = this.terminalStatus.isTerminalStableAndReady.bind(this.terminalStatus);
+        this.startTerminalStatusScanning = this.terminalStatus.startTerminalStatusScanning.bind(this.terminalStatus);
+        this.stopTerminalStatusScanning = this.terminalStatus.stopTerminalStatusScanning.bind(this.terminalStatus);
+        
+        // Delegate theme management to modules
+        this.getTerminalTheme = this.terminalThemes.getTerminalTheme.bind(this.terminalThemes);
+        this.applyTheme = this.terminalThemes.applyTheme.bind(this.terminalThemes);
     }
 
     setupConsoleErrorProtection() {
