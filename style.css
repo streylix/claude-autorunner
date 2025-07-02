@@ -230,7 +230,7 @@ body {
 }
 
 .terminal-status.running {
-    color: var(--accent-warning);
+    color: var(--accent-success);
 }
 
 .terminal-status.prompted {
@@ -239,6 +239,10 @@ body {
 
 .terminal-status.injecting {
     color: var(--accent-magenta);
+}
+
+.terminal-status.waiting {
+    color: var(--accent-warning);
 }
 
 #terminal-container {
@@ -660,9 +664,6 @@ body {
     border-left: 3px solid var(--accent-magenta);
 }
 
-.message-item.command {
-    border-left: 3px solid var(--accent-success);
-}
 
 .message-content {
     flex: 1;
