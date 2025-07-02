@@ -15,16 +15,17 @@ class TerminalGUI {
         this.terminal = null;
         this.fitAddon = null;
         
-        this.messageQueue = [];
+        // Initialize arrays for compatibility - will be delegated to modules
+        this._messageQueue = [];
         this.injectionTimer = null;
         this.schedulingInProgress = false; // Prevent concurrent scheduling calls
-        this.injectionCount = 0;
+        this._injectionCount = 0;
         this.currentlyInjectingMessages = new Set(); // Track messages being injected per terminal
         this.currentlyInjectingTerminals = new Set(); // Track which terminals are currently injecting
         this.terminalStabilityTimers = new Map(); // Track per-terminal stability start times
         this.lastAssignedTerminalId = 0; // For round-robin terminal assignment
         this.currentDirectory = null; // Will be set when terminal starts or directory is detected
-        this.isInjecting = false;
+        this._isInjecting = false;
         this.messageIdCounter = 1;
         this.messageSequenceCounter = 0;
         this.autoContinueEnabled = false;
@@ -102,10 +103,10 @@ class TerminalGUI {
         this.mediaRecorder = null;
         this.audioChunks = [];
         
-        // Message editing state
-        this.editingMessageId = null;
-        this.originalEditContent = null;
-        this.currentlyInjectingMessageId = null;
+        // Message editing state - will be delegated to modules
+        this._editingMessageId = null;
+        this._originalEditContent = null;
+        this._currentlyInjectingMessageId = null;
         
         // Terminal status scanning system
         this.terminalScanInterval = null;
@@ -120,8 +121,8 @@ class TerminalGUI {
         this.terminalIdleTimer = null;
         this.terminalIdleStartTime = null;
         
-        // Message history tracking
-        this.messageHistory = [];
+        // Message history tracking - will be delegated to modules
+        this._messageHistory = [];
         
         // Background service state
         this.powerSaveBlockerActive = false;
@@ -143,6 +144,9 @@ class TerminalGUI {
         this.terminalStatus = new TerminalStatus(this);
         this.terminalThemes = new TerminalThemes(this);
         
+        // Initialize messaging modules
+        this.messageQueueModule = new MessageQueue(this);
+        
         // Delegate terminal management to modules
         this.createTerminal = this.terminalManager.createTerminal.bind(this.terminalManager);
         this.switchToTerminal = this.terminalManager.switchToTerminal.bind(this.terminalManager);
@@ -160,7 +164,112 @@ class TerminalGUI {
         // Delegate theme management to modules
         this.getTerminalTheme = this.terminalThemes.getTerminalTheme.bind(this.terminalThemes);
         this.applyTheme = this.terminalThemes.applyTheme.bind(this.terminalThemes);
+        
+        // Delegate message queue management to modules
+        this.addMessageToQueue = this.messageQueueModule.addMessageToQueue.bind(this.messageQueueModule);
+        this.clearQueue = this.messageQueueModule.clearQueue.bind(this.messageQueueModule);
+        this.deleteMessage = this.messageQueueModule.deleteMessage.bind(this.messageQueueModule);
+        this.updateMessage = this.messageQueueModule.updateMessage.bind(this.messageQueueModule);
+        this.editMessage = this.messageQueueModule.editMessage.bind(this.messageQueueModule);
+        this.cancelEdit = this.messageQueueModule.cancelEdit.bind(this.messageQueueModule);
+        this.handleMessageUpdate = this.messageQueueModule.handleMessageUpdate.bind(this.messageQueueModule);
+        this.reorderMessage = this.messageQueueModule.reorderMessage.bind(this.messageQueueModule);
+        this.saveMessageQueue = this.messageQueueModule.saveMessageQueue.bind(this.messageQueueModule);
+        this.loadMessageQueue = this.messageQueueModule.loadMessageQueue.bind(this.messageQueueModule);
+        this.updateMessageList = this.messageQueueModule.updateMessageList.bind(this.messageQueueModule);
+        this.injectMessageAndContinueQueue = this.messageQueueModule.injectMessageAndContinueQueue.bind(this.messageQueueModule);
+        this.scheduleNextInjection = this.messageQueueModule.scheduleNextInjection.bind(this.messageQueueModule);
+        this.injectMessages = this.messageQueueModule.injectMessages.bind(this.messageQueueModule);
+        this.manualInjectNextMessage = this.messageQueueModule.manualInjectNextMessage.bind(this.messageQueueModule);
+        this.saveToMessageHistory = this.messageQueueModule.saveToMessageHistory.bind(this.messageQueueModule);
+        this.clearMessageHistory = this.messageQueueModule.clearMessageHistory.bind(this.messageQueueModule);
     }
+
+    // Getters for backward compatibility with existing code
+    get messageQueue() {
+        return this.messageQueueModule ? this.messageQueueModule.messageQueue : this._messageQueue || [];
+    }
+
+    set messageQueue(value) {
+        if (this.messageQueueModule) {
+            this.messageQueueModule.messageQueue = value;
+        } else {
+            this._messageQueue = value;
+        }
+    }
+
+    get injectionCount() {
+        return this.messageQueueModule ? this.messageQueueModule.injectionCount : this._injectionCount || 0;
+    }
+
+    set injectionCount(value) {
+        if (this.messageQueueModule) {
+            this.messageQueueModule.injectionCount = value;
+        } else {
+            this._injectionCount = value;
+        }
+    }
+
+    get messageHistory() {
+        return this.messageQueueModule ? this.messageQueueModule.messageHistory : this._messageHistory || [];
+    }
+
+    set messageHistory(value) {
+        if (this.messageQueueModule) {
+            this.messageQueueModule.messageHistory = value;
+        } else {
+            this._messageHistory = value;
+        }
+    }
+
+    get isInjecting() {
+        return this.messageQueueModule ? this.messageQueueModule.isInjecting : this._isInjecting || false;
+    }
+
+    set isInjecting(value) {
+        if (this.messageQueueModule) {
+            this.messageQueueModule.isInjecting = value;
+        } else {
+            this._isInjecting = value;
+        }
+    }
+
+    get currentlyInjectingMessageId() {
+        return this.messageQueueModule ? this.messageQueueModule.currentlyInjectingMessageId : this._currentlyInjectingMessageId || null;
+    }
+
+    set currentlyInjectingMessageId(value) {
+        if (this.messageQueueModule) {
+            this.messageQueueModule.currentlyInjectingMessageId = value;
+        } else {
+            this._currentlyInjectingMessageId = value;
+        }
+    }
+
+    get editingMessageId() {
+        return this.messageQueueModule ? this.messageQueueModule.editingMessageId : this._editingMessageId || null;
+    }
+
+    set editingMessageId(value) {
+        if (this.messageQueueModule) {
+            this.messageQueueModule.editingMessageId = value;
+        } else {
+            this._editingMessageId = value;
+        }
+    }
+
+    get originalEditContent() {
+        return this.messageQueueModule ? this.messageQueueModule.originalEditContent : this._originalEditContent || null;
+    }
+
+    set originalEditContent(value) {
+        if (this.messageQueueModule) {
+            this.messageQueueModule.originalEditContent = value;
+        } else {
+            this._originalEditContent = value;
+        }
+    }
+
 
     setupConsoleErrorProtection() {
         // Wrap console methods to prevent EIO crashes
@@ -3582,9 +3691,8 @@ class TerminalGUI {
         const hours = Math.floor(timeDiff / (1000 * 60 * 60));
         const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
         
-        // Store the reset time info for auto-fill
+        // Store the reset time info for potential timer setting (don't set timer yet)
         this.currentResetTime = { resetHour, ampm, hour24, resetTime };
-        this.setUsageLimitResetTime(resetTime);
         
         // Update reset time text
         if (hours > 0) {
@@ -3656,13 +3764,40 @@ class TerminalGUI {
         progressBar.classList.remove('active');
         this.usageLimitModalShowing = false;
         
-        // Log the choice and auto-fill form if user chose to queue
+        // Handle user choice - only set timer if user chooses to queue
         if (queue) {
-            this.logAction('Usage limit detected - Queue mode enabled until 3am reset', 'info');
+            this.logAction('Usage limit detected - Queue mode enabled until reset', 'info');
+            
+            // Set the timer since user chose to wait for reset
+            if (this.currentResetTime) {
+                this.setUsageLimitResetTime(this.currentResetTime.resetTime);
+            }
+            
             // Auto-fill the Execute in form with calculated time until reset
             this.autoFillExecuteInForm();
         } else {
-            this.logAction('Usage limit detected - Continuing normally', 'info');
+            this.logAction('Usage limit detected - User chose to continue normally, no timer set', 'info');
+            
+            // User chose "No thanks" - don't set timer, clear any usage limit state
+            this.usageLimitWaiting = false;
+            this.currentResetTime = null;
+            
+            // Clear any terminals that were marked as waiting
+            this.terminals.forEach((terminalData, terminalId) => {
+                if (terminalData.isWaiting || terminalData.usageLimitReached) {
+                    terminalData.isWaiting = false;
+                    terminalData.usageLimitReached = false;
+                    terminalData.usageResetTime = null;
+                    
+                    const terminalStatus = this.terminalStatuses.get(terminalId);
+                    if (terminalStatus) {
+                        terminalStatus.isWaiting = false;
+                    }
+                }
+            });
+            
+            // Update terminal status indicators
+            this.updateTerminalStatusIndicator();
         }
         
         // Resume injection if there are messages queued and timer was expired

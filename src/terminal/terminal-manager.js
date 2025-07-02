@@ -53,8 +53,11 @@ class TerminalManager {
                 lastUpdate: Date.now()
             });
 
-            // Create DOM elements
-            this.createTerminalDOM(id, color, terminalData.name);
+            // Create DOM elements if they don't exist
+            const existingWrapper = document.querySelector(`[data-terminal-id="${id}"]`);
+            if (!existingWrapper) {
+                this.createTerminalDOM(id, color, terminalData.name);
+            }
 
             // Open terminal in container
             const terminalContainer = document.querySelector(`[data-terminal-container="${id}"]`);
@@ -112,23 +115,33 @@ class TerminalManager {
     }
 
     createTerminalDOM(id, color, name) {
-        const terminalSection = document.getElementById('terminal-section');
+        const terminalsContainer = document.getElementById('terminals-container');
+        if (!terminalsContainer) {
+            console.error('terminals-container not found');
+            return;
+        }
         
         // Create terminal wrapper
         const terminalWrapper = document.createElement('div');
         terminalWrapper.className = 'terminal-wrapper';
-        terminalWrapper.setAttribute('data-terminal-wrapper', id);
+        terminalWrapper.setAttribute('data-terminal-id', id);
         terminalWrapper.style.display = 'none'; // Hidden by default
         
         // Create terminal header
         const terminalHeader = document.createElement('div');
         terminalHeader.className = 'terminal-header';
         terminalHeader.innerHTML = `
-            <div class="terminal-info">
-                <span class="terminal-indicator" style="background-color: ${color}"></span>
-                <span class="terminal-title" data-terminal-title="${id}">${name}</span>
-                <span class="terminal-status" data-terminal-status="${id}">...</span>
+            <div class="terminal-title-wrapper">
+                <button class="icon-btn close-terminal-btn" style="display: none;" title="Close terminal">
+                    <i data-lucide="x"></i>
+                </button>
+                <span class="terminal-color-dot" style="background-color: ${color};"></span>
+                <span class="terminal-title editable" contenteditable="false">${name}</span>
+                <button class="icon-btn add-terminal-btn" title="Add new terminal" style="display: none;">
+                    <i data-lucide="plus"></i>
+                </button>
             </div>
+            <span class="terminal-status" data-terminal-status="${id}"></span>
         `;
         
         // Create terminal container
@@ -139,7 +152,7 @@ class TerminalManager {
         // Assemble wrapper
         terminalWrapper.appendChild(terminalHeader);
         terminalWrapper.appendChild(terminalContainer);
-        terminalSection.appendChild(terminalWrapper);
+        terminalsContainer.appendChild(terminalWrapper);
     }
 
     switchToTerminal(terminalId) {
@@ -154,7 +167,7 @@ class TerminalManager {
         });
 
         // Show target terminal wrapper
-        const targetWrapper = document.querySelector(`[data-terminal-wrapper="${terminalId}"]`);
+        const targetWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
         if (targetWrapper) {
             targetWrapper.style.display = 'block';
         }
@@ -211,7 +224,7 @@ class TerminalManager {
             this.terminalStatuses.delete(terminalId);
 
             // Remove DOM elements
-            const terminalWrapper = document.querySelector(`[data-terminal-wrapper="${terminalId}"]`);
+            const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
             if (terminalWrapper) {
                 terminalWrapper.remove();
             }
@@ -258,7 +271,20 @@ class TerminalManager {
             return false;
         }
 
-        return this.createTerminal(nextId);
+        const success = this.createTerminal(nextId);
+        if (success) {
+            // Re-initialize Lucide icons for new elements
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+
+            this.gui.logAction(`Added Terminal ${nextId}`, 'info');
+            
+            // Save terminal state
+            this.saveTerminalState();
+        }
+        
+        return success;
     }
 
     updateTerminalButtonVisibility() {
@@ -466,7 +492,7 @@ class TerminalManager {
             titleElement.textContent = name;
         }
 
-        const indicatorElement = document.querySelector(`[data-terminal-wrapper="${terminalId}"] .terminal-indicator`);
+        const indicatorElement = document.querySelector(`[data-terminal-id="${terminalId}"] .terminal-color-dot`);
         if (indicatorElement) {
             indicatorElement.style.backgroundColor = color;
         }
