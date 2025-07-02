@@ -90,4 +90,6 @@ This is an Electron-based desktop application that provides a terminal GUI with 
 - Uses deprecated `nodeIntegration: true` and `contextIsolation: false` settings
 - Direct shell access through node-pty requires careful input validation
 - Remote module access enabled for window controls
-```
+
+### Ethical Guidelines
+- Never kill the system

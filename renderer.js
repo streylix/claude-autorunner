@@ -2,6 +2,7 @@ const { ipcRenderer } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { WebLinksAddon } = require('@xterm/addon-web-links');
+const InjectionManager = require('./src/messaging/injection-manager');
 
 class TerminalGUI {
     constructor() {
@@ -132,6 +133,9 @@ class TerminalGUI {
         this.powerSaveBlockerActive = false;
         this.backgroundServiceActive = false;
         
+        // Initialize injection manager
+        this.injectionManager = new InjectionManager(this);
+        
         // Add global console error protection to prevent EIO crashes
         this.setupConsoleErrorProtection();
         
@@ -194,6 +198,9 @@ class TerminalGUI {
             
             this.initializeTerminal();
             this.setupEventListeners();
+            
+            // Initialize injection manager after terminal setup
+            this.injectionManager.initialize();
             
             this.initializeLucideIcons();
             this.updateStatusDisplay();
@@ -1474,8 +1481,13 @@ class TerminalGUI {
     }
 
     toggleTimerOrInjection() {
-        // If injection is in progress, handle injection pause/resume
-        if (this.injectionInProgress) {
+        // Check if any injections are active (either legacy or new system)
+        const hasActiveInjections = this.injectionInProgress || 
+                                   this.currentlyInjectingMessages.size > 0 ||
+                                   (this.timerExpired && this.messageQueue.length > 0);
+        
+        // If injection is in progress or timer expired with messages, handle injection pause/resume
+        if (hasActiveInjections) {
             if (this.injectionPaused) {
                 this.resumeInjectionExecution();
             } else {
@@ -1541,8 +1553,26 @@ class TerminalGUI {
             this.timerInterval = null;
         }
         
+        // Cancel all active injections
+        this.currentlyInjectingMessages.clear();
+        this.currentlyInjectingTerminals.clear();
+        
+        // Clear any injection scheduling timers
+        if (this.injectionTimer) {
+            clearTimeout(this.injectionTimer);
+            this.injectionTimer = null;
+        }
+        
+        // Notify injection manager
+        this.injectionManager.onTimerStopped();
+        
         // Stop power save blocker when timer is stopped
         this.stopPowerSaveBlocker();
+        
+        // Update all terminal statuses
+        this.terminals.forEach((terminalData, terminalId) => {
+            this.setTerminalStatusDisplay('', terminalId);
+        });
         
         this.updateTimerUI();
         this.logAction('Timer stopped and reset', 'info');
@@ -1567,10 +1597,14 @@ class TerminalGUI {
                 this.timerInterval = null;
             }
             
+            // Notify injection manager
+            this.injectionManager.onTimerExpired();
+            
             // If we were waiting for usage limit reset, clear the waiting state
             if (this.usageLimitWaiting) {
                 this.logAction(`Timer expiration: clearing usageLimitWaiting. Current state - injectionInProgress: ${this.injectionInProgress}, queueLength: ${this.messageQueue.length}`, 'info');
                 this.usageLimitWaiting = false;
+                this.injectionManager.onUsageLimitReset();
                 this.logAction('Usage limit reset time reached - resuming auto injection', 'success');
                 
                 // Clear the saved reset time state to allow fresh detection cycles
@@ -1629,12 +1663,11 @@ class TerminalGUI {
                 }
             }
             
-            this.updateTimerUI();
+            // Update timer UI but let injection manager handle visual states
+            this.updateTimerDisplay();
             
             // Note: Timer expiration notification removed to prevent interrupting automated flow
-            this.logAction(`Timer expiration: about to call scheduleNextInjection. Final state - injectionInProgress: ${this.injectionInProgress}, queueLength: ${this.messageQueue.length}, timerExpired: ${this.timerExpired}`, 'info');
-            
-            this.scheduleNextInjection();
+            this.logAction(`Timer expiration: injection manager will handle scheduling. queueLength: ${this.messageQueue.length}`, 'info');
             return;
         }
         
@@ -1674,16 +1707,26 @@ class TerminalGUI {
         this.updateTimerDisplay();
         
         // Update display classes
-        display.className = 'timer-display';
-        if (this.timerActive) {
-            display.classList.add('active');
-        } else if (this.timerExpired && this.injectionInProgress) {
-            display.classList.add('expired');
+        // If timer is expired, let injection manager handle visual state
+        if (this.timerExpired) {
+            this.injectionManager.updateVisualState();
+            // Don't update classes here - injection manager will do it
+        } else {
+            // Timer not expired - handle normally
+            display.className = 'timer-display';
+            if (this.timerActive) {
+                display.classList.add('active');
+            }
         }
-        // When timer is at 00:00:00 and not injecting, it goes back to grey (no additional classes)
         
         // Update play/pause button
-        if (this.injectionInProgress) {
+        // Check if any injections are active (legacy or new system)
+        const hasActiveInjectionsForButton = this.injectionInProgress || 
+                                            this.currentlyInjectingMessages.size > 0 ||
+                                            (this.timerExpired && this.messageQueue.length > 0) ||
+                                            this.injectionPaused;
+        
+        if (hasActiveInjectionsForButton) {
             // During injection, show pause/resume for injection execution
             if (this.injectionPaused) {
                 playPauseBtn.innerHTML = '<i data-lucide="play"></i>';
@@ -1711,8 +1754,14 @@ class TerminalGUI {
         const timerIsSet = this.timerHours > 0 || this.timerMinutes > 0 || this.timerSeconds > 0;
         const timerAtZero = this.timerHours === 0 && this.timerMinutes === 0 && this.timerSeconds === 0;
         
-        if (this.injectionInProgress) {
-            // Show cancel button during injection
+        // Check if any injections are active (legacy or new system)
+        const hasActiveInjections = this.injectionInProgress || 
+                                   this.currentlyInjectingMessages.size > 0 ||
+                                   (this.timerExpired && this.messageQueue.length > 0) ||
+                                   this.injectionPaused;
+        
+        if (hasActiveInjections) {
+            // Show cancel button during injection or when paused
             stopBtn.style.display = 'flex';
             stopBtn.innerHTML = '<i data-lucide="square"></i>';
             stopBtn.title = 'Cancel injection';
@@ -1723,7 +1772,7 @@ class TerminalGUI {
             stopBtn.innerHTML = '<i data-lucide="square"></i>';
             stopBtn.title = 'Stop timer';
             stopBtn.className = 'timer-btn timer-stop';
-        } else if (timerAtZero && !this.timerActive && !this.injectionInProgress) {
+        } else if (timerAtZero && !this.timerActive && !hasActiveInjections) {
             // Show refresh button when timer is at 00:00:00 and not active/injecting
             stopBtn.style.display = 'flex';
             stopBtn.innerHTML = '<i data-lucide="refresh-cw"></i>';
@@ -1734,18 +1783,28 @@ class TerminalGUI {
         }
         
         // Update edit button / status display
-        if (this.injectionInProgress) {
-            editBtn.style.display = 'none';
-            if (waitingStatus) waitingStatus.style.display = 'none';
-            if (injectionStatus) injectionStatus.style.display = 'inline';
-        } else if (this.timerActive) {
-            editBtn.style.display = 'none';
-            if (waitingStatus) waitingStatus.style.display = 'inline';
-            if (injectionStatus) injectionStatus.style.display = 'none';
+        // If timer is expired, injection manager handles the status display
+        if (!this.timerExpired) {
+            // Timer not expired - handle normally
+            if (this.injectionInProgress) {
+                editBtn.style.display = 'none';
+                if (waitingStatus) waitingStatus.style.display = 'none';
+                if (injectionStatus) injectionStatus.style.display = 'inline';
+            } else if (this.timerActive) {
+                editBtn.style.display = 'none';
+                if (waitingStatus) {
+                    waitingStatus.style.display = 'inline';
+                    waitingStatus.textContent = 'Waiting...';
+                }
+                if (injectionStatus) injectionStatus.style.display = 'none';
+            } else {
+                editBtn.style.display = 'flex';
+                if (waitingStatus) waitingStatus.style.display = 'none';
+                if (injectionStatus) injectionStatus.style.display = 'none';
+            }
         } else {
-            editBtn.style.display = 'flex';
-            if (waitingStatus) waitingStatus.style.display = 'none';
-            if (injectionStatus) injectionStatus.style.display = 'none';
+            // Timer expired - make sure injection manager updates visual state
+            this.injectionManager.updateVisualState();
         }
         
         // Reinitialize lucide icons to apply icon changes
@@ -2042,7 +2101,6 @@ class TerminalGUI {
     }
 
     // REMOVED: Legacy sequential injection system - replaced with parallel injection
-    /*
     async startSequentialInjection() {
         if (this.messageQueue.length === 0) {
             this.logAction('Timer expired but no messages to inject', 'warning');
@@ -2224,10 +2282,21 @@ class TerminalGUI {
     cancelSequentialInjection() {
         // Stop all injection processes
         this.injectionInProgress = false;
+        this.injectionPaused = false; // Clear pause state
         this.timerExpired = false;
         this.safetyCheckCount = 0;
         this.isInjecting = false;
         this.currentlyInjectingMessageId = null; // Clear injecting message tracking
+        
+        // Clear new injection system state
+        this.currentlyInjectingMessages.clear();
+        this.currentlyInjectingTerminals.clear();
+        
+        // Clear any injection scheduling timers
+        if (this.injectionTimer) {
+            clearTimeout(this.injectionTimer);
+            this.injectionTimer = null;
+        }
         
         // Clear any pending safety check timeouts
         if (this.safetyCheckInterval) {
@@ -2241,8 +2310,16 @@ class TerminalGUI {
             this.currentTypeInterval = null;
         }
         
+        // Notify injection manager
+        this.injectionManager.onTimerStopped();
+        
         // Stop power save blocker
         this.stopPowerSaveBlocker();
+        
+        // Update all terminal statuses
+        this.terminals.forEach((terminalData, terminalId) => {
+            this.setTerminalStatusDisplay('', terminalId);
+        });
         
         // Update UI and status
         this.updateTimerUI();
@@ -2251,7 +2328,6 @@ class TerminalGUI {
         
         this.logAction(`Sequential injection cancelled - ${this.messageQueue.length} messages remaining in queue`, 'warning');
     }
-    */
 
     pauseInProgressInjection() {
         if (this.injectionInProgress) {
@@ -2319,12 +2395,27 @@ class TerminalGUI {
 
     // Pause execution during injection (preserves current typing position)
     pauseInjectionExecution() {
-        if (!this.injectionInProgress) {
+        // Check if any injections are active
+        const hasActiveInjections = this.injectionInProgress || 
+                                   this.currentlyInjectingMessages.size > 0 ||
+                                   (this.timerExpired && this.messageQueue.length > 0);
+                                   
+        if (!hasActiveInjections) {
             this.logAction('Cannot pause - no injection in progress', 'warning');
             return false;
         }
 
         this.injectionPaused = true;
+        
+        // Stop the injection manager's periodic checks
+        this.injectionManager.stopPeriodicChecks();
+        
+        // Clear any scheduled injection timers
+        if (this.injectionTimer) {
+            clearTimeout(this.injectionTimer);
+            this.injectionTimer = null;
+        }
+        
         this.logAction('Injection execution paused', 'info');
         this.updateTimerUI();
         return true;
@@ -2332,7 +2423,11 @@ class TerminalGUI {
 
     // Resume execution from where it was paused
     resumeInjectionExecution() {
-        if (!this.injectionInProgress) {
+        const hasActiveInjections = this.injectionInProgress || 
+                                   this.currentlyInjectingMessages.size > 0 ||
+                                   (this.timerExpired && this.messageQueue.length > 0);
+                                   
+        if (!hasActiveInjections) {
             this.logAction('Cannot resume - no injection in progress', 'warning');
             return false;
         }
@@ -2343,12 +2438,21 @@ class TerminalGUI {
         }
 
         this.injectionPaused = false;
+        
+        // Restart the injection manager's periodic checks if timer expired
+        if (this.timerExpired) {
+            this.injectionManager.startPeriodicChecks();
+        }
+        
         this.logAction('Injection execution resumed', 'info');
         this.updateTimerUI();
 
         // If we were in the middle of typing a message, continue from where we left off
         if (this.pausedMessageContent && this.pausedMessageIndex >= 0) {
             this.continueTypingFromPause();
+        } else if (this.timerExpired) {
+            // If no paused message, trigger injection scheduling
+            this.injectionManager.checkAndScheduleInjections();
         }
         
         return true;
@@ -2777,6 +2881,11 @@ class TerminalGUI {
     }
 
     scheduleNextInjection() {
+        // Only schedule injections if timer has expired
+        if (!this.timerExpired) {
+            return;
+        }
+        
         // Prevent concurrent scheduling calls
         if (this.schedulingInProgress) {
             return;
@@ -2795,8 +2904,8 @@ class TerminalGUI {
             return;
         }
         
-        // Reset legacy injection flags to ensure new system can run
-        this.injectionInProgress = false;
+        // Let injection manager handle injection state
+        // Remove: this.injectionInProgress = false;
         
         // Track which terminals are currently busy - use the dedicated Set
         const busyTerminals = new Set(this.currentlyInjectingTerminals);
@@ -2887,6 +2996,11 @@ class TerminalGUI {
         this.currentlyInjectingTerminals.add(terminalId); // Track busy terminal
         this.setTerminalStatusDisplay('injecting', terminalId);
         
+        // Set injection in progress for UI updates
+        if (this.timerExpired) {
+            this.injectionInProgress = true;
+        }
+        
         // Clear stability timer since terminal is now busy injecting
         this.terminalStabilityTimers.delete(terminalId);
         
@@ -2910,6 +3024,14 @@ class TerminalGUI {
                 this.currentlyInjectingTerminals.delete(terminalId); // Remove from busy terminals
                 this.deleteMessage(message.id); // Move message deletion to after injection cleanup
                 this.setTerminalStatusDisplay('', terminalId);
+                
+                // Notify injection manager that injection is complete
+                this.injectionManager.onInjectionComplete(message.id);
+                
+                // Clear injection in progress if no more messages being processed
+                if (this.currentlyInjectingMessages.size === 0) {
+                    this.injectionInProgress = false;
+                }
                 
                 // Schedule next injection
                 this.scheduleNextInjection();
@@ -3344,6 +3466,7 @@ class TerminalGUI {
             // Stop auto injection and set timer
             this.pauseInProgressInjection();
             this.usageLimitWaiting = true;
+            this.injectionManager.onUsageLimitDetected();
             
             // Set timer values
             this.timerHours = hours;
@@ -4457,6 +4580,7 @@ class TerminalGUI {
         this.timerSeconds = seconds;
         this.timerExpired = false;
         this.usageLimitWaiting = true;
+        this.injectionManager.onUsageLimitDetected();
         
         // Start the timer if not already active
         if (!this.timerActive) {
