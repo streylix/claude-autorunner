@@ -222,6 +222,7 @@ class TerminalGUI {
         // Initialize first terminal
         this.createTerminal(1);
         
+        
         // Set container to single terminal mode
         const terminalsContainer = document.getElementById('terminals-container');
         terminalsContainer.setAttribute('data-terminal-count', '1');
@@ -445,12 +446,14 @@ class TerminalGUI {
                 terminalData.terminal.write(data.content);
                 terminalData.lastOutput = data.content;
                 
-                // Update active terminal references
+                // Run detection functions for ALL terminals, not just active one
+                this.detectAutoContinuePrompt(data.content, terminalId);
+                await this.detectUsageLimit(data.content, terminalId);
+                
+                // Update active terminal references only for the active terminal
                 if (terminalId === this.activeTerminalId) {
                     this.terminal = terminalData.terminal;
                     this.updateTerminalOutput(data.content);
-                    this.detectAutoContinuePrompt(data.content, terminalId);
-                    await this.detectUsageLimit(data.content, terminalId);
                     this.handleTerminalOutput();
                 }
             }
@@ -537,19 +540,8 @@ class TerminalGUI {
             this.clearQueue();
         });
         
-        // Consolidated click event listener for all terminal-related interactions
+        // Consolidated click event listener for terminal interactions
         document.addEventListener('click', (e) => {
-            // Handle close terminal button (highest priority)
-            if (e.target.closest('.close-terminal-btn')) {
-                e.preventDefault();
-                e.stopPropagation();
-                const terminalWrapper = e.target.closest('.terminal-wrapper');
-                if (terminalWrapper) {
-                    const terminalId = parseInt(terminalWrapper.getAttribute('data-terminal-id'));
-                    this.closeTerminal(terminalId);
-                }
-                return; // Stop processing other clicks
-            }
             
             // Handle add terminal button
             if (e.target.closest('.add-terminal-btn')) {
@@ -2974,8 +2966,9 @@ class TerminalGUI {
         // Otherwise, type character by character as normal
         let index = 0;
         const typeInterval = setInterval(() => {
-            // Check if injection was cancelled
-            if (!this.currentlyInjectingMessages || this.currentlyInjectingMessages.size === 0) {
+            // Check if injection was cancelled (but skip this check for keyword responses)
+            const isKeywordResponse = this.keywordBlockingActive;
+            if (!isKeywordResponse && (!this.currentlyInjectingMessages || this.currentlyInjectingMessages.size === 0)) {
                 clearInterval(typeInterval);
                 return;
             }
@@ -3105,17 +3098,21 @@ class TerminalGUI {
                 // Wait and inject custom response if provided
                 if (keywordBlockResult.response) {
                     const responseDelay = this.getRandomDelay(700, 1000);
+                    this.logAction(`Will inject custom response to Terminal ${terminalId} in ${responseDelay}ms: "${keywordBlockResult.response}"`, 'info');
                     setTimeout(() => {
-                        this.logAction(`Injecting custom response to Terminal ${terminalId}: "${keywordBlockResult.response}"`, 'info');
+                        this.logAction(`Starting injection of custom response to Terminal ${terminalId}: "${keywordBlockResult.response}"`, 'info');
                         this.typeMessageToTerminal(keywordBlockResult.response, terminalId, () => {
+                            this.logAction(`Custom response injection completed for Terminal ${terminalId}`, 'info');
                             const enterDelay = this.getRandomDelay(150, 350);
                             setTimeout(() => {
                                 ipcRenderer.send('terminal-input', { terminalId, data: '\r' });
+                                this.logAction(`Sent Enter key for Terminal ${terminalId}`, 'info');
                                 // Reset keyword blocking flag and clear terminal tracking
                                 const resetDelay = this.getRandomDelay(800, 1200);
                                 setTimeout(() => {
                                     this.keywordBlockingActive = false;
                                     this.keywordResponseTerminals.delete(terminalId);
+                                    this.logAction(`Keyword blocking reset for Terminal ${terminalId}`, 'info');
                                 }, resetDelay);
                             }, enterDelay);
                         });
@@ -4980,7 +4977,7 @@ class TerminalGUI {
         terminalWrapper.innerHTML = `
             <div class="terminal-header">
                 <div class="terminal-title-wrapper">
-                    <button class="icon-btn close-terminal-btn" title="Close terminal">
+                    <button class="icon-btn close-terminal-btn" title="Close terminal" onclick="window.terminalGUI.closeTerminal(${newId})">
                         <i data-lucide="x"></i>
                     </button>
                     <span class="terminal-color-dot" style="background-color: ${color};"></span>
@@ -5014,6 +5011,7 @@ class TerminalGUI {
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
         }
+        
         
         // Update button visibility
         this.updateTerminalButtonVisibility();
@@ -5072,7 +5070,7 @@ class TerminalGUI {
             const messageTerminalId = message.terminalId != null ? message.terminalId : this.activeTerminalId;
             return messageTerminalId !== terminalId;
         });
-        this.displayMessages();
+        this.updateMessageList();
         
         // Notify main process to close terminal process
         ipcRenderer.send('terminal-close', { terminalId });
