@@ -23,6 +23,11 @@ class TerminalGUI {
         this.currentlyInjectingTerminals = new Set(); // Track which terminals are currently injecting
         this.terminalStabilityTimers = new Map(); // Track per-terminal stability start times
         this.lastAssignedTerminalId = 0; // For round-robin terminal assignment
+        
+        // Terminal-specific tracking for auto-continue, keyword detection, and timer targeting
+        this.usageLimitTerminals = new Set(); // Track terminals that received usage limit messages
+        this.continueTargetTerminals = new Set(); // Track terminals that should receive continue messages
+        this.keywordResponseTerminals = new Map(); // Track terminals that need keyword responses
         this.currentDirectory = null; // Will be set when terminal starts or directory is detected
         this.isInjecting = false;
         this.messageIdCounter = 1;
@@ -444,8 +449,8 @@ class TerminalGUI {
                 if (terminalId === this.activeTerminalId) {
                     this.terminal = terminalData.terminal;
                     this.updateTerminalOutput(data.content);
-                    this.detectAutoContinuePrompt(data.content);
-                    await this.detectUsageLimit(data.content);
+                    this.detectAutoContinuePrompt(data.content, terminalId);
+                    await this.detectUsageLimit(data.content, terminalId);
                     this.handleTerminalOutput();
                 }
             }
@@ -1593,28 +1598,42 @@ class TerminalGUI {
                 // Explicitly update terminal status to clear any stuck "injecting" state
                 this.updateTerminalStatusIndicator();
                 
-                // Automatically add 'continue' to message queue when usage limit resets
+                // Automatically add 'continue' messages to terminals that received usage limit messages
                 const continueContent = 'continue';
                 
-                // Validate the continue message (safety check)
-                if (this.isValidMessageContent(continueContent)) {
-                    const continueMessage = {
-                        id: this.generateMessageId(),
-                        content: continueContent,
-                        executeAt: Date.now(),
-                        createdAt: Date.now(),
-                        sequence: ++this.messageSequenceCounter
-                    };
-                    
-                    // Add to the beginning of the queue (highest priority)
-                    this.messageQueue.unshift(continueMessage);
-                    this.saveMessageQueue();
-                    this.updateMessageList();
-                    this.updateStatusDisplay();
-                    
-                    this.logAction('Auto-added continue message after usage limit reset', 'info');
+                if (this.usageLimitTerminals.size > 0) {
+                    // Validate the continue message (safety check)
+                    if (this.isValidMessageContent(continueContent)) {
+                        // Add continue message for each terminal that received usage limit
+                        for (const terminalId of this.usageLimitTerminals) {
+                            const terminalData = this.terminals.get(terminalId);
+                            const terminalName = terminalData ? terminalData.name : `Terminal ${terminalId}`;
+                            
+                            const continueMessage = {
+                                id: this.generateMessageId(),
+                                content: continueContent,
+                                executeAt: Date.now(),
+                                createdAt: Date.now(),
+                                sequence: ++this.messageSequenceCounter,
+                                terminalId: terminalId // Target specific terminal
+                            };
+                            
+                            // Add to the beginning of the queue (highest priority)
+                            this.messageQueue.unshift(continueMessage);
+                            this.logAction(`Auto-added continue message for ${terminalName} after usage limit reset`, 'info');
+                        }
+                        
+                        // Clear the tracking set since we've added the continue messages
+                        this.usageLimitTerminals.clear();
+                        
+                        this.saveMessageQueue();
+                        this.updateMessageList();
+                        this.updateStatusDisplay();
+                    } else {
+                        this.logAction('Failed to add continue messages - validation failed', 'error');
+                    }
                 } else {
-                    this.logAction('Failed to add continue message - validation failed', 'error');
+                    this.logAction('No terminals tracked for usage limit - no continue messages added', 'info');
                 }
             }
             
@@ -3053,35 +3072,50 @@ class TerminalGUI {
         this.currentTypeInterval = typeInterval;
     }
 
-    detectAutoContinuePrompt(data) {
+    detectAutoContinuePrompt(data, terminalId = this.activeTerminalId) {
+        // Get the terminal data for the specific terminal
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) return;
+        
+        // Use the terminal-specific output for detection
+        const terminalOutput = terminalData.lastOutput || '';
+        
         // Check for blocking conditions for message injection
-        const hasEscToInterrupt = this.lastTerminalOutput.includes("esc to interrupt") || 
-                                 this.lastTerminalOutput.includes("offline)");
-        const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
+        const hasEscToInterrupt = terminalOutput.includes("esc to interrupt") || 
+                                 terminalOutput.includes("offline)");
+        const hasClaudePrompt = terminalOutput.includes("No, and tell Claude what to do differently");
         
         // Handle keyword blocking specifically for Claude prompts (only if auto-continue is enabled)
         if (hasClaudePrompt && this.autoContinueEnabled) {
-            const keywordBlockResult = this.checkForKeywordBlocking();
+            const keywordBlockResult = this.checkTerminalForKeywords(terminalOutput);
             if (keywordBlockResult.blocked && !this.keywordBlockingActive) {
                 this.keywordBlockingActive = true;
-                this.logAction(`Keyword "${keywordBlockResult.keyword}" detected in Claude prompt - executing escape sequence`, 'warning');
+                this.logAction(`Keyword "${keywordBlockResult.keyword}" detected in Terminal ${terminalId} Claude prompt - executing escape sequence`, 'warning');
                 
-                // Send Esc key to interrupt
-                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\x1b' });
+                // Track this terminal for keyword response
+                this.keywordResponseTerminals.set(terminalId, {
+                    keyword: keywordBlockResult.keyword,
+                    response: keywordBlockResult.response,
+                    timestamp: Date.now()
+                });
+                
+                // Send Esc key to interrupt on the specific terminal
+                ipcRenderer.send('terminal-input', { terminalId, data: '\x1b' });
                 
                 // Wait and inject custom response if provided
                 if (keywordBlockResult.response) {
                     const responseDelay = this.getRandomDelay(700, 1000);
                     setTimeout(() => {
-                        this.logAction(`Injecting custom response: "${keywordBlockResult.response}"`, 'info');
-                        this.typeMessage(keywordBlockResult.response, () => {
+                        this.logAction(`Injecting custom response to Terminal ${terminalId}: "${keywordBlockResult.response}"`, 'info');
+                        this.typeMessageToTerminal(keywordBlockResult.response, terminalId, () => {
                             const enterDelay = this.getRandomDelay(150, 350);
                             setTimeout(() => {
-                                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
-                                // Reset keyword blocking flag
+                                ipcRenderer.send('terminal-input', { terminalId, data: '\r' });
+                                // Reset keyword blocking flag and clear terminal tracking
                                 const resetDelay = this.getRandomDelay(800, 1200);
                                 setTimeout(() => {
                                     this.keywordBlockingActive = false;
+                                    this.keywordResponseTerminals.delete(terminalId);
                                 }, resetDelay);
                             }, enterDelay);
                         });
@@ -3091,23 +3125,24 @@ class TerminalGUI {
                     const resetDelay = this.getRandomDelay(800, 1200);
                     setTimeout(() => {
                         this.keywordBlockingActive = false;
+                        this.keywordResponseTerminals.delete(terminalId);
                     }, resetDelay);
                 }
                 return; // Exit early, don't process auto-continue
             }
         }
         
-        // Reset keyword blocking flag if Claude prompt is no longer present
-        if (!hasClaudePrompt && this.keywordBlockingActive) {
-            this.keywordBlockingActive = false;
+        // Reset keyword blocking flag if Claude prompt is no longer present for this terminal
+        if (!hasClaudePrompt && this.keywordResponseTerminals.has(terminalId)) {
+            this.keywordResponseTerminals.delete(terminalId);
         }
         
-        // Check for custom keyword blocking for injection blocking
-        const keywordBlockResult = this.checkForKeywordBlocking();
+        // Check all terminals for keyword blocking (global check for injection blocking)
+        const allTerminalsKeywordResult = this.checkForKeywordBlocking();
         
-        // Update injection blocking status
+        // Update injection blocking status based on all terminals
         const previouslyBlocked = this.injectionBlocked;
-        this.injectionBlocked = hasEscToInterrupt || keywordBlockResult.blocked;
+        this.injectionBlocked = hasEscToInterrupt || allTerminalsKeywordResult.blocked;
         
         // Log when blocking status changes
         if (previouslyBlocked && !this.injectionBlocked) {
@@ -3117,7 +3152,7 @@ class TerminalGUI {
                 this.scheduleNextInjection();
             }
         } else if (!previouslyBlocked && this.injectionBlocked) {
-            let reason = hasEscToInterrupt ? 'running process detected' : `keyword "${keywordBlockResult.keyword}" detected`;
+            let reason = hasEscToInterrupt ? `running process detected in Terminal ${terminalId}` : `keyword "${allTerminalsKeywordResult.keyword}" detected`;
             this.logAction(`Message injection blocked - ${reason}`, 'warning');
             // Cancel any pending injection
             if (this.injectionTimer) {
@@ -3129,81 +3164,103 @@ class TerminalGUI {
         // Auto-continue logic (skip if keyword blocking just activated)
         if (!this.autoContinueEnabled || this.isInjecting || this.keywordBlockingActive) return;
         
-        // Check for prompts that should trigger auto-continue
-        const hasGeneralPrompt = /Do you want to proceed\?/i.test(this.lastTerminalOutput);
-        const hasTrustPrompt = this.lastTerminalOutput.includes('Do you trust the files in this folder?');
+        // Check for prompts that should trigger auto-continue (using terminal-specific output)
+        const hasGeneralPrompt = /Do you want to proceed\?/i.test(terminalOutput);
+        const hasTrustPrompt = terminalOutput.includes('Do you trust the files in this folder?');
         
-        // Handle trust prompt - inject enter with random delay
+        // Handle trust prompt - inject enter with random delay on specific terminal
         if (hasTrustPrompt && !this.trustPromptActive) {
             this.trustPromptActive = true;
             const delay = this.getRandomDelay(1000, 2000); // 1-2 seconds
-            this.logAction(`Trust prompt detected - auto-injecting enter in ${delay}ms`, 'info');
+            this.logAction(`Trust prompt detected in Terminal ${terminalId} - auto-injecting enter in ${delay}ms`, 'info');
             
             setTimeout(() => {
-                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
+                ipcRenderer.send('terminal-input', { terminalId, data: '\r' });
                 this.trustPromptActive = false;
             }, delay);
             
             return; // Exit early to avoid other auto-continue processing
         }
         
-        // Auto-continue for Claude prompt or general prompts
+        // Auto-continue for Claude prompt or general prompts on specific terminal
         if (hasClaudePrompt || hasGeneralPrompt) {
             const promptType = hasClaudePrompt ? 'Claude prompt' : 'general prompt';
             
-            // If auto-continue is not already active for this prompt, start it
+            // Track this terminal as needing continue messages
+            if (hasClaudePrompt) {
+                this.continueTargetTerminals.add(terminalId);
+            }
+            
+            // If auto-continue is not already active for this terminal, start it
             if (!this.autoContinueActive) {
-                console.log(`Auto-continue: ${promptType} detected! Starting persistent auto-continue.`);
-                this.logAction(`Auto-continue detected ${promptType} - starting persistent checking`, 'info');
+                console.log(`Auto-continue: ${promptType} detected in Terminal ${terminalId}! Starting persistent auto-continue.`);
+                this.logAction(`Auto-continue detected ${promptType} in Terminal ${terminalId} - starting persistent checking`, 'info');
                 this.autoContinueActive = true;
                 this.autoContinueRetryCount = 0;
-                this.performAutoContinue(promptType);
+                this.performAutoContinue(promptType, terminalId);
             }
-        } else if (this.autoContinueActive) {
-            // If we were auto-continuing but no longer see prompts, stop
-            this.logAction(`Auto-continue completed - prompt cleared after ${this.autoContinueRetryCount + 1} attempts`, 'success');
-            this.autoContinueActive = false;
-            this.autoContinueRetryCount = 0;
+        } else if (this.autoContinueActive && this.continueTargetTerminals.has(terminalId)) {
+            // If we were auto-continuing but no longer see prompts in this terminal, remove it from targets
+            this.continueTargetTerminals.delete(terminalId);
+            this.logAction(`Auto-continue completed for Terminal ${terminalId} - prompt cleared after ${this.autoContinueRetryCount + 1} attempts`, 'success');
+            
+            // If no more terminals need auto-continue, stop completely
+            if (this.continueTargetTerminals.size === 0) {
+                this.autoContinueActive = false;
+                this.autoContinueRetryCount = 0;
+            }
         }
     }
 
-    performAutoContinue(promptType) {
+    performAutoContinue(promptType, terminalId = this.activeTerminalId) {
         if (!this.autoContinueActive || !this.autoContinueEnabled) return;
         
         this.autoContinueRetryCount++;
-        this.logAction(`Auto-continue attempt #${this.autoContinueRetryCount} for ${promptType}`, 'info');
+        this.logAction(`Auto-continue attempt #${this.autoContinueRetryCount} for ${promptType} in Terminal ${terminalId}`, 'info');
         
-        // Send Enter key with small random delay for human-like behavior
+        // Send Enter key with small random delay for human-like behavior to specific terminal
         const enterDelay = this.getRandomDelay(50, 150);
         setTimeout(() => {
-            ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
+            ipcRenderer.send('terminal-input', { terminalId, data: '\r' });
         }, enterDelay);
         
         // Wait for terminal to process, then check if we need to continue
         const checkDelay = 1000 + this.getRandomDelay(0, 300); // 1-1.3 seconds
         setTimeout(() => {
             if (this.autoContinueActive) {
-                // Check if prompt text is still present in recent output
-                const hasClaudePrompt = this.lastTerminalOutput.includes("No, and tell Claude what to do differently");
-                const hasGeneralPrompt = /Do you want to proceed\?/i.test(this.lastTerminalOutput);
+                // Get terminal-specific output for checking
+                const terminalData = this.terminals.get(terminalId);
+                if (!terminalData) return;
+                
+                const terminalOutput = terminalData.lastOutput || '';
+                
+                // Check if prompt text is still present in this terminal's output
+                const hasClaudePrompt = terminalOutput.includes("No, and tell Claude what to do differently");
+                const hasGeneralPrompt = /Do you want to proceed\?/i.test(terminalOutput);
                 
                 if (hasClaudePrompt || hasGeneralPrompt) {
                     // Prompt still there, continue if we haven't exceeded max attempts
                     if (this.autoContinueRetryCount < 10) {
-                        this.logAction(`Prompt still present, retrying auto-continue`, 'warning');
-                        this.performAutoContinue(promptType);
+                        this.logAction(`Prompt still present in Terminal ${terminalId}, retrying auto-continue`, 'warning');
+                        this.performAutoContinue(promptType, terminalId);
                     } else {
-                        this.logAction(`Auto-continue stopped - max attempts (10) reached`, 'error');
-                        this.autoContinueActive = false;
-                        this.autoContinueRetryCount = 0;
+                        this.logAction(`Auto-continue stopped for Terminal ${terminalId} - max attempts (10) reached`, 'error');
+                        this.continueTargetTerminals.delete(terminalId);
+                        if (this.continueTargetTerminals.size === 0) {
+                            this.autoContinueActive = false;
+                            this.autoContinueRetryCount = 0;
+                        }
                     }
                 } else {
                     // Prompt is gone, success!
-                    this.logAction(`Auto-continue successful after ${this.autoContinueRetryCount} attempts`, 'success');
-                    this.autoContinueActive = false;
-                    this.autoContinueRetryCount = 0;
-                    // Clear the stored output
-                    this.lastTerminalOutput = '';
+                    this.logAction(`Auto-continue successful for Terminal ${terminalId} after ${this.autoContinueRetryCount} attempts`, 'success');
+                    this.continueTargetTerminals.delete(terminalId);
+                    
+                    // If no more terminals need auto-continue, stop completely
+                    if (this.continueTargetTerminals.size === 0) {
+                        this.autoContinueActive = false;
+                        this.autoContinueRetryCount = 0;
+                    }
                 }
             }
         }, checkDelay);
@@ -3214,7 +3271,7 @@ class TerminalGUI {
         return Math.floor(Math.random() * (max - min + 1)) + min;
     }
 
-    async detectUsageLimit(data) {
+    async detectUsageLimit(data, terminalId = this.activeTerminalId) {
         // Check for "Approaching usage limit" message and parse the reset time
         // const approachingMatch = data.match(/Approaching usage limit · resets at (\d{1,2})(am|pm)/i);
         // if (approachingMatch) {
@@ -3237,6 +3294,10 @@ class TerminalGUI {
             const resetHour = parseInt(reachedMatch[1]);
             const ampm = reachedMatch[2].toLowerCase();
             const resetTimeString = `${resetHour}${ampm}`;
+            
+            // Track this terminal as having received a usage limit message
+            this.usageLimitTerminals.add(terminalId);
+            this.logAction(`Usage limit detected in Terminal ${terminalId} - tracking for continue targeting`, 'info');
             
             // Set timer to exact reset time and pause injection
             await this.setTimerToUsageLimitReset(resetHour, ampm);
@@ -4258,22 +4319,22 @@ class TerminalGUI {
         });
     }
     
-    checkForKeywordBlocking() {
+    checkTerminalForKeywords(terminalOutput) {
         // Only check if we have keyword rules
         if (!this.preferences.keywordRules || this.preferences.keywordRules.length === 0) {
             return { blocked: false };
         }
         
         // Ensure we have terminal output to check
-        if (!this.lastTerminalOutput || this.lastTerminalOutput.trim() === '') {
+        if (!terminalOutput || terminalOutput.trim() === '') {
             return { blocked: false };
         }
         
         // Find the ╭ character which marks the start of the current Claude prompt area
-        const claudePromptStart = this.lastTerminalOutput.lastIndexOf("╭");
+        const claudePromptStart = terminalOutput.lastIndexOf("╭");
         if (claudePromptStart === -1) {
             // Fallback: check the last 1000 characters if no ╭ found
-            const fallbackArea = this.lastTerminalOutput.slice(-1000);
+            const fallbackArea = terminalOutput.slice(-1000);
             const hasClaudePrompt = fallbackArea.includes("No, and tell Claude what to do differently");
             if (!hasClaudePrompt) {
                 return { blocked: false };
@@ -4299,7 +4360,7 @@ class TerminalGUI {
         }
         
         // Extract only the text from ╭ to the end (current prompt area)
-        const currentPromptArea = this.lastTerminalOutput.substring(claudePromptStart);
+        const currentPromptArea = terminalOutput.substring(claudePromptStart);
         
         // Only proceed if this area contains the Claude prompt
         const hasClaudePrompt = currentPromptArea.includes("No, and tell Claude what to do differently");
@@ -4324,6 +4385,23 @@ class TerminalGUI {
                     keyword: rule.keyword,
                     response: rule.response || ''
                 };
+            }
+        }
+        
+        return { blocked: false };
+    }
+
+    checkForKeywordBlocking() {
+        // Check all terminals for keyword blocking
+        for (const [terminalId, terminalData] of this.terminals) {
+            if (!terminalData.lastOutput || terminalData.lastOutput.trim() === '') {
+                continue;
+            }
+            
+            const result = this.checkTerminalForKeywords(terminalData.lastOutput);
+            if (result.blocked) {
+                console.log(`Keyword "${result.keyword}" detected in Terminal ${terminalId} - BLOCKING injection`);
+                return result;
             }
         }
         
