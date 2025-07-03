@@ -6,6 +6,20 @@ const InjectionManager = require('./src/messaging/injection-manager');
 
 class TerminalGUI {
     constructor() {
+        // Platform detection for keyboard shortcuts
+        this.isMac = process.platform === 'darwin';
+        this.keySymbols = this.isMac ? {
+            cmd: '⌘',
+            shift: '⇧',
+            ctrl: '⌃',
+            alt: '⌥'
+        } : {
+            cmd: 'Ctrl',
+            shift: 'Shift',
+            ctrl: 'Ctrl',
+            alt: 'Alt'
+        };
+        
         // Multi-terminal support
         this.terminals = new Map(); // Map of terminal ID to terminal data
         this.activeTerminalId = 1;
@@ -189,6 +203,21 @@ class TerminalGUI {
         console.log = throttledConsole('log', originalConsole.log);
         console.warn = throttledConsole('warn', originalConsole.warn);
         console.error = throttledConsole('error', originalConsole.error);
+        
+        // Store original console methods for direct logging that bypasses throttling
+        this.originalConsole = originalConsole;
+    }
+    
+    // Direct logging method that bypasses throttling for debugging
+    directLog(message, level = 'log') {
+        try {
+            if (this.originalConsole && this.originalConsole[level]) {
+                this.originalConsole[level]('[DEBUG]', message);
+            }
+        } catch (error) {
+            // Fallback to regular console if direct logging fails
+            console.log('[DEBUG]', message);
+        }
     }
 
     async initialize() {
@@ -216,9 +245,10 @@ class TerminalGUI {
             this.setupTrayEventListeners();
             this.updateTrayBadge();
             
-            console.log('App initialization completed successfully');
+            // Log using direct console method to bypass throttling
+            this.directLog('App initialization completed successfully');
         } catch (error) {
-            console.error('Error during app initialization:', error);
+            this.directLog('Error during app initialization: ' + error.message);
         }
         this.startTerminalStatusScanning(); // Start the continuous terminal scanning
     }
@@ -227,7 +257,71 @@ class TerminalGUI {
         // Initialize Lucide icons
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
+            // Force re-initialization after a short delay to ensure DOM is ready
+            setTimeout(() => {
+                lucide.createIcons();
+                // Update platform-specific shortcuts after icons are ready
+                this.updatePlatformSpecificShortcuts();
+            }, 100);
         }
+    }
+
+    formatKeyboardShortcut(shortcut) {
+        // Convert keyboard shortcuts to platform-specific format
+        // Example: "Ctrl+Shift+P" -> "⌘⇧P" on Mac or "Ctrl+Shift+P" on other platforms
+        if (this.isMac) {
+            return shortcut
+                .replace(/Cmd\+/g, this.keySymbols.cmd)
+                .replace(/Ctrl\+/g, this.keySymbols.cmd)
+                .replace(/Shift\+/g, this.keySymbols.shift)
+                .replace(/Alt\+/g, this.keySymbols.alt)
+                .replace(/Meta\+/g, this.keySymbols.cmd);
+        } else {
+            return shortcut
+                .replace(/Cmd\+/g, 'Ctrl+');
+        }
+    }
+
+    // Helper function to detect the correct modifier key for the platform
+    isCommandKey(e) {
+        return this.isMac ? e.metaKey : e.ctrlKey;
+    }
+
+    updatePlatformSpecificShortcuts() {
+        // Update all elements with data-hotkey attributes
+        const hotkeyElements = document.querySelectorAll('[data-hotkey]');
+        
+        this.directLog(`Updating ${hotkeyElements.length} hotkey elements, isMac: ${this.isMac}`);
+        
+        hotkeyElements.forEach(element => {
+            const originalShortcut = element.getAttribute('data-hotkey');
+            const formattedShortcut = this.formatKeyboardShortcut(originalShortcut);
+            element.setAttribute('data-hotkey', formattedShortcut);
+            
+            this.directLog(`Updated hotkey: "${originalShortcut}" -> "${formattedShortcut}"`);
+            
+            // Also update title attributes if they contain keyboard shortcuts
+            const title = element.getAttribute('title');
+            if (title && (title.includes('Cmd+') || title.includes('Ctrl+') || title.includes('Shift+') || title.includes('Alt+'))) {
+                const formattedTitle = this.formatKeyboardShortcut(title);
+                element.setAttribute('title', formattedTitle);
+                this.directLog(`Updated title: "${title}" -> "${formattedTitle}"`);
+            }
+        });
+
+        // Update placeholder text that mentions keyboard shortcuts
+        const messageInput = document.getElementById('message-input');
+        if (messageInput && messageInput.placeholder) {
+            const placeholder = messageInput.placeholder;
+            if (placeholder.includes('Cmd+') || placeholder.includes('Ctrl+')) {
+                const formattedPlaceholder = this.formatKeyboardShortcut(placeholder);
+                messageInput.placeholder = formattedPlaceholder;
+                this.directLog(`Updated placeholder: "${placeholder}" -> "${formattedPlaceholder}"`);
+            }
+        }
+        
+        // Force a DOM update to ensure CSS sees the new attributes
+        document.body.offsetHeight; // Trigger reflow
     }
 
     initializeTerminal() {
@@ -515,7 +609,27 @@ class TerminalGUI {
         });
         
         // Enhanced global keyboard shortcuts system
+        this.directLog('ATTACHING KEYBOARD EVENT LISTENER');
+        
+        // Test if ANY event listeners work
+        document.addEventListener('click', () => {
+            this.directLog('CLICK EVENT DETECTED - Event listeners are working');
+        });
+        
         document.addEventListener('keydown', (e) => {
+            // Debug all keyboard events for critical hotkeys
+            if ((this.isCommandKey(e) && e.key === 'b') || (e.shiftKey && e.key === 'Tab')) {
+                this.directLog('KEYDOWN EVENT: ' + JSON.stringify({
+                    key: e.key,
+                    code: e.code,
+                    metaKey: e.metaKey,
+                    ctrlKey: e.ctrlKey,
+                    shiftKey: e.shiftKey,
+                    altKey: e.altKey,
+                    target: e.target.tagName,
+                    isCommandKey: this.isCommandKey(e)
+                }));
+            }
             // Don't trigger shortcuts if user is typing in an input/textarea (except for some special cases)
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
                 // Still allow some shortcuts in text inputs
@@ -523,8 +637,8 @@ class TerminalGUI {
                     e.target.blur(); // Unfocus input on Escape
                     return;
                 }
-                // Allow Ctrl+Enter in message input to send message
-                if (e.target.id === 'message-input' && e.ctrlKey && e.key === 'Enter') {
+                // Allow Cmd+Enter in message input to send message
+                if (e.target.id === 'message-input' && this.isCommandKey(e) && e.key === 'Enter') {
                     e.preventDefault();
                     this.addMessageToQueue();
                     return;
@@ -533,74 +647,99 @@ class TerminalGUI {
             }
 
             // Handle hotkey combinations
-            if (e.ctrlKey && e.shiftKey && e.key === 'I') {
-                // Manual injection (existing)
+            if (this.isCommandKey(e) && e.key === 'i') {
+                // Manual injection
                 e.preventDefault();
                 try {
                     this.manualInjectNextMessage();
-                    this.logAction('Manual injection triggered via keyboard shortcut (Ctrl+Shift+I)', 'info');
+                    this.logAction('Manual injection triggered via keyboard shortcut (Cmd+I)', 'info');
                 } catch (error) {
                     this.logAction(`Keyboard shortcut injection error: ${error.message}`, 'error');
                 }
-            } else if (e.ctrlKey && e.shiftKey && e.key === 'P') {
+            } else if (this.isCommandKey(e) && e.key === 'p') {
                 // Play/pause timer
                 e.preventDefault();
                 this.toggleTimer();
-                this.logAction('Timer toggled via keyboard shortcut (Ctrl+Shift+P)', 'info');
-            } else if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+                this.logAction('Timer toggled via keyboard shortcut (Cmd+P)', 'info');
+            } else if (this.isCommandKey(e) && e.shiftKey && e.key === 'S') {
                 // Stop timer
                 e.preventDefault();
                 this.stopTimer();
-                this.logAction('Timer stopped via keyboard shortcut (Ctrl+Shift+S)', 'info');
-            } else if (e.ctrlKey && e.shiftKey && e.key === 'C') {
-                // Clear queue
+                this.logAction('Timer stopped via keyboard shortcut (Cmd+Shift+S)', 'info');
+            } else if (this.isCommandKey(e) && e.shiftKey && e.key === '.') {
+                // Clear queue with confirmation
                 e.preventDefault();
-                this.clearQueue();
-                this.logAction('Queue cleared via keyboard shortcut (Ctrl+Shift+C)', 'info');
-            } else if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+                this.clearQueueWithConfirmation();
+            } else if (this.isCommandKey(e) && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
+                // Clear log
+                e.preventDefault();
+                this.clearActionLog();
+                this.logAction('Action log cleared via keyboard shortcut (Cmd+Shift+L)', 'info');
+            } else if (this.isCommandKey(e) && e.key === 't') {
                 // Add new terminal
                 e.preventDefault();
                 this.addNewTerminal();
-                this.logAction('New terminal added via keyboard shortcut (Ctrl+Shift+T)', 'info');
-            } else if (e.ctrlKey && e.shiftKey && e.key === 'W') {
+                this.logAction('New terminal added via keyboard shortcut (Cmd+T)', 'info');
+            } else if (this.isCommandKey(e) && e.shiftKey && (e.key === 'W' || e.key === 'w')) {
                 // Close current terminal
                 e.preventDefault();
                 if (this.terminals.size > 1) {
                     this.closeTerminal(this.activeTerminalId);
-                    this.logAction('Terminal closed via keyboard shortcut (Ctrl+Shift+W)', 'info');
+                    this.logAction('Terminal closed via keyboard shortcut (Cmd+Shift+W)', 'info');
+                } else {
+                    this.logAction('Cannot close last terminal - at least one terminal must remain open', 'warning');
                 }
-            } else if (e.ctrlKey && e.shiftKey && e.key === 'A') {
+            } else if (e.shiftKey && e.key === 'Tab') {
                 // Toggle auto-continue
+                this.directLog('SHIFT+TAB DETECTED! Calling toggleAutoContinue()');
                 e.preventDefault();
                 this.toggleAutoContinue();
-                this.logAction('Auto-continue toggled via keyboard shortcut (Ctrl+Shift+A)', 'info');
-            } else if (e.ctrlKey && e.shiftKey && e.key === 'V') {
+                this.logAction('Auto-continue toggled via keyboard shortcut (Shift+Tab)', 'info');
+            } else if (this.isCommandKey(e) && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
                 // Toggle voice transcription
                 e.preventDefault();
                 document.getElementById('voice-btn').click();
-                this.logAction('Voice transcription toggled via keyboard shortcut (Ctrl+Shift+V)', 'info');
-            } else if (e.ctrlKey && e.shiftKey && e.key === 'H') {
-                // Show/hide hotkey help
-                e.preventDefault();
-                this.toggleHotkeyHelp();
-            } else if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+                this.logAction('Voice transcription toggled via keyboard shortcut (Cmd+Shift+V)', 'info');
+            } else if (this.isCommandKey(e) && e.key === '/') {
                 // Focus message input
                 e.preventDefault();
                 document.getElementById('message-input').focus();
-                this.logAction('Message input focused via keyboard shortcut (Ctrl+Shift+D)', 'info');
-            } else if (e.ctrlKey && e.key >= '1' && e.key <= '9') {
-                // Switch to terminal by number (Ctrl+1-9)
+                this.logAction('Message input focused via keyboard shortcut (Cmd+/)', 'info');
+            } else if (this.isCommandKey(e) && e.key === 's') {
+                // Open settings
+                e.preventDefault();
+                this.openSettingsModal();
+                this.logAction('Settings opened via keyboard shortcut (Cmd+S)', 'info');
+            } else if (this.isCommandKey(e) && e.key === 'f') {
+                // Focus search
+                e.preventDefault();
+                this.focusSearchInput();
+                this.logAction('Search focused via keyboard shortcut (Cmd+F)', 'info');
+            } else if (this.isCommandKey(e) && e.key === 'k') {
+                // Focus terminal selector
+                e.preventDefault();
+                this.focusTerminalSelector();
+                this.logAction('Terminal selector focused via keyboard shortcut (Cmd+K)', 'info');
+            } else if (this.isCommandKey(e) && (e.key === 'b' || e.key === 'B')) {
+                // Edit timer
+                this.directLog('CMD+B DETECTED! Calling focusTimerEdit()');
+                e.preventDefault();
+                this.focusTimerEdit();
+                this.logAction('Timer edit focused via keyboard shortcut (Cmd+B)', 'info');
+            } else if (this.isCommandKey(e) && e.shiftKey && (e.key === 'H' || e.key === 'h')) {
+                // Open message history
+                e.preventDefault();
+                this.openMessageHistoryModal();
+                this.logAction('Message history opened via keyboard shortcut (Cmd+Shift+H)', 'info');
+            } else if (this.isCommandKey(e) && e.key >= '1' && e.key <= '9') {
+                // Switch to terminal by number (Cmd+1-9)
                 e.preventDefault();
                 const terminalNumber = parseInt(e.key);
                 const terminalIds = Array.from(this.terminals.keys());
                 if (terminalIds[terminalNumber - 1]) {
                     this.switchToTerminal(terminalIds[terminalNumber - 1]);
-                    this.logAction(`Switched to terminal ${terminalNumber} via keyboard shortcut (Ctrl+${e.key})`, 'info');
+                    this.logAction(`Switched to terminal ${terminalNumber} via keyboard shortcut (Cmd+${e.key})`, 'info');
                 }
-            } else if (e.key === 'F1') {
-                // Show hotkey help
-                e.preventDefault();
-                this.toggleHotkeyHelp();
             } else if (e.key === 'Escape') {
                 // Close any open modals/dropdowns
                 e.preventDefault();
@@ -775,7 +914,6 @@ class TerminalGUI {
         document.getElementById('settings-btn').addEventListener('click', () => {
             this.openSettingsModal();
         });
-
 
         document.getElementById('settings-close').addEventListener('click', () => {
             this.closeSettingsModal();
@@ -1191,6 +1329,18 @@ class TerminalGUI {
             } else {
                 autoContinueBtn.classList.remove('enabled');
             }
+        }
+    }
+
+    toggleAutoContinue() {
+        this.autoContinueEnabled = !this.autoContinueEnabled;
+        this.preferences.autoContinueEnabled = this.autoContinueEnabled;
+        this.saveAllPreferences();
+        this.updateAutoContinueButtonState();
+        if (this.autoContinueEnabled) {
+            this.logAction('Auto-continue enabled', 'success');
+        } else {
+            this.logAction('Auto-continue disabled', 'info');
         }
     }
 
@@ -5456,6 +5606,7 @@ class TerminalGUI {
         this.terminals.forEach((terminalData, terminalId) => {
             const item = document.createElement('div');
             item.className = 'terminal-selector-item';
+            item.dataset.terminalId = terminalId;
             if (terminalId === this.activeTerminalId) {
                 item.classList.add('selected');
             }
@@ -5632,17 +5783,6 @@ class TerminalGUI {
         this.logAction(`Updated message to inject into ${terminalData.name}`, 'info');
     }
     
-    // Helper methods for hotkey functionality
-    toggleHotkeyHelp() {
-        const helpModal = document.getElementById('hotkey-help-modal');
-        if (helpModal) {
-            if (helpModal.style.display === 'block') {
-                helpModal.style.display = 'none';
-            } else {
-                helpModal.style.display = 'block';
-            }
-        }
-    }
     
     closeAllModals() {
         // Close settings modal
@@ -5657,11 +5797,6 @@ class TerminalGUI {
             historyModal.style.display = 'none';
         }
         
-        // Close hotkey help modal
-        const helpModal = document.getElementById('hotkey-help-modal');
-        if (helpModal && helpModal.style.display === 'block') {
-            helpModal.style.display = 'none';
-        }
         
         // Close usage limit modal
         const usageModal = document.getElementById('usage-limit-modal');
@@ -5681,14 +5816,152 @@ class TerminalGUI {
             hotkeyDropdown.style.display = 'none';
         }
     }
+
+    clearQueueWithConfirmation() {
+        if (this.messageQueue.length === 0) {
+            this.logAction('Queue is already empty', 'info');
+            return;
+        }
+        
+        const confirmed = confirm(`Are you sure you want to clear ${this.messageQueue.length} message(s) from the queue?`);
+        if (confirmed) {
+            this.clearQueue();
+            this.logAction('Queue cleared via keyboard shortcut (Cmd+Shift+.)', 'info');
+        }
+    }
+
+    focusSearchInput() {
+        const searchInput = document.getElementById('log-search');
+        if (searchInput) {
+            searchInput.focus();
+            searchInput.select();
+        }
+    }
+
+    focusTerminalSelector() {
+        const selectorBtn = document.getElementById('terminal-selector-btn');
+        const dropdown = document.getElementById('terminal-selector-dropdown');
+        
+        if (selectorBtn && dropdown) {
+            // Show dropdown
+            dropdown.style.display = 'block';
+            // Focus the first item or selected item
+            const selectedItem = dropdown.querySelector('.selected') || dropdown.querySelector('.terminal-selector-item');
+            if (selectedItem) {
+                selectedItem.focus();
+                this.setupTerminalSelectorKeyboard(dropdown);
+            }
+        }
+    }
+
+    setupTerminalSelectorKeyboard(dropdown) {
+        const items = dropdown.querySelectorAll('.terminal-selector-item');
+        let selectedIndex = Array.from(items).findIndex(item => item.classList.contains('selected'));
+        
+        const keyHandler = (e) => {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                selectedIndex = (selectedIndex + 1) % items.length;
+                this.highlightTerminalItem(items, selectedIndex);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                selectedIndex = selectedIndex <= 0 ? items.length - 1 : selectedIndex - 1;
+                this.highlightTerminalItem(items, selectedIndex);
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                const terminalId = parseInt(items[selectedIndex].dataset.terminalId);
+                this.switchToTerminal(terminalId);
+                dropdown.style.display = 'none';
+                document.removeEventListener('keydown', keyHandler);
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                dropdown.style.display = 'none';
+                document.removeEventListener('keydown', keyHandler);
+            }
+        };
+        
+        document.addEventListener('keydown', keyHandler);
+    }
+
+    highlightTerminalItem(items, index) {
+        items.forEach((item, i) => {
+            item.classList.toggle('highlighted', i === index);
+        });
+    }
+
+    focusTimerEdit() {
+        const editBtn = document.getElementById('timer-edit-btn');
+        if (editBtn && editBtn.style.display !== 'none') {
+            // Create a synthetic event with the timer edit button as target
+            const syntheticEvent = {
+                target: editBtn,
+                preventDefault: () => {}
+            };
+            this.openTimerEditDropdown(syntheticEvent);
+            // Focus on seconds input
+            setTimeout(() => {
+                const secondsInput = document.querySelector('.timer-segment-input[data-segment="seconds"]');
+                if (secondsInput) {
+                    secondsInput.focus();
+                    secondsInput.select();
+                    this.setupSmartTimerInput();
+                }
+            }, 100);
+        }
+    }
+
+    setupSmartTimerInput() {
+        const secondsInput = document.querySelector('.timer-edit-seconds input');
+        const minutesInput = document.querySelector('.timer-edit-minutes input');
+        const hoursInput = document.querySelector('.timer-edit-hours input');
+        
+        if (secondsInput) {
+            secondsInput.addEventListener('input', (e) => {
+                const value = parseInt(e.target.value) || 0;
+                if (value >= 60) {
+                    const minutes = Math.floor(value / 60);
+                    const remainingSeconds = value % 60;
+                    e.target.value = remainingSeconds;
+                    if (minutesInput) {
+                        const currentMinutes = parseInt(minutesInput.value) || 0;
+                        minutesInput.value = currentMinutes + minutes;
+                        minutesInput.focus();
+                        minutesInput.select();
+                    }
+                }
+            });
+        }
+        
+        if (minutesInput) {
+            minutesInput.addEventListener('input', (e) => {
+                const value = parseInt(e.target.value) || 0;
+                if (value >= 60) {
+                    const hours = Math.floor(value / 60);
+                    const remainingMinutes = value % 60;
+                    e.target.value = remainingMinutes;
+                    if (hoursInput) {
+                        const currentHours = parseInt(hoursInput.value) || 0;
+                        hoursInput.value = currentHours + hours;
+                        hoursInput.focus();
+                        hoursInput.select();
+                    }
+                }
+            });
+        }
+    }
+
 }
 
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    window.terminalGUI = new TerminalGUI();
-    
-    // Add initial log message after app is fully initialized
-    setTimeout(() => {
-        window.terminalGUI.logAction('Application ready - all systems operational', 'success');
-    }, 500);
+    try {
+        window.terminalGUI = new TerminalGUI();
+        
+        // Add initial log message after app is fully initialized
+        setTimeout(() => {
+            window.terminalGUI.logAction('Application ready - all systems operational', 'success');
+        }, 500);
+    } catch (error) {
+        console.error('Error creating TerminalGUI:', error);
+    }
 });
