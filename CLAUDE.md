@@ -93,3 +93,4 @@ This is an Electron-based desktop application that provides a terminal GUI with 
 
 ### Ethical Guidelines
 - Never kill the system
+- Do not kill the process ever

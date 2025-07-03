@@ -207,6 +207,11 @@ class TerminalGUI {
             this.setTerminalStatusDisplay(''); // Initialize with default status
             this.updateTimerUI(); // Initialize timer UI after loading preferences
             
+            // If timer was expired on startup, trigger injection manager
+            if (this.timerExpired) {
+                this.injectionManager.onTimerExpired();
+            }
+            
             // Setup background service functionality
             this.setupTrayEventListeners();
             this.updateTrayBadge();
@@ -509,9 +514,27 @@ class TerminalGUI {
             }
         });
         
-        // Global keyboard shortcut for manual injection (Ctrl+Shift+I)
+        // Enhanced global keyboard shortcuts system
         document.addEventListener('keydown', (e) => {
+            // Don't trigger shortcuts if user is typing in an input/textarea (except for some special cases)
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                // Still allow some shortcuts in text inputs
+                if (e.key === 'Escape') {
+                    e.target.blur(); // Unfocus input on Escape
+                    return;
+                }
+                // Allow Ctrl+Enter in message input to send message
+                if (e.target.id === 'message-input' && e.ctrlKey && e.key === 'Enter') {
+                    e.preventDefault();
+                    this.addMessageToQueue();
+                    return;
+                }
+                return; // Skip other shortcuts when typing
+            }
+
+            // Handle hotkey combinations
             if (e.ctrlKey && e.shiftKey && e.key === 'I') {
+                // Manual injection (existing)
                 e.preventDefault();
                 try {
                     this.manualInjectNextMessage();
@@ -519,6 +542,69 @@ class TerminalGUI {
                 } catch (error) {
                     this.logAction(`Keyboard shortcut injection error: ${error.message}`, 'error');
                 }
+            } else if (e.ctrlKey && e.shiftKey && e.key === 'P') {
+                // Play/pause timer
+                e.preventDefault();
+                this.toggleTimer();
+                this.logAction('Timer toggled via keyboard shortcut (Ctrl+Shift+P)', 'info');
+            } else if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+                // Stop timer
+                e.preventDefault();
+                this.stopTimer();
+                this.logAction('Timer stopped via keyboard shortcut (Ctrl+Shift+S)', 'info');
+            } else if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+                // Clear queue
+                e.preventDefault();
+                this.clearQueue();
+                this.logAction('Queue cleared via keyboard shortcut (Ctrl+Shift+C)', 'info');
+            } else if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+                // Add new terminal
+                e.preventDefault();
+                this.addNewTerminal();
+                this.logAction('New terminal added via keyboard shortcut (Ctrl+Shift+T)', 'info');
+            } else if (e.ctrlKey && e.shiftKey && e.key === 'W') {
+                // Close current terminal
+                e.preventDefault();
+                if (this.terminals.size > 1) {
+                    this.closeTerminal(this.activeTerminalId);
+                    this.logAction('Terminal closed via keyboard shortcut (Ctrl+Shift+W)', 'info');
+                }
+            } else if (e.ctrlKey && e.shiftKey && e.key === 'A') {
+                // Toggle auto-continue
+                e.preventDefault();
+                this.toggleAutoContinue();
+                this.logAction('Auto-continue toggled via keyboard shortcut (Ctrl+Shift+A)', 'info');
+            } else if (e.ctrlKey && e.shiftKey && e.key === 'V') {
+                // Toggle voice transcription
+                e.preventDefault();
+                document.getElementById('voice-btn').click();
+                this.logAction('Voice transcription toggled via keyboard shortcut (Ctrl+Shift+V)', 'info');
+            } else if (e.ctrlKey && e.shiftKey && e.key === 'H') {
+                // Show/hide hotkey help
+                e.preventDefault();
+                this.toggleHotkeyHelp();
+            } else if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+                // Focus message input
+                e.preventDefault();
+                document.getElementById('message-input').focus();
+                this.logAction('Message input focused via keyboard shortcut (Ctrl+Shift+D)', 'info');
+            } else if (e.ctrlKey && e.key >= '1' && e.key <= '9') {
+                // Switch to terminal by number (Ctrl+1-9)
+                e.preventDefault();
+                const terminalNumber = parseInt(e.key);
+                const terminalIds = Array.from(this.terminals.keys());
+                if (terminalIds[terminalNumber - 1]) {
+                    this.switchToTerminal(terminalIds[terminalNumber - 1]);
+                    this.logAction(`Switched to terminal ${terminalNumber} via keyboard shortcut (Ctrl+${e.key})`, 'info');
+                }
+            } else if (e.key === 'F1') {
+                // Show hotkey help
+                e.preventDefault();
+                this.toggleHotkeyHelp();
+            } else if (e.key === 'Escape') {
+                // Close any open modals/dropdowns
+                e.preventDefault();
+                this.closeAllModals();
             }
         });
         
@@ -1597,6 +1683,13 @@ class TerminalGUI {
                 this.timerInterval = null;
             }
             
+            // Clear the saved target datetime since timer has now expired
+            this.preferences.timerTargetDateTime = null;
+            this.preferences.timerHours = 0;
+            this.preferences.timerMinutes = 0;
+            this.preferences.timerSeconds = 0;
+            this.saveAllPreferences();
+            
             // Notify injection manager
             this.injectionManager.onTimerExpired();
             
@@ -2076,17 +2169,22 @@ class TerminalGUI {
         this.timerSeconds = Math.max(0, Math.min(59, seconds));
         this.timerExpired = false;
         
-        // Save timer values to preferences for persistence
+        // Calculate target datetime when timer should expire
+        const totalSeconds = (this.timerHours * 3600) + (this.timerMinutes * 60) + this.timerSeconds;
+        const targetDateTime = new Date(Date.now() + (totalSeconds * 1000));
+        
+        // Save timer values and target datetime to preferences for persistence
         this.preferences.timerHours = this.timerHours;
         this.preferences.timerMinutes = this.timerMinutes;
         this.preferences.timerSeconds = this.timerSeconds;
+        this.preferences.timerTargetDateTime = targetDateTime.toISOString();
         this.saveAllPreferences();
         
         this.updateTimerUI();
         
         // Only log when not in silent mode
         if (!silent) {
-            this.logAction(`Timer set to ${String(this.timerHours).padStart(2, '0')}:${String(this.timerMinutes).padStart(2, '0')}:${String(this.timerSeconds).padStart(2, '0')}`, 'info');
+            this.logAction(`Timer set to ${String(this.timerHours).padStart(2, '0')}:${String(this.timerMinutes).padStart(2, '0')}:${String(this.timerSeconds).padStart(2, '0')} (expires at ${targetDateTime.toLocaleString()})`, 'info');
         }
     }
 
@@ -3706,7 +3804,7 @@ class TerminalGUI {
                 }
                 
                 // Check for completion sound trigger for this terminal
-                this.checkCompletionSoundTrigger(previousStatus, terminalData.status);
+                this.checkCompletionSoundTrigger(previousStatus, terminalData.status, terminalId);
             }
         } else {
             // Legacy support - update active terminal
@@ -3714,40 +3812,23 @@ class TerminalGUI {
         }
     }
 
-    checkCompletionSoundTrigger(previousStatus, currentStatus) {
+    checkCompletionSoundTrigger(previousStatus, currentStatus, terminalId) {
         // Trigger completion sound when transitioning from 'running' to idle ('...')
         if (previousStatus === 'running' && (currentStatus === '...' || currentStatus === '')) {
-            // Start idle timer for completion sound
-            if (!this.terminalIdleStartTime) {
-                this.terminalIdleStartTime = Date.now();
-            }
-            
-            // Clear any existing timer
-            if (this.terminalIdleTimer) {
-                clearTimeout(this.terminalIdleTimer);
-            }
-            
-            this.terminalIdleTimer = setTimeout(() => {
-                // Double-check conditions before playing sound
-                const isQueueEmpty = this.messageQueue.length === 0;
-                const isStillIdle = (this.terminalStatus === '...' || this.terminalStatus === '');
+            // Play completion sound for this specific terminal completion
+            // Remove queue empty check to allow sounds for each terminal individually
+            setTimeout(() => {
+                // Simple check: just make sure the terminal is still idle
+                const terminalData = this.terminals.get(terminalId);
+                const isStillIdle = terminalData && (terminalData.status === '...' || terminalData.status === '');
                 
-                if (isQueueEmpty && isStillIdle && !this.isInjecting) {
+                if (isStillIdle) {
                     this.playCompletionSound();
+                    this.logAction(`Terminal ${terminalId} completed - playing sound`, 'info');
                 } else {
-                    this.logAction('Completion sound cancelled - conditions changed', 'info');
+                    this.logAction(`Terminal ${terminalId} completion sound cancelled - status changed`, 'info');
                 }
-                
-                this.terminalIdleTimer = null;
-                this.terminalIdleStartTime = null;
             }, 100);
-        } else {
-            // Reset idle tracking when not transitioning from running to idle
-            if (this.terminalIdleTimer) {
-                clearTimeout(this.terminalIdleTimer);
-                this.terminalIdleTimer = null;
-            }
-            this.terminalIdleStartTime = null;
         }
     }
 
@@ -4081,10 +4162,39 @@ class TerminalGUI {
             this.autoscrollDelay = this.preferences.autoscrollDelay || 3000;
             this.autoContinueEnabled = this.preferences.autoContinueEnabled || false;
             
-            // Load saved timer values
-            this.timerHours = this.preferences.timerHours || 0;
-            this.timerMinutes = this.preferences.timerMinutes || 0;
-            this.timerSeconds = this.preferences.timerSeconds || 0;
+            // Load saved timer values, but check if target datetime has passed
+            if (this.preferences.timerTargetDateTime) {
+                const targetDate = new Date(this.preferences.timerTargetDateTime);
+                const now = new Date();
+                
+                if (now >= targetDate) {
+                    // Target time has passed, clear timer and mark as expired
+                    this.logAction(`Timer target time (${targetDate.toLocaleString()}) has already passed on startup`, 'info');
+                    this.timerHours = 0;
+                    this.timerMinutes = 0;
+                    this.timerSeconds = 0;
+                    this.timerExpired = true;
+                    
+                    // Clear the saved values
+                    this.preferences.timerTargetDateTime = null;
+                    this.preferences.timerHours = 0;
+                    this.preferences.timerMinutes = 0;
+                    this.preferences.timerSeconds = 0;
+                    this.saveAllPreferences();
+                } else {
+                    // Target time hasn't passed, restore timer values
+                    this.timerHours = this.preferences.timerHours || 0;
+                    this.timerMinutes = this.preferences.timerMinutes || 0;
+                    this.timerSeconds = this.preferences.timerSeconds || 0;
+                    this.timerExpired = false;
+                }
+            } else {
+                // No target datetime saved, load timer values normally
+                this.timerHours = this.preferences.timerHours || 0;
+                this.timerMinutes = this.preferences.timerMinutes || 0;
+                this.timerSeconds = this.preferences.timerSeconds || 0;
+                this.timerExpired = false;
+            }
             
             // Load message queue from database
             const dbMessages = await ipcRenderer.invoke('db-get-messages');
@@ -4633,7 +4743,46 @@ class TerminalGUI {
     }
 
     resetTimer() {
-        // Restore timer to last saved values from preferences
+        // Check if we have a saved target datetime
+        const savedTargetDateTime = this.preferences.timerTargetDateTime;
+        
+        if (savedTargetDateTime) {
+            const targetDate = new Date(savedTargetDateTime);
+            const now = new Date();
+            
+            // If target datetime has passed, don't restore the timer
+            if (now >= targetDate) {
+                this.logAction(`Timer target time (${targetDate.toLocaleString()}) has already passed - not restoring timer`, 'info');
+                
+                // Clear the saved target datetime so it doesn't keep trying to restore
+                this.preferences.timerTargetDateTime = null;
+                this.preferences.timerHours = 0;
+                this.preferences.timerMinutes = 0;
+                this.preferences.timerSeconds = 0;
+                this.saveAllPreferences();
+                
+                // Set timer to 00:00:00
+                this.timerActive = false;
+                this.timerExpired = true; // Mark as expired since target time passed
+                this.injectionInProgress = false;
+                this.timerHours = 0;
+                this.timerMinutes = 0;
+                this.timerSeconds = 0;
+                
+                if (this.timerInterval) {
+                    clearInterval(this.timerInterval);
+                    this.timerInterval = null;
+                }
+                
+                // Trigger injection manager since timer effectively expired
+                this.injectionManager.onTimerExpired();
+                
+                this.updateTimerUI();
+                return;
+            }
+        }
+        
+        // Restore timer to last saved values from preferences (only if target time hasn't passed)
         const savedHours = this.preferences.timerHours || 0;
         const savedMinutes = this.preferences.timerMinutes || 0;
         const savedSeconds = this.preferences.timerSeconds || 0;
@@ -4996,10 +5145,10 @@ class TerminalGUI {
             // Clear existing options
             select.innerHTML = '';
             
-            // Add "Hl2 beep" as default option
+            // Add "None" as default option
             const defaultOption = document.createElement('option');
             defaultOption.value = '';
-            defaultOption.textContent = 'Hl2 beep';
+            defaultOption.textContent = 'None';
             select.appendChild(defaultOption);
             
             if (result.success && result.files.length > 0) {
@@ -5481,6 +5630,56 @@ class TerminalGUI {
         }
         
         this.logAction(`Updated message to inject into ${terminalData.name}`, 'info');
+    }
+    
+    // Helper methods for hotkey functionality
+    toggleHotkeyHelp() {
+        const helpModal = document.getElementById('hotkey-help-modal');
+        if (helpModal) {
+            if (helpModal.style.display === 'block') {
+                helpModal.style.display = 'none';
+            } else {
+                helpModal.style.display = 'block';
+            }
+        }
+    }
+    
+    closeAllModals() {
+        // Close settings modal
+        const settingsModal = document.getElementById('settings-modal');
+        if (settingsModal && settingsModal.style.display === 'block') {
+            settingsModal.style.display = 'none';
+        }
+        
+        // Close message history modal
+        const historyModal = document.getElementById('message-history-modal');
+        if (historyModal && historyModal.style.display === 'block') {
+            historyModal.style.display = 'none';
+        }
+        
+        // Close hotkey help modal
+        const helpModal = document.getElementById('hotkey-help-modal');
+        if (helpModal && helpModal.style.display === 'block') {
+            helpModal.style.display = 'none';
+        }
+        
+        // Close usage limit modal
+        const usageModal = document.getElementById('usage-limit-modal');
+        if (usageModal && usageModal.style.display === 'block') {
+            usageModal.style.display = 'none';
+        }
+        
+        // Close terminal selector dropdown
+        const terminalDropdown = document.getElementById('terminal-selector-dropdown');
+        if (terminalDropdown) {
+            terminalDropdown.style.display = 'none';
+        }
+        
+        // Close hotkey dropdown
+        const hotkeyDropdown = document.getElementById('hotkey-dropdown');
+        if (hotkeyDropdown) {
+            hotkeyDropdown.style.display = 'none';
+        }
     }
 }
 

@@ -19,8 +19,9 @@
             <div class="action-log-sidebar">
                 <div class="action-log-header">
                     <span class="action-log-title">Action Log</span>
-                    <button class="icon-btn" id="clear-log-btn" title="Clear action log">
+                    <button class="icon-btn hotkey-enabled" id="clear-log-btn" title="Clear action log" data-hotkey="Ctrl+Shift+C">
                         <i data-lucide="eraser"></i>
+                        <span class="hotkey-hint">Ctrl+Shift+C</span>
                     </button>
                 </div>
                 <div class="action-log-search">
@@ -47,8 +48,9 @@
                                 </button>
                                 <span class="terminal-color-dot" style="background-color: #007acc;"></span>
                                 <span class="terminal-title editable" contenteditable="false">Terminal 1</span>
-                                <button class="icon-btn add-terminal-btn" id="add-terminal-btn" title="Add new terminal">
+                                <button class="icon-btn add-terminal-btn hotkey-enabled" id="add-terminal-btn" title="Add new terminal" data-hotkey="Ctrl+Shift+T">
                                     <i data-lucide="plus"></i>
+                                    <span class="hotkey-hint">Ctrl+Shift+T</span>
                                 </button>
                             </div>
                             <span class="terminal-status" data-terminal-status="1"></span>
@@ -91,11 +93,13 @@
                         <div class="timer-controls-row">
                             <label>Auto-inject at</label>
                             <div class="timer-buttons">
-                                <button type="button" id="timer-stop-btn" class="timer-btn timer-stop" title="Stop timer" style="display: none;">
+                                <button type="button" id="timer-stop-btn" class="timer-btn timer-stop hotkey-enabled" title="Stop timer" style="display: none;" data-hotkey="Ctrl+Shift+S">
                                     <i data-lucide="square"></i>
+                                    <span class="hotkey-hint">Ctrl+Shift+S</span>
                                 </button>
-                                <button type="button" id="timer-play-pause-btn" class="timer-btn" title="Start/Pause timer">
+                                <button type="button" id="timer-play-pause-btn" class="timer-btn hotkey-enabled" title="Start/Pause timer" data-hotkey="Ctrl+Shift+P">
                                     <i data-lucide="play"></i>
+                                    <span class="hotkey-hint">Ctrl+Shift+P</span>
                                 </button>
                             </div>
                         </div>
@@ -117,8 +121,9 @@
                             <button class="icon-btn" id="message-history-btn" title="View message history">
                                 <i data-lucide="history"></i>
                             </button>
-                            <button class="icon-btn" id="inject-now-btn" title="Inject next message now">
+                            <button class="icon-btn hotkey-enabled" id="inject-now-btn" title="Inject next message now" data-hotkey="Ctrl+Shift+I">
                                 <i data-lucide="arrow-left-from-line"></i>
+                                <span class="hotkey-hint">Ctrl+Shift+I</span>
                             </button>
                             <button class="icon-btn" id="clear-queue-header-btn" title="Clear all queued messages">
                                 <i data-lucide="trash-2"></i>
@@ -134,7 +139,7 @@
                     <div class="input-container" id="drop-zone">
                         <div class="input-wrapper">
                             <div class="textarea-container">
-                                <textarea id="message-input" placeholder="Type your command here..." rows="3" title="Enter command to add to message queue"></textarea>
+                                <textarea id="message-input" placeholder="Type your command here... (Ctrl+Shift+D to focus, Enter to send)" rows="3" title="Enter command to add to message queue"></textarea>
                                 <button type="button" class="hotkey-btn" id="hotkey-btn" title="Insert hotkeys/commands">
                                     <i data-lucide="keyboard"></i>
                                 </button>
@@ -151,16 +156,19 @@
                                             <!-- Dropdown items will be dynamically generated -->
                                         </div>
                                     </div>
-                                    <button type="button" class="auto-continue-btn" id="auto-continue-btn" title="Auto-continue on prompts">
+                                    <button type="button" class="auto-continue-btn hotkey-enabled" id="auto-continue-btn" title="Auto-continue on prompts" data-hotkey="Ctrl+Shift+A">
                                         <i data-lucide="fast-forward"></i>
+                                        <span class="hotkey-hint">Ctrl+Shift+A</span>
                                     </button>
                                 </div>
                                 <div class="button-group">
-                                    <button type="button" id="voice-btn" class="voice-button" title="Voice transcription">
+                                    <button type="button" id="voice-btn" class="voice-button hotkey-enabled" title="Voice transcription" data-hotkey="Ctrl+Shift+V">
                                         <i data-lucide="mic"></i>
+                                        <span class="hotkey-hint">Ctrl+Shift+V</span>
                                     </button>
-                                    <button type="button" id="send-btn" class="send-button" title="Add message to queue (Enter)">
+                                    <button type="button" id="send-btn" class="send-button hotkey-enabled" title="Add message to queue (Enter)" data-hotkey="Enter">
                                         <i data-lucide="send-horizontal"></i>
+                                        <span class="hotkey-hint">Enter / Ctrl+Enter</span>
                                     </button>
                                 </div>
                             </div>
@@ -344,7 +352,94 @@
         </div>
     </div>
     
-
+    <!-- Hotkey Help Modal -->
+    <div id="hotkey-help-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Keyboard Shortcuts</h3>
+                <button class="modal-close" onclick="document.getElementById('hotkey-help-modal').style.display='none'" title="Close help">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="hotkey-help-content">
+                    <div class="hotkey-category">
+                        <h4>Main Functions</h4>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+Shift+I</span>
+                            <span class="hotkey-description">Inject next message now</span>
+                        </div>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+Shift+P</span>
+                            <span class="hotkey-description">Play/Pause timer</span>
+                        </div>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+Shift+S</span>
+                            <span class="hotkey-description">Stop timer</span>
+                        </div>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+Shift+C</span>
+                            <span class="hotkey-description">Clear message queue</span>
+                        </div>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+Shift+A</span>
+                            <span class="hotkey-description">Toggle auto-continue</span>
+                        </div>
+                    </div>
+                    
+                    <div class="hotkey-category">
+                        <h4>Terminal Management</h4>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+Shift+T</span>
+                            <span class="hotkey-description">Add new terminal</span>
+                        </div>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+Shift+W</span>
+                            <span class="hotkey-description">Close current terminal</span>
+                        </div>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+1-9</span>
+                            <span class="hotkey-description">Switch to terminal 1-9</span>
+                        </div>
+                    </div>
+                    
+                    <div class="hotkey-category">
+                        <h4>Input & Navigation</h4>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+Shift+D</span>
+                            <span class="hotkey-description">Focus message input</span>
+                        </div>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+Enter</span>
+                            <span class="hotkey-description">Send message (in input)</span>
+                        </div>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Enter</span>
+                            <span class="hotkey-description">Send message (in input)</span>
+                        </div>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Escape</span>
+                            <span class="hotkey-description">Close modals / Unfocus input</span>
+                        </div>
+                    </div>
+                    
+                    <div class="hotkey-category">
+                        <h4>Features</h4>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+Shift+V</span>
+                            <span class="hotkey-description">Toggle voice transcription</span>
+                        </div>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">Ctrl+Shift+H</span>
+                            <span class="hotkey-description">Show/hide this help</span>
+                        </div>
+                        <div class="hotkey-item">
+                            <span class="hotkey-combo">F1</span>
+                            <span class="hotkey-description">Show keyboard shortcuts</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Hotkey Dropdown -->
     <div id="hotkey-dropdown" class="hotkey-dropdown">
@@ -380,6 +475,11 @@
             </div>
         </div>
     </div>
+    
+    <!-- Floating Hotkey Help Button -->
+    <button class="hotkey-help-float" onclick="window.terminalGUI.toggleHotkeyHelp()" title="Keyboard Shortcuts (F1 or Ctrl+Shift+H)">
+        <i data-lucide="keyboard"></i>
+    </button>
     
     <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
     <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
