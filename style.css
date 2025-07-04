@@ -579,22 +579,32 @@ body {
     align-items: center;
 }
 
-.settings-cog {
+.settings-cog, .debug-icon {
     cursor: pointer;
     color: var(--text-quaternary);
     padding: 4px;
     border-radius: 4px;
     transition: all 0.2s;
+    margin-left: 4px;
 }
 
-.settings-cog:hover {
+.settings-cog:hover, .debug-icon:hover {
     color: var(--text-primary);
     background-color: var(--bg-tertiary);
 }
 
-.settings-cog i {
+.settings-cog i, .debug-icon i {
     width: 16px;
     height: 16px;
+}
+
+.debug-icon {
+    color: var(--accent-warning);
+    opacity: 0.7;
+}
+
+.debug-icon:hover {
+    opacity: 1;
 }
 
 .queued-messages {
