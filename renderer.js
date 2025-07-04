@@ -4072,7 +4072,9 @@ class TerminalGUI {
     handleScroll() {
         if (!this.autoscrollEnabled) return;
 
-        const viewport = document.querySelector('.xterm-viewport');
+        // Get viewport for the active terminal specifically
+        const activeTerminalContainer = document.querySelector(`[data-terminal-container="${this.activeTerminalId}"]`);
+        const viewport = activeTerminalContainer?.querySelector('.xterm-viewport');
         if (!viewport) return;
 
         const isAtBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 10;
@@ -4099,7 +4101,9 @@ class TerminalGUI {
     }
 
     scrollToBottom() {
-        const viewport = document.querySelector('.xterm-viewport');
+        // Get viewport for the active terminal specifically
+        const activeTerminalContainer = document.querySelector(`[data-terminal-container="${this.activeTerminalId}"]`);
+        const viewport = activeTerminalContainer?.querySelector('.xterm-viewport');
         if (viewport) {
             viewport.scrollTo({
                 top: viewport.scrollHeight,
