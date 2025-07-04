@@ -39,20 +39,20 @@ class TerminalGUI {
         this.terminalStabilityTimers = new Map(); // Track per-terminal stability start times
         this.lastAssignedTerminalId = 0; // For round-robin terminal assignment
         
-        // Terminal-specific tracking for auto-continue, keyword detection, and timer targeting
+        // Terminal-specific tracking for keyword detection and timer targeting
         this.usageLimitTerminals = new Set(); // Track terminals that received usage limit messages
-        this.continueTargetTerminals = new Set(); // Track terminals that should receive continue messages
         this.keywordResponseTerminals = new Map(); // Track terminals that need keyword responses
         this.currentDirectory = null; // Will be set when terminal starts or directory is detected
         this.isInjecting = false;
         this.messageIdCounter = 1;
         this.messageSequenceCounter = 0;
-        this.autoContinueEnabled = false;
         this.lastTerminalOutput = '';
         this.autoscrollEnabled = true;
         this.autoscrollDelay = 3000;
         this.autoscrollTimeout = null;
         this.userInteracting = false;
+        this.terminalUserInteractions = new Map(); // Track user interaction per terminal
+        this.terminalAutoscrollTimeouts = new Map(); // Track autoscroll timeouts per terminal
         this.actionLog = [];
         this.injectionBlocked = false;
         this.autoContinueActive = false;
@@ -406,9 +406,7 @@ class TerminalGUI {
                 const terminalViewport = terminalContainer.querySelector('.xterm-viewport');
                 if (terminalViewport) {
                     terminalViewport.addEventListener('scroll', () => {
-                        if (id === this.activeTerminalId) {
-                            this.handleScroll();
-                        }
+                        this.handleScrollForTerminal(id);
                     });
                 }
             }, 100);
@@ -553,14 +551,16 @@ class TerminalGUI {
                 terminalData.lastOutput = data.content;
                 
                 // Run detection functions for ALL terminals, not just active one
-                this.detectAutoContinuePrompt(data.content, terminalId);
+                this.detectBlockingConditions(data.content, terminalId);
                 await this.detectUsageLimit(data.content, terminalId);
+                
+                // Handle autoscroll for all terminals that receive output
+                this.handleTerminalOutputForTerminal(terminalId);
                 
                 // Update active terminal references only for the active terminal
                 if (terminalId === this.activeTerminalId) {
                     this.terminal = terminalData.terminal;
                     this.updateTerminalOutput(data.content);
-                    this.handleTerminalOutput();
                 }
             }
         });
@@ -4069,33 +4069,55 @@ class TerminalGUI {
         
     }
 
+    handleTerminalOutputForTerminal(terminalId) {
+        // Only autoscroll if enabled and user is not interacting with the specific terminal
+        const isUserInteractingWithTerminal = this.terminalUserInteractions.get(terminalId) || false;
+        if (this.autoscrollEnabled && !isUserInteractingWithTerminal) {
+            this.scrollToBottomForTerminal(terminalId);
+        }
+    }
+
     handleScroll() {
+        // Legacy method for backward compatibility - delegates to active terminal
+        this.handleScrollForTerminal(this.activeTerminalId);
+    }
+
+    handleScrollForTerminal(terminalId) {
         if (!this.autoscrollEnabled) return;
 
-        // Get viewport for the active terminal specifically
-        const activeTerminalContainer = document.querySelector(`[data-terminal-container="${this.activeTerminalId}"]`);
-        const viewport = activeTerminalContainer?.querySelector('.xterm-viewport');
+        // Get viewport for the specific terminal
+        const terminalContainer = document.querySelector(`[data-terminal-container="${terminalId}"]`);
+        const viewport = terminalContainer?.querySelector('.xterm-viewport');
         if (!viewport) return;
 
         const isAtBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 10;
         
         if (!isAtBottom) {
-            this.userInteracting = true;
-            if (this.autoscrollTimeout) {
-                clearTimeout(this.autoscrollTimeout);
+            // User is scrolling up - mark this terminal as being interacted with
+            this.terminalUserInteractions.set(terminalId, true);
+            
+            // Clear any existing timeout for this terminal
+            const existingTimeout = this.terminalAutoscrollTimeouts.get(terminalId);
+            if (existingTimeout) {
+                clearTimeout(existingTimeout);
             }
             
-            this.autoscrollTimeout = setTimeout(() => {
-                this.userInteracting = false;
+            // Set new timeout for this terminal
+            const timeout = setTimeout(() => {
+                this.terminalUserInteractions.set(terminalId, false);
                 if (this.autoscrollEnabled) {
-                    this.scrollToBottom();
+                    this.scrollToBottomForTerminal(terminalId);
                 }
             }, this.autoscrollDelay);
+            
+            this.terminalAutoscrollTimeouts.set(terminalId, timeout);
         } else {
-            this.userInteracting = false;
-            if (this.autoscrollTimeout) {
-                clearTimeout(this.autoscrollTimeout);
-                this.autoscrollTimeout = null;
+            // User is at bottom - clear interaction flag and timeout
+            this.terminalUserInteractions.set(terminalId, false);
+            const existingTimeout = this.terminalAutoscrollTimeouts.get(terminalId);
+            if (existingTimeout) {
+                clearTimeout(existingTimeout);
+                this.terminalAutoscrollTimeouts.delete(terminalId);
             }
         }
     }
@@ -4104,6 +4126,18 @@ class TerminalGUI {
         // Get viewport for the active terminal specifically
         const activeTerminalContainer = document.querySelector(`[data-terminal-container="${this.activeTerminalId}"]`);
         const viewport = activeTerminalContainer?.querySelector('.xterm-viewport');
+        if (viewport) {
+            viewport.scrollTo({
+                top: viewport.scrollHeight,
+                behavior: 'smooth'
+            });
+        }
+    }
+
+    scrollToBottomForTerminal(terminalId) {
+        // Get viewport for the specific terminal
+        const terminalContainer = document.querySelector(`[data-terminal-container="${terminalId}"]`);
+        const viewport = terminalContainer?.querySelector('.xterm-viewport');
         if (viewport) {
             viewport.scrollTo({
                 top: viewport.scrollHeight,
@@ -5507,6 +5541,14 @@ class TerminalGUI {
         
         // Remove from terminals map
         this.terminals.delete(terminalId);
+        
+        // Clean up autoscroll data for this terminal
+        this.terminalUserInteractions.delete(terminalId);
+        const existingTimeout = this.terminalAutoscrollTimeouts.get(terminalId);
+        if (existingTimeout) {
+            clearTimeout(existingTimeout);
+            this.terminalAutoscrollTimeouts.delete(terminalId);
+        }
         
         // Remove DOM element
         const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
