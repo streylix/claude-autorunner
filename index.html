@@ -222,18 +222,43 @@
                 
                 <div class="setting-group">
                     <label class="setting-label">
-                        <input type="checkbox" id="completion-sound-enabled">
-                        <span class="setting-title">Completion Sound Effect</span>
+                        <input type="checkbox" id="sound-effects-enabled">
+                        <span class="setting-title">Sound Effects</span>
                     </label>
-                    <p class="setting-description">Play a sound effect when auto-injection process completes.</p>
+                    <p class="setting-description">Play sound effects for various terminal states and actions.</p>
                     <div class="setting-subgroup" id="sound-selection-group">
-                        <div class="sound-selection-row">
-                            <select id="completion-sound-select" class="setting-select">
-                            </select>
-                            <button type="button" id="test-sound-btn" class="setting-btn setting-btn-small">
-                                <i data-lucide="volume-2"></i>
-                                Test
-                            </button>
+                        <div class="sound-category">
+                            <label class="sound-category-label">Completion Sound</label>
+                            <div class="sound-selection-row">
+                                <select id="completion-sound-select" class="setting-select">
+                                </select>
+                                <button type="button" id="test-completion-sound-btn" class="setting-btn setting-btn-small">
+                                    <i data-lucide="volume-2"></i>
+                                    Test
+                                </button>
+                            </div>
+                        </div>
+                        <div class="sound-category">
+                            <label class="sound-category-label">Injection Sound</label>
+                            <div class="sound-selection-row">
+                                <select id="injection-sound-select" class="setting-select">
+                                </select>
+                                <button type="button" id="test-injection-sound-btn" class="setting-btn setting-btn-small">
+                                    <i data-lucide="volume-2"></i>
+                                    Test
+                                </button>
+                            </div>
+                        </div>
+                        <div class="sound-category">
+                            <label class="sound-category-label">Prompted Sound</label>
+                            <div class="sound-selection-row">
+                                <select id="prompted-sound-select" class="setting-select">
+                                </select>
+                                <button type="button" id="test-prompted-sound-btn" class="setting-btn setting-btn-small">
+                                    <i data-lucide="volume-2"></i>
+                                    Test
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>

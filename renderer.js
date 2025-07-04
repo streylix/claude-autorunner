@@ -86,8 +86,10 @@ class TerminalGUI {
             // Add directory persistence
             currentDirectory: null,
             // Add sound effects preferences
-            completionSoundEnabled: false,
-            completionSoundFile: 'completion_beep.wav',
+            soundEffectsEnabled: false,
+            completionSoundFile: '',
+            injectionSoundFile: '',
+            promptedSoundFile: '',
             // Add message history
             messageHistory: [],
             // Background service preferences
@@ -985,21 +987,44 @@ class TerminalGUI {
         });
 
         // Sound effects controls
-        document.getElementById('completion-sound-enabled').addEventListener('change', (e) => {
-            this.preferences.completionSoundEnabled = e.target.checked;
+        document.getElementById('sound-effects-enabled').addEventListener('change', (e) => {
+            this.preferences.soundEffectsEnabled = e.target.checked;
             this.saveAllPreferences();
             this.updateSoundSettingsVisibility();
-            this.logAction(`Completion sound ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+            this.logAction(`Sound effects ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
         });
 
+        // Completion sound controls
         document.getElementById('completion-sound-select').addEventListener('change', (e) => {
             this.preferences.completionSoundFile = e.target.value;
             this.saveAllPreferences();
             this.logAction(`Completion sound changed to: ${e.target.value || 'None'}`, 'info');
         });
 
-        document.getElementById('test-sound-btn').addEventListener('click', () => {
+        document.getElementById('test-completion-sound-btn').addEventListener('click', () => {
             this.testCompletionSound();
+        });
+
+        // Injection sound controls
+        document.getElementById('injection-sound-select').addEventListener('change', (e) => {
+            this.preferences.injectionSoundFile = e.target.value;
+            this.saveAllPreferences();
+            this.logAction(`Injection sound changed to: ${e.target.value || 'None'}`, 'info');
+        });
+
+        document.getElementById('test-injection-sound-btn').addEventListener('click', () => {
+            this.testInjectionSound();
+        });
+
+        // Prompted sound controls
+        document.getElementById('prompted-sound-select').addEventListener('change', (e) => {
+            this.preferences.promptedSoundFile = e.target.value;
+            this.saveAllPreferences();
+            this.logAction(`Prompted sound changed to: ${e.target.value || 'None'}`, 'info');
+        });
+
+        document.getElementById('test-prompted-sound-btn').addEventListener('click', () => {
+            this.testPromptedSound();
         });
 
         // Background service settings listeners
@@ -2485,6 +2510,9 @@ class TerminalGUI {
         this.updateTerminalStatusIndicator(); // Use new status system
         this.updateMessageList(); // Update UI to show injecting state
         
+        // Play injection sound
+        this.playInjectionSound();
+        
         this.logAction(`Sequential injection: "${message.content}"`, 'success');
         
         // Type the message
@@ -3012,6 +3040,9 @@ class TerminalGUI {
         this.currentlyInjectingMessageId = message.id;
         this.updateMessageList(); // Update UI to show injecting state
         
+        // Play injection sound
+        this.playInjectionSound();
+        
         // Create a robust typing function that handles all cases
         const performManualInjection = () => {
             // Create a completion handler to avoid code duplication
@@ -3096,6 +3127,9 @@ class TerminalGUI {
         // Set injecting status for the terminal that will receive the first message
         const firstMessageTerminalId = messages[0].terminalId != null ? messages[0].terminalId : this.activeTerminalId;
         this.setTerminalStatusDisplay('injecting', firstMessageTerminalId);
+        
+        // Play injection sound
+        this.playInjectionSound();
         let index = 0;
         
         const processNext = () => {
@@ -3942,6 +3976,10 @@ class TerminalGUI {
                         case 'prompted':
                             statusElement.className = 'terminal-status visible prompted';
                             statusElement.textContent = 'Prompted';
+                            // Play prompted sound when terminal becomes prompted
+                            if (previousStatus !== 'prompted') {
+                                this.playPromptedSound();
+                            }
                             break;
                         case 'injecting':
                             statusElement.className = 'terminal-status visible injecting';
@@ -4391,8 +4429,8 @@ class TerminalGUI {
             if (themeSelectEl) themeSelectEl.value = this.preferences.theme || 'dark';
             
             // Update sound settings UI
-            const completionSoundEl = document.getElementById('completion-sound-enabled');
-            if (completionSoundEl) completionSoundEl.checked = this.preferences.completionSoundEnabled || false;
+            const soundEffectsEl = document.getElementById('sound-effects-enabled');
+            if (soundEffectsEl) soundEffectsEl.checked = this.preferences.soundEffectsEnabled || false;
             
             // Update background service settings UI
             const keepScreenAwakeEl = document.getElementById('keep-screen-awake');
@@ -5287,40 +5325,53 @@ class TerminalGUI {
                 }
             }
             
-            const select = document.getElementById('completion-sound-select');
+            // Get all sound select elements
+            const soundSelects = [
+                { id: 'completion-sound-select', preference: 'completionSoundFile' },
+                { id: 'injection-sound-select', preference: 'injectionSoundFile' },
+                { id: 'prompted-sound-select', preference: 'promptedSoundFile' }
+            ];
             
-            // Store current selection to restore it after populating
-            const currentSelection = this.preferences.completionSoundFile;
-            
-            // Clear existing options
-            select.innerHTML = '';
-            
-            // Add "None" as default option
-            const defaultOption = document.createElement('option');
-            defaultOption.value = '';
-            defaultOption.textContent = 'None';
-            select.appendChild(defaultOption);
+            // Populate each sound select dropdown
+            soundSelects.forEach(selectInfo => {
+                const select = document.getElementById(selectInfo.id);
+                if (!select) return;
+                
+                // Store current selection to restore it after populating
+                const currentSelection = this.preferences[selectInfo.preference];
+                
+                // Clear existing options
+                select.innerHTML = '';
+                
+                // Add "None" as default option
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = 'None';
+                select.appendChild(defaultOption);
+                
+                if (result.success && result.files.length > 0) {
+                    // Add sound files as options
+                    result.files.forEach(file => {
+                        const option = document.createElement('option');
+                        option.value = file;
+                        // Create a friendly display name (remove extension and format)
+                        const displayName = file.replace(/\.[^/.]+$/, '') // Remove extension
+                            .replace(/[-_]/g, ' ') // Replace hyphens/underscores with spaces
+                            .replace(/\b\w/g, l => l.toUpperCase()); // Capitalize words
+                        option.textContent = displayName;
+                        select.appendChild(option);
+                    });
+                }
+                
+                // Restore the previously selected sound file
+                select.value = currentSelection;
+            });
             
             if (result.success && result.files.length > 0) {
-                // Add sound files as options
-                result.files.forEach(file => {
-                    const option = document.createElement('option');
-                    option.value = file;
-                    // Create a friendly display name (remove extension and format)
-                    const displayName = file.replace(/\.[^/.]+$/, '') // Remove extension
-                        .replace(/[-_]/g, ' ') // Replace hyphens/underscores with spaces
-                        .replace(/\b\w/g, l => l.toUpperCase()); // Capitalize words
-                    option.textContent = displayName;
-                    select.appendChild(option);
-                });
-                
-                this.logAction(`Loaded ${result.files.length} sound effects`, 'info');
+                this.logAction(`Loaded ${result.files.length} sound effects for all categories`, 'info');
             } else {
                 this.logAction('No sound effects found', 'warning');
             }
-            
-            // Restore the previously selected sound file
-            select.value = currentSelection;
             
         } catch (error) {
             console.error('Error populating sound effects:', error);
@@ -5330,7 +5381,7 @@ class TerminalGUI {
 
     updateSoundSettingsVisibility() {
         const soundGroup = document.getElementById('sound-selection-group');
-        const isEnabled = document.getElementById('completion-sound-enabled').checked;
+        const isEnabled = document.getElementById('sound-effects-enabled').checked;
         
         if (isEnabled) {
             soundGroup.classList.add('enabled');
@@ -5342,20 +5393,59 @@ class TerminalGUI {
     testCompletionSound() {
         const soundFile = document.getElementById('completion-sound-select').value;
         if (!soundFile) {
-            this.logAction('No sound file selected', 'warning');
+            this.logAction('No completion sound file selected', 'warning');
             return;
         }
         
-        this.playCompletionSound(soundFile);
-        this.logAction(`Testing sound: ${soundFile}`, 'info');
+        this.playSound(soundFile, 'completion');
+        this.logAction(`Testing completion sound: ${soundFile}`, 'info');
     }
 
-    playCompletionSound(filename = null) {
-        if (!this.preferences.completionSoundEnabled) {
+    testInjectionSound() {
+        const soundFile = document.getElementById('injection-sound-select').value;
+        if (!soundFile) {
+            this.logAction('No injection sound file selected', 'warning');
             return;
         }
         
-        const soundFile = filename || this.preferences.completionSoundFile;
+        this.playSound(soundFile, 'injection');
+        this.logAction(`Testing injection sound: ${soundFile}`, 'info');
+    }
+
+    testPromptedSound() {
+        const soundFile = document.getElementById('prompted-sound-select').value;
+        if (!soundFile) {
+            this.logAction('No prompted sound file selected', 'warning');
+            return;
+        }
+        
+        this.playSound(soundFile, 'prompted');
+        this.logAction(`Testing prompted sound: ${soundFile}`, 'info');
+    }
+
+    playSound(filename = null, soundType = 'completion') {
+        if (!this.preferences.soundEffectsEnabled) {
+            return;
+        }
+        
+        let soundFile = filename;
+        if (!soundFile) {
+            // Get the sound file from preferences based on type
+            switch (soundType) {
+                case 'completion':
+                    soundFile = this.preferences.completionSoundFile;
+                    break;
+                case 'injection':
+                    soundFile = this.preferences.injectionSoundFile;
+                    break;
+                case 'prompted':
+                    soundFile = this.preferences.promptedSoundFile;
+                    break;
+                default:
+                    return;
+            }
+        }
+        
         if (!soundFile) {
             return;
         }
@@ -5365,12 +5455,24 @@ class TerminalGUI {
             audio.volume = 0.5; // Set volume to 50%
             audio.play().catch(error => {
                 console.error('Error playing sound:', error);
-                this.logAction(`Error playing sound: ${error.message}`, 'error');
+                this.logAction(`Error playing ${soundType} sound: ${error.message}`, 'error');
             });
         } catch (error) {
             console.error('Error creating audio:', error);
-            this.logAction(`Error creating audio: ${error.message}`, 'error');
+            this.logAction(`Error creating ${soundType} audio: ${error.message}`, 'error');
         }
+    }
+
+    playCompletionSound(filename = null) {
+        this.playSound(filename, 'completion');
+    }
+
+    playInjectionSound(filename = null) {
+        this.playSound(filename, 'injection');
+    }
+
+    playPromptedSound(filename = null) {
+        this.playSound(filename, 'prompted');
     }
 
     onAutoInjectionComplete() {

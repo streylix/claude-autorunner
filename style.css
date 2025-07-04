@@ -2378,6 +2378,22 @@ body {
 
 
 /* Sound Effects Settings */
+.sound-category {
+    margin-bottom: 16px;
+}
+
+.sound-category:last-child {
+    margin-bottom: 0;
+}
+
+.sound-category-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
 .sound-selection-row {
     display: flex;
     gap: 10px;
@@ -2387,7 +2403,7 @@ body {
 .sound-selection-row .setting-select {
     flex: 1;
     height: 36px;
-    margin-bottom: 8px;
+    margin-bottom: 0;
 }
 
 .setting-btn-small {
