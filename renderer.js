@@ -158,6 +158,18 @@ class TerminalGUI {
         this.initialize();
     }
 
+    // Utility method to safely add event listeners
+    safeAddEventListener(elementId, event, handler) {
+        const element = document.getElementById(elementId);
+        if (element) {
+            element.addEventListener(event, handler);
+            return true;
+        } else {
+            console.warn(`Element with ID '${elementId}' not found - skipping event listener`);
+            return false;
+        }
+    }
+
     setupConsoleErrorProtection() {
         // Wrap console methods to prevent EIO crashes
         const originalConsole = {
@@ -591,12 +603,12 @@ class TerminalGUI {
         });
 
         // UI event listeners
-        document.getElementById('send-btn').addEventListener('click', () => {
+        this.safeAddEventListener('send-btn', 'click', () => {
             this.addMessageToQueue();
         });
 
         // Voice transcription button
-        document.getElementById('voice-btn').addEventListener('click', () => {
+        this.safeAddEventListener('voice-btn', 'click', () => {
             this.toggleVoiceRecording();
         });
 
@@ -868,7 +880,7 @@ class TerminalGUI {
         });
 
         // Auto-continue button listener
-        document.getElementById('auto-continue-btn').addEventListener('click', (e) => {
+        this.safeAddEventListener('auto-continue-btn', 'click', (e) => {
             this.autoContinueEnabled = !this.autoContinueEnabled;
             this.preferences.autoContinueEnabled = this.autoContinueEnabled;
             this.saveAllPreferences();
@@ -945,23 +957,20 @@ class TerminalGUI {
         });
 
         // Settings modal listeners
-        document.getElementById('settings-btn').addEventListener('click', () => {
+        this.safeAddEventListener('settings-btn', 'click', () => {
             this.openSettingsModal();
         });
         
         // Debug button for testing usage limit modal
-        const debugBtn = document.getElementById('usage-limit-debug-btn');
-        if (debugBtn) {
-            debugBtn.addEventListener('click', () => {
-                this.triggerDebugUsageLimit();
-            });
-        }
+        this.safeAddEventListener('usage-limit-debug-btn', 'click', () => {
+            this.triggerDebugUsageLimit();
+        });
 
-        document.getElementById('settings-close').addEventListener('click', () => {
+        this.safeAddEventListener('settings-close', 'click', () => {
             this.closeSettingsModal();
         });
 
-        document.getElementById('settings-modal').addEventListener('click', (e) => {
+        this.safeAddEventListener('settings-modal', 'click', (e) => {
             if (e.target.id === 'settings-modal') {
                 this.closeSettingsModal();
             }
@@ -1027,11 +1036,11 @@ class TerminalGUI {
         });
 
         // Sound effects controls
-        document.getElementById('completion-sound-enabled').addEventListener('change', (e) => {
+        this.safeAddEventListener('sound-effects-enabled', 'change', (e) => {
             this.preferences.completionSoundEnabled = e.target.checked;
             this.saveAllPreferences();
             this.updateSoundSettingsVisibility();
-            this.logAction(`Completion sound ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+            this.logAction(`Sound effects ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
         });
 
         document.getElementById('completion-sound-select').addEventListener('change', (e) => {
@@ -1040,8 +1049,16 @@ class TerminalGUI {
             this.logAction(`Completion sound changed to: ${e.target.value || 'None'}`, 'info');
         });
 
-        document.getElementById('test-sound-btn').addEventListener('click', () => {
+        this.safeAddEventListener('test-completion-sound-btn', 'click', () => {
             this.testCompletionSound();
+        });
+        
+        this.safeAddEventListener('test-injection-sound-btn', 'click', () => {
+            this.testSound('injection-sound-select');
+        });
+        
+        this.safeAddEventListener('test-prompted-sound-btn', 'click', () => {
+            this.testSound('prompted-sound-select');
         });
 
         // Background service settings listeners
@@ -1342,6 +1359,29 @@ class TerminalGUI {
                 icon.setAttribute('data-lucide', 'mic');
             }
             lucide.createIcons();
+        }
+    }
+
+    updateAutoContinueButtonState() {
+        const autoContinueBtn = document.getElementById('auto-continue-btn');
+        if (autoContinueBtn) {
+            if (this.autoContinueEnabled) {
+                autoContinueBtn.classList.add('enabled');
+            } else {
+                autoContinueBtn.classList.remove('enabled');
+            }
+        }
+    }
+
+    toggleAutoContinue() {
+        this.autoContinueEnabled = !this.autoContinueEnabled;
+        this.preferences.autoContinueEnabled = this.autoContinueEnabled;
+        this.saveAllPreferences();
+        this.updateAutoContinueButtonState();
+        if (this.autoContinueEnabled) {
+            this.logAction('Auto-continue enabled', 'success');
+        } else {
+            this.logAction('Auto-continue disabled', 'info');
         }
     }
 
@@ -4639,8 +4679,8 @@ class TerminalGUI {
             if (themeSelectEl) themeSelectEl.value = this.preferences.theme || 'dark';
             
             // Update sound settings UI
-            const completionSoundEl = document.getElementById('completion-sound-enabled');
-            if (completionSoundEl) completionSoundEl.checked = this.preferences.completionSoundEnabled || false;
+            const soundEffectsEl = document.getElementById('sound-effects-enabled');
+            if (soundEffectsEl) soundEffectsEl.checked = this.preferences.completionSoundEnabled || false;
             
             // Update background service settings UI
             const keepScreenAwakeEl = document.getElementById('keep-screen-awake');
@@ -4654,6 +4694,8 @@ class TerminalGUI {
 
             const startMinimizedEl = document.getElementById('start-minimized');
             if (startMinimizedEl) startMinimizedEl.checked = this.preferences.startMinimized || false;
+            
+            this.updateAutoContinueButtonState();
             
             // Apply theme
             this.applyTheme(this.preferences.theme || 'dark');
@@ -5535,40 +5577,52 @@ class TerminalGUI {
                 }
             }
             
-            const select = document.getElementById('completion-sound-select');
+            // Populate all three sound effect dropdowns
+            const soundSelectors = [
+                'completion-sound-select',
+                'injection-sound-select', 
+                'prompted-sound-select'
+            ];
             
-            // Store current selection to restore it after populating
-            const currentSelection = this.preferences.completionSoundFile;
-            
-            // Clear existing options
-            select.innerHTML = '';
-            
-            // Add "None" as default option
-            const defaultOption = document.createElement('option');
-            defaultOption.value = '';
-            defaultOption.textContent = 'None';
-            select.appendChild(defaultOption);
+            soundSelectors.forEach(selectorId => {
+                const select = document.getElementById(selectorId);
+                if (!select) return;
+                
+                // Store current selection to restore it after populating
+                const currentSelection = this.preferences.completionSoundFile;
+                
+                // Clear existing options
+                select.innerHTML = '';
+                
+                // Add "None" as default option
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = 'None';
+                select.appendChild(defaultOption);
+                
+                if (result.success && result.files.length > 0) {
+                    // Add sound files as options
+                    result.files.forEach(file => {
+                        const option = document.createElement('option');
+                        option.value = file;
+                        // Create a friendly display name (remove extension and format)
+                        const displayName = file.replace(/\.[^/.]+$/, '') // Remove extension
+                            .replace(/[-_]/g, ' ') // Replace hyphens/underscores with spaces
+                            .replace(/\b\w/g, l => l.toUpperCase()); // Capitalize words
+                        option.textContent = displayName;
+                        select.appendChild(option);
+                    });
+                }
+                
+                // Restore the previously selected sound file
+                select.value = currentSelection;
+            });
             
             if (result.success && result.files.length > 0) {
-                // Add sound files as options
-                result.files.forEach(file => {
-                    const option = document.createElement('option');
-                    option.value = file;
-                    // Create a friendly display name (remove extension and format)
-                    const displayName = file.replace(/\.[^/.]+$/, '') // Remove extension
-                        .replace(/[-_]/g, ' ') // Replace hyphens/underscores with spaces
-                        .replace(/\b\w/g, l => l.toUpperCase()); // Capitalize words
-                    option.textContent = displayName;
-                    select.appendChild(option);
-                });
-                
                 this.logAction(`Loaded ${result.files.length} sound effects`, 'info');
             } else {
                 this.logAction('No sound effects found', 'warning');
             }
-            
-            // Restore the previously selected sound file
-            select.value = currentSelection;
             
         } catch (error) {
             console.error('Error populating sound effects:', error);
@@ -5578,7 +5632,9 @@ class TerminalGUI {
 
     updateSoundSettingsVisibility() {
         const soundGroup = document.getElementById('sound-selection-group');
-        const isEnabled = document.getElementById('completion-sound-enabled').checked;
+        const soundEffectsCheckbox = document.getElementById('sound-effects-enabled');
+        if (!soundEffectsCheckbox) return; // Guard against null element
+        const isEnabled = soundEffectsCheckbox.checked;
         
         if (isEnabled) {
             soundGroup.classList.add('enabled');
@@ -5596,6 +5652,35 @@ class TerminalGUI {
         
         this.playCompletionSound(soundFile);
         this.logAction(`Testing sound: ${soundFile}`, 'info');
+    }
+
+    testSound(selectElementId) {
+        const soundFile = document.getElementById(selectElementId).value;
+        if (!soundFile) {
+            this.logAction('No sound file selected', 'warning');
+            return;
+        }
+        
+        this.playSound(soundFile);
+        this.logAction(`Testing sound: ${soundFile}`, 'info');
+    }
+
+    playSound(filename) {
+        if (!filename) {
+            return;
+        }
+        
+        try {
+            const audio = new Audio(`./soundeffects/${filename}`);
+            audio.volume = 0.5; // Set volume to 50%
+            audio.play().catch(error => {
+                console.error('Error playing sound:', error);
+                this.logAction(`Error playing sound: ${error.message}`, 'error');
+            });
+        } catch (error) {
+            console.error('Error creating audio:', error);
+            this.logAction(`Error creating audio: ${error.message}`, 'error');
+        }
     }
 
     playCompletionSound(filename = null) {
@@ -6035,14 +6120,14 @@ class TerminalGUI {
     closeAllModals() {
         // Close settings modal
         const settingsModal = document.getElementById('settings-modal');
-        if (settingsModal && settingsModal.style.display === 'block') {
-            settingsModal.style.display = 'none';
+        if (settingsModal && settingsModal.classList.contains('show')) {
+            settingsModal.classList.remove('show');
         }
         
         // Close message history modal
         const historyModal = document.getElementById('message-history-modal');
-        if (historyModal && historyModal.style.display === 'block') {
-            historyModal.style.display = 'none';
+        if (historyModal && historyModal.classList.contains('show')) {
+            historyModal.classList.remove('show');
         }
         
         
