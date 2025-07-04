@@ -633,18 +633,51 @@ class TerminalGUI {
             }
             // Don't trigger shortcuts if user is typing in an input/textarea (except for some special cases)
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-                // Still allow some shortcuts in text inputs
+                // Define hotkeys that should work even when typing in input fields
+                const allowedInputHotkeys = [
+                    // Navigation hotkeys
+                    { key: 'k', cmd: true, shift: false }, // Cmd+K - Terminal selector
+                    { key: 'Tab', cmd: false, shift: true }, // Shift+Tab - Auto-continue toggle
+                    { key: 'p', cmd: true, shift: false }, // Cmd+P - Play/pause timer
+                    { key: 'i', cmd: true, shift: false }, // Cmd+I - Manual injection
+                    { key: 's', cmd: true, shift: true }, // Cmd+Shift+S - Stop timer
+                    { key: 'v', cmd: true, shift: true }, // Cmd+Shift+V - Voice transcription
+                    { key: 'F', cmd: true, shift: false }, // Cmd+F - Focus log search
+                    { key: 'l', cmd: true, shift: true }, // Cmd+Shift+L - Clear log
+                    { key: 'h', cmd: true, shift: true }, // Cmd+Shift+H - Message history
+                    { key: '.', cmd: true, shift: true }, // Cmd+Shift+. - Clear queue
+                    { key: 't', cmd: true, shift: false }, // Cmd+T - Add terminal
+                    { key: 'w', cmd: true, shift: true }, // Cmd+Shift+W - Close terminal
+                    { key: 's', cmd: true, shift: false }, // Cmd+S - Settings
+                    { key: 'b', cmd: true, shift: false }, // Cmd+B - Edit timer
+                ];
+                
+                // Check if current hotkey is in allowed list
+                const isAllowedHotkey = allowedInputHotkeys.some(hotkey => 
+                    e.key === hotkey.key && 
+                    this.isCommandKey(e) === hotkey.cmd && 
+                    e.shiftKey === hotkey.shift
+                );
+                
+                // Always allow escape and specific message input hotkeys
                 if (e.key === 'Escape') {
                     e.target.blur(); // Unfocus input on Escape
                     return;
                 }
+                
                 // Allow Cmd+Enter in message input to send message
                 if (e.target.id === 'message-input' && this.isCommandKey(e) && e.key === 'Enter') {
                     e.preventDefault();
                     this.addMessageToQueue();
                     return;
                 }
-                return; // Skip other shortcuts when typing
+                
+                // If not an allowed hotkey, skip processing
+                if (!isAllowedHotkey) {
+                    return;
+                }
+                
+                // Continue processing the allowed hotkey
             }
 
             // Handle hotkey combinations
@@ -3694,7 +3727,7 @@ class TerminalGUI {
         }
     }
 
-    async setTimerToUsageLimitReset(resetHour, ampm) {
+    async setTimerToUsageLimitReset(resetHour, ampm, exactResetTime = null) {
         const resetTimeString = `${resetHour}${ampm}`;
         
         try {
@@ -3710,22 +3743,29 @@ class TerminalGUI {
             }
             
             // Calculate time until reset
-            const now = new Date();
-            const resetTime = new Date();
+            let resetTime;
             
-            // Convert to 24-hour format
-            let hour24 = resetHour;
-            if (ampm === 'pm' && resetHour !== 12) {
-                hour24 += 12;
-            } else if (ampm === 'am' && resetHour === 12) {
-                hour24 = 0;
-            }
-            
-            resetTime.setHours(hour24, 0, 0, 0);
-            
-            // If reset time is in the past, it's tomorrow
-            if (resetTime <= now) {
-                resetTime.setDate(resetTime.getDate() + 1);
+            if (exactResetTime) {
+                // Use exact reset time for debug mode
+                resetTime = new Date(exactResetTime);
+            } else {
+                // Normal flow: calculate from hour and ampm
+                resetTime = new Date();
+                
+                // Convert to 24-hour format
+                let hour24 = resetHour;
+                if (ampm === 'pm' && resetHour !== 12) {
+                    hour24 += 12;
+                } else if (ampm === 'am' && resetHour === 12) {
+                    hour24 = 0;
+                }
+                
+                resetTime.setHours(hour24, 0, 0, 0);
+                
+                // If reset time is in the past, it's tomorrow
+                if (resetTime <= now) {
+                    resetTime.setDate(resetTime.getDate() + 1);
+                }
             }
             
             const timeDiff = resetTime.getTime() - now.getTime();
@@ -3837,7 +3877,15 @@ class TerminalGUI {
         }
     }
 
-    showUsageLimitModal(resetHour, ampm) {
+    async checkAndShowUsageLimitModalDebug(resetTimeString, exactResetTime) {
+        // For debug mode, always show the modal with exact reset time (bypass duplicate check)
+        this.logAction(`DEBUG: Showing usage limit modal for ${resetTimeString}`, 'info');
+        this.showUsageLimitModal(null, null, exactResetTime);
+    }
+
+    showUsageLimitModal(resetHour, ampm, exactResetTime = null) {
+        this.logAction(`DEBUG: showUsageLimitModal called with resetHour=${resetHour}, ampm=${ampm}, exactResetTime=${exactResetTime}`, 'info');
+        
         // Set flag that modal is showing and pause injection
         this.usageLimitModalShowing = true;
         this.pauseInProgressInjection();
@@ -3849,23 +3897,35 @@ class TerminalGUI {
         const yesBtn = document.getElementById('usage-limit-yes');
         const noBtn = document.getElementById('usage-limit-no');
         
+        this.logAction(`DEBUG: Modal elements found: ${modal ? 'yes' : 'no'}, progressBar: ${progressBar ? 'yes' : 'no'}`, 'info');
+        
         // Calculate time until the parsed reset time
         const now = new Date();
-        const resetTime = new Date();
+        let resetTime;
+        let hour24 = null;
         
-        // Convert 12-hour format to 24-hour format
-        let hour24 = resetHour;
-        if (ampm === 'pm' && resetHour !== 12) {
-            hour24 = resetHour + 12;
-        } else if (ampm === 'am' && resetHour === 12) {
-            hour24 = 0;
-        }
-        
-        resetTime.setHours(hour24, 0, 0, 0);
-        
-        // If the reset time has already passed today, it must be tomorrow
-        if (resetTime.getTime() <= now.getTime()) {
-            resetTime.setDate(resetTime.getDate() + 1);
+        if (exactResetTime) {
+            // Use exact reset time for debug mode
+            resetTime = new Date(exactResetTime);
+            hour24 = resetTime.getHours();
+        } else {
+            // Normal flow: use hour with 0 minutes
+            resetTime = new Date();
+            
+            // Convert 12-hour format to 24-hour format
+            hour24 = resetHour;
+            if (ampm === 'pm' && resetHour !== 12) {
+                hour24 = resetHour + 12;
+            } else if (ampm === 'am' && resetHour === 12) {
+                hour24 = 0;
+            }
+            
+            resetTime.setHours(hour24, 0, 0, 0);
+            
+            // If the reset time has already passed today, it must be tomorrow
+            if (resetTime.getTime() <= now.getTime()) {
+                resetTime.setDate(resetTime.getDate() + 1);
+            }
         }
         
         const timeDiff = resetTime.getTime() - now.getTime();
@@ -3903,7 +3963,9 @@ class TerminalGUI {
         }
 
         // Show modal and start progress bar animation
+        this.logAction(`DEBUG: About to show modal. Current classes: ${modal.className}`, 'info');
         modal.classList.add('show');
+        this.logAction(`DEBUG: Modal show class added. New classes: ${modal.className}`, 'info');
         setTimeout(() => {
             progressBar.classList.add('active');
         }, 100);
@@ -3942,8 +4004,9 @@ class TerminalGUI {
         const now = new Date();
         const debugResetTime = new Date(now.getTime() + 60000); // 1 minute from now
         
-        // Get hour and am/pm for the debug reset time
+        // Get hour, minutes and am/pm for the debug reset time
         let debugHour = debugResetTime.getHours();
+        let debugMinutes = debugResetTime.getMinutes();
         let debugAmPm = 'am';
         
         if (debugHour >= 12) {
@@ -3960,7 +4023,7 @@ class TerminalGUI {
             await this.clearUsageLimitTracking();
         }
         
-        this.logAction(`DEBUG: Triggering usage limit modal for ${debugHour}${debugAmPm} (1 minute from now)`, 'warning');
+        this.logAction(`DEBUG: Triggering usage limit modal for ${debugHour}:${debugMinutes.toString().padStart(2, '0')}${debugAmPm} (1 minute from now)`, 'warning');
         
         // Simulate the usage limit detection
         const simulatedTerminalId = this.activeTerminalId || 1;
@@ -3968,13 +4031,13 @@ class TerminalGUI {
         // Track this terminal as having received a usage limit message
         this.usageLimitTerminals.add(simulatedTerminalId);
         
-        // Set timer to exact reset time and show modal
-        await this.setTimerToUsageLimitReset(debugHour, debugAmPm);
+        // Store pending reset info with exact time
+        this.pendingUsageLimitReset = { resetHour: debugHour, ampm: debugAmPm, debugMinutes, debugResetTime };
         
-        const resetTimeString = `${debugHour}${debugAmPm}`;
-        this.checkAndShowUsageLimitModal(resetTimeString, debugHour, debugAmPm);
+        const resetTimeString = `${debugHour}:${debugMinutes.toString().padStart(2, '0')}${debugAmPm}`;
+        this.checkAndShowUsageLimitModalDebug(resetTimeString, debugResetTime);
         
-        this.logAction('DEBUG: Usage limit modal and timer triggered for testing', 'info');
+        this.logAction('DEBUG: Usage limit modal triggered for testing', 'info');
     }
 
     async handleUsageLimitChoice(queue) {
@@ -3992,7 +4055,13 @@ class TerminalGUI {
             
             // Only set timer if user chose "Yes" and we have pending reset info
             if (this.pendingUsageLimitReset) {
-                await this.setTimerToUsageLimitReset(this.pendingUsageLimitReset.resetHour, this.pendingUsageLimitReset.ampm);
+                if (this.pendingUsageLimitReset.debugResetTime) {
+                    // Debug mode: use exact reset time
+                    await this.setTimerToUsageLimitReset(this.pendingUsageLimitReset.resetHour, this.pendingUsageLimitReset.ampm, this.pendingUsageLimitReset.debugResetTime);
+                } else {
+                    // Normal mode: use hour and ampm
+                    await this.setTimerToUsageLimitReset(this.pendingUsageLimitReset.resetHour, this.pendingUsageLimitReset.ampm);
+                }
                 this.pendingUsageLimitReset = null; // Clear pending info
             }
             
