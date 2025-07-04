@@ -34,6 +34,7 @@ class TerminalGUI {
         this.injectionTimer = null;
         this.schedulingInProgress = false; // Prevent concurrent scheduling calls
         this.injectionCount = 0;
+        this.keywordCount = 0;
         this.currentlyInjectingMessages = new Set(); // Track messages being injected per terminal
         this.currentlyInjectingTerminals = new Set(); // Track which terminals are currently injecting
         this.terminalStabilityTimers = new Map(); // Track per-terminal stability start times
@@ -964,10 +965,6 @@ class TerminalGUI {
             this.openSettingsModal();
         });
         
-        // Debug button for testing usage limit modal
-        this.safeAddEventListener('usage-limit-debug-btn', 'click', () => {
-            this.triggerDebugUsageLimit();
-        });
 
         this.safeAddEventListener('settings-close', 'click', () => {
             this.closeSettingsModal();
@@ -3525,6 +3522,8 @@ class TerminalGUI {
             const keywordBlockResult = this.checkTerminalForKeywords(terminalOutput);
             if (keywordBlockResult.blocked && !this.keywordBlockingActive) {
                 this.keywordBlockingActive = true;
+                this.keywordCount++;
+                this.updateStatusDisplay();
                 this.logAction(`Keyword "${keywordBlockResult.keyword}" detected in Terminal ${terminalId} Claude prompt - executing escape sequence`, 'warning');
                 
                 // Track this terminal for keyword response
@@ -3663,6 +3662,8 @@ class TerminalGUI {
         // Check for keywords before hitting enter
         const keywordBlockResult = this.checkTerminalForKeywords(terminalOutput);
         if (keywordBlockResult.blocked) {
+            this.keywordCount++;
+            this.updateStatusDisplay();
             this.logAction(`Keyword "${keywordBlockResult.keyword}" detected in Terminal ${terminalId} during auto-continue - blocking and sending escape`, 'warning');
             
             // Send Esc key to interrupt instead of Enter
@@ -4044,46 +4045,6 @@ class TerminalGUI {
         }, 10000);
     }
     
-    async triggerDebugUsageLimit() {
-        // Calculate time exactly 1 minute from now
-        const now = new Date();
-        const debugResetTime = new Date(now.getTime() + 60000); // 1 minute from now
-        
-        // Get hour, minutes and am/pm for the debug reset time
-        let debugHour = debugResetTime.getHours();
-        let debugMinutes = debugResetTime.getMinutes();
-        let debugAmPm = 'am';
-        
-        if (debugHour >= 12) {
-            debugAmPm = 'pm';
-            if (debugHour > 12) {
-                debugHour -= 12;
-            }
-        } else if (debugHour === 0) {
-            debugHour = 12;
-        }
-        
-        // Clear any existing tracking first
-        if (this.clearUsageLimitTracking) {
-            await this.clearUsageLimitTracking();
-        }
-        
-        this.logAction(`DEBUG: Triggering usage limit modal for ${debugHour}:${debugMinutes.toString().padStart(2, '0')}${debugAmPm} (1 minute from now)`, 'warning');
-        
-        // Simulate the usage limit detection
-        const simulatedTerminalId = this.activeTerminalId || 1;
-        
-        // Track this terminal as having received a usage limit message
-        this.usageLimitTerminals.add(simulatedTerminalId);
-        
-        // Store pending reset info with exact time
-        this.pendingUsageLimitReset = { resetHour: debugHour, ampm: debugAmPm, debugMinutes, debugResetTime };
-        
-        const resetTimeString = `${debugHour}:${debugMinutes.toString().padStart(2, '0')}${debugAmPm}`;
-        this.checkAndShowUsageLimitModalDebug(resetTimeString, debugResetTime);
-        
-        this.logAction('DEBUG: Usage limit modal triggered for testing', 'info');
-    }
 
     async handleUsageLimitChoice(queue) {
         this.logAction(`DEBUG: handleUsageLimitChoice called with queue=${queue}`, 'info');
@@ -4266,6 +4227,7 @@ class TerminalGUI {
         
         document.getElementById('injection-count').textContent = this.injectionCount;
         document.getElementById('queue-count').textContent = this.messageQueue.length;
+        document.getElementById('keyword-count').textContent = this.keywordCount;
         
         // Update execution times in message list
         const executionTimeElements = document.querySelectorAll('.execution-time');
@@ -5056,6 +5018,8 @@ class TerminalGUI {
             
             const result = this.checkTerminalForKeywords(terminalData.lastOutput);
             if (result.blocked) {
+                this.keywordCount++;
+                this.updateStatusDisplay();
                 console.log(`Keyword "${result.keyword}" detected in Terminal ${terminalId} - BLOCKING injection`);
                 return result;
             }
