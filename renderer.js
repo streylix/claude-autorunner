@@ -1808,6 +1808,9 @@ class TerminalGUI {
             this.injectionTimer = null;
         }
         
+        // Clear usage limit tracking when timer is stopped
+        this.clearUsageLimitTracking();
+        
         // Notify injection manager
         this.injectionManager.onTimerStopped();
         
@@ -1858,6 +1861,9 @@ class TerminalGUI {
                 this.usageLimitWaiting = false;
                 this.injectionManager.onUsageLimitReset();
                 this.logAction('Usage limit reset time reached - resuming auto injection', 'success');
+                
+                // Clear usage limit tracking since the reset time has been reached
+                this.clearUsageLimitTracking();
                 
                 // Clear the saved reset time state to allow fresh detection cycles
                 // This prevents re-processing old usage limit messages from terminal buffer
@@ -3694,9 +3700,12 @@ class TerminalGUI {
         try {
             // Check if we've already set timer for this reset time
             const lastTimerResetTime = await ipcRenderer.invoke('db-get-app-state', 'usageLimitTimerLastResetTime');
+            const lastTimerResetTimestamp = await ipcRenderer.invoke('db-get-app-state', 'usageLimitTimerLastResetTimestamp');
+            const now = new Date();
             
-            if (lastTimerResetTime === resetTimeString) {
-                console.log(`Timer already set for reset time ${resetTimeString}, skipping duplicate update`);
+            // If we have the same reset time AND it hasn't passed yet, skip
+            if (lastTimerResetTime === resetTimeString && lastTimerResetTimestamp && now.getTime() < lastTimerResetTimestamp) {
+                this.logAction(`Timer already set for reset time ${resetTimeString}, skipping duplicate update`, 'info');
                 return;
             }
             
@@ -3743,8 +3752,9 @@ class TerminalGUI {
                 this.updateTimerUI();
             }
             
-            // Save this reset time to prevent duplicate timer updates
+            // Save this reset time and timestamp to prevent duplicate timer updates
             await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTime', resetTimeString);
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTimestamp', resetTime.getTime());
             
             this.logAction(`Usage limit detected - timer set to reset at ${resetHour}${ampm} (${hours}h ${minutes}m ${seconds}s)`, 'warning');
         } catch (error) {
@@ -3767,16 +3777,63 @@ class TerminalGUI {
         }
     }
 
+    async clearUsageLimitTracking() {
+        try {
+            // Clear all usage limit tracking from database
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTime', null);
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTimestamp', null);
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTime', null);
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTimestamp', null);
+            this.logAction('Cleared usage limit tracking data', 'info');
+        } catch (error) {
+            console.error('Error clearing usage limit tracking:', error);
+        }
+    }
+
     async checkAndShowUsageLimitModal(resetTimeString, resetHour, ampm) {
         try {
             const lastShownResetTime = await ipcRenderer.invoke('db-get-app-state', 'usageLimitModalLastResetTime');
+            const lastShownTimestamp = await ipcRenderer.invoke('db-get-app-state', 'usageLimitModalLastResetTimestamp');
             
-            if (lastShownResetTime !== resetTimeString) {
+            // Calculate the actual reset timestamp for this message
+            const now = new Date();
+            const resetTime = new Date();
+            
+            // Convert to 24-hour format
+            let hour24 = resetHour;
+            if (ampm === 'pm' && resetHour !== 12) {
+                hour24 += 12;
+            } else if (ampm === 'am' && resetHour === 12) {
+                hour24 = 0;
+            }
+            
+            resetTime.setHours(hour24, 0, 0, 0);
+            
+            // If reset time is in the past, it's tomorrow
+            if (resetTime <= now) {
+                resetTime.setDate(resetTime.getDate() + 1);
+            }
+            
+            const resetTimestamp = resetTime.getTime();
+            
+            // Check if this is a new usage limit message:
+            // 1. Different reset time string OR
+            // 2. Same reset time string but the previous one has already passed
+            const isNewMessage = lastShownResetTime !== resetTimeString || 
+                                (lastShownTimestamp && now.getTime() > lastShownTimestamp);
+            
+            if (isNewMessage) {
+                this.logAction(`New usage limit detected for ${resetTimeString} - showing modal`, 'info');
                 this.showUsageLimitModal(resetHour, ampm);
                 await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTime', resetTimeString);
+                await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTimestamp', resetTimestamp);
+            } else {
+                this.logAction(`Duplicate usage limit message for ${resetTimeString} ignored - modal already shown`, 'info');
             }
         } catch (error) {
             console.error('Error checking usage limit modal state:', error);
+            // Fallback: show modal if we can't check the state
+            this.showUsageLimitModal(resetHour, ampm);
         }
     }
 
