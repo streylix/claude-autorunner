@@ -3522,8 +3522,6 @@ class TerminalGUI {
             const keywordBlockResult = this.checkTerminalForKeywords(terminalOutput);
             if (keywordBlockResult.blocked && !this.keywordBlockingActive) {
                 this.keywordBlockingActive = true;
-                this.keywordCount++;
-                this.updateStatusDisplay();
                 this.logAction(`Keyword "${keywordBlockResult.keyword}" detected in Terminal ${terminalId} Claude prompt - executing escape sequence`, 'warning');
                 
                 // Track this terminal for keyword response
@@ -3599,15 +3597,14 @@ class TerminalGUI {
             }
         }
         
-        // Auto-continue logic based on terminal status (skip if keyword blocking just activated)
+        // Auto-continue logic (skip if keyword blocking just activated)
         if (!this.autoContinueEnabled || this.isInjecting || this.keywordBlockingActive) return;
         
-        // Get terminal status to check if it's in prompted state
-        const terminalStatus = this.terminalStatuses.get(terminalId);
-        const isTerminalPrompted = terminalStatus && terminalStatus.isPrompting;
+        // Check for prompts that should trigger auto-continue (using terminal-specific output)
+        const hasGeneralPrompt = /Do you want to proceed\?/i.test(terminalOutput);
+        const hasTrustPrompt = terminalOutput.includes('Do you trust the files in this folder?');
         
         // Handle trust prompt - inject enter with random delay on specific terminal
-        const hasTrustPrompt = terminalOutput.includes('Do you trust the files in this folder?');
         if (hasTrustPrompt && !this.trustPromptActive) {
             this.trustPromptActive = true;
             const delay = this.getRandomDelay(1000, 2000); // 1-2 seconds
@@ -3621,21 +3618,25 @@ class TerminalGUI {
             return; // Exit early to avoid other auto-continue processing
         }
         
-        // Auto-continue logic: if terminal is in prompted state and auto-continue is enabled
-        if (isTerminalPrompted) {
+        // Auto-continue for Claude prompt or general prompts on specific terminal
+        if (hasClaudePrompt || hasGeneralPrompt) {
+            const promptType = hasClaudePrompt ? 'Claude prompt' : 'general prompt';
+            
             // Track this terminal as needing continue messages
-            this.continueTargetTerminals.add(terminalId);
+            if (hasClaudePrompt) {
+                this.continueTargetTerminals.add(terminalId);
+            }
             
             // If auto-continue is not already active for this terminal, start it
             if (!this.autoContinueActive) {
-                console.log(`Auto-continue: Prompted state detected in Terminal ${terminalId}! Starting persistent auto-continue.`);
-                this.logAction(`Auto-continue detected prompted state in Terminal ${terminalId} - starting persistent checking`, 'info');
+                console.log(`Auto-continue: ${promptType} detected in Terminal ${terminalId}! Starting persistent auto-continue.`);
+                this.logAction(`Auto-continue detected ${promptType} in Terminal ${terminalId} - starting persistent checking`, 'info');
                 this.autoContinueActive = true;
                 this.autoContinueRetryCount = 0;
-                this.performAutoContinue('prompted state', terminalId);
+                this.performAutoContinue(promptType, terminalId);
             }
         } else if (this.autoContinueActive && this.continueTargetTerminals.has(terminalId)) {
-            // If we were auto-continuing but terminal is no longer prompted, remove it from targets
+            // If we were auto-continuing but no longer see prompts in this terminal, remove it from targets
             this.continueTargetTerminals.delete(terminalId);
             this.logAction(`Auto-continue completed for Terminal ${terminalId} - prompt cleared after ${this.autoContinueRetryCount + 1} attempts`, 'success');
             
@@ -3645,6 +3646,60 @@ class TerminalGUI {
                 this.autoContinueRetryCount = 0;
             }
         }
+    }
+
+    performAutoContinue(promptType, terminalId = this.activeTerminalId) {
+        if (!this.autoContinueActive || !this.autoContinueEnabled) return;
+        
+        this.autoContinueRetryCount++;
+        this.logAction(`Auto-continue attempt #${this.autoContinueRetryCount} for ${promptType} in Terminal ${terminalId}`, 'info');
+        
+        // Send Enter key with small random delay for human-like behavior to specific terminal
+        const enterDelay = this.getRandomDelay(50, 150);
+        setTimeout(() => {
+            ipcRenderer.send('terminal-input', { terminalId, data: '\r' });
+        }, enterDelay);
+        
+        // Wait for terminal to process, then check if we need to continue
+        const checkDelay = 1000 + this.getRandomDelay(0, 300); // 1-1.3 seconds
+        setTimeout(() => {
+            if (this.autoContinueActive) {
+                // Get terminal-specific output for checking
+                const terminalData = this.terminals.get(terminalId);
+                if (!terminalData) return;
+                
+                const terminalOutput = terminalData.lastOutput || '';
+                
+                // Check if prompt text is still present in this terminal's output
+                const hasClaudePrompt = terminalOutput.includes("No, and tell Claude what to do differently");
+                const hasGeneralPrompt = /Do you want to proceed\?/i.test(terminalOutput);
+                
+                if (hasClaudePrompt || hasGeneralPrompt) {
+                    // Prompt still there, continue if we haven't exceeded max attempts
+                    if (this.autoContinueRetryCount < 10) {
+                        this.logAction(`Prompt still present in Terminal ${terminalId}, retrying auto-continue`, 'warning');
+                        this.performAutoContinue(promptType, terminalId);
+                    } else {
+                        this.logAction(`Auto-continue stopped for Terminal ${terminalId} - max attempts (10) reached`, 'error');
+                        this.continueTargetTerminals.delete(terminalId);
+                        if (this.continueTargetTerminals.size === 0) {
+                            this.autoContinueActive = false;
+                            this.autoContinueRetryCount = 0;
+                        }
+                    }
+                } else {
+                    // Prompt is gone, success!
+                    this.logAction(`Auto-continue successful for Terminal ${terminalId} after ${this.autoContinueRetryCount} attempts`, 'success');
+                    this.continueTargetTerminals.delete(terminalId);
+                    
+                    // If no more terminals need auto-continue, stop completely
+                    if (this.continueTargetTerminals.size === 0) {
+                        this.autoContinueActive = false;
+                        this.autoContinueRetryCount = 0;
+                    }
+                }
+            }
+        }, checkDelay);
     }
 
     performAutoContinue(promptType, terminalId = this.activeTerminalId) {
