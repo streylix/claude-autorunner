@@ -915,6 +915,14 @@ class TerminalGUI {
         document.getElementById('settings-btn').addEventListener('click', () => {
             this.openSettingsModal();
         });
+        
+        // Debug button for testing usage limit modal
+        const debugBtn = document.getElementById('usage-limit-debug-btn');
+        if (debugBtn) {
+            debugBtn.addEventListener('click', () => {
+                this.triggerDebugUsageLimit();
+            });
+        }
 
         document.getElementById('settings-close').addEventListener('click', () => {
             this.closeSettingsModal();
@@ -3745,6 +3753,19 @@ class TerminalGUI {
             this.logAction(`Error tracking timer state, proceeding with timer update for ${resetHour}${ampm}`, 'error');
         }
     }
+    
+    async clearUsageLimitTracking() {
+        try {
+            // Clear all usage limit tracking from database
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTime', null);
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTimestamp', null);
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTime', null);
+            await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTimestamp', null);
+            this.logAction('Cleared usage limit tracking data', 'info');
+        } catch (error) {
+            console.error('Error clearing usage limit tracking:', error);
+        }
+    }
 
     async checkAndShowUsageLimitModal(resetTimeString, resetHour, ampm) {
         try {
@@ -3857,6 +3878,46 @@ class TerminalGUI {
                 handleChoice(true);
             }
         }, 10000);
+    }
+    
+    async triggerDebugUsageLimit() {
+        // Calculate time exactly 1 minute from now
+        const now = new Date();
+        const debugResetTime = new Date(now.getTime() + 60000); // 1 minute from now
+        
+        // Get hour and am/pm for the debug reset time
+        let debugHour = debugResetTime.getHours();
+        let debugAmPm = 'am';
+        
+        if (debugHour >= 12) {
+            debugAmPm = 'pm';
+            if (debugHour > 12) {
+                debugHour -= 12;
+            }
+        } else if (debugHour === 0) {
+            debugHour = 12;
+        }
+        
+        // Clear any existing tracking first
+        if (this.clearUsageLimitTracking) {
+            await this.clearUsageLimitTracking();
+        }
+        
+        this.logAction(`DEBUG: Triggering usage limit modal for ${debugHour}${debugAmPm} (1 minute from now)`, 'warning');
+        
+        // Simulate the usage limit detection
+        const simulatedTerminalId = this.activeTerminalId || 1;
+        
+        // Track this terminal as having received a usage limit message
+        this.usageLimitTerminals.add(simulatedTerminalId);
+        
+        // Set timer to exact reset time and show modal
+        await this.setTimerToUsageLimitReset(debugHour, debugAmPm);
+        
+        const resetTimeString = `${debugHour}${debugAmPm}`;
+        this.checkAndShowUsageLimitModal(resetTimeString, debugHour, debugAmPm);
+        
+        this.logAction('DEBUG: Usage limit modal and timer triggered for testing', 'info');
     }
 
     async handleUsageLimitChoice(queue) {
