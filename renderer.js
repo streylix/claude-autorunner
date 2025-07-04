@@ -38,6 +38,7 @@ class TerminalGUI {
         this.currentlyInjectingTerminals = new Set(); // Track which terminals are currently injecting
         this.terminalStabilityTimers = new Map(); // Track per-terminal stability start times
         this.lastAssignedTerminalId = 0; // For round-robin terminal assignment
+        this.previousTerminalStatuses = new Map(); // Track previous status for each terminal for sound triggering
         
         // Terminal-specific tracking for auto-continue, keyword detection, and timer targeting
         this.usageLimitTerminals = new Set(); // Track terminals that received usage limit messages
@@ -88,6 +89,8 @@ class TerminalGUI {
             // Add sound effects preferences
             completionSoundEnabled: false,
             completionSoundFile: 'completion_beep.wav',
+            injectionSoundFile: 'injection_click.wav',
+            promptedSoundFile: 'prompted_gmod.wav',
             // Add message history
             messageHistory: [],
             // Background service preferences
@@ -1043,10 +1046,22 @@ class TerminalGUI {
             this.logAction(`Sound effects ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
         });
 
-        document.getElementById('completion-sound-select').addEventListener('change', (e) => {
+        this.safeAddEventListener('completion-sound-select', 'change', (e) => {
             this.preferences.completionSoundFile = e.target.value;
             this.saveAllPreferences();
             this.logAction(`Completion sound changed to: ${e.target.value || 'None'}`, 'info');
+        });
+
+        this.safeAddEventListener('injection-sound-select', 'change', (e) => {
+            this.preferences.injectionSoundFile = e.target.value;
+            this.saveAllPreferences();
+            this.logAction(`Injection sound changed to: ${e.target.value || 'None'}`, 'info');
+        });
+
+        this.safeAddEventListener('prompted-sound-select', 'change', (e) => {
+            this.preferences.promptedSoundFile = e.target.value;
+            this.saveAllPreferences();
+            this.logAction(`Prompted sound changed to: ${e.target.value || 'None'}`, 'info');
         });
 
         this.safeAddEventListener('test-completion-sound-btn', 'click', () => {
@@ -1054,11 +1069,11 @@ class TerminalGUI {
         });
         
         this.safeAddEventListener('test-injection-sound-btn', 'click', () => {
-            this.testSound('injection-sound-select');
+            this.testInjectionSound();
         });
         
         this.safeAddEventListener('test-prompted-sound-btn', 'click', () => {
-            this.testSound('prompted-sound-select');
+            this.testPromptedSound();
         });
 
         // Background service settings listeners
@@ -1954,44 +1969,6 @@ class TerminalGUI {
                 
                 // Explicitly update terminal status to clear any stuck "injecting" state
                 this.updateTerminalStatusIndicator();
-                
-                // Automatically add 'continue' messages to terminals that received usage limit messages
-                const continueContent = 'continue';
-                
-                if (this.usageLimitTerminals.size > 0) {
-                    // Validate the continue message (safety check)
-                    if (this.isValidMessageContent(continueContent)) {
-                        // Add continue message for each terminal that received usage limit
-                        for (const terminalId of this.usageLimitTerminals) {
-                            const terminalData = this.terminals.get(terminalId);
-                            const terminalName = terminalData ? terminalData.name : `Terminal ${terminalId}`;
-                            
-                            const continueMessage = {
-                                id: this.generateMessageId(),
-                                content: continueContent,
-                                executeAt: Date.now(),
-                                createdAt: Date.now(),
-                                sequence: ++this.messageSequenceCounter,
-                                terminalId: terminalId // Target specific terminal
-                            };
-                            
-                            // Add to the beginning of the queue (highest priority)
-                            this.messageQueue.unshift(continueMessage);
-                            this.logAction(`Auto-added continue message for ${terminalName} after usage limit reset`, 'info');
-                        }
-                        
-                        // Clear the tracking set since we've added the continue messages
-                        this.usageLimitTerminals.clear();
-                        
-                        this.saveMessageQueue();
-                        this.updateMessageList();
-                        this.updateStatusDisplay();
-                    } else {
-                        this.logAction('Failed to add continue messages - validation failed', 'error');
-                    }
-                } else {
-                    this.logAction('No terminals tracked for usage limit - no continue messages added', 'info');
-                }
             }
             
             // Update timer UI but let injection manager handle visual states
@@ -4020,25 +3997,6 @@ class TerminalGUI {
         } else {
             resetTimeSpan.textContent = `${minutes}m`;
         }
-        
-        // Add 'continue' message to top of queue if there are items in queue
-        if (this.messageQueue.length > 0) {
-            const continueMessage = {
-                id: this.generateMessageId(),
-                content: 'continue', // Enter key to continue current prompt (escaped for proper handling)
-                executeAt: Date.now(), // Execute immediately
-                createdAt: Date.now(),
-                sequence: ++this.messageSequenceCounter
-            };
-            
-            // Add to the beginning of the queue
-            this.messageQueue.unshift(continueMessage);
-            this.saveMessageQueue();
-            this.updateMessageList();
-            this.updateStatusDisplay();
-            
-            this.logAction('Added continue message to handle current prompt before queue processing', 'info');
-        }
 
         // Show modal and start progress bar animation
         this.logAction(`DEBUG: About to show modal. Current classes: ${modal.className}`, 'info');
@@ -4066,8 +4024,17 @@ class TerminalGUI {
             this.handleUsageLimitChoice(choice);
         };
         
-        yesBtn.onclick = () => handleChoice(true);
-        noBtn.onclick = () => handleChoice(false);
+        if (yesBtn) {
+            yesBtn.onclick = () => handleChoice(true);
+        } else {
+            this.logAction('ERROR: usage-limit-yes button not found', 'error');
+        }
+        
+        if (noBtn) {
+            noBtn.onclick = () => handleChoice(false);
+        } else {
+            this.logAction('ERROR: usage-limit-no button not found', 'error');
+        }
         
         // Auto-close after 10 seconds
         setTimeout(() => {
@@ -4119,6 +4086,8 @@ class TerminalGUI {
     }
 
     async handleUsageLimitChoice(queue) {
+        this.logAction(`DEBUG: handleUsageLimitChoice called with queue=${queue}`, 'info');
+        
         const modal = document.getElementById('usage-limit-modal');
         const progressBar = modal.querySelector('.usage-limit-progress-bar');
         
@@ -4243,6 +4212,9 @@ class TerminalGUI {
                 
                 // Check for completion sound trigger for this terminal
                 this.checkCompletionSoundTrigger(previousStatus, terminalData.status, terminalId);
+                
+                // Check for injection and prompted sound triggers
+                this.checkStatusChangeSounds(previousStatus, terminalData.status, terminalId);
             }
         } else {
             // Legacy support - update active terminal
@@ -4267,6 +4239,20 @@ class TerminalGUI {
                     this.logAction(`Terminal ${terminalId} completion sound cancelled - status changed`, 'info');
                 }
             }, 100);
+        }
+    }
+
+    checkStatusChangeSounds(previousStatus, currentStatus, terminalId) {
+        // Only play injection sound when status changes TO 'injecting'
+        if (previousStatus !== 'injecting' && currentStatus === 'injecting') {
+            this.playInjectionSound();
+            this.logAction(`Terminal ${terminalId} injection started - playing injection sound`, 'info');
+        }
+        
+        // Only play prompted sound when status changes TO 'prompted'
+        if (previousStatus !== 'prompted' && currentStatus === 'prompted') {
+            this.playPromptedSound();
+            this.logAction(`Terminal ${terminalId} prompted - playing prompted sound`, 'info');
         }
     }
 
@@ -5589,7 +5575,14 @@ class TerminalGUI {
                 if (!select) return;
                 
                 // Store current selection to restore it after populating
-                const currentSelection = this.preferences.completionSoundFile;
+                let currentSelection;
+                if (selectorId === 'completion-sound-select') {
+                    currentSelection = this.preferences.completionSoundFile;
+                } else if (selectorId === 'injection-sound-select') {
+                    currentSelection = this.preferences.injectionSoundFile;
+                } else if (selectorId === 'prompted-sound-select') {
+                    currentSelection = this.preferences.promptedSoundFile;
+                }
                 
                 // Clear existing options
                 select.innerHTML = '';
@@ -5654,15 +5647,26 @@ class TerminalGUI {
         this.logAction(`Testing sound: ${soundFile}`, 'info');
     }
 
-    testSound(selectElementId) {
-        const soundFile = document.getElementById(selectElementId).value;
+    testInjectionSound() {
+        const soundFile = document.getElementById('injection-sound-select').value;
         if (!soundFile) {
-            this.logAction('No sound file selected', 'warning');
+            this.logAction('No injection sound file selected', 'warning');
             return;
         }
         
-        this.playSound(soundFile);
-        this.logAction(`Testing sound: ${soundFile}`, 'info');
+        this.playInjectionSound(soundFile);
+        this.logAction(`Testing injection sound: ${soundFile}`, 'info');
+    }
+
+    testPromptedSound() {
+        const soundFile = document.getElementById('prompted-sound-select').value;
+        if (!soundFile) {
+            this.logAction('No prompted sound file selected', 'warning');
+            return;
+        }
+        
+        this.playPromptedSound(soundFile);
+        this.logAction(`Testing prompted sound: ${soundFile}`, 'info');
     }
 
     playSound(filename) {
@@ -5697,12 +5701,58 @@ class TerminalGUI {
             const audio = new Audio(`./soundeffects/${soundFile}`);
             audio.volume = 0.5; // Set volume to 50%
             audio.play().catch(error => {
-                console.error('Error playing sound:', error);
-                this.logAction(`Error playing sound: ${error.message}`, 'error');
+                console.error('Error playing completion sound:', error);
+                this.logAction(`Error playing completion sound: ${error.message}`, 'error');
             });
         } catch (error) {
-            console.error('Error creating audio:', error);
-            this.logAction(`Error creating audio: ${error.message}`, 'error');
+            console.error('Error creating completion audio:', error);
+            this.logAction(`Error creating completion audio: ${error.message}`, 'error');
+        }
+    }
+
+    playInjectionSound(filename = null) {
+        if (!this.preferences.completionSoundEnabled) {
+            return;
+        }
+        
+        const soundFile = filename || this.preferences.injectionSoundFile;
+        if (!soundFile) {
+            return;
+        }
+        
+        try {
+            const audio = new Audio(`./soundeffects/${soundFile}`);
+            audio.volume = 0.5; // Set volume to 50%
+            audio.play().catch(error => {
+                console.error('Error playing injection sound:', error);
+                this.logAction(`Error playing injection sound: ${error.message}`, 'error');
+            });
+        } catch (error) {
+            console.error('Error creating injection audio:', error);
+            this.logAction(`Error creating injection audio: ${error.message}`, 'error');
+        }
+    }
+
+    playPromptedSound(filename = null) {
+        if (!this.preferences.completionSoundEnabled) {
+            return;
+        }
+        
+        const soundFile = filename || this.preferences.promptedSoundFile;
+        if (!soundFile) {
+            return;
+        }
+        
+        try {
+            const audio = new Audio(`./soundeffects/${soundFile}`);
+            audio.volume = 0.5; // Set volume to 50%
+            audio.play().catch(error => {
+                console.error('Error playing prompted sound:', error);
+                this.logAction(`Error playing prompted sound: ${error.message}`, 'error');
+            });
+        } catch (error) {
+            console.error('Error creating prompted audio:', error);
+            this.logAction(`Error creating prompted audio: ${error.message}`, 'error');
         }
     }
 
