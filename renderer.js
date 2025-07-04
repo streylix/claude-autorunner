@@ -99,6 +99,7 @@ class TerminalGUI {
         this.usageLimitSyncInterval = null;
         this.usageLimitResetTime = null;
         this.autoSyncEnabled = true; // Auto-sync until user manually changes timer
+        this.pendingUsageLimitReset = null; // Store reset info until user makes choice
         this.safetyCheckCount = 0;
         this.safetyCheckInterval = null;
         
@@ -3666,8 +3667,13 @@ class TerminalGUI {
             this.usageLimitTerminals.add(terminalId);
             this.logAction(`Usage limit detected in Terminal ${terminalId} - tracking for continue targeting`, 'info');
             
-            // Set timer to exact reset time and pause injection
-            await this.setTimerToUsageLimitReset(resetHour, ampm);
+            // Store reset time info for potential timer setting after user choice
+            this.pendingUsageLimitReset = { resetHour, ampm };
+            
+            // Pause injection until user makes a choice
+            this.pauseInProgressInjection();
+            this.usageLimitWaiting = true;
+            this.injectionManager.onUsageLimitDetected();
             
             // Check if we've already shown modal for this specific reset time
             this.checkAndShowUsageLimitModal(resetTimeString, resetHour, ampm);
@@ -3853,7 +3859,7 @@ class TerminalGUI {
         }, 10000);
     }
 
-    handleUsageLimitChoice(queue) {
+    async handleUsageLimitChoice(queue) {
         const modal = document.getElementById('usage-limit-modal');
         const progressBar = modal.querySelector('.usage-limit-progress-bar');
         
@@ -3862,13 +3868,30 @@ class TerminalGUI {
         progressBar.classList.remove('active');
         this.usageLimitModalShowing = false;
         
-        // Log the choice and auto-fill form if user chose to queue
+        // Log the choice and handle based on user's decision
         if (queue) {
-            this.logAction('Usage limit detected - Queue mode enabled until 3am reset', 'info');
+            this.logAction('Usage limit detected - Queue mode enabled until reset', 'info');
+            
+            // Only set timer if user chose "Yes" and we have pending reset info
+            if (this.pendingUsageLimitReset) {
+                await this.setTimerToUsageLimitReset(this.pendingUsageLimitReset.resetHour, this.pendingUsageLimitReset.ampm);
+                this.pendingUsageLimitReset = null; // Clear pending info
+            }
+            
             // Auto-fill the Execute in form with calculated time until reset
             this.autoFillExecuteInForm();
         } else {
             this.logAction('Usage limit detected - Continuing normally', 'info');
+            
+            // User chose "No thanks" - clear pending reset info and resume normal operation
+            this.pendingUsageLimitReset = null;
+            this.usageLimitWaiting = false;
+            this.injectionManager.onUsageLimitReset(); // Reset injection manager state
+            
+            // Resume injection if there are messages queued
+            if (this.messageQueue.length > 0) {
+                this.scheduleNextInjection();
+            }
         }
         
         // Resume injection if there are messages queued and timer was expired
