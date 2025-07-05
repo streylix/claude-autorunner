@@ -45,6 +45,7 @@ class TerminalGUI {
         this.usageLimitTerminals = new Set(); // Track terminals that received usage limit messages
         this.continueTargetTerminals = new Set(); // Track terminals that should receive continue messages
         this.keywordResponseTerminals = new Map(); // Track terminals that need keyword responses
+        this.processedUsageLimitMessages = new Set(); // Track processed usage limit messages to prevent duplicates
         this.currentDirectory = null; // Will be set when terminal starts or directory is detected
         this.isInjecting = false;
         this.messageIdCounter = 1;
@@ -92,6 +93,7 @@ class TerminalGUI {
             completionSoundFile: 'completion_beep.wav',
             injectionSoundFile: 'injection_click.wav',
             promptedSoundFile: 'prompted_gmod.wav',
+            promptedSoundKeywordsOnly: false,
             // Add message history
             messageHistory: [],
             // Background service preferences
@@ -647,6 +649,41 @@ class TerminalGUI {
                     isCommandKey: this.isCommandKey(e)
                 }));
             }
+            
+            // Check if settings modal is open - if so, disable all global hotkeys except modal-specific ones
+            const settingsModal = document.getElementById('settings-modal');
+            const isSettingsModalOpen = settingsModal && settingsModal.classList.contains('show');
+            
+            if (isSettingsModalOpen) {
+                // Only allow Escape and modal-specific hotkeys in settings
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    this.closeSettingsModal();
+                    return;
+                }
+                
+                // Allow Cmd+C for copying in settings modal
+                if (this.isCommandKey(e) && e.key === 'c') {
+                    // Let default copy behavior work
+                    return;
+                }
+                
+                // Allow Tab and Shift+Tab for navigation within settings
+                if (e.key === 'Tab') {
+                    // Let default tab navigation work
+                    return;
+                }
+                
+                // Block all other global hotkeys when settings modal is open
+                if (this.isCommandKey(e) || e.shiftKey || e.altKey) {
+                    e.preventDefault();
+                    return;
+                }
+                
+                // Let normal typing continue
+                return;
+            }
+            
             // Don't trigger shortcuts if user is typing in an input/textarea (except for some special cases)
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
                 // Define hotkeys that should work even when typing in input fields
@@ -1071,6 +1108,12 @@ class TerminalGUI {
         
         this.safeAddEventListener('test-prompted-sound-btn', 'click', () => {
             this.testPromptedSound();
+        });
+
+        this.safeAddEventListener('prompted-sound-keywords-only', 'change', (e) => {
+            this.preferences.promptedSoundKeywordsOnly = e.target.checked;
+            this.saveAllPreferences();
+            this.logAction(`Prompted sound keywords-only ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
         });
 
         // Background service settings listeners
@@ -3522,6 +3565,8 @@ class TerminalGUI {
             const keywordBlockResult = this.checkTerminalForKeywords(terminalOutput);
             if (keywordBlockResult.blocked && !this.keywordBlockingActive) {
                 this.keywordBlockingActive = true;
+                this.keywordCount++;
+                this.updateStatusDisplay();
                 this.logAction(`Keyword "${keywordBlockResult.keyword}" detected in Terminal ${terminalId} Claude prompt - executing escape sequence`, 'warning');
                 
                 // Track this terminal for keyword response
@@ -3922,20 +3967,11 @@ class TerminalGUI {
             await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTimestamp', null);
             await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTime', null);
             await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTimestamp', null);
-            this.logAction('Cleared usage limit tracking data', 'info');
-        } catch (error) {
-            console.error('Error clearing usage limit tracking:', error);
-        }
-    }
-
-    async clearUsageLimitTracking() {
-        try {
-            // Clear all usage limit tracking from database
-            await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTime', null);
-            await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTimestamp', null);
-            await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTime', null);
-            await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTimestamp', null);
-            this.logAction('Cleared usage limit tracking data', 'info');
+            
+            // Clear session-based tracking to allow new modals after reset
+            this.processedUsageLimitMessages.clear();
+            
+            this.logAction('Cleared usage limit tracking data and session memory', 'info');
         } catch (error) {
             console.error('Error clearing usage limit tracking:', error);
         }
@@ -3943,6 +3979,16 @@ class TerminalGUI {
 
     async checkAndShowUsageLimitModal(resetTimeString, resetHour, ampm) {
         try {
+            // Create a unique identifier for this specific usage limit message
+            // Include both the reset time and current session to avoid cross-session duplicates
+            const messageId = `${resetTimeString}_${Date.now().toString().slice(-6)}`;
+            
+            // Check if we've already processed this specific reset time in this session
+            if (this.processedUsageLimitMessages.has(resetTimeString)) {
+                this.logAction(`Usage limit message for ${resetTimeString} already processed in this session - ignoring`, 'info');
+                return;
+            }
+            
             const lastShownResetTime = await ipcRenderer.invoke('db-get-app-state', 'usageLimitModalLastResetTime');
             const lastShownTimestamp = await ipcRenderer.invoke('db-get-app-state', 'usageLimitModalLastResetTimestamp');
             
@@ -3967,24 +4013,31 @@ class TerminalGUI {
             
             const resetTimestamp = resetTime.getTime();
             
-            // Check if this is a new usage limit message:
-            // 1. Different reset time string OR
-            // 2. Same reset time string but the previous one has already passed
-            const isNewMessage = lastShownResetTime !== resetTimeString || 
-                                (lastShownTimestamp && now.getTime() > lastShownTimestamp);
+            // Only show modal if this is a genuinely new reset time (different from last shown)
+            // Remove the flawed logic about "previous time has passed"
+            const isNewMessage = lastShownResetTime !== resetTimeString;
             
             if (isNewMessage) {
                 this.logAction(`New usage limit detected for ${resetTimeString} - showing modal`, 'info');
+                
+                // Mark this reset time as processed in current session
+                this.processedUsageLimitMessages.add(resetTimeString);
+                
                 this.showUsageLimitModal(resetHour, ampm);
                 await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTime', resetTimeString);
                 await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTimestamp', resetTimestamp);
             } else {
-                this.logAction(`Duplicate usage limit message for ${resetTimeString} ignored - modal already shown`, 'info');
+                this.logAction(`Duplicate usage limit message for ${resetTimeString} ignored - modal already shown for this reset time`, 'info');
+                // Still mark as processed to prevent future processing in this session
+                this.processedUsageLimitMessages.add(resetTimeString);
             }
         } catch (error) {
             console.error('Error checking usage limit modal state:', error);
-            // Fallback: show modal if we can't check the state
-            this.showUsageLimitModal(resetHour, ampm);
+            // Fallback: show modal if we can't check the state, but only if not already processed
+            if (!this.processedUsageLimitMessages.has(resetTimeString)) {
+                this.processedUsageLimitMessages.add(resetTimeString);
+                this.showUsageLimitModal(resetHour, ampm);
+            }
         }
     }
 
@@ -4267,8 +4320,22 @@ class TerminalGUI {
         
         // Only play prompted sound when status changes TO 'prompted'
         if (previousStatus !== 'prompted' && currentStatus === 'prompted') {
-            this.playPromptedSound();
-            this.logAction(`Terminal ${terminalId} prompted - playing prompted sound`, 'info');
+            // Check if keywords-only mode is enabled
+            if (this.preferences.promptedSoundKeywordsOnly) {
+                // Only play sound if keywords are detected
+                const terminalData = this.terminals.get(terminalId);
+                if (terminalData && terminalData.lastOutput) {
+                    const keywordResult = this.checkTerminalForKeywords(terminalData.lastOutput);
+                    if (keywordResult.blocked) {
+                        this.playPromptedSound();
+                        this.logAction(`Terminal ${terminalId} prompted with keyword "${keywordResult.keyword}" - playing prompted sound`, 'info');
+                    }
+                }
+            } else {
+                // Play sound normally (default behavior)
+                this.playPromptedSound();
+                this.logAction(`Terminal ${terminalId} prompted - playing prompted sound`, 'info');
+            }
         }
     }
 
@@ -4684,6 +4751,9 @@ class TerminalGUI {
             // Update sound settings UI
             const soundEffectsEl = document.getElementById('sound-effects-enabled');
             if (soundEffectsEl) soundEffectsEl.checked = this.preferences.completionSoundEnabled || false;
+            
+            const promptedSoundKeywordsOnlyEl = document.getElementById('prompted-sound-keywords-only');
+            if (promptedSoundKeywordsOnlyEl) promptedSoundKeywordsOnlyEl.checked = this.preferences.promptedSoundKeywordsOnly || false;
             
             // Update background service settings UI
             const keepScreenAwakeEl = document.getElementById('keep-screen-awake');
