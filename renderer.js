@@ -35,6 +35,7 @@ class TerminalGUI {
         this.schedulingInProgress = false; // Prevent concurrent scheduling calls
         this.injectionCount = 0;
         this.keywordCount = 0;
+        this.planCount = 0;
         this.currentlyInjectingMessages = new Set(); // Track messages being injected per terminal
         this.currentlyInjectingTerminals = new Set(); // Track which terminals are currently injecting
         this.terminalStabilityTimers = new Map(); // Track per-terminal stability start times
@@ -46,6 +47,7 @@ class TerminalGUI {
         this.continueTargetTerminals = new Set(); // Track terminals that should receive continue messages
         this.keywordResponseTerminals = new Map(); // Track terminals that need keyword responses
         this.processedUsageLimitMessages = new Set(); // Track processed usage limit messages to prevent duplicates
+        this.processedPlans = new Set(); // Track processed plans to prevent duplicates
         this.currentDirectory = null; // Will be set when terminal starts or directory is detected
         this.isInjecting = false;
         this.messageIdCounter = 1;
@@ -80,6 +82,7 @@ class TerminalGUI {
                     response: "do not credit yourself"
                 }
             ],
+            planRules: [], // Store detected plans
             // Add timer persistence
             timerHours: 0,
             timerMinutes: 0,
@@ -90,9 +93,9 @@ class TerminalGUI {
             currentDirectory: null,
             // Add sound effects preferences
             completionSoundEnabled: false,
-            completionSoundFile: 'completion_beep.wav',
-            injectionSoundFile: 'injection_click.wav',
-            promptedSoundFile: 'prompted_gmod.wav',
+            completionSoundFile: 'beep.wav',
+            injectionSoundFile: 'click.wav',
+            promptedSoundFile: 'gmod.wav',
             promptedSoundKeywordsOnly: false,
             // Add message history
             messageHistory: [],
@@ -118,6 +121,7 @@ class TerminalGUI {
         this.timerExpired = false;
         this.injectionInProgress = false;
         this.injectionPaused = false;
+        this.injectionPausedByTimer = false; // Track if injection was paused by timer
         this.pausedMessageContent = null;
         this.pausedMessageIndex = 0;
         this.currentTypeInterval = null;
@@ -393,7 +397,9 @@ class TerminalGUI {
             name: `Terminal ${id}`,
             directory: this.preferences.currentDirectory || null,
             lastOutput: '',
-            status: ''
+            status: '',
+            userInteracting: false,
+            autoscrollTimeout: null
         };
         
         this.terminals.set(id, terminalData);
@@ -425,9 +431,7 @@ class TerminalGUI {
                 const terminalViewport = terminalContainer.querySelector('.xterm-viewport');
                 if (terminalViewport) {
                     terminalViewport.addEventListener('scroll', () => {
-                        if (id === this.activeTerminalId) {
-                            this.handleScroll();
-                        }
+                        this.handleScroll(id);
                     });
                 }
             }, 100);
@@ -575,11 +579,13 @@ class TerminalGUI {
                 this.detectAutoContinuePrompt(data.content, terminalId);
                 await this.detectUsageLimit(data.content, terminalId);
                 
+                // Handle autoscrolling for this specific terminal
+                this.handleTerminalOutput(terminalId);
+                
                 // Update active terminal references only for the active terminal
                 if (terminalId === this.activeTerminalId) {
                     this.terminal = terminalData.terminal;
                     this.updateTerminalOutput(data.content);
-                    this.handleTerminalOutput();
                 }
             }
         });
@@ -590,6 +596,8 @@ class TerminalGUI {
             
             if (terminalData) {
                 terminalData.terminal.write('\r\n\x1b[31mTerminal process exited\x1b[0m\r\n');
+                // Handle autoscrolling for terminal exit message
+                this.handleTerminalOutput(terminalId);
             }
         });
 
@@ -1031,6 +1039,21 @@ class TerminalGUI {
         document.getElementById('clear-history-btn').addEventListener('click', () => {
             if (confirm('Are you sure you want to clear all message history? This cannot be undone.')) {
                 this.clearMessageHistory();
+            }
+        });
+
+        // Plans modal listeners
+        document.getElementById('plan-count').addEventListener('click', () => {
+            this.openPlansModal();
+        });
+
+        document.getElementById('plans-close').addEventListener('click', () => {
+            this.closePlansModal();
+        });
+
+        document.getElementById('plans-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'plans-modal') {
+                this.closePlansModal();
             }
         });
 
@@ -1882,6 +1905,15 @@ class TerminalGUI {
         this.timerExpired = false;
         this.updateTimerUI();
         
+        // Resume injections if they were paused by timer pause
+        if (this.injectionPaused && this.injectionPausedByTimer) {
+            this.injectionPausedByTimer = false;
+            this.resumeInjectionExecution();
+            this.logAction('Timer started - resuming paused injections', 'info');
+        } else {
+            this.logAction('Timer started', 'info');
+        }
+        
         this.timerInterval = setInterval(async () => {
             try {
                 await this.decrementTimer();
@@ -1898,8 +1930,6 @@ class TerminalGUI {
                 }
             }
         }, 1000);
-        
-        this.logAction('Timer started', 'info');
     }
 
     pauseTimer() {
@@ -1908,14 +1938,28 @@ class TerminalGUI {
             clearInterval(this.timerInterval);
             this.timerInterval = null;
         }
+        
+        // Also pause any active injections when timer is paused
+        const hasActiveInjections = this.injectionInProgress || 
+                                   this.currentlyInjectingMessages.size > 0 ||
+                                   (this.timerExpired && this.messageQueue.length > 0);
+        
+        if (hasActiveInjections && !this.injectionPaused) {
+            this.injectionPausedByTimer = true; // Track that timer pause triggered this
+            this.pauseInjectionExecution();
+            this.logAction('Timer paused - also pausing active injections', 'info');
+        } else {
+            this.logAction('Timer paused', 'info');
+        }
+        
         this.updateTimerUI();
-        this.logAction('Timer paused', 'info');
     }
 
     stopTimer() {
         this.timerActive = false;
         this.timerExpired = false;
         this.injectionInProgress = false;
+        this.injectionPausedByTimer = false; // Clear timer pause flag
         this.usageLimitWaiting = false;
         this.timerHours = 0;
         this.timerMinutes = 0;
@@ -2791,6 +2835,7 @@ class TerminalGUI {
         }
 
         this.injectionPaused = false;
+        this.injectionPausedByTimer = false; // Clear timer-triggered flag on any resume
         
         // Restart the injection manager's periodic checks if timer expired
         if (this.timerExpired) {
@@ -2974,7 +3019,8 @@ class TerminalGUI {
                            /Do you want to proceed\?/i.test(recentOutput) ||
                            /Continue\?/i.test(recentOutput) ||
                            /\?\s*$/.test(recentOutput.trim()) ||
-                           recentOutput.includes('Do you trust the files in this folder?');
+                           recentOutput.includes('Do you trust the files in this folder?') ||
+                           recentOutput.includes('No, keep planning');
         
         // Get current status for this terminal
         const currentStatus = this.terminalStatuses.get(terminalId) || {
@@ -3558,7 +3604,8 @@ class TerminalGUI {
         // Check for blocking conditions for message injection
         const hasEscToInterrupt = terminalOutput.includes("esc to interrupt") || 
                                  terminalOutput.includes("offline)");
-        const hasClaudePrompt = terminalOutput.includes("No, and tell Claude what to do differently");
+        const hasClaudePrompt = terminalOutput.includes("No, and tell Claude what to do differently") ||
+                                terminalOutput.includes("No, keep planning");
         
         // Handle keyword blocking specifically for Claude prompts (only if auto-continue is enabled)
         if (hasClaudePrompt && this.autoContinueEnabled) {
@@ -3620,6 +3667,9 @@ class TerminalGUI {
         
         // Check all terminals for keyword blocking (global check for injection blocking)
         const allTerminalsKeywordResult = this.checkForKeywordBlocking();
+        
+        // Check for plan detection in all terminals
+        this.checkForPlanDetection();
         
         // Update injection blocking status based on all terminals
         const previouslyBlocked = this.injectionBlocked;
@@ -4350,6 +4400,7 @@ class TerminalGUI {
         document.getElementById('injection-count').textContent = this.injectionCount;
         document.getElementById('queue-count').textContent = this.messageQueue.length;
         document.getElementById('keyword-count').textContent = this.keywordCount;
+        document.getElementById('plan-count').textContent = this.planCount;
         
         // Update execution times in message list
         const executionTimeElements = document.querySelectorAll('.execution-time');
@@ -4420,44 +4471,57 @@ class TerminalGUI {
         }
     }
 
-    handleTerminalOutput() {
-        if (this.autoscrollEnabled && !this.userInteracting) {
-            this.scrollToBottom();
+    handleTerminalOutput(terminalId = this.activeTerminalId) {
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) return;
+        
+        if (this.autoscrollEnabled && !terminalData.userInteracting) {
+            this.scrollToBottom(terminalId);
         }
         
     }
 
-    handleScroll() {
+    handleScroll(terminalId = this.activeTerminalId) {
         if (!this.autoscrollEnabled) return;
 
-        const viewport = document.querySelector('.xterm-viewport');
+        const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
+        if (!terminalWrapper) return;
+        
+        const viewport = terminalWrapper.querySelector('.xterm-viewport');
         if (!viewport) return;
 
         const isAtBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 10;
         
+        // Use per-terminal timeout tracking
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) return;
+        
         if (!isAtBottom) {
-            this.userInteracting = true;
-            if (this.autoscrollTimeout) {
-                clearTimeout(this.autoscrollTimeout);
+            terminalData.userInteracting = true;
+            if (terminalData.autoscrollTimeout) {
+                clearTimeout(terminalData.autoscrollTimeout);
             }
             
-            this.autoscrollTimeout = setTimeout(() => {
-                this.userInteracting = false;
+            terminalData.autoscrollTimeout = setTimeout(() => {
+                terminalData.userInteracting = false;
                 if (this.autoscrollEnabled) {
-                    this.scrollToBottom();
+                    this.scrollToBottom(terminalId);
                 }
             }, this.autoscrollDelay);
         } else {
-            this.userInteracting = false;
-            if (this.autoscrollTimeout) {
-                clearTimeout(this.autoscrollTimeout);
-                this.autoscrollTimeout = null;
+            terminalData.userInteracting = false;
+            if (terminalData.autoscrollTimeout) {
+                clearTimeout(terminalData.autoscrollTimeout);
+                terminalData.autoscrollTimeout = null;
             }
         }
     }
 
-    scrollToBottom() {
-        const viewport = document.querySelector('.xterm-viewport');
+    scrollToBottom(terminalId = this.activeTerminalId) {
+        const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
+        if (!terminalWrapper) return;
+        
+        const viewport = terminalWrapper.querySelector('.xterm-viewport');
         if (viewport) {
             viewport.scrollTo({
                 top: viewport.scrollHeight,
@@ -4485,6 +4549,44 @@ class TerminalGUI {
     closeMessageHistoryModal() {
         const modal = document.getElementById('message-history-modal');
         modal.classList.remove('show');
+    }
+
+    openPlansModal() {
+        const modal = document.getElementById('plans-modal');
+        modal.classList.add('show');
+        this.updatePlansModal();
+    }
+
+    closePlansModal() {
+        const modal = document.getElementById('plans-modal');
+        modal.classList.remove('show');
+    }
+
+    updatePlansModal() {
+        const plansList = document.getElementById('plans-list');
+        
+        if (this.preferences.planRules.length === 0) {
+            plansList.innerHTML = `
+                <div class="plans-empty">
+                    <p>No plans detected yet. Plans will appear here when Claude provides planning options.</p>
+                </div>
+            `;
+            return;
+        }
+
+        const plansHTML = this.preferences.planRules.map(plan => `
+            <div class="plan-item">
+                <div class="plan-item-header">
+                    <span class="plan-item-date">${new Date(plan.timestamp).toLocaleString()}</span>
+                    <span class="plan-item-terminal">Terminal ${plan.terminalId}</span>
+                </div>
+                <div class="plan-item-content">
+                    <pre>${plan.content}</pre>
+                </div>
+            </div>
+        `).join('');
+
+        plansList.innerHTML = plansHTML;
     }
 
     // Message validation utility
@@ -5132,6 +5234,92 @@ class TerminalGUI {
         }
         
         return { blocked: false };
+    }
+
+    checkTerminalForPlans(terminalOutput) {
+        // Ensure we have terminal output to check
+        if (!terminalOutput || terminalOutput.trim() === '') {
+            return { found: false };
+        }
+        
+        // Find the ╭ character which marks the start of the current Claude prompt area
+        const claudePromptStart = terminalOutput.lastIndexOf("╭");
+        if (claudePromptStart === -1) {
+            return { found: false };
+        }
+        
+        // Find the ╯ character which marks the end of the plan area
+        const claudePromptEnd = terminalOutput.indexOf("╯", claudePromptStart);
+        if (claudePromptEnd === -1) {
+            return { found: false };
+        }
+        
+        // Extract the text between ╭ and ╯
+        const planArea = terminalOutput.substring(claudePromptStart, claudePromptEnd + 1);
+        
+        // Check if this area contains "No, keep planning"
+        if (!planArea.includes("No, keep planning")) {
+            return { found: false };
+        }
+        
+        // Extract the plan content by removing the markers and numbered options
+        let planContent = planArea.replace(/╭/g, '').replace(/╯/g, '');
+        
+        // Remove numbered options (1. Yes, 2. No, keep planning, etc.)
+        planContent = planContent.replace(/^\d+\.\s*(Yes|No,?\s*keep\s*planning).*$/gim, '');
+        
+        // Clean up whitespace
+        planContent = planContent.trim();
+        
+        // Generate unique ID for the plan
+        const planId = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
+        
+        // Create plan object
+        const plan = {
+            id: planId,
+            content: planContent,
+            timestamp: new Date().toISOString(),
+            terminalId: this.activeTerminalId
+        };
+        
+        console.log('Plan detected:', plan);
+        
+        return {
+            found: true,
+            plan: plan
+        };
+    }
+
+    checkForPlanDetection() {
+        // Check all terminals for plan detection
+        for (const [terminalId, terminalData] of this.terminals) {
+            if (!terminalData.lastOutput || terminalData.lastOutput.trim() === '') {
+                continue;
+            }
+            
+            const result = this.checkTerminalForPlans(terminalData.lastOutput);
+            if (result.found) {
+                // Check for duplicates using content comparison
+                const isDuplicate = this.preferences.planRules.some(existingPlan => 
+                    existingPlan.content === result.plan.content
+                );
+                
+                if (!isDuplicate) {
+                    // Add to preferences
+                    this.preferences.planRules.push(result.plan);
+                    this.saveAllPreferences();
+                    
+                    // Update counter
+                    this.planCount++;
+                    this.updateStatusDisplay();
+                    
+                    console.log(`Plan detected in Terminal ${terminalId} and added to list`);
+                    return result;
+                }
+            }
+        }
+        
+        return { found: false };
     }
 
     checkForKeywordBlocking() {
