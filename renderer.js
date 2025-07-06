@@ -1,6 +1,7 @@
 const { ipcRenderer } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
+const { SearchAddon } = require('@xterm/addon-search');
 const { WebLinksAddon } = require('@xterm/addon-web-links');
 const InjectionManager = require('./src/messaging/injection-manager');
 
@@ -385,7 +386,9 @@ class TerminalGUI {
 
         // Add addons
         const fitAddon = new FitAddon();
+        const searchAddon = new SearchAddon();
         terminal.loadAddon(fitAddon);
+        terminal.loadAddon(searchAddon);
         terminal.loadAddon(new WebLinksAddon());
 
         // Store terminal data
@@ -393,13 +396,15 @@ class TerminalGUI {
             id,
             terminal,
             fitAddon,
+            searchAddon,
             color,
             name: `Terminal ${id}`,
             directory: this.preferences.currentDirectory || null,
             lastOutput: '',
             status: '',
             userInteracting: false,
-            autoscrollTimeout: null
+            autoscrollTimeout: null,
+            searchVisible: false
         };
         
         this.terminals.set(id, terminalData);
@@ -435,6 +440,13 @@ class TerminalGUI {
                     });
                 }
             }, 100);
+
+            // Add click handler to focus terminal when clicked
+            terminalContainer.addEventListener('click', () => {
+                console.log('Terminal container clicked, focusing terminal:', id);
+                terminal.focus();
+                this.switchToTerminal(id);
+            });
 
             // Handle terminal resize
             terminal.onResize(({ cols, rows }) => {
@@ -703,7 +715,7 @@ class TerminalGUI {
                     { key: 'i', cmd: true, shift: false }, // Cmd+I - Manual injection
                     { key: 's', cmd: true, shift: true }, // Cmd+Shift+S - Stop timer
                     { key: 'v', cmd: true, shift: true }, // Cmd+Shift+V - Voice transcription
-                    { key: 'F', cmd: true, shift: false }, // Cmd+F - Focus log search
+                    { key: 'f', cmd: true, shift: false }, // Cmd+F - Focus log search
                     { key: 'l', cmd: true, shift: true }, // Cmd+Shift+L - Clear log
                     { key: 'h', cmd: true, shift: true }, // Cmd+Shift+H - Message history
                     { key: '.', cmd: true, shift: true }, // Cmd+Shift+. - Clear queue
@@ -806,10 +818,40 @@ class TerminalGUI {
                 this.openSettingsModal();
                 this.logAction('Settings opened via keyboard shortcut (Cmd+S)', 'info');
             } else if (this.isCommandKey(e) && e.key === 'f') {
-                // Focus search
+                // Check if a terminal is focused for terminal search, otherwise focus log search
                 e.preventDefault();
-                this.focusSearchInput();
-                this.logAction('Search focused via keyboard shortcut (Cmd+F)', 'info');
+                const focusedElement = document.activeElement;
+                console.log('Cmd+F pressed, focused element:', focusedElement, 'class:', focusedElement?.className);
+                
+                // Check if the focused element is within a terminal or if it's a terminal element
+                const isTerminalFocused = focusedElement && (
+                    focusedElement.closest('.terminal-container') || 
+                    focusedElement.closest('.xterm') ||
+                    focusedElement.classList?.contains('xterm-helper-textarea') ||
+                    focusedElement.classList?.contains('xterm-screen') ||
+                    focusedElement.tagName === 'CANVAS' ||
+                    focusedElement.closest('.terminal-wrapper')
+                );
+                
+                console.log('Is terminal focused:', isTerminalFocused);
+                
+                if (isTerminalFocused) {
+                    // Get the terminal ID from the focused terminal container
+                    const terminalWrapper = focusedElement.closest('.terminal-wrapper');
+                    const terminalId = terminalWrapper ? parseInt(terminalWrapper.getAttribute('data-terminal-id')) : this.activeTerminalId;
+                    console.log('Toggling terminal search for terminal:', terminalId);
+                    this.toggleTerminalSearch(terminalId);
+                    this.logAction(`Terminal search toggled via keyboard shortcut (Cmd+F) for Terminal ${terminalId}`, 'info');
+                } else if (this.activeTerminalId && this.terminals.has(this.activeTerminalId)) {
+                    // Fallback: if no terminal is specifically focused, toggle search for active terminal
+                    console.log('No terminal focused, toggling search for active terminal:', this.activeTerminalId);
+                    this.toggleTerminalSearch(this.activeTerminalId);
+                    this.logAction(`Terminal search toggled via keyboard shortcut (Cmd+F) for active Terminal ${this.activeTerminalId}`, 'info');
+                } else {
+                    console.log('Opening log search');
+                    this.focusSearchInput();
+                    this.logAction('Log search focused via keyboard shortcut (Cmd+F)', 'info');
+                }
             } else if (this.isCommandKey(e) && e.key === 'k') {
                 // Focus terminal selector
                 e.preventDefault();
@@ -4589,6 +4631,254 @@ class TerminalGUI {
         plansList.innerHTML = plansHTML;
     }
 
+    // Terminal search functionality
+    toggleTerminalSearch(terminalId) {
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) return;
+
+        const searchOverlay = document.querySelector(`[data-terminal-search="${terminalId}"]`);
+        if (!searchOverlay) return;
+
+        // Check if search is currently visible
+        if (terminalData.searchVisible) {
+            // Hide search if it's currently visible
+            this.hideTerminalSearch(terminalId);
+        } else {
+            // Show search if it's currently hidden
+            this.showTerminalSearch(terminalId);
+        }
+    }
+
+    showTerminalSearch(terminalId) {
+        console.log('showTerminalSearch called with terminalId:', terminalId);
+        const terminalData = this.terminals.get(terminalId);
+        console.log('Terminal data found:', !!terminalData);
+        if (!terminalData) return;
+
+        const searchOverlay = document.querySelector(`[data-terminal-search="${terminalId}"]`);
+        console.log('Search overlay found:', !!searchOverlay);
+        if (!searchOverlay) return;
+
+        // Show the search overlay
+        searchOverlay.style.display = 'block';
+        terminalData.searchVisible = true;
+        
+        // Add search-active class to terminal wrapper
+        const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
+        if (terminalWrapper) {
+            terminalWrapper.classList.add('search-active');
+        }
+        
+        console.log('Search overlay shown');
+
+        // Focus the search input
+        const searchInput = searchOverlay.querySelector('.search-input');
+        if (searchInput) {
+            searchInput.focus();
+            searchInput.select();
+            console.log('Search input focused');
+        }
+
+        // Set up event listeners if not already done
+        this.setupTerminalSearchListeners(terminalId);
+        
+        // Initialize Lucide icons in the search overlay
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons({
+                nameAttr: 'data-lucide'
+            });
+        }
+    }
+
+    hideTerminalSearch(terminalId) {
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) return;
+
+        const searchOverlay = document.querySelector(`[data-terminal-search="${terminalId}"]`);
+        if (!searchOverlay) return;
+
+        // Hide the search overlay
+        searchOverlay.style.display = 'none';
+        terminalData.searchVisible = false;
+
+        // Remove search-active class from terminal wrapper
+        const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
+        if (terminalWrapper) {
+            terminalWrapper.classList.remove('search-active');
+        }
+
+        // Clear any search highlights
+        terminalData.searchAddon.clearDecorations();
+
+        // Focus back on terminal
+        terminalData.terminal.focus();
+    }
+
+    setupTerminalSearchListeners(terminalId) {
+        const searchOverlay = document.querySelector(`[data-terminal-search="${terminalId}"]`);
+        if (!searchOverlay || searchOverlay.dataset.listenersSetup) return;
+
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) return;
+
+        const searchInput = searchOverlay.querySelector('.search-input');
+        const prevBtn = searchOverlay.querySelector('.search-prev');
+        const nextBtn = searchOverlay.querySelector('.search-next');
+        const closeBtn = searchOverlay.querySelector('.search-close');
+        const matchesDisplay = searchOverlay.querySelector('.search-matches');
+
+        let currentMatches = 0;
+        let currentIndex = 0;
+
+        // Manual search tracking since onDidChangeResults might not be available
+        let currentSearchTerm = '';
+        
+        function countMatches(searchTerm) {
+            if (!searchTerm) return 0;
+            
+            try {
+                // Get terminal buffer content
+                const buffer = terminalData.terminal.buffer.active;
+                let matchCount = 0;
+                
+                // Search through all lines in the terminal buffer
+                for (let i = 0; i < buffer.length; i++) {
+                    const line = buffer.getLine(i);
+                    if (line) {
+                        const lineText = line.translateToString();
+                        // Count overlapping matches
+                        let pos = 0;
+                        while ((pos = lineText.toLowerCase().indexOf(searchTerm.toLowerCase(), pos)) !== -1) {
+                            matchCount++;
+                            pos += 1; // Move by 1 to find overlapping matches
+                        }
+                    }
+                }
+                
+                return matchCount;
+            } catch (error) {
+                console.error('Error counting matches:', error);
+                return 0;
+            }
+        }
+        
+        function updateMatchDisplay(found, isNavigation = false) {
+            if (found) {
+                if (!isNavigation) {
+                    // Count total matches for new search
+                    currentMatches = countMatches(currentSearchTerm);
+                    currentIndex = 1;
+                } else {
+                    // For navigation, just increment/decrement index
+                    // Note: This is approximate since we don't know exact position
+                    if (currentMatches > 0) {
+                        // We'll keep current index for now
+                    }
+                }
+                
+                if (currentMatches > 0) {
+                    matchesDisplay.textContent = `${currentIndex} of ${currentMatches}`;
+                } else {
+                    matchesDisplay.textContent = 'Found';
+                }
+                
+                prevBtn.disabled = false;
+                nextBtn.disabled = false;
+            } else {
+                matchesDisplay.textContent = 'No matches';
+                prevBtn.disabled = true;
+                nextBtn.disabled = true;
+                currentIndex = 0;
+                currentMatches = 0;
+            }
+        }
+
+        // Search input handler
+        searchInput.addEventListener('input', () => {
+            const query = searchInput.value;
+            if (query) {
+                try {
+                    // Clear previous search decorations
+                    terminalData.searchAddon.clearDecorations();
+                    
+                    // Search for the term
+                    const found = terminalData.searchAddon.findNext(query);
+                    currentSearchTerm = query;
+                    updateMatchDisplay(found, false);
+                } catch (error) {
+                    console.error('Search error:', error);
+                    matchesDisplay.textContent = `Error`;
+                }
+            } else {
+                try {
+                    terminalData.searchAddon.clearDecorations();
+                } catch (error) {
+                    console.error('Clear decorations error:', error);
+                }
+                matchesDisplay.textContent = `0 of 0`;
+                prevBtn.disabled = true;
+                nextBtn.disabled = true;
+                currentSearchTerm = '';
+            }
+        });
+
+        // Navigation handlers
+        nextBtn.addEventListener('click', () => {
+            const query = searchInput.value;
+            if (query) {
+                try {
+                    const found = terminalData.searchAddon.findNext(query);
+                    if (found && currentMatches > 0) {
+                        currentIndex = Math.min(currentIndex + 1, currentMatches);
+                    }
+                    updateMatchDisplay(found, true);
+                } catch (error) {
+                    console.error('Find next error:', error);
+                    matchesDisplay.textContent = `Error`;
+                }
+            }
+        });
+
+        prevBtn.addEventListener('click', () => {
+            const query = searchInput.value;
+            if (query) {
+                try {
+                    const found = terminalData.searchAddon.findPrevious(query);
+                    if (found && currentMatches > 0) {
+                        currentIndex = Math.max(currentIndex - 1, 1);
+                    }
+                    updateMatchDisplay(found, true);
+                } catch (error) {
+                    console.error('Find previous error:', error);
+                    matchesDisplay.textContent = `Error`;
+                }
+            }
+        });
+
+        // Close handler
+        closeBtn.addEventListener('click', () => {
+            this.hideTerminalSearch(terminalId);
+        });
+
+        // Keyboard navigation within search
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                this.hideTerminalSearch(terminalId);
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (e.shiftKey) {
+                    prevBtn.click();
+                } else {
+                    nextBtn.click();
+                }
+            }
+        });
+
+        // Mark listeners as set up
+        searchOverlay.dataset.listenersSetup = 'true';
+    }
+
     // Message validation utility
     isValidMessageContent(content) {
         return content && typeof content === 'string' && content.trim().length > 0;
@@ -6072,6 +6362,26 @@ class TerminalGUI {
                 <span class="terminal-status" data-terminal-status="${newId}"></span>
             </div>
             <div class="terminal-container" data-terminal-container="${newId}"></div>
+            <div class="terminal-search-overlay" data-terminal-search="${newId}" style="display: none;">
+                <div class="search-bar">
+                    <div class="search-input-wrapper">
+                        <i class="search-icon" data-lucide="search"></i>
+                        <input type="text" class="search-input" placeholder="Search in terminal..." />
+                    </div>
+                    <div class="search-controls">
+                        <button class="search-btn search-prev" title="Previous match">
+                            <i data-lucide="chevron-up"></i>
+                        </button>
+                        <button class="search-btn search-next" title="Next match">
+                            <i data-lucide="chevron-down"></i>
+                        </button>
+                        <span class="search-matches">0/0</span>
+                        <button class="search-btn search-close" title="Close search">
+                            <i data-lucide="x"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
         `;
         
         // Add to container

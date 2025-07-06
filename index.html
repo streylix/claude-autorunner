@@ -54,6 +54,26 @@
                             <span class="terminal-status" data-terminal-status="1"></span>
                         </div>
                         <div class="terminal-container" data-terminal-container="1"></div>
+                        <div class="terminal-search-overlay" data-terminal-search="1" style="display: none;">
+                            <div class="search-bar">
+                                <div class="search-input-wrapper">
+                                    <i class="search-icon" data-lucide="search"></i>
+                                    <input type="text" class="search-input" placeholder="Search in terminal..." />
+                                </div>
+                                <div class="search-controls">
+                                    <button class="search-btn search-prev" title="Previous match">
+                                        <i data-lucide="chevron-up"></i>
+                                    </button>
+                                    <button class="search-btn search-next" title="Next match">
+                                        <i data-lucide="chevron-down"></i>
+                                    </button>
+                                    <span class="search-matches">0/0</span>
+                                    <button class="search-btn search-close" title="Close search">
+                                        <i data-lucide="x"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -436,6 +456,7 @@
     
     <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
     <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+    <script src="node_modules/@xterm/addon-search/lib/addon-search.js"></script>
     <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
     <script src="renderer.js"></script>
 </body>
