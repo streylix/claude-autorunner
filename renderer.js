@@ -26,6 +26,7 @@ class TerminalGUI {
         this.activeTerminalId = 1;
         this.terminalIdCounter = 1;
         this.terminalColors = ['#007acc', '#28ca42', '#ff5f57', '#ffbe2e', '#af52de', '#5ac8fa'];
+        this.terminalSessionMap = new Map(); // Map of terminal ID to backend session UUID
         
         // Legacy single terminal references (will be updated to use active terminal)
         this.terminal = null;
@@ -249,6 +250,16 @@ class TerminalGUI {
             // Load preferences FIRST so we have saved directory before starting terminal
             await this.loadAllPreferences();
             
+            // Load terminal session mapping
+            this.loadTerminalSessionMapping();
+            
+            // Initialize backend API client before terminal initialization
+            if (typeof BackendAPIClient !== 'undefined') {
+                this.backendAPIClient = new BackendAPIClient();
+                // Sync existing backend sessions with frontend terminals
+                await this.syncTerminalSessions();
+            }
+            
             this.initializeTerminal();
             this.setupEventListeners();
             
@@ -272,10 +283,6 @@ class TerminalGUI {
             // Initialize todo system
             this.initializeTodoSystem();
             
-            // Initialize backend API client
-            if (typeof BackendAPIClient !== 'undefined') {
-                this.backendAPIClient = new BackendAPIClient();
-            }
             
             // Log using direct console method to bypass throttling
             this.directLog('App initialization completed successfully');
@@ -5242,6 +5249,60 @@ class TerminalGUI {
         }
     }
 
+    saveTerminalSessionMapping() {
+        try {
+            // Convert Map to object for storage
+            const mappingObj = {};
+            this.terminalSessionMap.forEach((sessionId, terminalId) => {
+                mappingObj[terminalId] = sessionId;
+            });
+            localStorage.setItem('terminalSessionMapping', JSON.stringify(mappingObj));
+        } catch (error) {
+            console.error('Failed to save terminal session mapping:', error);
+        }
+    }
+
+    loadTerminalSessionMapping() {
+        try {
+            const stored = localStorage.getItem('terminalSessionMapping');
+            if (stored) {
+                const mappingObj = JSON.parse(stored);
+                this.terminalSessionMap.clear();
+                Object.entries(mappingObj).forEach(([terminalId, sessionId]) => {
+                    this.terminalSessionMap.set(parseInt(terminalId), sessionId);
+                });
+            }
+        } catch (error) {
+            console.error('Failed to load terminal session mapping:', error);
+        }
+    }
+
+    async syncTerminalSessions() {
+        // Sync existing backend sessions with frontend terminals
+        // This helps maintain mapping across app restarts
+        if (!this.backendAPIClient) return;
+        
+        try {
+            const sessions = await this.backendAPIClient.getTerminalSessions();
+            const existingSessions = sessions.results || sessions;
+            
+            // For each existing session, try to match with terminal names
+            for (const session of existingSessions) {
+                const match = session.name.match(/Terminal (\d+)/);
+                if (match) {
+                    const terminalId = parseInt(match[1]);
+                    if (!this.terminalSessionMap.has(terminalId)) {
+                        this.terminalSessionMap.set(terminalId, session.id);
+                    }
+                }
+            }
+            
+            this.saveTerminalSessionMapping();
+        } catch (error) {
+            console.error('Failed to sync terminal sessions:', error);
+        }
+    }
+
     async checkAndMigrateLocalStorageData() {
         try {
             // Check if localStorage has data
@@ -6430,6 +6491,21 @@ class TerminalGUI {
         // Create terminal instance
         const terminalData = this.createTerminal(newId);
         
+        // Create backend session if available
+        if (this.backendAPIClient) {
+            this.backendAPIClient.createTerminalSession(`Terminal ${newId}`, this.currentDirectory)
+                .then(session => {
+                    // Store the mapping of frontend terminal ID to backend session UUID
+                    this.terminalSessionMap.set(newId, session.id);
+                    this.saveTerminalSessionMapping();
+                    this.logAction(`Created backend session for Terminal ${newId}`, 'info');
+                })
+                .catch(error => {
+                    console.error('Failed to create backend terminal session:', error);
+                    this.logAction(`Failed to create backend session for Terminal ${newId}`, 'error');
+                });
+        }
+        
         // Start terminal process
         ipcRenderer.send('terminal-start', { terminalId: newId, directory: this.currentDirectory });
         
@@ -6509,6 +6585,10 @@ class TerminalGUI {
         
         // Remove from terminals map
         this.terminals.delete(terminalId);
+        
+        // Remove from terminal session mapping
+        this.terminalSessionMap.delete(terminalId);
+        this.saveTerminalSessionMapping();
         
         // Remove DOM element
         const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
@@ -7161,7 +7241,13 @@ class TerminalGUI {
     
     async generateTodosViaBackend(terminalId, terminalOutput) {
         try {
-            const sessionId = this.backendAPIClient.currentSessionId || await this.createBackendSession(terminalId);
+            // Get the session ID for this specific terminal
+            let sessionId = this.terminalSessionMap.get(terminalId);
+            
+            // If no session ID found, create one
+            if (!sessionId) {
+                sessionId = await this.createBackendSession(terminalId);
+            }
             
             console.log('[DEBUG] Generating todos:', {
                 terminalId,
@@ -7214,7 +7300,9 @@ class TerminalGUI {
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             
             const session = await response.json();
-            this.backendAPIClient.currentSessionId = session.id;
+            // Store the mapping
+            this.terminalSessionMap.set(terminalId, session.id);
+            this.saveTerminalSessionMapping();
             return session.id;
         } catch (error) {
             throw new Error(`Failed to create backend session: ${error.message}`);
@@ -7304,8 +7392,13 @@ class TerminalGUI {
     }
     
     getTerminalNumberFromSession(sessionId) {
-        // For now, return a default terminal number
-        // In the future, we could map session IDs to terminal numbers
+        // Find the terminal ID that maps to this session UUID
+        for (const [terminalId, mappedSessionId] of this.terminalSessionMap.entries()) {
+            if (mappedSessionId === sessionId) {
+                return terminalId;
+            }
+        }
+        // If no mapping found, return active terminal ID as fallback
         return this.activeTerminalId || 1;
     }
     
