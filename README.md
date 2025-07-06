@@ -80,6 +80,8 @@ Next-generation auto-continue system that intelligently processes entire workflo
 - **Microphone access** for voice features (optional)
 
 ### Installation
+
+#### Option 1: Electron Only (Basic)
 ```bash
 # Clone the repository
 git clone https://github.com/yourusername/auto-injector.git
@@ -91,6 +93,52 @@ npm install
 # Start the application
 npm start
 ```
+
+#### Option 2: With Django Backend (Advanced)
+For enhanced functionality including persistent memory, voice processing, and advanced features:
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/auto-injector.git
+cd auto-injector
+
+# Install Electron dependencies
+npm install
+
+# Set up Django backend
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python manage.py migrate
+
+# Start both backend and frontend (with waiting for backend)
+cd ..
+./start_with_backend.sh
+
+# OR start immediately without waiting (recommended)
+./start_simple.sh
+```
+
+### 🐍 Django Backend Features
+
+The optional Django backend running on port 8001 provides:
+
+- **🔄 Persistent Memory** - Sessions, queues, and settings survive app restarts
+- **🎙️ Enhanced Voice Processing** - Server-side speech recognition with multiple engines
+- **📡 WebSocket Support** - Real-time terminal communication
+- **🗃️ Advanced Storage** - SQLite database for all application data
+- **🔌 REST API** - Full API access for automation and integration
+- **⚡ Performance** - Offload processing from Electron to dedicated server
+
+**Backend API Endpoints:**
+- `http://127.0.0.1:8001/api/terminal/` - Terminal session management
+- `http://127.0.0.1:8001/api/queue/` - Message queue operations  
+- `http://127.0.0.1:8001/api/voice/` - Voice transcription services
+- `http://127.0.0.1:8001/api/settings/` - Persistent settings storage
+- `http://127.0.0.1:8001/api/todos/` - AI-powered todo generation system
+
+See `backend/README.md` for complete API documentation.
 
 ### First Run Setup
 1. **Launch the app** - Terminal will initialize automatically

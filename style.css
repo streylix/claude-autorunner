@@ -45,6 +45,14 @@
     --terminal-bright-magenta: #bf5af2;
     --terminal-bright-cyan: #64d8ff;
     --terminal-bright-white: #ffffff;
+    
+    /* Terminal specific colors for todos and messages */
+    --terminal-1: #007acc;
+    --terminal-2: #28ca42;
+    --terminal-3: #ff5f57;
+    --terminal-4: #ffbe2e;
+    --terminal-5: #af52de;
+    --terminal-6: #5ac8fa;
 }
 
 /* Light theme (Catppuccin Latte) */
@@ -87,6 +95,14 @@
     --terminal-bright-magenta: #ea76cb;
     --terminal-bright-cyan: #179299;
     --terminal-bright-white: #4c4f69;
+    
+    /* Terminal specific colors for todos and messages */
+    --terminal-1: #1e66f5;
+    --terminal-2: #40a02b;
+    --terminal-3: #d20f39;
+    --terminal-4: #df8e1d;
+    --terminal-5: #ea76cb;
+    --terminal-6: #179299;
 }
 
 /* System theme detection */
@@ -130,6 +146,14 @@
         --terminal-bright-magenta: #ea76cb;
         --terminal-bright-cyan: #179299;
         --terminal-bright-white: #4c4f69;
+        
+        /* Terminal specific colors for todos and messages */
+        --terminal-1: #1e66f5;
+        --terminal-2: #40a02b;
+        --terminal-3: #d20f39;
+        --terminal-4: #df8e1d;
+        --terminal-5: #ea76cb;
+        --terminal-6: #179299;
     }
 }
 
@@ -675,9 +699,6 @@ body {
     border-left: 3px solid var(--accent-magenta);
 }
 
-.message-item.command {
-    border-left: 3px solid var(--accent-success);
-}
 
 .message-content {
     flex: 1;
@@ -2255,7 +2276,13 @@ body {
     border-radius: 2px;
 }
 
-#clear-log-btn {
+/* Sidebar Navigation */
+.sidebar-nav-buttons {
+    display: flex;
+    gap: 4px;
+}
+
+.sidebar-nav-btn {
     background: none;
     border: none;
     color: var(--text-quaternary);
@@ -2268,14 +2295,224 @@ body {
     justify-content: center;
 }
 
+.sidebar-nav-btn:hover {
+    color: var(--text-secondary);
+    background-color: var(--bg-tertiary);
+}
+
+.sidebar-nav-btn.active {
+    color: var(--accent-primary);
+    background-color: rgba(0, 122, 204, 0.1);
+}
+
+.sidebar-nav-btn i {
+    width: 16px;
+    height: 16px;
+}
+
+/* Sidebar Views */
+.sidebar-view {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* Sidebar Footer */
+.sidebar-footer {
+    padding: 12px 15px;
+    border-top: 1px solid var(--border-primary);
+    background-color: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.footer-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 8px 12px;
+    border-radius: 4px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    justify-content: center;
+}
+
+.footer-btn:hover {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
+}
+
+.footer-btn i {
+    width: 14px;
+    height: 14px;
+}
+
 #clear-log-btn:hover {
     color: var(--accent-error);
     background-color: rgba(255, 95, 87, 0.1);
+    border-color: var(--accent-error);
 }
 
-#clear-log-btn i {
-    width: 16px;
-    height: 16px;
+/* To-Do Styles */
+.todo-search {
+    padding: 10px 15px;
+    border-bottom: 1px solid var(--border-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.todo-content {
+    flex: 1;
+    padding: 15px;
+    overflow-y: auto;
+}
+
+.todo-item {
+    background-color: var(--bg-tertiary);
+    padding: 12px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    border-left: 3px solid var(--border-secondary);
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.todo-item:hover {
+    border-color: var(--border-secondary);
+    background-color: var(--bg-secondary);
+}
+
+.todo-item.completed {
+    opacity: 0.6;
+}
+
+.todo-item.completed .todo-message {
+    text-decoration: line-through;
+}
+
+.todo-checkbox-wrapper {
+    display: flex;
+    align-items: center;
+    margin-top: 2px;
+}
+
+.todo-checkbox {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 2px solid var(--border-secondary);
+    background: var(--bg-primary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    appearance: none;
+    position: relative;
+}
+
+.todo-checkbox:checked {
+    background: var(--accent-success);
+    border-color: var(--accent-success);
+}
+
+.todo-checkbox:checked::after {
+    content: '✓';
+    position: absolute;
+    top: -1px;
+    left: 1px;
+    color: white;
+    font-size: 10px;
+    font-weight: bold;
+}
+
+/* Terminal-specific checkbox and border colors */
+.todo-checkbox[data-terminal="1"] {
+    border-color: var(--terminal-1);
+}
+
+.todo-checkbox[data-terminal="1"]:checked {
+    background: var(--terminal-1);
+    border-color: var(--terminal-1);
+}
+
+.todo-item[data-terminal="1"] {
+    border-left-color: var(--terminal-1);
+}
+
+.todo-checkbox[data-terminal="2"] {
+    border-color: var(--terminal-2);
+}
+
+.todo-checkbox[data-terminal="2"]:checked {
+    background: var(--terminal-2);
+    border-color: var(--terminal-2);
+}
+
+.todo-item[data-terminal="2"] {
+    border-left-color: var(--terminal-2);
+}
+
+.todo-checkbox[data-terminal="3"] {
+    border-color: var(--terminal-3);
+}
+
+.todo-checkbox[data-terminal="3"]:checked {
+    background: var(--terminal-3);
+    border-color: var(--terminal-3);
+}
+
+.todo-item[data-terminal="3"] {
+    border-left-color: var(--terminal-3);
+}
+
+.todo-checkbox[data-terminal="4"] {
+    border-color: var(--terminal-4);
+}
+
+.todo-checkbox[data-terminal="4"]:checked {
+    background: var(--terminal-4);
+    border-color: var(--terminal-4);
+}
+
+.todo-item[data-terminal="4"] {
+    border-left-color: var(--terminal-4);
+}
+
+.todo-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.todo-time {
+    color: var(--text-tertiary);
+    font-size: 10px;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+}
+
+.todo-message {
+    color: var(--text-primary);
+    font-size: 12px;
+    word-wrap: break-word;
+    line-height: 1.4;
+}
+
+.todo-description {
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.3;
+    margin-top: 4px;
+    font-style: italic;
 }
 
 /* Hotkey Dropdown */

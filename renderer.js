@@ -269,6 +269,14 @@ class TerminalGUI {
             this.setupTrayEventListeners();
             this.updateTrayBadge();
             
+            // Initialize todo system
+            this.initializeTodoSystem();
+            
+            // Initialize backend API client
+            if (typeof BackendAPIClient !== 'undefined') {
+                this.backendAPIClient = new BackendAPIClient();
+            }
+            
             // Log using direct console method to bypass throttling
             this.directLog('App initialization completed successfully');
         } catch (error) {
@@ -309,6 +317,11 @@ class TerminalGUI {
     // Helper function to detect the correct modifier key for the platform
     isCommandKey(e) {
         return this.isMac ? e.metaKey : e.ctrlKey;
+    }
+
+    // Helper function to check if user is typing in an input field
+    isTypingInInputField(e) {
+        return e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
     }
 
     updatePlatformSpecificShortcuts() {
@@ -421,6 +434,9 @@ class TerminalGUI {
         if (terminalContainer) {
             terminal.open(terminalContainer);
             
+            // Store the terminal container element for later access
+            terminalData.element = terminalContainer;
+            
             // Fit terminal to container
             setTimeout(() => {
                 fitAddon.fit();
@@ -479,6 +495,13 @@ class TerminalGUI {
             if (!savedDirectory) {
                 console.log('Requesting current working directory...');
                 ipcRenderer.send('get-cwd', { terminalId: id });
+            }
+            
+            // Create backend session if API client is available
+            if (this.backendAPIClient) {
+                this.createBackendSession(id).catch(error => {
+                    console.warn('Failed to create backend session for terminal', id, ':', error);
+                });
             }
         }
         
@@ -695,7 +718,14 @@ class TerminalGUI {
                 }
                 
                 // Block all other global hotkeys when settings modal is open
-                if (this.isCommandKey(e) || e.shiftKey || e.altKey) {
+                // Allow shift key for normal typing in input fields
+                if (this.isCommandKey(e) || (e.altKey && !this.isTypingInInputField(e))) {
+                    e.preventDefault();
+                    return;
+                }
+                
+                // Block shift key only for non-input elements or when combined with other keys
+                if (e.shiftKey && (!this.isTypingInInputField(e) || e.ctrlKey || e.metaKey)) {
                     e.preventDefault();
                     return;
                 }
@@ -1602,9 +1632,6 @@ class TerminalGUI {
                 messageElement.classList.add('injecting');
             }
             
-            if (this.isCommandMessage(message.content)) {
-                messageElement.classList.add('command');
-            }
             
             // Set terminal color for message border
             const terminalId = message.terminalId || 1;
@@ -3082,6 +3109,15 @@ class TerminalGUI {
             
             // Debug logging for status changes
             this.logAction(`Terminal ${terminalId} status changed: ${oldStatus} → ${newStatus}`, 'info');
+            
+            // Trigger automatic todo generation when going from 'running' to 'ready'
+            if (oldStatus === 'running' && newStatus === 'ready') {
+                // Add a small delay to ensure the terminal output is fully captured
+                setTimeout(() => {
+                    this.logAction(`Auto-generating todos for Terminal ${terminalId}`, 'info');
+                    this.manualGenerateTodos();
+                }, 1000);
+            }
         }
         
         // Update the terminal's status
@@ -5177,6 +5213,9 @@ class TerminalGUI {
             // Load saved usage limit reset time and start auto-sync if available
             await this.loadUsageLimitResetTime();
             
+            // Synchronize planCount with loaded planRules
+            this.syncPlanCount();
+            
             this.logAction('Preferences loaded successfully from database', 'success');
         } catch (error) {
             console.error('Error loading preferences:', error);
@@ -5580,6 +5619,18 @@ class TerminalGUI {
         };
     }
 
+    syncPlanCount() {
+        // Synchronize planCount with the actual length of planRules array
+        if (this.preferences.planRules && Array.isArray(this.preferences.planRules)) {
+            this.planCount = this.preferences.planRules.length;
+            this.updateStatusDisplay();
+            console.log(`Plan count synchronized: ${this.planCount} plans loaded`);
+        } else {
+            this.planCount = 0;
+            this.updateStatusDisplay();
+        }
+    }
+
     checkForPlanDetection() {
         // Check all terminals for plan detection
         for (const [terminalId, terminalData] of this.terminals) {
@@ -5599,9 +5650,8 @@ class TerminalGUI {
                     this.preferences.planRules.push(result.plan);
                     this.saveAllPreferences();
                     
-                    // Update counter
-                    this.planCount++;
-                    this.updateStatusDisplay();
+                    // Update counter using sync method to ensure consistency
+                    this.syncPlanCount();
                     
                     console.log(`Plan detected in Terminal ${terminalId} and added to list`);
                     return result;
@@ -5866,20 +5916,6 @@ class TerminalGUI {
         this.logAction(`Inserted hotkey: ${command}`, 'info');
     }
 
-    // Command detection for styling
-    isCommandMessage(content) {
-        // Common command patterns
-        const commandPatterns = [
-            /^\^[A-Z]/,  // Ctrl commands like ^C, ^Z
-            /\\x1b/,     // Escape sequences
-            /\\r/,       // Return/Enter
-            /\\t/,       // Tab
-            /\r\n|\n|\r/, // Line breaks
-            /^(ls|cd|pwd|cat|grep|find|ps|kill|top|htop|vim|nano|git|npm|yarn|docker|curl|wget)/i, // Common terminal commands
-        ];
-        
-        return commandPatterns.some(pattern => pattern.test(content));
-    }
 
     // Smart waiting system for auto-injection
     waitForStableReadyState(callback) {
@@ -6918,6 +6954,491 @@ class TerminalGUI {
                 }
             });
         }
+    }
+
+    // ===============================
+    // TODO SYSTEM METHODS
+    // ===============================
+    
+    initializeTodoSystem() {
+        // Restore saved view state from localStorage or default to action-log
+        let savedView = 'action-log';
+        try {
+            savedView = localStorage.getItem('sidebarView') || 'action-log';
+        } catch (error) {
+            console.warn('Failed to restore sidebar view from localStorage:', error);
+        }
+        
+        this.todoSystem = {
+            currentView: savedView,
+            todos: [],
+            terminalStateMonitors: new Map(),
+            dotWaitStartTime: null,
+            isWaitingForCompletion: false
+        };
+        
+        this.setupTodoEventListeners();
+        // Note: Automatic todo generation now uses the existing scanSingleTerminalStatus logic
+        
+        // Apply the saved view state after DOM is ready
+        setTimeout(() => {
+            try {
+                this.switchSidebarView(savedView);
+            } catch (error) {
+                console.warn('Failed to switch sidebar view:', error);
+                // Fallback to action-log if there's an error
+                this.switchSidebarView('action-log');
+            }
+        }, 100);
+    }
+    
+    setupTodoEventListeners() {
+        // Navigation buttons
+        const actionLogNavBtn = document.getElementById('action-log-nav-btn');
+        const todoNavBtn = document.getElementById('todo-nav-btn');
+        
+        if (actionLogNavBtn) {
+            actionLogNavBtn.addEventListener('click', () => this.switchSidebarView('action-log'));
+        }
+        
+        if (todoNavBtn) {
+            todoNavBtn.addEventListener('click', () => this.switchSidebarView('todo'));
+        }
+        
+        // Footer buttons
+        const clearTodosBtn = document.getElementById('clear-todos-btn');
+        
+        if (clearTodosBtn) {
+            clearTodosBtn.addEventListener('click', () => this.clearCompletedTodos());
+        }
+        
+        // Todo search
+        const todoSearch = document.getElementById('todo-search');
+        if (todoSearch) {
+            todoSearch.addEventListener('input', (e) => this.filterTodos(e.target.value));
+        }
+        
+        // Manual generate todos button
+        const manualGenerateBtn = document.getElementById('manual-generate-btn');
+        if (manualGenerateBtn) {
+            manualGenerateBtn.addEventListener('click', () => this.manualGenerateTodos());
+        }
+        
+        const todoSearchClearBtn = document.getElementById('todo-search-clear-btn');
+        if (todoSearchClearBtn) {
+            todoSearchClearBtn.addEventListener('click', () => {
+                todoSearch.value = '';
+                this.filterTodos('');
+            });
+        }
+    }
+    
+    switchSidebarView(view) {
+        const actionLogView = document.getElementById('action-log-view');
+        const todoView = document.getElementById('todo-view');
+        const actionLogNavBtn = document.getElementById('action-log-nav-btn');
+        const todoNavBtn = document.getElementById('todo-nav-btn');
+        const sidebarTitle = document.getElementById('sidebar-title');
+        
+        if (view === 'action-log') {
+            actionLogView.style.display = 'flex';
+            todoView.style.display = 'none';
+            actionLogNavBtn.classList.add('active');
+            todoNavBtn.classList.remove('active');
+            sidebarTitle.textContent = 'Action Log';
+            this.todoSystem.currentView = 'action-log';
+            // Save the current view state to localStorage
+            try {
+                localStorage.setItem('sidebarView', 'action-log');
+            } catch (error) {
+                console.warn('Failed to save sidebar view to localStorage:', error);
+            }
+        } else if (view === 'todo') {
+            actionLogView.style.display = 'none';
+            todoView.style.display = 'flex';
+            actionLogNavBtn.classList.remove('active');
+            todoNavBtn.classList.add('active');
+            sidebarTitle.textContent = 'To-Do';
+            this.todoSystem.currentView = 'todo';
+            // Save the current view state to localStorage
+            try {
+                localStorage.setItem('sidebarView', 'todo');
+            } catch (error) {
+                console.warn('Failed to save sidebar view to localStorage:', error);
+            }
+            this.loadTodos();
+        }
+    }
+    
+    startTerminalStateMonitoring() {
+        // Monitor all terminals for completion state
+        setInterval(() => {
+            this.checkTerminalStatesForCompletion();
+        }, 1000); // Check every second
+    }
+    
+    checkTerminalStatesForCompletion() {
+        for (const [terminalId, terminal] of this.terminals) {
+            if (!terminal.element) continue;
+            
+            // Look for the terminal status indicator using the correct selector from setTerminalStatusDisplay
+            const terminalStatusElement = document.querySelector(`[data-terminal-status="${terminalId}"]`);
+            
+            const isThinking = terminalStatusElement && terminalStatusElement.textContent.includes('...');
+            const isRunning = terminalStatusElement && (
+                terminalStatusElement.textContent.includes('Running') || 
+                terminalStatusElement.className.includes('running')
+            );
+            
+            // Enhanced debug logging (increase frequency temporarily to debug)
+            if (Math.random() < 0.05) { // 5% chance to log for debugging
+                console.log(`[DEBUG] Terminal ${terminalId}:`, {
+                    hasStatusElement: !!terminalStatusElement,
+                    statusText: terminalStatusElement?.textContent?.substring(0, 100),
+                    isThinking,
+                    isRunning,
+                    elementTagName: terminalStatusElement?.tagName,
+                    elementClass: terminalStatusElement?.className
+                });
+            }
+            
+            // Check if terminal is in any busy state (thinking "..." or running)
+            const isBusy = isThinking || isRunning;
+            
+            if (isBusy) {
+                // Terminal is busy - start or update monitoring
+                if (!this.todoSystem.terminalStateMonitors.has(terminalId)) {
+                    this.todoSystem.terminalStateMonitors.set(terminalId, {
+                        busyStartTime: Date.now(),
+                        wasInBusyState: true,
+                        wasRunning: isRunning // Track if we've seen the "running" state
+                    });
+                    this.logAction(`Terminal ${terminalId} entered busy state`, 'info');
+                } else {
+                    // Update the running state if we see it, and reset idle timer if terminal goes back to busy
+                    const monitor = this.todoSystem.terminalStateMonitors.get(terminalId);
+                    if (isRunning && !monitor.wasRunning) {
+                        monitor.wasRunning = true;
+                    }
+                    // Reset idle timer if terminal goes back to busy after being idle
+                    if (monitor.idleStartTime) {
+                        delete monitor.idleStartTime;
+                        this.logAction(`Terminal ${terminalId} became busy again, resetting idle timer`, 'info');
+                    }
+                    this.todoSystem.terminalStateMonitors.set(terminalId, monitor);
+                }
+            } else {
+                // Terminal is now idle - check if we should generate todos
+                const monitor = this.todoSystem.terminalStateMonitors.get(terminalId);
+                if (monitor && monitor.wasInBusyState && monitor.wasRunning) {
+                    // Terminal went through the full cycle: ... -> running -> idle
+                    const busyDuration = Date.now() - monitor.busyStartTime;
+                    if (busyDuration >= 3000) { // Minimum 3 seconds of activity
+                        // Set idle start time if not already set
+                        if (!monitor.idleStartTime) {
+                            monitor.idleStartTime = Date.now();
+                            this.todoSystem.terminalStateMonitors.set(terminalId, monitor);
+                            this.logAction(`Terminal ${terminalId} became idle, waiting for stability...`, 'info');
+                        } else {
+                            // Check if idle for long enough (4 seconds)
+                            const idleDuration = Date.now() - monitor.idleStartTime;
+                            if (idleDuration >= 4000) { // 4 seconds of idle time
+                                this.logAction(`Terminal ${terminalId} completed work (${Math.round(busyDuration/1000)}s active, ${Math.round(idleDuration/1000)}s idle)`, 'success');
+                                // Trigger the same functionality as the manual button press
+                                this.manualGenerateTodos();
+                                this.todoSystem.terminalStateMonitors.delete(terminalId);
+                            }
+                        }
+                    } else {
+                        // If terminal wasn't busy long enough, just clean up
+                        this.todoSystem.terminalStateMonitors.delete(terminalId);
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    async generateTodosViaBackend(terminalId, terminalOutput) {
+        try {
+            const sessionId = this.backendAPIClient.currentSessionId || await this.createBackendSession(terminalId);
+            
+            console.log('[DEBUG] Generating todos:', {
+                terminalId,
+                sessionId,
+                outputLength: terminalOutput.length,
+                outputPreview: terminalOutput.substring(0, 200)
+            });
+            
+            const response = await fetch('http://127.0.0.1:8001/api/todos/items/generate_from_output/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    terminal_session: sessionId,
+                    terminal_output: terminalOutput
+                })
+            });
+            
+            console.log('[DEBUG] Response status:', response.status);
+            
+            if (!response.ok) {
+                const responseText = await response.text();
+                console.error('[DEBUG] Error response:', responseText);
+                throw new Error(`HTTP ${response.status}: ${responseText.substring(0, 200)}`);
+            }
+            
+            const result = await response.json();
+            console.log('[DEBUG] Success response:', result);
+            return result;
+        } catch (error) {
+            console.error('[DEBUG] Todo generation error:', error);
+            return { success: false, error: error.message };
+        }
+    }
+    
+    async createBackendSession(terminalId) {
+        try {
+            const response = await fetch('http://127.0.0.1:8001/api/terminal/sessions/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    name: `Terminal ${terminalId}`,
+                    current_directory: process.cwd()
+                })
+            });
+            
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const session = await response.json();
+            this.backendAPIClient.currentSessionId = session.id;
+            return session.id;
+        } catch (error) {
+            throw new Error(`Failed to create backend session: ${error.message}`);
+        }
+    }
+    
+    async manualGenerateTodos() {
+        try {
+            const activeTerminal = this.terminals.get(this.activeTerminalId);
+            if (!activeTerminal || !activeTerminal.element) {
+                this.logAction('No active terminal for todo generation', 'error');
+                return;
+            }
+            
+            // Get clean text content from the terminal buffer, not the DOM
+            const terminalOutput = this.getCleanTerminalOutput(activeTerminal.terminal);
+            this.logAction(`Manually generating todos from Terminal ${this.activeTerminalId}`, 'info');
+            
+            const result = await this.generateTodosViaBackend(this.activeTerminalId, terminalOutput);
+            if (result.success) {
+                this.logAction(`Generated ${result.todos_created} todo items`, 'success');
+                this.refreshTodos();
+            } else {
+                this.logAction(`Manual todo generation failed: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.logAction(`Error in manual todo generation: ${error.message}`, 'error');
+        }
+    }
+    
+    async loadTodos() {
+        try {
+            const response = await fetch('http://127.0.0.1:8001/api/todos/items/');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const data = await response.json();
+            this.todoSystem.todos = data.results || data;
+            this.renderTodos();
+        } catch (error) {
+            this.logAction(`Error loading todos: ${error.message}`, 'error');
+        }
+    }
+    
+    renderTodos() {
+        const todoList = document.getElementById('todo-list');
+        const clearTodosBtn = document.getElementById('clear-todos-btn');
+        if (!todoList) return;
+        
+        if (this.todoSystem.todos.length === 0) {
+            todoList.innerHTML = `
+                <div class="todo-item">
+                    <div class="todo-text">
+                        <span class="todo-time">[empty]</span>
+                        <span class="todo-message">No todos yet. Generate some from terminal output!</span>
+                    </div>
+                </div>
+            `;
+            // Hide Clear Completed button when no todos
+            if (clearTodosBtn) clearTodosBtn.style.display = 'none';
+            return;
+        }
+        
+        todoList.innerHTML = this.todoSystem.todos.map(todo => {
+            const terminalNumber = this.getTerminalNumberFromSession(todo.terminal_session);
+            return `
+                <div class="todo-item ${todo.completed ? 'completed' : ''}" data-todo-id="${todo.id}" data-terminal="${terminalNumber}" onclick="window.terminalGUI.toggleTodo('${todo.id}')" style="cursor: pointer;">
+                    <div class="todo-checkbox-wrapper">
+                        <input type="checkbox" class="todo-checkbox" 
+                               data-terminal="${terminalNumber}" 
+                               ${todo.completed ? 'checked' : ''}
+                               onchange="window.terminalGUI.toggleTodo('${todo.id}')"
+                               onclick="event.stopPropagation();">
+                    </div>
+                    <div class="todo-text">
+                        <span class="todo-message">${this.escapeHtml(todo.title)}</span>
+                        ${todo.description ? `<div class="todo-description">${this.escapeHtml(todo.description)}</div>` : ''}
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
+        // Show/hide Clear Completed button based on whether there are completed todos
+        const hasCompletedTodos = this.todoSystem.todos.some(todo => todo.completed);
+        if (clearTodosBtn) {
+            clearTodosBtn.style.display = hasCompletedTodos ? 'flex' : 'none';
+        }
+    }
+    
+    getTerminalNumberFromSession(sessionId) {
+        // For now, return a default terminal number
+        // In the future, we could map session IDs to terminal numbers
+        return this.activeTerminalId || 1;
+    }
+    
+    getCleanTerminalOutput(terminal) {
+        try {
+            // Use xterm.js buffer API to get clean text content
+            const buffer = terminal.buffer.active;
+            const lines = [];
+            
+            // Get the last 200 lines to ensure we capture enough content
+            const startLine = Math.max(0, buffer.length - 200);
+            
+            for (let i = startLine; i < buffer.length; i++) {
+                const line = buffer.getLine(i);
+                if (line) {
+                    lines.push(line.translateToString(true)); // true = trim right whitespace
+                }
+            }
+            
+            const fullOutput = lines.join('\n').trim();
+            
+            // Extract last 1000 characters before '╭' character (Claude prompt indicator)
+            return this.extractRelevantOutput(fullOutput);
+        } catch (error) {
+            console.warn('Failed to get clean terminal output, falling back to textContent:', error);
+            // Fallback: try to get text from the terminal viewport
+            const viewport = terminal.element?.querySelector('.xterm-screen');
+            const fallbackOutput = viewport?.textContent || '';
+            return this.extractRelevantOutput(fallbackOutput);
+        }
+    }
+    
+    extractRelevantOutput(terminalOutput) {
+        // Find the last occurrence of '╭' (Claude prompt indicator)
+        const lastPromptStart = terminalOutput.lastIndexOf('╭');
+        
+        if (lastPromptStart === -1) {
+            // No prompt found, use the last 1000 characters
+            return terminalOutput.length > 1000 ? terminalOutput.slice(-1000) : terminalOutput;
+        }
+        
+        // Extract content before the prompt
+        const contentBeforePrompt = terminalOutput.substring(0, lastPromptStart);
+        
+        // Get the last 1000 characters before the prompt
+        return contentBeforePrompt.length > 1000 ? 
+            contentBeforePrompt.slice(-1000) : 
+            contentBeforePrompt;
+    }
+    
+    async toggleTodo(todoId) {
+        try {
+            const response = await fetch(`http://127.0.0.1:8001/api/todos/items/${todoId}/toggle_completed/`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
+            
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const updatedTodo = await response.json();
+            
+            // Update local todos array
+            const todoIndex = this.todoSystem.todos.findIndex(t => t.id === todoId);
+            if (todoIndex !== -1) {
+                this.todoSystem.todos[todoIndex] = updatedTodo;
+                this.renderTodos();
+            }
+            
+            this.logAction(`Todo "${updatedTodo.title.substring(0, 30)}..." ${updatedTodo.completed ? 'completed' : 'reopened'}`, 'info');
+        } catch (error) {
+            this.logAction(`Error toggling todo: ${error.message}`, 'error');
+        }
+    }
+    
+    async clearCompletedTodos() {
+        try {
+            // Check if backend is available
+            if (!this.backendAPIClient || !(await this.backendAPIClient.isBackendAvailable())) {
+                this.logAction('Backend not available for clearing todos', 'error');
+                return;
+            }
+            
+            // Get current terminal session ID
+            let terminalSessionId = this.backendAPIClient.currentSessionId;
+            console.log('[DEBUG] Current session ID:', terminalSessionId);
+            
+            if (!terminalSessionId) {
+                // Try to create a session if none exists
+                this.logAction('No session found, creating one...', 'info');
+                try {
+                    terminalSessionId = await this.createBackendSession(this.activeTerminalId);
+                    console.log('[DEBUG] Created session ID:', terminalSessionId);
+                } catch (sessionError) {
+                    this.logAction(`Failed to create session: ${sessionError.message}`, 'error');
+                    return;
+                }
+            }
+            
+            // For now, clear all completed todos regardless of session to handle legacy todos
+            const result = await this.backendAPIClient.clearCompletedTodos(null);
+            this.logAction(`Cleared ${result.deleted_count} completed todos`, 'success');
+            this.refreshTodos();
+        } catch (error) {
+            this.logAction(`Error clearing completed todos: ${error.message}`, 'error');
+        }
+    }
+    
+    refreshTodos() {
+        if (this.todoSystem.currentView === 'todo') {
+            this.loadTodos();
+        }
+    }
+    
+    filterTodos(searchTerm) {
+        const todoItems = document.querySelectorAll('.todo-item');
+        const lowercaseSearch = searchTerm.toLowerCase();
+        
+        todoItems.forEach(item => {
+            const title = item.querySelector('.todo-message')?.textContent || '';
+            const description = item.querySelector('.todo-description')?.textContent || '';
+            const matches = title.toLowerCase().includes(lowercaseSearch) || 
+                          description.toLowerCase().includes(lowercaseSearch);
+            
+            item.style.display = matches ? 'flex' : 'none';
+        });
+    }
+    
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
 }

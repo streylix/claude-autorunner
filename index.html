@@ -18,21 +18,66 @@
         <div class="main-content">
             <div class="action-log-sidebar">
                 <div class="action-log-header">
-                    <span class="action-log-title">Action Log</span>
-                    <button class="icon-btn hotkey-enabled" id="clear-log-btn" title="Clear action log" data-hotkey="Cmd+Shift+L">
-                        <i data-lucide="eraser"></i>
-                    </button>
+                    <span class="action-log-title" id="sidebar-title">Action Log</span>
+                    <div class="sidebar-nav-buttons">
+                        <button class="icon-btn sidebar-nav-btn active" id="action-log-nav-btn" title="Action Log">
+                            <i data-lucide="scroll-text"></i>
+                        </button>
+                        <button class="icon-btn sidebar-nav-btn" id="todo-nav-btn" title="To-Do">
+                            <i data-lucide="check-square"></i>
+                        </button>
+                    </div>
                 </div>
-                <div class="action-log-search">
-                    <input type="text" id="log-search" placeholder="Search logs... (Cmd+F)" class="log-search-input hotkey-enabled" data-hotkey="Cmd+F">
-                    <button class="icon-btn" id="search-clear-btn" title="Clear search">
-                        <i data-lucide="x"></i>
-                    </button>
+                
+                <!-- Action Log View -->
+                <div class="sidebar-view" id="action-log-view">
+                    <div class="action-log-search">
+                        <input type="text" id="log-search" placeholder="Search logs... (Cmd+F)" class="log-search-input hotkey-enabled" data-hotkey="Cmd+F">
+                        <button class="icon-btn" id="search-clear-btn" title="Clear search">
+                            <i data-lucide="x"></i>
+                        </button>
+                    </div>
+                    <div class="action-log-content" id="action-log">
+                        <div class="log-item log-info">
+                            <span class="log-time">[startup]</span>
+                            <span class="log-message">Auto-Injector initialized</span>
+                        </div>
+                    </div>
+                    <div class="sidebar-footer">
+                        <button class="footer-btn hotkey-enabled" id="clear-log-btn" title="Clear all logs" data-hotkey="Cmd+Shift+L">
+                            <i data-lucide="eraser"></i>
+                            Clear all logs
+                        </button>
+                    </div>
                 </div>
-                <div class="action-log-content" id="action-log">
-                    <div class="log-item log-info">
-                        <span class="log-time">[startup]</span>
-                        <span class="log-message">Auto-Injector initialized</span>
+
+                <!-- To-Do View -->
+                <div class="sidebar-view" id="todo-view" style="display: none;">
+                    <div class="todo-search">
+                        <input type="text" id="todo-search" placeholder="Search todos..." class="log-search-input">
+                        <button class="icon-btn" id="todo-search-clear-btn" title="Clear search">
+                            <i data-lucide="x"></i>
+                        </button>
+                        <button class="icon-btn" id="manual-generate-btn" title="Generate todos from terminal output">
+                            <i data-lucide="plus-circle"></i>
+                        </button>
+                    </div>
+                    <div class="todo-content" id="todo-list">
+                        <div class="todo-item">
+                            <div class="todo-checkbox-wrapper">
+                                <input type="checkbox" class="todo-checkbox" data-terminal="1">
+                            </div>
+                            <div class="todo-text">
+                                <span class="todo-time">[auto-generated]</span>
+                                <span class="todo-message">Example todo item from terminal output</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="sidebar-footer">
+                        <button class="footer-btn" id="clear-todos-btn" title="Clear completed todos">
+                            <i data-lucide="check"></i>
+                            Clear completed
+                        </button>
                     </div>
                 </div>
             </div>
@@ -458,6 +503,7 @@
     <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
     <script src="node_modules/@xterm/addon-search/lib/addon-search.js"></script>
     <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+    <script src="api-client.js"></script>
     <script src="renderer.js"></script>
 </body>
 </html> 
