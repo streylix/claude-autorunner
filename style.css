@@ -2360,6 +2360,12 @@ body {
     border-color: var(--accent-error);
 }
 
+#clear-all-todos-btn:hover {
+    color: var(--accent-error);
+    background-color: rgba(255, 95, 87, 0.1);
+    border-color: var(--accent-error);
+}
+
 /* To-Do Styles */
 .todo-search {
     padding: 10px 15px;
@@ -2723,6 +2729,50 @@ body {
 .setting-subgroup {
     /* margin-left: 20px; */
     margin-bottom: 15px;
+}
+
+/* Background Service and Todo Generation Settings */
+.setting-header {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+
+.setting-row {
+    margin-bottom: 16px;
+}
+
+.setting-row:last-child {
+    margin-bottom: 0;
+}
+
+.setting-row .setting-label {
+    display: flex;
+    align-items: center;
+    margin-bottom: 4px;
+    cursor: pointer;
+}
+
+.setting-row .setting-label input[type="checkbox"] {
+    margin-right: 12px;
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent-primary);
+}
+
+.setting-text {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.setting-help {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+    margin: 0;
+    margin-left: 30px;
 }
 
 .setting-buttons {

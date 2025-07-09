@@ -20,11 +20,11 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "terminal_backend.settings")
 django_asgi_app = get_asgi_application()
 
 # Import routing after Django setup
-from terminal.routing import websocket_urlpatterns
+from terminal.routing import websocket_urlpatterns as terminal_websocket_urlpatterns
+from message_queue.routing import websocket_urlpatterns as message_queue_websocket_urlpatterns
 
-# Use sync-to-async wrapper for better compatibility
-from asgiref.sync import sync_to_async
-from channels.http import AsgiHandler
+# Combine all websocket URL patterns
+websocket_urlpatterns = terminal_websocket_urlpatterns + message_queue_websocket_urlpatterns
 
 application = ProtocolTypeRouter(
     {

@@ -6,6 +6,7 @@ import uuid
 class TodoItem(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     terminal_session = models.ForeignKey(TerminalSession, on_delete=models.CASCADE, related_name='todos')
+    terminal_id = models.IntegerField(default=1)  # Store the original terminal ID for color persistence
     title = models.CharField(max_length=500)
     description = models.TextField(blank=True)
     completed = models.BooleanField(default=False)

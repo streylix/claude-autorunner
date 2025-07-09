@@ -105,7 +105,9 @@ class TerminalGUI {
             keepScreenAwake: true,
             showSystemNotifications: true,
             minimizeToTray: true,
-            startMinimized: false
+            startMinimized: false,
+            // Todo generation preferences
+            automaticTodoGeneration: true
         };
         this.usageLimitSyncInterval = null;
         this.usageLimitResetTime = null;
@@ -148,6 +150,10 @@ class TerminalGUI {
             lastUpdate: Date.now()
         };
         this.terminalStatuses = new Map(); // Per-terminal status tracking
+        
+        // 3-minute delay mechanism for todo generation
+        this.terminalStabilityTracking = new Map(); // Track stability for each terminal
+        this.todoGenerationCooldown = 3 * 60 * 1000; // 3 minutes in milliseconds
         
         // Terminal idle tracking for completion sound
         this.terminalIdleTimer = null;
@@ -258,6 +264,8 @@ class TerminalGUI {
                 this.backendAPIClient = new BackendAPIClient();
                 // Sync existing backend sessions with frontend terminals
                 await this.syncTerminalSessions();
+                // Start polling for message updates instead of WebSocket (for now)
+                this.startMessageQueuePolling();
             }
             
             this.initializeTerminal();
@@ -945,6 +953,7 @@ class TerminalGUI {
         document.getElementById('clear-queue-header-btn').addEventListener('click', () => {
             this.clearQueue();
         });
+
         
         // Consolidated click event listener for terminal interactions
         document.addEventListener('click', (e) => {
@@ -1243,6 +1252,13 @@ class TerminalGUI {
             this.logAction(`Start minimized ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
         });
 
+        // Todo generation setting
+        document.getElementById('automatic-todo-generation').addEventListener('change', (e) => {
+            this.preferences.automaticTodoGeneration = e.target.checked;
+            this.saveAllPreferences();
+            this.logAction(`Automatic todo generation ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+        });
+
         // System theme change listener
         window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
             if (this.preferences.theme === 'system') {
@@ -1381,7 +1397,7 @@ class TerminalGUI {
         return ids.length === uniqueIds.size;
     }
 
-    addMessageToQueue() {
+    async addMessageToQueue() {
         const input = document.getElementById('message-input');
         const content = input.value.trim();
         
@@ -1412,6 +1428,26 @@ class TerminalGUI {
             const terminalData = this.terminals.get(message.terminalId);
             const terminalName = terminalData ? terminalData.name : `Terminal ${message.terminalId}`;
             this.logAction(`Added message to queue for ${terminalName}: "${content}"`, 'info');
+            
+            // Save to backend if available
+            if (this.backendAPIClient && this.terminalSessionMap.has(message.terminalId)) {
+                try {
+                    const backendSessionId = this.terminalSessionMap.get(message.terminalId);
+                    const backendMessage = await this.backendAPIClient.addMessageToQueue(backendSessionId, content);
+                    
+                    // Update the message with backend ID
+                    const messageIndex = this.messageQueue.findIndex(m => m.id === message.id);
+                    if (messageIndex !== -1 && backendMessage && backendMessage.id) {
+                        this.messageQueue[messageIndex].backendId = backendMessage.id;
+                        this.saveMessageQueue(); // Save the updated queue with backend ID
+                    }
+                    
+                    console.log(`Message saved to backend for session ${backendSessionId} with ID ${backendMessage.id}`);
+                } catch (error) {
+                    console.error('Failed to save message to backend:', error);
+                    // Continue anyway - frontend queue still has the message
+                }
+            }
         }
     }
 
@@ -1720,10 +1756,21 @@ class TerminalGUI {
         }
     }
 
-    deleteMessage(messageId) {
+    async deleteMessage(messageId) {
         const index = this.messageQueue.findIndex(m => m.id === messageId);
         if (index !== -1) {
             const deletedMessage = this.messageQueue[index];
+            
+            // Mark as cancelled in backend if it has a backend ID
+            if (this.backendAPIClient && deletedMessage.backendId) {
+                try {
+                    // Use the same inject endpoint but we'll update the backend to handle cancellation
+                    await this.markMessageAsCancelledInBackend(deletedMessage);
+                } catch (error) {
+                    this.logAction(`Failed to cancel message in backend: ${error.message}`, 'error');
+                }
+            }
+            
             this.messageQueue.splice(index, 1);
             this.updateTrayBadge();
             this.saveMessageQueue();
@@ -1731,6 +1778,22 @@ class TerminalGUI {
             this.updateStatusDisplay();
             
             this.logAction(`Deleted message: "${deletedMessage.content}"`, 'warning');
+        }
+    }
+
+    async markMessageAsCancelledInBackend(message) {
+        // Mark message as cancelled in backend if it has a backend ID
+        if (!this.backendAPIClient || !message.backendId) {
+            return;
+        }
+        
+        try {
+            // For now, we'll mark it as injected to remove it from pending queue
+            // TODO: Add a proper cancel endpoint to the backend
+            await this.backendAPIClient.injectMessage(message.backendId);
+            this.logAction(`Marked deleted message ${message.backendId} as processed in backend`, 'info');
+        } catch (error) {
+            this.logAction(`Failed to mark deleted message as processed in backend: ${error.message}`, 'error');
         }
     }
 
@@ -2134,7 +2197,8 @@ class TerminalGUI {
             // Update timer UI but let injection manager handle visual states
             this.updateTimerDisplay();
             
-            // Note: Timer expiration notification removed to prevent interrupting automated flow
+            // Show notification for timer expiration
+            this.showSystemNotification('Timer Expired', `Injection timer has expired. ${this.messageQueue.length} messages queued.`);
             this.logAction(`Timer expiration: injection manager will handle scheduling. queueLength: ${this.messageQueue.length}`, 'info');
             return;
         }
@@ -2611,6 +2675,7 @@ class TerminalGUI {
         
         this.injectionInProgress = true;
         this.updateTimerUI();
+        this.showSystemNotification('Injection Started', `Sequential injection of ${this.messageQueue.length} messages has begun.`);
         this.logAction(`Timer expired - starting sequential injection of ${this.messageQueue.length} messages (timerExpired=${this.timerExpired}, usageLimitWaiting=${this.usageLimitWaiting})`, 'success');
         
         // Validate state after setting injection progress
@@ -2661,6 +2726,7 @@ class TerminalGUI {
             this.safetyCheckCount = 0; // Reset safety check count
             this.updateTimerUI();
             this.logAction('Sequential injection completed - all messages processed', 'success');
+            this.showSystemNotification('Injection Complete', 'All messages have been successfully injected.');
             
             // Stop power save blocker
             this.stopPowerSaveBlocker();
@@ -2710,7 +2776,11 @@ class TerminalGUI {
         this.updateTerminalStatusIndicator(); // Use new status system
         this.updateMessageList(); // Update UI to show injecting state
         
+        // Mark message as injected in backend
+        this.markMessageAsInjectedInBackend(message);
+        
         this.logAction(`Sequential injection: "${message.content}"`, 'success');
+        this.showSystemNotification('Message Injected', `Injecting: ${message.content.substring(0, 50)}${message.content.length > 50 ? '...' : ''}`);
         
         // Type the message
         this.typeMessage(message.processedContent, () => {
@@ -3117,14 +3187,8 @@ class TerminalGUI {
             // Debug logging for status changes
             this.logAction(`Terminal ${terminalId} status changed: ${oldStatus} → ${newStatus}`, 'info');
             
-            // Trigger automatic todo generation when going from 'running' to 'ready'
-            if (oldStatus === 'running' && newStatus === 'ready') {
-                // Add a small delay to ensure the terminal output is fully captured
-                setTimeout(() => {
-                    this.logAction(`Auto-generating todos for Terminal ${terminalId}`, 'info');
-                    this.manualGenerateTodos();
-                }, 1000);
-            }
+            // Handle terminal state changes for todo generation with 3-minute delay
+            this.handleTerminalStateChangeForTodos(terminalId, oldStatus, newStatus);
         }
         
         // Update the terminal's status
@@ -3262,6 +3326,9 @@ class TerminalGUI {
                 // Remove the injected message from queue
                 this.messageQueue.shift();
                 this.saveMessageQueue();
+                
+                // Mark message as injected in backend
+                this.markMessageAsInjectedInBackend(message);
                 
                 // Update counters and UI
                 this.injectionCount++;
@@ -5147,7 +5214,8 @@ class TerminalGUI {
                 processedContent: msg.processed_content,
                 executeAt: msg.execute_at,
                 createdAt: msg.created_at,
-                timestamp: msg.created_at // For compatibility
+                timestamp: msg.created_at, // For compatibility
+                terminalId: msg.terminal_id || 1 // Include terminal ID
             }));
             
             // Synchronize messageIdCounter to avoid duplicate IDs
@@ -5157,6 +5225,11 @@ class TerminalGUI {
             
             this.updateMessageList();
             this.validateMessageIds(); // Debug: Check for ID conflicts after loading
+            
+            // Sync messages from backend after loading local messages
+            this.logAction('About to sync messages from backend...', 'info');
+            await this.syncMessagesFromBackend(true); // verbose = true for initial sync
+            this.logAction('Finished syncing messages from backend', 'info');
             
             // Load message history from database
             const dbHistory = await ipcRenderer.invoke('db-get-message-history');
@@ -5202,6 +5275,10 @@ class TerminalGUI {
 
             const startMinimizedEl = document.getElementById('start-minimized');
             if (startMinimizedEl) startMinimizedEl.checked = this.preferences.startMinimized || false;
+
+            // Update todo generation settings UI
+            const automaticTodoGenerationEl = document.getElementById('automatic-todo-generation');
+            if (automaticTodoGenerationEl) automaticTodoGenerationEl.checked = this.preferences.automaticTodoGeneration !== undefined ? this.preferences.automaticTodoGeneration : true;
             
             this.updateAutoContinueButtonState();
             
@@ -5274,6 +5351,218 @@ class TerminalGUI {
             }
         } catch (error) {
             console.error('Failed to load terminal session mapping:', error);
+        }
+    }
+
+    async syncMessagesFromBackend(verbose = false) {
+        // Sync messages from backend for all terminal sessions
+        if (verbose) {
+            this.logAction('syncMessagesFromBackend called, checking backend API client...', 'info');
+            this.logAction(`Backend API client available: ${!!this.backendAPIClient}`, 'info');
+            this.logAction(`Terminal session map size: ${this.terminalSessionMap.size}`, 'info');
+        }
+        
+        if (!this.backendAPIClient) {
+            if (verbose) this.logAction('No backend API client available', 'warning');
+            return;
+        }
+        
+        try {
+            let totalNewMessages = 0;
+            // Get messages for each terminal session
+            for (const [terminalId, sessionId] of this.terminalSessionMap) {
+                if (verbose) this.logAction(`Getting messages for terminal ${terminalId}, session ${sessionId}`, 'info');
+                const backendMessages = await this.backendAPIClient.getQueuedMessages(sessionId, 'pending');
+                const messages = backendMessages.results || backendMessages;
+                if (verbose) this.logAction(`Got ${messages.length} messages from backend for terminal ${terminalId}`, 'info');
+                
+                // Add backend messages that aren't already in local queue
+                for (const backendMsg of messages) {
+                    const exists = this.messageQueue.some(msg => 
+                        msg.backendId === backendMsg.id ||
+                        (msg.content === backendMsg.content && msg.terminalId === terminalId)
+                    );
+                    
+                    if (!exists) {
+                        const message = {
+                            id: this.generateMessageId(),
+                            content: backendMsg.content,
+                            processedContent: backendMsg.content,
+                            executeAt: Date.now(),
+                            createdAt: new Date(backendMsg.created_at).getTime(),
+                            timestamp: new Date(backendMsg.created_at).getTime(),
+                            terminalId: terminalId,
+                            backendId: backendMsg.id, // Store backend ID for reference
+                            sequence: ++this.messageSequenceCounter
+                        };
+                        this.messageQueue.push(message);
+                        totalNewMessages++;
+                        if (verbose) this.logAction(`Added message from backend: "${backendMsg.content}"`, 'success');
+                    } else {
+                        if (verbose) this.logAction(`Message already exists: "${backendMsg.content}"`, 'info');
+                    }
+                }
+            }
+            
+            // Update UI after syncing
+            if (totalNewMessages > 0) {
+                this.updateMessageList();
+                this.updateStatusDisplay();
+                this.logAction(`Added ${totalNewMessages} new messages from backend`, 'success');
+            } else if (verbose) {
+                this.logAction(`Synced messages from backend. Total queue size: ${this.messageQueue.length}`, 'success');
+            }
+        } catch (error) {
+            if (verbose) this.logAction(`Failed to sync messages from backend: ${error.message}`, 'error');
+        }
+    }
+
+    async markMessageAsInjectedInBackend(message) {
+        // Mark message as injected in backend if it has a backend ID
+        if (!this.backendAPIClient || !message.backendId) {
+            this.logAction(`Cannot mark message as injected - backendAPIClient: ${!!this.backendAPIClient}, backendId: ${message.backendId}`, 'warning');
+            return;
+        }
+        
+        try {
+            await this.backendAPIClient.injectMessage(message.backendId);
+            this.logAction(`Marked message ${message.backendId} as injected in backend`, 'success');
+        } catch (error) {
+            this.logAction(`Failed to mark message as injected in backend: ${error.message}`, 'error');
+        }
+    }
+
+    connectMessageQueueWebSocket() {
+        if (!this.backendAPIClient) return;
+
+        try {
+            this.messageQueueWebSocket = this.backendAPIClient.createMessageQueueWebSocket();
+            
+            this.messageQueueWebSocket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleMessageQueueWebSocketEvent(data);
+                } catch (error) {
+                    this.logAction(`Error parsing WebSocket message: ${error.message}`, 'error');
+                }
+            };
+
+            this.messageQueueWebSocket.onopen = () => {
+                this.logAction('Connected to message queue WebSocket', 'success');
+            };
+
+            this.messageQueueWebSocket.onclose = () => {
+                this.logAction('Message queue WebSocket disconnected', 'warning');
+                // Attempt to reconnect after 5 seconds
+                setTimeout(() => {
+                    this.logAction('Attempting to reconnect to message queue WebSocket...', 'info');
+                    this.connectMessageQueueWebSocket();
+                }, 5000);
+            };
+
+            this.messageQueueWebSocket.onerror = (error) => {
+                this.logAction(`Message queue WebSocket error: ${error}`, 'error');
+            };
+
+        } catch (error) {
+            this.logAction(`Failed to connect to message queue WebSocket: ${error.message}`, 'error');
+        }
+    }
+
+    handleMessageQueueWebSocketEvent(data) {
+        const { type, action, message, terminal_session } = data;
+        
+        this.logAction(`WebSocket event: ${type} - ${action || 'N/A'}`, 'info');
+
+        if (type === 'message_queue_update' || type === 'message_added') {
+            this.handleMessageQueueUpdate(action, message, terminal_session);
+        } else if (type === 'message_injected') {
+            this.handleMessageInjected(data.message_id, terminal_session);
+        }
+    }
+
+    handleMessageQueueUpdate(action, messageData, terminalSessionId) {
+        // Find the terminal ID that corresponds to this session
+        let terminalId = null;
+        for (const [tId, sessionId] of this.terminalSessionMap) {
+            if (sessionId === terminalSessionId) {
+                terminalId = tId;
+                break;
+            }
+        }
+
+        if (!terminalId) {
+            this.logAction(`Could not find terminal for session ${terminalSessionId}`, 'warning');
+            return;
+        }
+
+        if (action === 'added') {
+            // Check if message already exists to avoid duplicates
+            const exists = this.messageQueue.some(msg => 
+                msg.backendId === messageData.id || 
+                (msg.content === messageData.content && msg.terminalId === terminalId)
+            );
+
+            if (!exists) {
+                const message = {
+                    id: this.generateMessageId(),
+                    content: messageData.content,
+                    processedContent: messageData.content,
+                    executeAt: Date.now(),
+                    createdAt: new Date(messageData.created_at).getTime(),
+                    timestamp: new Date(messageData.created_at).getTime(),
+                    terminalId: terminalId,
+                    backendId: messageData.id,
+                    sequence: ++this.messageSequenceCounter
+                };
+                
+                this.messageQueue.push(message);
+                this.updateMessageList();
+                this.updateStatusDisplay();
+                this.logAction(`Added message from WebSocket: "${messageData.content}"`, 'success');
+            }
+        } else if (action === 'removed') {
+            // Remove message from queue
+            const index = this.messageQueue.findIndex(msg => msg.backendId === messageData.id);
+            if (index !== -1) {
+                this.messageQueue.splice(index, 1);
+                this.updateMessageList();
+                this.updateStatusDisplay();
+                this.logAction(`Removed message from WebSocket: "${messageData.content}"`, 'info');
+            }
+        }
+    }
+
+    handleMessageInjected(messageId, terminalSessionId) {
+        // Find and remove the injected message from the queue
+        const index = this.messageQueue.findIndex(msg => msg.backendId === messageId);
+        if (index !== -1) {
+            const message = this.messageQueue[index];
+            this.messageQueue.splice(index, 1);
+            this.updateMessageList();
+            this.updateStatusDisplay();
+            this.logAction(`Message injected via WebSocket: "${message.content}"`, 'success');
+        }
+    }
+
+    startMessageQueuePolling() {
+        // Poll for message updates every 2 seconds
+        this.messageQueuePolling = setInterval(async () => {
+            try {
+                await this.syncMessagesFromBackend();
+            } catch (error) {
+                // Silently continue - error logging is handled in syncMessagesFromBackend
+            }
+        }, 2000);
+
+        this.logAction('Started polling for message queue updates every 2 seconds', 'info');
+    }
+
+    stopMessageQueuePolling() {
+        if (this.messageQueuePolling) {
+            clearInterval(this.messageQueuePolling);
+            this.messageQueuePolling = null;
+            this.logAction('Stopped message queue polling', 'info');
         }
     }
 
@@ -5626,6 +5915,19 @@ class TerminalGUI {
         return { blocked: false };
     }
 
+    // Strip ANSI escape codes from text
+    stripAnsiCodes(text) {
+        if (!text || typeof text !== 'string') {
+            return '';
+        }
+        
+        // Remove ANSI escape sequences
+        return text.replace(
+            /\u001b\[[0-9;]*[a-zA-Z]|\u001b\][^\u0007]*\u0007|\u001b\][^\u001b]*\u001b\\|\u001b\[[0-9;]*[mGKH]|\u001b\[[0-9;]*[mK]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[[0-9;]*[m]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[[0-9;]*[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]|\u001b\[\d*[A-Za-z]|\u001b\[\d+;\d+[Hf]|\u001b\[\d+[ABCD]|\u001b\[\d+[JK]|\u001b\[\d+[ST]|\u001b\[\d+[~]|\u001b\[\d+[G]|\u001b\[[0-9;]*[mGK]|\u001b\[\d+[mGK]|\u001b\[\d+[mGKH]|\u001b\[\?[0-9;]*[hlc]/g,
+            ''
+        );
+    }
+
     checkTerminalForPlans(terminalOutput) {
         // Ensure we have terminal output to check
         if (!terminalOutput || terminalOutput.trim() === '') {
@@ -5657,6 +5959,9 @@ class TerminalGUI {
         
         // Remove numbered options (1. Yes, 2. No, keep planning, etc.)
         planContent = planContent.replace(/^\d+\.\s*(Yes|No,?\s*keep\s*planning).*$/gim, '');
+        
+        // Filter to only alphabetical characters and numbers (with spaces)
+        planContent = planContent.replace(/[^a-zA-Z0-9\s]/g, '');
         
         // Clean up whitespace
         planContent = planContent.trim();
@@ -6397,6 +6702,24 @@ class TerminalGUI {
         }
     }
 
+    async showSystemNotification(title, body, options = {}) {
+        if (!this.preferences.showSystemNotifications) {
+            return;
+        }
+        
+        try {
+            // Use Electron's notification system for Mac compatibility
+            const result = await ipcRenderer.invoke('show-notification', title, body, options);
+            if (!result.success) {
+                console.error('Failed to show notification:', result.error);
+                this.logAction(`Notification error: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            console.error('Error showing system notification:', error);
+            this.logAction(`Notification error: ${error.message}`, 'error');
+        }
+    }
+
     playPromptedSound(filename = null) {
         if (!this.preferences.completionSoundEnabled) {
             return;
@@ -7092,6 +7415,11 @@ class TerminalGUI {
             clearTodosBtn.addEventListener('click', () => this.clearCompletedTodos());
         }
         
+        const clearAllTodosBtn = document.getElementById('clear-all-todos-btn');
+        if (clearAllTodosBtn) {
+            clearAllTodosBtn.addEventListener('click', () => this.clearAllTodos());
+        }
+        
         // Todo search
         const todoSearch = document.getElementById('todo-search');
         if (todoSearch) {
@@ -7224,8 +7552,7 @@ class TerminalGUI {
                             const idleDuration = Date.now() - monitor.idleStartTime;
                             if (idleDuration >= 4000) { // 4 seconds of idle time
                                 this.logAction(`Terminal ${terminalId} completed work (${Math.round(busyDuration/1000)}s active, ${Math.round(idleDuration/1000)}s idle)`, 'success');
-                                // Trigger the same functionality as the manual button press
-                                this.manualGenerateTodos();
+                                // Note: Automatic todo generation now handled by 3-minute delay mechanism
                                 this.todoSystem.terminalStateMonitors.delete(terminalId);
                             }
                         }
@@ -7238,6 +7565,81 @@ class TerminalGUI {
         }
     }
     
+    handleTerminalStateChangeForTodos(terminalId, oldStatus, newStatus) {
+        // Only proceed if automatic todo generation is enabled
+        if (!this.preferences.automaticTodoGeneration) {
+            return;
+        }
+        
+        // Initialize stability tracking for this terminal if not exists
+        if (!this.terminalStabilityTracking.has(terminalId)) {
+            this.terminalStabilityTracking.set(terminalId, {
+                stableStartTime: null,
+                lastGeneration: null,
+                stabilityTimer: null
+            });
+        }
+        
+        const stability = this.terminalStabilityTracking.get(terminalId);
+        
+        // If terminal is transitioning to a stable state (not running, not prompting)
+        if ((oldStatus === 'running' || oldStatus === 'prompting') && newStatus === 'ready') {
+            // Start tracking stability
+            stability.stableStartTime = Date.now();
+            this.logAction(`Terminal ${terminalId} became stable, starting 3-minute countdown for todo generation`, 'info');
+            
+            // Clear any existing timer
+            if (stability.stabilityTimer) {
+                clearTimeout(stability.stabilityTimer);
+            }
+            
+            // Set 3-minute timer
+            stability.stabilityTimer = setTimeout(() => {
+                this.checkTerminalStabilityForGeneration(terminalId);
+            }, this.todoGenerationCooldown);
+            
+        } else if (newStatus === 'running' || newStatus === 'prompting') {
+            // Terminal is no longer stable, cancel any pending generation
+            if (stability.stabilityTimer) {
+                clearTimeout(stability.stabilityTimer);
+                stability.stabilityTimer = null;
+            }
+            stability.stableStartTime = null;
+            this.logAction(`Terminal ${terminalId} is no longer stable, canceling todo generation countdown`, 'info');
+        }
+    }
+    
+    checkTerminalStabilityForGeneration(terminalId) {
+        const stability = this.terminalStabilityTracking.get(terminalId);
+        if (!stability) return;
+        
+        // Get current terminal status
+        const currentStatus = this.terminalStatuses.get(terminalId);
+        if (!currentStatus) return;
+        
+        // Verify the terminal is still in a stable state
+        if (!currentStatus.isRunning && !currentStatus.isPrompting) {
+            // Check if we've waited long enough since last generation
+            const now = Date.now();
+            const timeSinceStable = stability.stableStartTime ? now - stability.stableStartTime : 0;
+            
+            if (timeSinceStable >= this.todoGenerationCooldown) {
+                // Generate todos
+                this.logAction(`Terminal ${terminalId} has been stable for 3 minutes, generating todos`, 'info');
+                this.manualGenerateTodos();
+                
+                // Update last generation time
+                stability.lastGeneration = now;
+                stability.stableStartTime = null;
+                stability.stabilityTimer = null;
+            }
+        } else {
+            // Terminal is no longer stable, cancel generation
+            this.logAction(`Terminal ${terminalId} is no longer stable at generation time, canceling`, 'info');
+            stability.stableStartTime = null;
+            stability.stabilityTimer = null;
+        }
+    }
     
     async generateTodosViaBackend(terminalId, terminalOutput) {
         try {
@@ -7263,7 +7665,8 @@ class TerminalGUI {
                 },
                 body: JSON.stringify({
                     terminal_session: sessionId,
-                    terminal_output: terminalOutput
+                    terminal_output: terminalOutput,
+                    terminal_id: terminalId
                 })
             });
             
@@ -7366,7 +7769,7 @@ class TerminalGUI {
         }
         
         todoList.innerHTML = this.todoSystem.todos.map(todo => {
-            const terminalNumber = this.getTerminalNumberFromSession(todo.terminal_session);
+            const terminalNumber = todo.terminal_id || this.getTerminalNumberFromSession(todo.terminal_session);
             return `
                 <div class="todo-item ${todo.completed ? 'completed' : ''}" data-todo-id="${todo.id}" data-terminal="${terminalNumber}" onclick="window.terminalGUI.toggleTodo('${todo.id}')" style="cursor: pointer;">
                     <div class="todo-checkbox-wrapper">
@@ -7505,6 +7908,28 @@ class TerminalGUI {
             this.refreshTodos();
         } catch (error) {
             this.logAction(`Error clearing completed todos: ${error.message}`, 'error');
+        }
+    }
+    
+    async clearAllTodos() {
+        try {
+            // Show confirmation dialog
+            const confirmation = confirm('Are you sure you want to clear all todos? This action cannot be undone.');
+            
+            if (!confirmation) return;
+            
+            // Check if backend is available
+            if (!this.backendAPIClient || !(await this.backendAPIClient.isBackendAvailable())) {
+                this.logAction('Backend not available for clearing todos', 'error');
+                return;
+            }
+            
+            // Clear all todos using the API client method
+            const result = await this.backendAPIClient.clearAllTodos();
+            this.logAction(`Cleared all ${result.deleted_count} todos`, 'success');
+            this.refreshTodos();
+        } catch (error) {
+            this.logAction(`Error clearing all todos: ${error.message}`, 'error');
         }
     }
     

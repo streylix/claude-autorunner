@@ -36,6 +36,7 @@ ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*']
 # Application definition
 
 INSTALLED_APPS = [
+    # "daphne",  # Disabled for now - using polling instead of WebSocket
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -46,7 +47,6 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "channels",
-    # "daphne",  # Temporarily disabled to use WSGI instead of ASGI
     # Local apps
     "terminal",
     "message_queue",

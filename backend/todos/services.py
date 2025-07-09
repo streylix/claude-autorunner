@@ -42,7 +42,7 @@ class TodoGenerationService:
         
         return content_before_prompt
     
-    def generate_todos_from_output(self, terminal_output, terminal_session):
+    def generate_todos_from_output(self, terminal_output, terminal_session, terminal_id=1):
         """
         Generate todo items from terminal output using GPT-4o-mini
         """
@@ -65,29 +65,30 @@ class TodoGenerationService:
 
 IMPORTANT: Always generate at least 1 todo item. Never return an empty array.
 
-Generate 1-3 specific, high-value todos. Focus on the most important next steps:
-- Testing critical functionality
-- Reviewing key implementations
-- Running essential commands
-- Fixing important issues
-- Documenting changes
-- Verifying functionality
+Analyze the terminal output to understand what specific changes were made, what files were modified, what commands were run, and what functionality was added or fixed.
+
+Generate 1-3 specific, high-value todos based on the ACTUAL changes shown in the terminal output:
+- Test the specific functionality that was just implemented or modified
+- Run specific commands that are relevant to the changes made
+- Fix specific issues that were identified in the output
+- Verify that specific features work correctly after changes
+- Document specific changes that were made
 
 Return ONLY a JSON array. Each todo should have:
-- "title": Brief, actionable (max 50 chars)
-- "description": Concise details (max 100 chars)  
+- "title": Brief, actionable description of what to do (max 50 chars)
+- "description": Specific details about what was changed and what to test/verify (max 100 chars)  
 - "priority": "high", "medium", or "low"
 
 Example:
 [
   {
-    "title": "Test auth endpoint",
-    "description": "Verify /api/auth/login works with valid credentials",
+    "title": "Test user authentication flow",
+    "description": "Verify login works after fixing auth middleware bug in user.js:45",
     "priority": "high"
   }
 ]
 
-If no obvious development tasks are apparent, create a general todo like "Review recent changes" or "Test functionality"."""
+Base todos on the SPECIFIC changes shown in the terminal output. If you see file modifications, command executions, or error fixes, create todos that relate directly to testing or verifying those specific changes."""
 
             user_prompt = f"""Terminal Output:
 {relevant_output}
@@ -142,6 +143,7 @@ Generate todo items based on this terminal output. Return only the JSON array.""
                 
                 todo = TodoItem.objects.create(
                     terminal_session=terminal_session,
+                    terminal_id=terminal_id,
                     title=title[:500],  # Truncate if too long
                     description=todo_data.get('description', '')[:1000],  # Truncate if too long
                     priority=todo_data.get('priority', 'medium'),

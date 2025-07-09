@@ -208,11 +208,25 @@ function createWindow() {
 function showNotification(title, body) {
   try {
     if (Notification.isSupported()) {
-      new Notification({
+      const notification = new Notification({
         title: title,
         body: body,
-        icon: getIcon()
-      }).show();
+        icon: getIcon(),
+        silent: false,
+        urgency: 'normal'
+      });
+      
+      // On macOS, we need to ensure the notification shows even when app is focused
+      if (process.platform === 'darwin') {
+        notification.show();
+        
+        // Also show in notification center
+        if (app.isReady()) {
+          app.dock.bounce('informational');
+        }
+      } else {
+        notification.show();
+      }
     }
   } catch (error) {
     try { console.error('Error showing notification:', error); } catch (e) { /* ignore */ }
@@ -232,6 +246,19 @@ app.whenReady().then(() => {
       app.dock.setIcon(logoIconPath);
     } catch (error) {
       try { console.error('Failed to set logo dock icon:', error); } catch (e) { /* ignore */ }
+    }
+  }
+  
+  // Request notification permissions on macOS
+  if (process.platform === 'darwin') {
+    try {
+      // Notification permission is automatic on macOS for signed apps
+      // But we can check if they're supported
+      if (Notification.isSupported()) {
+        try { console.log('System notifications are supported'); } catch (e) { /* ignore */ }
+      }
+    } catch (error) {
+      try { console.error('Error checking notification support:', error); } catch (e) { /* ignore */ }
     }
   }
   

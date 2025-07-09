@@ -6,7 +6,7 @@ class TodoItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = TodoItem
         fields = [
-            'id', 'terminal_session', 'title', 'description', 'completed', 
+            'id', 'terminal_session', 'terminal_id', 'title', 'description', 'completed', 
             'created_at', 'completed_at', 'priority', 'source_output', 'auto_generated'
         ]
         read_only_fields = ['id', 'created_at', 'completed_at']

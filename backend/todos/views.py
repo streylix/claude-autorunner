@@ -71,8 +71,10 @@ class TodoItemViewSet(viewsets.ModelViewSet):
         
         terminal_session_id = request.data.get('terminal_session')
         terminal_output = request.data.get('terminal_output')
+        terminal_id = request.data.get('terminal_id', 1)  # Default to 1 if not provided
         
         print(f"[DEBUG] terminal_session_id: {terminal_session_id}")
+        print(f"[DEBUG] terminal_id: {terminal_id}")
         print(f"[DEBUG] terminal_output length: {len(terminal_output) if terminal_output else 0}")
         
         if not terminal_session_id:
@@ -107,7 +109,7 @@ class TodoItemViewSet(viewsets.ModelViewSet):
         
         print("[DEBUG] Calling service.generate_todos_from_output")
         # Generate todos
-        result = service.generate_todos_from_output(terminal_output, terminal_session)
+        result = service.generate_todos_from_output(terminal_output, terminal_session, terminal_id)
         
         print(f"[DEBUG] Service result: {result}")
         
