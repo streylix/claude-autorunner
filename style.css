@@ -3395,10 +3395,17 @@ body {
 
 .manual-generate-btn.loading {
     pointer-events: none;
+    opacity: 0.8;
+    cursor: not-allowed;
 }
 
 .manual-generate-btn.loading i {
     animation: spin 1s linear infinite;
+}
+
+.manual-generate-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 @keyframes spin {

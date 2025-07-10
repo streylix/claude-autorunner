@@ -13,6 +13,43 @@ let tray = null;
 let powerSaveBlockerId = null;
 let isQuitting = false;
 
+// Safe logging function that handles EPIPE errors
+function safeLog(...args) {
+  try {
+    if (process.stdout.writable && !process.stdout.destroyed) {
+      console.log(...args);
+    }
+  } catch (e) {
+    // Ignore logging errors
+  }
+}
+
+// Global error handlers
+process.on('uncaughtException', (error) => {
+  if (error.code === 'EPIPE') {
+    // Ignore EPIPE errors - they occur when stdout is closed
+    return;
+  }
+  // Log other errors to stderr if possible
+  try {
+    if (process.stderr.writable) {
+      console.error('Uncaught Exception:', error);
+    }
+  } catch (e) {
+    // Even stderr might be closed
+  }
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  try {
+    if (process.stderr.writable) {
+      console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    }
+  } catch (e) {
+    // Ignore
+  }
+});
+
 
 function getIcon() {
   const fs = require('fs');
@@ -32,7 +69,7 @@ function getIcon() {
     const iconPath = path.join(__dirname, iconFile);
     try {
       if (fs.existsSync(iconPath)) {
-        try { console.log('Using icon:', iconPath); } catch (e) { /* ignore */ }
+        safeLog('Using icon:', iconPath);
         return iconPath;
       }
     } catch (error) {
@@ -50,7 +87,7 @@ function initDataStorage() {
     const userDataPath = app.getPath('userData');
     dataFilePath = path.join(userDataPath, 'auto-injector-data.json');
     
-    try { console.log('Data storage initialized at:', dataFilePath); } catch (e) { /* ignore */ }
+    safeLog('Data storage initialized at:', dataFilePath);
   } catch (error) {
     try { console.error('Failed to initialize data storage:', error); } catch (e) { /* ignore */ }
   }
@@ -242,7 +279,7 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin') {
     try {
       const logoIconPath = path.join(__dirname, 'logo.png');
-      try { console.log('Setting dock icon from:', logoIconPath); } catch (e) { /* ignore */ }
+      safeLog('Setting dock icon from:', logoIconPath);
       app.dock.setIcon(logoIconPath);
     } catch (error) {
       try { console.error('Failed to set logo dock icon:', error); } catch (e) { /* ignore */ }
@@ -255,7 +292,7 @@ app.whenReady().then(() => {
       // Notification permission is automatic on macOS for signed apps
       // But we can check if they're supported
       if (Notification.isSupported()) {
-        try { console.log('System notifications are supported'); } catch (e) { /* ignore */ }
+        safeLog('System notifications are supported');
       }
     } catch (error) {
       try { console.error('Error checking notification support:', error); } catch (e) { /* ignore */ }
@@ -281,10 +318,10 @@ function setupIpcHandlers() {
     const terminalId = options.terminalId || 1;
     const startDirectory = options.directory || null;
     
-    try { console.log('Received terminal-start request, terminalId:', terminalId, 'directory:', startDirectory); } catch (e) { /* ignore */ }
+    safeLog('Received terminal-start request, terminalId:', terminalId, 'directory:', startDirectory);
     const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/zsh';
     const cwd = startDirectory || process.cwd();
-    try { console.log('Starting terminal', terminalId, 'with shell:', shell, 'cwd:', cwd); } catch (e) { /* ignore */ }
+    safeLog('Starting terminal', terminalId, 'with shell:', shell, 'cwd:', cwd);
     
     const terminalProcess = pty.spawn(shell, [], {
       name: 'xterm-color',
@@ -293,7 +330,7 @@ function setupIpcHandlers() {
       cwd: cwd,
       env: process.env
     });
-    try { console.log('Terminal', terminalId, 'process spawned successfully'); } catch (e) { /* ignore */ }
+    safeLog('Terminal', terminalId, 'process spawned successfully');
 
     // Store in map
     ptyProcesses.set(terminalId, terminalProcess);
@@ -365,11 +402,7 @@ function setupIpcHandlers() {
         ptyProcess = null;
       }
       
-      try { 
-        console.log('Terminal', terminalId, 'process closed'); 
-      } catch (e) { 
-        /* ignore */ 
-      }
+      safeLog('Terminal', terminalId, 'process closed');
     }
   });
 
@@ -828,7 +861,7 @@ function setupIpcHandlers() {
     try {
       if (powerSaveBlockerId === null) {
         powerSaveBlockerId = powerSaveBlocker.start('prevent-display-sleep');
-        try { console.log('Power save blocker started:', powerSaveBlockerId); } catch (e) { /* ignore */ }
+        safeLog('Power save blocker started:', powerSaveBlockerId);
         return { success: true, id: powerSaveBlockerId };
       }
       return { success: true, id: powerSaveBlockerId };
@@ -842,7 +875,7 @@ function setupIpcHandlers() {
     try {
       if (powerSaveBlockerId !== null) {
         powerSaveBlocker.stop(powerSaveBlockerId);
-        try { console.log('Power save blocker stopped:', powerSaveBlockerId); } catch (e) { /* ignore */ }
+        safeLog('Power save blocker stopped:', powerSaveBlockerId);
         powerSaveBlockerId = null;
         return { success: true };
       }
@@ -999,13 +1032,34 @@ app.on('activate', () => {
 app.on('before-quit', () => {
   isQuitting = true;
   
+  // Clean up all terminal processes
+  for (const [terminalId, ptyProcess] of ptyProcesses) {
+    try {
+      if (ptyProcess && !ptyProcess.killed) {
+        ptyProcess.kill();
+      }
+    } catch (error) {
+      // Ignore errors during cleanup
+    }
+  }
+  ptyProcesses.clear();
+  
+  // Clean up legacy single process
+  if (ptyProcess && !ptyProcess.killed) {
+    try {
+      ptyProcess.kill();
+    } catch (error) {
+      // Ignore errors during cleanup
+    }
+  }
+  
   // Clean up power save blocker
   if (powerSaveBlockerId !== null) {
     try {
       powerSaveBlocker.stop(powerSaveBlockerId);
       powerSaveBlockerId = null;
     } catch (error) {
-      try { console.error('Error stopping power save blocker on quit:', error); } catch (e) { /* ignore */ }
+      // Ignore errors during cleanup
     }
   }
 });
