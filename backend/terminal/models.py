@@ -11,6 +11,11 @@ class TerminalSession(models.Model):
     is_active = models.BooleanField(default=True)
     current_directory = models.CharField(max_length=500, default='~')
     
+    # Enhanced terminal state fields
+    color = models.CharField(max_length=7, default='#007acc')  # Hex color code
+    frontend_terminal_id = models.IntegerField(null=True, blank=True)  # Frontend terminal ID mapping
+    position_index = models.IntegerField(default=0)  # Order in terminal list
+    
     class Meta:
         ordering = ['-created_at']
     
@@ -31,3 +36,27 @@ class TerminalCommand(models.Model):
     
     def __str__(self):
         return f"{self.command[:50]} - {self.timestamp}"
+
+
+class ApplicationStatistics(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session_id = models.CharField(max_length=255, unique=True)  # Frontend session identifier
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    # Status section values
+    current_directory = models.CharField(max_length=500, default='~')
+    injection_count = models.IntegerField(default=0)
+    keyword_count = models.IntegerField(default=0)
+    plan_count = models.IntegerField(default=0)
+    terminal_count = models.IntegerField(default=1)
+    
+    # Terminal state summary
+    active_terminal_id = models.IntegerField(default=1)
+    terminal_id_counter = models.IntegerField(default=1)
+    
+    class Meta:
+        ordering = ['-updated_at']
+    
+    def __str__(self):
+        return f"Stats for {self.session_id} - {self.injection_count} injections"

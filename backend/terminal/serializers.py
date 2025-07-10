@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import TerminalSession, TerminalCommand
+from .models import TerminalSession, TerminalCommand, ApplicationStatistics
 
 
 class TerminalCommandSerializer(serializers.ModelSerializer):
@@ -14,5 +14,15 @@ class TerminalSessionSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = TerminalSession
-        fields = ['id', 'name', 'created_at', 'updated_at', 'is_active', 'current_directory', 'commands']
+        fields = ['id', 'name', 'created_at', 'updated_at', 'is_active', 'current_directory', 
+                 'color', 'frontend_terminal_id', 'position_index', 'commands']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class ApplicationStatisticsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ApplicationStatistics
+        fields = ['id', 'session_id', 'created_at', 'updated_at', 'current_directory', 
+                 'injection_count', 'keyword_count', 'plan_count', 'terminal_count', 
+                 'active_terminal_id', 'terminal_id_counter']
         read_only_fields = ['id', 'created_at', 'updated_at']

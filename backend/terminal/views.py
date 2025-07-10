@@ -1,8 +1,8 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from .models import TerminalSession, TerminalCommand
-from .serializers import TerminalSessionSerializer, TerminalCommandSerializer
+from .models import TerminalSession, TerminalCommand, ApplicationStatistics
+from .serializers import TerminalSessionSerializer, TerminalCommandSerializer, ApplicationStatisticsSerializer
 
 
 class TerminalSessionViewSet(viewsets.ModelViewSet):
@@ -40,3 +40,30 @@ class TerminalSessionViewSet(viewsets.ModelViewSet):
 class TerminalCommandViewSet(viewsets.ModelViewSet):
     queryset = TerminalCommand.objects.all()
     serializer_class = TerminalCommandSerializer
+
+
+class ApplicationStatisticsViewSet(viewsets.ModelViewSet):
+    queryset = ApplicationStatistics.objects.all()
+    serializer_class = ApplicationStatisticsSerializer
+    lookup_field = 'session_id'
+    
+    def get_object(self):
+        try:
+            return ApplicationStatistics.objects.get(session_id=self.kwargs['session_id'])
+        except ApplicationStatistics.DoesNotExist:
+            # Create new statistics record if it doesn't exist
+            return ApplicationStatistics.objects.create(session_id=self.kwargs['session_id'])
+    
+    @action(detail=True, methods=['post'])
+    def update_stats(self, request, session_id=None):
+        stats = self.get_object()
+        
+        # Update stats with provided data
+        for field in ['current_directory', 'injection_count', 'keyword_count', 
+                     'plan_count', 'terminal_count', 'active_terminal_id', 'terminal_id_counter']:
+            if field in request.data:
+                setattr(stats, field, request.data[field])
+        
+        stats.save()
+        serializer = self.get_serializer(stats)
+        return Response(serializer.data)

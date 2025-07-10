@@ -62,6 +62,19 @@ class BackendAPIClient {
         });
     }
 
+    async updateTerminalSessionComplete(sessionId, name, color, frontendTerminalId, positionIndex, currentDirectory) {
+        return await this._fetch(`/terminal/sessions/${sessionId}/`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                name,
+                color,
+                frontend_terminal_id: frontendTerminalId,
+                position_index: positionIndex,
+                current_directory: currentDirectory
+            })
+        });
+    }
+
     async deleteTerminalSession(sessionId) {
         return await this._fetch(`/terminal/sessions/${sessionId}/`, {
             method: 'DELETE'
@@ -119,6 +132,19 @@ class BackendAPIClient {
             url += `?terminal_session=${terminalSessionId}`;
         }
         return await this._fetch(url);
+    }
+
+    async addMessageToHistory(terminalSessionId, content, source = 'manual', terminalId = null, counter = null) {
+        return await this._fetch('/queue/history/', {
+            method: 'POST',
+            body: JSON.stringify({
+                terminal_session: terminalSessionId,
+                message: content,
+                source,
+                terminal_id: terminalId,
+                counter
+            })
+        });
     }
 
     // Voice Transcription
@@ -185,6 +211,28 @@ class BackendAPIClient {
     async deleteSetting(key) {
         return await this._fetch(`/settings/app-settings/${key}/`, {
             method: 'DELETE'
+        });
+    }
+
+    // Application Statistics Management
+    async getApplicationStats(sessionId) {
+        return await this._fetch(`/terminal/stats/${sessionId}/`);
+    }
+
+    async updateApplicationStats(sessionId, stats) {
+        return await this._fetch(`/terminal/stats/${sessionId}/update_stats/`, {
+            method: 'POST',
+            body: JSON.stringify(stats)
+        });
+    }
+
+    async createApplicationStats(sessionId, initialStats = {}) {
+        return await this._fetch('/terminal/stats/', {
+            method: 'POST',
+            body: JSON.stringify({
+                session_id: sessionId,
+                ...initialStats
+            })
         });
     }
 
