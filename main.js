@@ -633,6 +633,29 @@ function setupIpcHandlers() {
     }
   });
 
+  // Alias for db-get-all-settings
+  ipcMain.handle('db-get-settings', async () => {
+    try {
+      const data = await readDataFile();
+      return data.settings;
+    } catch (error) {
+      try { console.error('Error getting all settings:', error); } catch (e) { /* ignore */ }
+      return {};
+    }
+  });
+
+  // Alias for db-set-setting
+  ipcMain.handle('db-save-setting', async (event, key, value) => {
+    try {
+      const data = await readDataFile();
+      data.settings[key] = value;
+      return await writeDataFile(data);
+    } catch (error) {
+      try { console.error('Error setting setting:', error); } catch (e) { /* ignore */ }
+      return false;
+    }
+  });
+
   ipcMain.handle('db-get-messages', async () => {
     try {
       const data = await readDataFile();

@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     "voice",
     "settings",
     "todos",
+    "user_settings",
 ]
 
 MIDDLEWARE = [

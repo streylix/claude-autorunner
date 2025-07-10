@@ -58,9 +58,6 @@
                         <button class="icon-btn" id="todo-search-clear-btn" title="Clear search">
                             <i data-lucide="x"></i>
                         </button>
-                        <button class="icon-btn" id="manual-generate-btn" title="Generate todos from terminal output">
-                            <i data-lucide="plus-circle"></i>
-                        </button>
                     </div>
                     <div class="todo-content" id="todo-list">
                         <div class="todo-item">
@@ -71,6 +68,39 @@
                                 <span class="todo-time">[auto-generated]</span>
                                 <span class="todo-message">Example todo item from terminal output</span>
                             </div>
+                        </div>
+                    </div>
+                    <div class="manual-generation-section">
+                        <div class="manual-generation-controls">
+                            <div class="manual-dropdowns-group">
+                                <div class="manual-generation-selector">
+                                    <button class="manual-terminal-selector-btn" id="manual-terminal-selector-btn">
+                                        <span class="manual-terminal-selector-dot" style="background-color: #007acc;"></span>
+                                        <span class="manual-terminal-selector-text">Terminal 1</span>
+                                        <i data-lucide="chevron-down"></i>
+                                    </button>
+                                    <div class="manual-terminal-selector-dropdown" id="manual-terminal-selector-dropdown" style="display: none;">
+                                        <!-- Dropdown items will be dynamically generated -->
+                                    </div>
+                                </div>
+                                <div class="manual-generation-mode">
+                                    <button class="manual-mode-selector-btn" id="manual-mode-selector-btn">
+                                        <span class="manual-mode-selector-text">Verify</span>
+                                        <i data-lucide="chevron-down"></i>
+                                    </button>
+                                    <div class="manual-mode-selector-dropdown" id="manual-mode-selector-dropdown" style="display: none;">
+                                        <div class="manual-mode-option" data-mode="verify">Verify</div>
+                                        <div class="manual-mode-option" data-mode="explain">Explain</div>
+                                        <div class="manual-mode-option" data-mode="custom">Custom</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <button class="manual-generate-btn" id="manual-generate-btn" title="Generate todos from terminal output">
+                                <i data-lucide="sparkles"></i>
+                            </button>
+                        </div>
+                        <div class="custom-prompt-section" id="custom-prompt-section" style="display: none;">
+                            <textarea class="custom-prompt-input" id="custom-prompt-input" placeholder="Enter custom prompt for todo generation..." rows="3"></textarea>
                         </div>
                     </div>
                     <div class="sidebar-footer">
@@ -447,15 +477,14 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3>Message History</h3>
-                <button class="modal-close" id="message-history-close" title="Close history">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="history-controls">
+                <div class="modal-header-actions">
                     <button class="setting-btn" id="clear-history-btn" title="Clear all history">
                         <i data-lucide="trash-2"></i>
-                        Clear History
                     </button>
+                    <button class="modal-close" id="message-history-close" title="Close history">&times;</button>
                 </div>
+            </div>
+            <div class="modal-body">
                 <div class="history-list" id="history-list">
                     <div class="history-empty">
                         <p>No message history yet. Messages will appear here after they are successfully injected.</p>

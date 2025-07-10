@@ -33,6 +33,8 @@ class MessageHistory(models.Model):
         ('auto', 'Auto'),
         ('voice', 'Voice'),
     ], default='manual')
+    terminal_id = models.IntegerField(null=True, blank=True)
+    counter = models.IntegerField(null=True, blank=True)
     
     class Meta:
         ordering = ['-timestamp']

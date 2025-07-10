@@ -107,7 +107,7 @@ class TerminalGUI {
             minimizeToTray: true,
             startMinimized: false,
             // Todo generation preferences
-            automaticTodoGeneration: true
+            automaticTodoGeneration: false
         };
         this.usageLimitSyncInterval = null;
         this.usageLimitResetTime = null;
@@ -131,6 +131,7 @@ class TerminalGUI {
         this.currentTypeInterval = null;
         this.usageLimitModalShowing = false;
         this.usageLimitWaiting = false;
+        this.usageLimitCooldownUntil = null; // Timestamp when usage limit detection cooldown ends
         
         // Voice recording state
         this.isRecording = false;
@@ -257,7 +258,10 @@ class TerminalGUI {
             await this.loadAllPreferences();
             
             // Load terminal session mapping
-            this.loadTerminalSessionMapping();
+            await this.loadTerminalSessionMapping();
+            
+            // Load terminal state BEFORE initializing terminals
+            await this.loadTerminalState();
             
             // Initialize backend API client before terminal initialization
             if (typeof BackendAPIClient !== 'undefined') {
@@ -269,6 +273,10 @@ class TerminalGUI {
             }
             
             this.initializeTerminal();
+            
+            // Restore terminal data after terminals are created
+            this.restoreTerminalData();
+            
             this.setupEventListeners();
             
             // Initialize injection manager after terminal setup
@@ -289,7 +297,7 @@ class TerminalGUI {
             this.updateTrayBadge();
             
             // Initialize todo system
-            this.initializeTodoSystem();
+            await this.initializeTodoSystem();
             
             
             // Log using direct console method to bypass throttling
@@ -377,19 +385,20 @@ class TerminalGUI {
     }
 
     initializeTerminal() {
-        // Initialize first terminal
-        this.createTerminal(1);
+        // Initialize first terminal (using activeTerminalId to support restored state)
+        this.createTerminal(this.activeTerminalId);
         
         
-        // Set container to single terminal mode
+        // Set container terminal count based on restored/current state
         const terminalsContainer = document.getElementById('terminals-container');
-        terminalsContainer.setAttribute('data-terminal-count', '1');
+        terminalsContainer.setAttribute('data-terminal-count', this.terminals.size.toString());
         
         // Update button visibility for initial state
         this.updateTerminalButtonVisibility();
         
         // Initialize terminal dropdown
         this.updateTerminalDropdowns();
+        this.updateManualTerminalDropdown();
         
         // Handle window resize for all terminals
         window.addEventListener('resize', () => {
@@ -693,7 +702,7 @@ class TerminalGUI {
             this.directLog('CLICK EVENT DETECTED - Event listeners are working');
         });
         
-        document.addEventListener('keydown', (e) => {
+        document.addEventListener('keydown', async (e) => {
             // Debug all keyboard events for critical hotkeys
             if ((this.isCommandKey(e) && e.key === 'b') || (e.shiftKey && e.key === 'Tab')) {
                 this.directLog('KEYDOWN EVENT: ' + JSON.stringify({
@@ -836,7 +845,7 @@ class TerminalGUI {
                 // Close current terminal
                 e.preventDefault();
                 if (this.terminals.size > 1) {
-                    this.closeTerminal(this.activeTerminalId);
+                    await this.closeTerminal(this.activeTerminalId);
                     this.logAction('Terminal closed via keyboard shortcut (Cmd+Shift+W)', 'info');
                 } else {
                     this.logAction('Cannot close last terminal - at least one terminal must remain open', 'warning');
@@ -957,6 +966,16 @@ class TerminalGUI {
         
         // Consolidated click event listener for terminal interactions
         document.addEventListener('click', (e) => {
+            
+            // Handle close terminal button
+            const closeBtn = e.target.closest('.close-terminal-btn');
+            if (closeBtn) {
+                const terminalId = parseInt(closeBtn.dataset.terminalId);
+                if (terminalId && this.terminals.size > 1) {
+                    this.closeTerminal(terminalId);
+                }
+                return;
+            }
             
             // Handle add terminal button
             if (e.target.closest('.add-terminal-btn')) {
@@ -1403,6 +1422,32 @@ class TerminalGUI {
         
         // Validate content is not empty or just whitespace
         if (this.isValidMessageContent(content)) {
+            // Handle special usage limit commands
+            if (content.startsWith('/usage-limit-status')) {
+                const status = await this.getUsageLimitStatus();
+                this.logAction(status.message, 'info');
+                if (status.firstDetected) {
+                    this.logAction(`First detected: ${status.firstDetected}`, 'info');
+                }
+                input.value = '';
+                return;
+            }
+            
+            if (content.startsWith('/usage-limit-reset')) {
+                await this.resetUsageLimitTimer();
+                input.value = '';
+                return;
+            }
+            
+            if (content.startsWith('/help') && (content === '/help' || content.includes('usage-limit'))) {
+                this.logAction('Usage Limit Commands:', 'info');
+                this.logAction('  /usage-limit-status - Check status and remaining time until auto-disable', 'info');
+                this.logAction('  /usage-limit-reset - Reset the 5-hour auto-disable timer', 'info');
+                this.logAction('', 'info');
+                this.logAction('Auto-disable: Usage limit detection automatically disables 5 hours after first detection', 'info');
+                input.value = '';
+                return;
+            }
             const now = Date.now();
             const message = {
                 id: this.generateMessageId(),
@@ -1963,11 +2008,16 @@ class TerminalGUI {
         console.error('All attempts to save message queue failed - data may be lost on app restart');
     }
 
-    async saveToMessageHistory(message) {
+    async saveToMessageHistory(message, terminalId = null, counter = null) {
         try {
+            const targetTerminalId = terminalId || message.terminalId || this.activeTerminalId;
+            const injectionCounter = counter || this.injectionCount;
+            
             const historyItem = {
                 content: message.content || message.processedContent,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                terminalId: targetTerminalId,
+                counter: injectionCounter
             };
             
             // Save to database
@@ -1979,7 +2029,9 @@ class TerminalGUI {
                 id: Date.now() + Math.random(),
                 content: historyItem.content,
                 timestamp: new Date().toISOString(),
-                injectedAt: new Date().toLocaleString()
+                injectedAt: new Date().toLocaleString(),
+                terminalId: targetTerminalId,
+                counter: injectionCounter
             };
             
             this.messageHistory.unshift(localHistoryItem);
@@ -1992,6 +2044,13 @@ class TerminalGUI {
             this.updateMessageHistoryDisplay();
         } catch (error) {
             console.error('Failed to save message history:', error);
+        }
+    }
+
+    updateMessageHistoryDisplay() {
+        // Update the history modal if it's open
+        if (document.getElementById('message-history-modal').style.display === 'block') {
+            this.updateHistoryModal();
         }
     }
 
@@ -2183,6 +2242,10 @@ class TerminalGUI {
                 } catch (error) {
                     console.error('Error clearing usage limit timer state:', error);
                 }
+                
+                // Set one-hour cooldown period to prevent reactivation
+                this.usageLimitCooldownUntil = Date.now() + (60 * 60 * 1000); // 1 hour from now
+                this.logAction('Usage limit detection disabled for 1 hour to prevent reactivation', 'info');
                 
                 // Comprehensively clear any stuck injection states when timer expires
                 this.isInjecting = false;
@@ -2769,7 +2832,7 @@ class TerminalGUI {
         }
         
         const message = this.messageQueue.shift();
-        this.saveMessageQueue(); // Save queue changes to localStorage
+        this.saveMessageQueue(); // Save queue changes to backend database
         this.isInjecting = true;
         // Keep injectionInProgress true throughout the entire sequence
         this.currentlyInjectingMessageId = message.id; // Track which message is being injected
@@ -2785,7 +2848,7 @@ class TerminalGUI {
         // Type the message
         this.typeMessage(message.processedContent, () => {
             this.injectionCount++;
-            this.saveToMessageHistory(message); // Save to history after successful injection
+            this.saveToMessageHistory(message, this.activeTerminalId, this.injectionCount); // Save to history after successful injection
             this.updateStatusDisplay();
             this.updateMessageList();
             
@@ -3332,7 +3395,7 @@ class TerminalGUI {
                 
                 // Update counters and UI
                 this.injectionCount++;
-                this.saveToMessageHistory(message);
+                this.saveToMessageHistory(message, this.activeTerminalId, this.injectionCount);
                 
                 // Reset injection state
                 this.isInjecting = false;
@@ -3415,7 +3478,7 @@ class TerminalGUI {
                 
                 this.typeMessage(message.processedContent, () => {
                     this.injectionCount++;
-                    this.saveToMessageHistory(message); // Save to history after successful injection
+                    this.saveToMessageHistory(message, this.activeTerminalId, this.injectionCount); // Save to history after successful injection
                     this.updateStatusDisplay();
                     
                     setTimeout(() => {
@@ -3573,7 +3636,7 @@ class TerminalGUI {
         
         this.typeMessageToTerminal(message.processedContent, terminalId, () => {
             this.injectionCount++;
-            this.saveToMessageHistory(message);
+            this.saveToMessageHistory(message, terminalId, this.injectionCount);
             this.updateStatusDisplay();
             
             setTimeout(() => {
@@ -4064,6 +4127,34 @@ class TerminalGUI {
         // Also check for "Claude usage limit reached" message and parse the reset time
         const reachedMatch = data.match(/Claude usage limit reached\. Your limit will reset at (\d{1,2})(am|pm)/i);
         if (reachedMatch) {
+            // Check if usage limit detection should be auto-disabled (5 hours after first detection)
+            const usageLimitFirstDetected = await ipcRenderer.invoke('db-get-setting', 'usageLimitFirstDetected');
+            const now = Date.now();
+            const fiveHoursInMs = 5 * 60 * 60 * 1000; // 5 hours in milliseconds
+            
+            if (usageLimitFirstDetected) {
+                const firstDetectedTime = parseInt(usageLimitFirstDetected);
+                const timeSinceFirstDetection = now - firstDetectedTime;
+                
+                if (timeSinceFirstDetection >= fiveHoursInMs) {
+                    const hoursElapsed = Math.round(timeSinceFirstDetection / (60 * 60 * 1000) * 10) / 10;
+                    this.logAction(`Usage limit detection auto-disabled (${hoursElapsed}h elapsed since first detection)`, 'info');
+                    // Clear the first detection timestamp
+                    await ipcRenderer.invoke('db-save-setting', 'usageLimitFirstDetected', null);
+                    return;
+                }
+            } else {
+                // First time detecting usage limit - store timestamp
+                await ipcRenderer.invoke('db-save-setting', 'usageLimitFirstDetected', now.toString());
+                this.logAction('Usage limit first detected - auto-disable timer set for 5 hours', 'info');
+            }
+            
+            // Check if we're in the cooldown period after a previous reset
+            if (this.usageLimitCooldownUntil && Date.now() < this.usageLimitCooldownUntil) {
+                const remainingCooldown = Math.round((this.usageLimitCooldownUntil - Date.now()) / 1000 / 60);
+                this.logAction(`Usage limit detected but ignored due to cooldown (${remainingCooldown} minutes remaining)`, 'info');
+                return;
+            }
             const resetHour = parseInt(reachedMatch[1]);
             const ampm = reachedMatch[2].toLowerCase();
             const resetTimeString = `${resetHour}${ampm}`;
@@ -4173,7 +4264,10 @@ class TerminalGUI {
             // Clear session-based tracking to allow new modals after reset
             this.processedUsageLimitMessages.clear();
             
-            this.logAction('Cleared usage limit tracking data and session memory', 'info');
+            // Clear cooldown period when manually clearing tracking
+            this.usageLimitCooldownUntil = null;
+            
+            this.logAction('Cleared usage limit tracking data, session memory, and cooldown period', 'info');
         } catch (error) {
             console.error('Error clearing usage limit tracking:', error);
         }
@@ -4247,6 +4341,45 @@ class TerminalGUI {
         // For debug mode, always show the modal with exact reset time (bypass duplicate check)
         this.logAction(`DEBUG: Showing usage limit modal for ${resetTimeString}`, 'info');
         this.showUsageLimitModal(null, null, exactResetTime);
+    }
+
+    async getUsageLimitStatus() {
+        const usageLimitFirstDetected = await ipcRenderer.invoke('db-get-setting', 'usageLimitFirstDetected');
+        if (!usageLimitFirstDetected) {
+            return { 
+                active: true,
+                message: 'Usage limit detection is active (no detection recorded yet)'
+            };
+        }
+        
+        const firstDetectedTime = parseInt(usageLimitFirstDetected);
+        const now = Date.now();
+        const fiveHoursInMs = 5 * 60 * 60 * 1000;
+        const timeSinceFirstDetection = now - firstDetectedTime;
+        
+        if (timeSinceFirstDetection >= fiveHoursInMs) {
+            return {
+                active: false,
+                message: 'Usage limit detection is auto-disabled (5+ hours since first detection)'
+            };
+        }
+        
+        const remainingMs = fiveHoursInMs - timeSinceFirstDetection;
+        const remainingHours = Math.floor(remainingMs / (60 * 60 * 1000));
+        const remainingMinutes = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
+        
+        return {
+            active: true,
+            firstDetected: new Date(firstDetectedTime).toLocaleString(),
+            remainingTime: `${remainingHours}h ${remainingMinutes}m`,
+            message: `Usage limit detection active - auto-disables in ${remainingHours}h ${remainingMinutes}m`
+        };
+    }
+
+    async resetUsageLimitTimer() {
+        await ipcRenderer.invoke('db-save-setting', 'usageLimitFirstDetected', null);
+        this.logAction('Usage limit auto-disable timer has been reset', 'info');
+        return true;
     }
 
     showUsageLimitModal(resetHour, ampm, exactResetTime = null) {
@@ -4627,7 +4760,11 @@ class TerminalGUI {
         const terminalData = this.terminals.get(terminalId);
         if (!terminalData) return;
         
-        if (this.autoscrollEnabled && !terminalData.userInteracting) {
+        // Only autoscroll when terminal status is 'running' or 'prompted'
+        const shouldAutoscroll = terminalData.status === 'running' || 
+                               terminalData.status === 'prompted';
+        
+        if (this.autoscrollEnabled && !terminalData.userInteracting && shouldAutoscroll) {
             this.scrollToBottom(terminalId);
         }
         
@@ -4656,7 +4793,10 @@ class TerminalGUI {
             
             terminalData.autoscrollTimeout = setTimeout(() => {
                 terminalData.userInteracting = false;
-                if (this.autoscrollEnabled) {
+                // Only auto-resume scrolling if terminal status is 'running' or 'prompted'
+                const shouldAutoscroll = terminalData.status === 'running' || 
+                                       terminalData.status === 'prompted';
+                if (this.autoscrollEnabled && shouldAutoscroll) {
                     this.scrollToBottom(terminalId);
                 }
             }, this.autoscrollDelay);
@@ -5024,10 +5164,21 @@ class TerminalGUI {
         const historyHTML = this.messageHistory.map(item => `
             <div class="history-item">
                 <div class="history-item-header">
-                    <span class="history-item-date">${item.injectedAt}</span>
-                    <button class="undo-btn" onclick="terminalGUI.undoFromHistory('${item.id}')" title="Add back to queue">
-                        <i data-lucide="undo-2"></i>
-                    </button>
+                    <div class="history-item-info">
+                        <span class="history-item-date">${item.injectedAt}</span>
+                        <span class="history-item-meta">
+                            ${item.terminalId ? `Terminal ${item.terminalId}` : 'Unknown Terminal'}
+                            ${item.counter ? ` • #${item.counter}` : ''}
+                        </span>
+                    </div>
+                    <div class="history-item-actions">
+                        <button class="undo-btn" onclick="terminalGUI.undoFromHistory('${item.id}')" title="Add back to queue">
+                            <i data-lucide="undo-2"></i>
+                        </button>
+                        <button class="delete-btn" onclick="terminalGUI.deleteFromHistory('${item.id}')" title="Delete from history">
+                            <i data-lucide="trash-2"></i>
+                        </button>
+                    </div>
                 </div>
                 <div class="history-item-content">${this.escapeHtml(item.content)}</div>
             </div>
@@ -5040,9 +5191,11 @@ class TerminalGUI {
     }
 
     undoFromHistory(historyId) {
-        const historyItem = this.messageHistory.find(item => item.id === historyId);
+        // Convert historyId to appropriate type for comparison
+        const historyIdParsed = typeof historyId === 'string' ? parseFloat(historyId) : historyId;
+        const historyItem = this.messageHistory.find(item => item.id === historyIdParsed);
         if (!historyItem) {
-            this.logAction('History item not found', 'error');
+            this.logAction(`History item not found. ID: ${historyId}, Available IDs: ${this.messageHistory.map(item => item.id).join(', ')}`, 'error');
             return;
         }
 
@@ -5076,6 +5229,28 @@ class TerminalGUI {
         
         // Close the history modal
         this.closeMessageHistoryModal();
+    }
+
+    deleteFromHistory(historyId) {
+        // Convert historyId to appropriate type for comparison
+        const historyIdParsed = typeof historyId === 'string' ? parseFloat(historyId) : historyId;
+        const historyItemIndex = this.messageHistory.findIndex(item => item.id === historyIdParsed);
+        if (historyItemIndex === -1) {
+            this.logAction(`History item not found. ID: ${historyId}, Available IDs: ${this.messageHistory.map(item => item.id).join(', ')}`, 'error');
+            return;
+        }
+
+        const historyItem = this.messageHistory[historyItemIndex];
+        this.messageHistory.splice(historyItemIndex, 1);
+        
+        // Save updated history to preferences
+        this.preferences.messageHistory = this.messageHistory;
+        this.savePreferences();
+        
+        // Update the modal display
+        this.updateHistoryModal();
+        
+        this.logAction(`Deleted message from history: "${historyItem.content.substring(0, 50)}..."`, 'info');
     }
 
     escapeHtml(text) {
@@ -5321,29 +5496,36 @@ class TerminalGUI {
                 await ipcRenderer.invoke('db-set-setting', key, JSON.stringify(value));
             }
             
+            // Save terminal state
+            await this.saveTerminalState();
+            
         } catch (error) {
             console.error('Failed to save preferences:', error);
         }
     }
 
-    saveTerminalSessionMapping() {
+    async saveTerminalSessionMapping() {
         try {
             // Convert Map to object for storage
             const mappingObj = {};
             this.terminalSessionMap.forEach((sessionId, terminalId) => {
                 mappingObj[terminalId] = sessionId;
             });
-            localStorage.setItem('terminalSessionMapping', JSON.stringify(mappingObj));
+            await ipcRenderer.invoke('db-save-setting', 'terminalSessionMapping', mappingObj);
         } catch (error) {
             console.error('Failed to save terminal session mapping:', error);
         }
     }
 
-    loadTerminalSessionMapping() {
+    async loadTerminalSessionMapping() {
         try {
-            const stored = localStorage.getItem('terminalSessionMapping');
-            if (stored) {
-                const mappingObj = JSON.parse(stored);
+            const settings = await ipcRenderer.invoke('db-get-settings');
+            let mappingObj = settings.terminalSessionMapping;
+            if (mappingObj) {
+                // If it's a string, parse it as JSON
+                if (typeof mappingObj === 'string') {
+                    mappingObj = JSON.parse(mappingObj);
+                }
                 this.terminalSessionMap.clear();
                 Object.entries(mappingObj).forEach(([terminalId, sessionId]) => {
                     this.terminalSessionMap.set(parseInt(terminalId), sessionId);
@@ -5351,6 +5533,67 @@ class TerminalGUI {
             }
         } catch (error) {
             console.error('Failed to load terminal session mapping:', error);
+        }
+    }
+
+    async saveTerminalState() {
+        try {
+            const terminalState = {
+                activeTerminalId: this.activeTerminalId,
+                terminalIdCounter: this.terminalIdCounter,
+                terminals: Array.from(this.terminals.entries()).map(([id, data]) => ({
+                    id,
+                    name: data.name,
+                    color: data.color,
+                    directory: data.directory
+                }))
+            };
+            await ipcRenderer.invoke('db-set-setting', 'terminalState', JSON.stringify(terminalState));
+        } catch (error) {
+            console.error('Failed to save terminal state:', error);
+        }
+    }
+
+    async loadTerminalState() {
+        try {
+            const settings = await ipcRenderer.invoke('db-get-all-settings');
+            let terminalState = settings.terminalState;
+            if (terminalState) {
+                if (typeof terminalState === 'string') {
+                    terminalState = JSON.parse(terminalState);
+                }
+                
+                // Restore terminal counter and active terminal
+                this.terminalIdCounter = terminalState.terminalIdCounter || 1;
+                this.activeTerminalId = terminalState.activeTerminalId || 1;
+                
+                // Store terminal data for restoration after terminals are created
+                this.savedTerminalData = terminalState.terminals || [];
+            }
+        } catch (error) {
+            console.error('Failed to load terminal state:', error);
+        }
+    }
+    
+    restoreTerminalData() {
+        // Apply saved terminal data to existing terminals
+        if (this.savedTerminalData && this.savedTerminalData.length > 0) {
+            for (const termData of this.savedTerminalData) {
+                if (this.terminals.has(termData.id)) {
+                    const existingTerminal = this.terminals.get(termData.id);
+                    existingTerminal.name = termData.name;
+                    existingTerminal.directory = termData.directory;
+                    // Color is already set during creation based on ID
+                }
+            }
+            
+            // Update UI to reflect loaded state
+            this.updateTerminalDropdowns();
+            this.updateManualTerminalDropdown();
+            this.switchToTerminal(this.activeTerminalId);
+            
+            // Clear saved data after applying
+            this.savedTerminalData = null;
         }
     }
 
@@ -5586,7 +5829,7 @@ class TerminalGUI {
                 }
             }
             
-            this.saveTerminalSessionMapping();
+            await this.saveTerminalSessionMapping();
         } catch (error) {
             console.error('Failed to sync terminal sessions:', error);
         }
@@ -6750,7 +6993,7 @@ class TerminalGUI {
     }
     
     // Multi-terminal management methods
-    addNewTerminal() {
+    async addNewTerminal() {
         const terminalCount = this.terminals.size;
         if (terminalCount >= 4) {
             this.logAction('Maximum of 4 terminals reached', 'warning');
@@ -6770,7 +7013,7 @@ class TerminalGUI {
         terminalWrapper.innerHTML = `
             <div class="terminal-header">
                 <div class="terminal-title-wrapper">
-                    <button class="icon-btn close-terminal-btn" title="Close terminal" onclick="window.terminalGUI.closeTerminal(${newId})">
+                    <button class="icon-btn close-terminal-btn" title="Close terminal" data-terminal-id="${newId}">
                         <i data-lucide="x"></i>
                     </button>
                     <span class="terminal-color-dot" style="background-color: ${color};"></span>
@@ -6817,10 +7060,10 @@ class TerminalGUI {
         // Create backend session if available
         if (this.backendAPIClient) {
             this.backendAPIClient.createTerminalSession(`Terminal ${newId}`, this.currentDirectory)
-                .then(session => {
+                .then(async session => {
                     // Store the mapping of frontend terminal ID to backend session UUID
                     this.terminalSessionMap.set(newId, session.id);
-                    this.saveTerminalSessionMapping();
+                    await this.saveTerminalSessionMapping();
                     this.logAction(`Created backend session for Terminal ${newId}`, 'info');
                 })
                 .catch(error => {
@@ -6834,6 +7077,7 @@ class TerminalGUI {
         
         // Update dropdowns
         this.updateTerminalDropdowns();
+        this.updateManualTerminalDropdown();
         
         // Re-initialize Lucide icons for new elements
         if (typeof lucide !== 'undefined') {
@@ -6850,6 +7094,9 @@ class TerminalGUI {
         }, 100);
         
         this.logAction(`Added Terminal ${newId}`, 'info');
+        
+        // Save terminal state
+        await this.saveTerminalState();
     }
     
     updateTerminalButtonVisibility() {
@@ -6880,7 +7127,7 @@ class TerminalGUI {
         }
     }
     
-    closeTerminal(terminalId) {
+    async closeTerminal(terminalId) {
         const terminalData = this.terminals.get(terminalId);
         if (!terminalData) {
             this.logAction(`Terminal ${terminalId} not found`, 'error');
@@ -6911,7 +7158,7 @@ class TerminalGUI {
         
         // Remove from terminal session mapping
         this.terminalSessionMap.delete(terminalId);
-        this.saveTerminalSessionMapping();
+        await this.saveTerminalSessionMapping();
         
         // Remove DOM element
         const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
@@ -6940,6 +7187,9 @@ class TerminalGUI {
         }, 100);
         
         this.logAction(`Closed ${terminalData.name}`, 'info');
+        
+        // Save terminal state
+        await this.saveTerminalState();
     }
     
     toggleTerminalSelectorDropdown() {
@@ -6998,6 +7248,7 @@ class TerminalGUI {
         
         // Update dropdown to show new selection
         this.updateTerminalDropdowns();
+        this.updateManualTerminalDropdown();
         
         this.updateStatusDisplay();
         this.logAction(`Selected ${terminalData.name}`, 'info');
@@ -7083,6 +7334,7 @@ class TerminalGUI {
                 if (terminalData) {
                     terminalData.name = newText;
                     this.updateTerminalDropdowns();
+                    this.updateManualTerminalDropdown();
                     
                     // Update selector if this is the active terminal
                     if (terminalId === this.activeTerminalId) {
@@ -7363,13 +7615,14 @@ class TerminalGUI {
     // TODO SYSTEM METHODS
     // ===============================
     
-    initializeTodoSystem() {
-        // Restore saved view state from localStorage or default to action-log
+    async initializeTodoSystem() {
+        // Restore saved view state from backend or default to action-log
         let savedView = 'action-log';
         try {
-            savedView = localStorage.getItem('sidebarView') || 'action-log';
+            const settings = await ipcRenderer.invoke('db-get-settings');
+            savedView = settings.sidebarView || 'action-log';
         } catch (error) {
-            console.warn('Failed to restore sidebar view from localStorage:', error);
+            console.warn('Failed to restore sidebar view from backend:', error);
         }
         
         this.todoSystem = {
@@ -7377,20 +7630,26 @@ class TerminalGUI {
             todos: [],
             terminalStateMonitors: new Map(),
             dotWaitStartTime: null,
-            isWaitingForCompletion: false
+            isWaitingForCompletion: false,
+            manualGeneration: {
+                selectedTerminalId: this.activeTerminalId,
+                selectedMode: 'verify',
+                customPrompt: '',
+                isGenerating: false
+            }
         };
         
         this.setupTodoEventListeners();
         // Note: Automatic todo generation now uses the existing scanSingleTerminalStatus logic
         
         // Apply the saved view state after DOM is ready
-        setTimeout(() => {
+        setTimeout(async () => {
             try {
-                this.switchSidebarView(savedView);
+                await this.switchSidebarView(savedView);
             } catch (error) {
                 console.warn('Failed to switch sidebar view:', error);
                 // Fallback to action-log if there's an error
-                this.switchSidebarView('action-log');
+                await this.switchSidebarView('action-log');
             }
         }, 100);
     }
@@ -7401,11 +7660,11 @@ class TerminalGUI {
         const todoNavBtn = document.getElementById('todo-nav-btn');
         
         if (actionLogNavBtn) {
-            actionLogNavBtn.addEventListener('click', () => this.switchSidebarView('action-log'));
+            actionLogNavBtn.addEventListener('click', async () => await this.switchSidebarView('action-log'));
         }
         
         if (todoNavBtn) {
-            todoNavBtn.addEventListener('click', () => this.switchSidebarView('todo'));
+            todoNavBtn.addEventListener('click', async () => await this.switchSidebarView('todo'));
         }
         
         // Footer buttons
@@ -7426,11 +7685,8 @@ class TerminalGUI {
             todoSearch.addEventListener('input', (e) => this.filterTodos(e.target.value));
         }
         
-        // Manual generate todos button
-        const manualGenerateBtn = document.getElementById('manual-generate-btn');
-        if (manualGenerateBtn) {
-            manualGenerateBtn.addEventListener('click', () => this.manualGenerateTodos());
-        }
+        // Manual generation controls
+        this.setupManualGenerationControls();
         
         const todoSearchClearBtn = document.getElementById('todo-search-clear-btn');
         if (todoSearchClearBtn) {
@@ -7441,7 +7697,85 @@ class TerminalGUI {
         }
     }
     
-    switchSidebarView(view) {
+    setupManualGenerationControls() {
+        // Manual terminal selector
+        const manualTerminalSelectorBtn = document.getElementById('manual-terminal-selector-btn');
+        const manualTerminalSelectorDropdown = document.getElementById('manual-terminal-selector-dropdown');
+        
+        if (manualTerminalSelectorBtn) {
+            manualTerminalSelectorBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleManualTerminalSelector();
+            });
+        }
+        
+        // Manual mode selector
+        const manualModeSelectorBtn = document.getElementById('manual-mode-selector-btn');
+        const manualModeSelectorDropdown = document.getElementById('manual-mode-selector-dropdown');
+        
+        if (manualModeSelectorBtn) {
+            manualModeSelectorBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleManualModeSelector();
+            });
+        }
+        
+        // Manual generate button
+        const manualGenerateBtn = document.getElementById('manual-generate-btn');
+        if (manualGenerateBtn) {
+            manualGenerateBtn.addEventListener('click', () => this.handleManualGeneration());
+        }
+        
+        // Custom prompt input
+        const customPromptInput = document.getElementById('custom-prompt-input');
+        if (customPromptInput) {
+            customPromptInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.todoSystem.manualGeneration.customPrompt = customPromptInput.value;
+                    this.saveCustomPrompt();
+                    document.getElementById('custom-prompt-section').style.display = 'none';
+                }
+            });
+            
+            customPromptInput.addEventListener('input', (e) => {
+                this.todoSystem.manualGeneration.customPrompt = e.target.value;
+            });
+        }
+        
+        // Setup dropdown click handlers
+        if (manualTerminalSelectorDropdown) {
+            manualTerminalSelectorDropdown.addEventListener('click', (e) => {
+                if (e.target.classList.contains('manual-terminal-selector-item')) {
+                    this.selectManualTerminal(e.target);
+                }
+            });
+        }
+        
+        if (manualModeSelectorDropdown) {
+            manualModeSelectorDropdown.addEventListener('click', (e) => {
+                if (e.target.classList.contains('manual-mode-option')) {
+                    this.selectManualMode(e.target);
+                }
+            });
+        }
+        
+        // Close dropdowns when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.manual-generation-selector') && manualTerminalSelectorDropdown) {
+                manualTerminalSelectorDropdown.style.display = 'none';
+            }
+            if (!e.target.closest('.manual-generation-mode') && manualModeSelectorDropdown) {
+                manualModeSelectorDropdown.style.display = 'none';
+            }
+        });
+        
+        // Initialize the UI
+        this.updateManualGenerationUI();
+        this.loadCustomPrompt();
+    }
+    
+    async switchSidebarView(view) {
         const actionLogView = document.getElementById('action-log-view');
         const todoView = document.getElementById('todo-view');
         const actionLogNavBtn = document.getElementById('action-log-nav-btn');
@@ -7455,11 +7789,11 @@ class TerminalGUI {
             todoNavBtn.classList.remove('active');
             sidebarTitle.textContent = 'Action Log';
             this.todoSystem.currentView = 'action-log';
-            // Save the current view state to localStorage
+            // Save the current view state to backend
             try {
-                localStorage.setItem('sidebarView', 'action-log');
+                await ipcRenderer.invoke('db-save-setting', 'sidebarView', 'action-log');
             } catch (error) {
-                console.warn('Failed to save sidebar view to localStorage:', error);
+                console.warn('Failed to save sidebar view to backend:', error);
             }
         } else if (view === 'todo') {
             actionLogView.style.display = 'none';
@@ -7468,11 +7802,11 @@ class TerminalGUI {
             todoNavBtn.classList.add('active');
             sidebarTitle.textContent = 'To-Do';
             this.todoSystem.currentView = 'todo';
-            // Save the current view state to localStorage
+            // Save the current view state to backend
             try {
-                localStorage.setItem('sidebarView', 'todo');
+                await ipcRenderer.invoke('db-save-setting', 'sidebarView', 'todo');
             } catch (error) {
-                console.warn('Failed to save sidebar view to localStorage:', error);
+                console.warn('Failed to save sidebar view to backend:', error);
             }
             this.loadTodos();
         }
@@ -7582,30 +7916,33 @@ class TerminalGUI {
         
         const stability = this.terminalStabilityTracking.get(terminalId);
         
-        // If terminal is transitioning to a stable state (not running, not prompting)
-        if ((oldStatus === 'running' || oldStatus === 'prompting') && newStatus === 'ready') {
-            // Start tracking stability
+        // Check if terminal status shows '...' (idle/ready state)
+        const terminalStatusElement = document.querySelector(`[data-terminal-status="${terminalId}"]`);
+        const hasDotsStatus = terminalStatusElement && terminalStatusElement.textContent.includes('...');
+        
+        if (hasDotsStatus && (oldStatus === 'running' || oldStatus === 'prompting')) {
+            // Terminal transitioned to '...' status, start 3-second stability check
             stability.stableStartTime = Date.now();
-            this.logAction(`Terminal ${terminalId} became stable, starting 3-minute countdown for todo generation`, 'info');
+            this.logAction(`Terminal ${terminalId} shows '...' status, starting 3-second stability check`, 'info');
             
             // Clear any existing timer
             if (stability.stabilityTimer) {
                 clearTimeout(stability.stabilityTimer);
             }
             
-            // Set 3-minute timer
+            // Start 3-second stability monitoring
             stability.stabilityTimer = setTimeout(() => {
                 this.checkTerminalStabilityForGeneration(terminalId);
-            }, this.todoGenerationCooldown);
+            }, 3000);
             
-        } else if (newStatus === 'running' || newStatus === 'prompting') {
-            // Terminal is no longer stable, cancel any pending generation
+        } else if (!hasDotsStatus && (newStatus === 'running' || newStatus === 'prompting')) {
+            // Terminal is no longer in '...' state, cancel any pending generation
             if (stability.stabilityTimer) {
                 clearTimeout(stability.stabilityTimer);
                 stability.stabilityTimer = null;
             }
             stability.stableStartTime = null;
-            this.logAction(`Terminal ${terminalId} is no longer stable, canceling todo generation countdown`, 'info');
+            this.logAction(`Terminal ${terminalId} no longer shows '...' status, canceling todo generation`, 'info');
         }
     }
     
@@ -7613,31 +7950,49 @@ class TerminalGUI {
         const stability = this.terminalStabilityTracking.get(terminalId);
         if (!stability) return;
         
-        // Get current terminal status
-        const currentStatus = this.terminalStatuses.get(terminalId);
-        if (!currentStatus) return;
+        // Get current terminal status element to check for '...' status
+        const terminalStatusElement = document.querySelector(`[data-terminal-status="${terminalId}"]`);
+        const hasDotsStatus = terminalStatusElement && terminalStatusElement.textContent.includes('...');
         
-        // Verify the terminal is still in a stable state
-        if (!currentStatus.isRunning && !currentStatus.isPrompting) {
-            // Check if we've waited long enough since last generation
-            const now = Date.now();
-            const timeSinceStable = stability.stableStartTime ? now - stability.stableStartTime : 0;
+        if (!hasDotsStatus) {
+            // Terminal doesn't have '...' status, reset and restart monitoring
+            this.logAction(`Terminal ${terminalId} doesn't have '...' status, restarting stability tracking`, 'info');
+            stability.stableStartTime = Date.now();
             
-            if (timeSinceStable >= this.todoGenerationCooldown) {
-                // Generate todos
-                this.logAction(`Terminal ${terminalId} has been stable for 3 minutes, generating todos`, 'info');
-                this.manualGenerateTodos();
-                
-                // Update last generation time
-                stability.lastGeneration = now;
-                stability.stableStartTime = null;
-                stability.stabilityTimer = null;
+            // Clear existing timer and restart
+            if (stability.stabilityTimer) {
+                clearTimeout(stability.stabilityTimer);
             }
-        } else {
-            // Terminal is no longer stable, cancel generation
-            this.logAction(`Terminal ${terminalId} is no longer stable at generation time, canceling`, 'info');
+            
+            stability.stabilityTimer = setTimeout(() => {
+                this.checkTerminalStabilityForGeneration(terminalId);
+            }, 3000); // Check again in 3 seconds
+            
+            return;
+        }
+        
+        // Terminal has '...' status, check if it's been consistent for 3 seconds
+        const now = Date.now();
+        const timeSinceStable = stability.stableStartTime ? now - stability.stableStartTime : 0;
+        
+        if (timeSinceStable >= 3000) {
+            // Terminal has been stable with '...' for 3 seconds, generate todos
+            this.logAction(`Terminal ${terminalId} has been stable with '...' for 3 seconds, generating todos`, 'info');
+            this.manualGenerateTodos();
+            
+            // Update last generation time and cleanup
+            stability.lastGeneration = now;
             stability.stableStartTime = null;
             stability.stabilityTimer = null;
+        } else {
+            // Not stable long enough yet, check again in 1 second
+            if (stability.stabilityTimer) {
+                clearTimeout(stability.stabilityTimer);
+            }
+            
+            stability.stabilityTimer = setTimeout(() => {
+                this.checkTerminalStabilityForGeneration(terminalId);
+            }, 1000); // Check again in 1 second
         }
     }
     
@@ -7705,7 +8060,7 @@ class TerminalGUI {
             const session = await response.json();
             // Store the mapping
             this.terminalSessionMap.set(terminalId, session.id);
-            this.saveTerminalSessionMapping();
+            await this.saveTerminalSessionMapping();
             return session.id;
         } catch (error) {
             throw new Error(`Failed to create backend session: ${error.message}`);
@@ -7733,6 +8088,334 @@ class TerminalGUI {
             }
         } catch (error) {
             this.logAction(`Error in manual todo generation: ${error.message}`, 'error');
+        }
+    }
+
+    toggleManualTerminalSelector() {
+        const dropdown = document.getElementById('manual-terminal-selector-dropdown');
+        const modeDropdown = document.getElementById('manual-mode-selector-dropdown');
+        const isVisible = dropdown.style.display === 'block';
+        
+        if (isVisible) {
+            dropdown.style.display = 'none';
+        } else {
+            // Close mode dropdown if open
+            if (modeDropdown) {
+                modeDropdown.style.display = 'none';
+            }
+            this.updateManualTerminalDropdown();
+            dropdown.style.display = 'block';
+        }
+    }
+
+    toggleManualModeSelector() {
+        const dropdown = document.getElementById('manual-mode-selector-dropdown');
+        const terminalDropdown = document.getElementById('manual-terminal-selector-dropdown');
+        const isVisible = dropdown.style.display === 'block';
+        
+        if (isVisible) {
+            dropdown.style.display = 'none';
+        } else {
+            // Close terminal dropdown if open
+            if (terminalDropdown) {
+                terminalDropdown.style.display = 'none';
+            }
+            this.updateManualModeDropdown();
+            dropdown.style.display = 'block';
+        }
+    }
+
+    updateManualTerminalDropdown() {
+        const dropdown = document.getElementById('manual-terminal-selector-dropdown');
+        if (!dropdown) return;
+        
+        // Guard against accessing todoSystem before it's initialized
+        if (!this.todoSystem || !this.todoSystem.manualGeneration) return;
+        
+        // Clear existing items
+        dropdown.innerHTML = '';
+        
+        // Add "All terminals" option first
+        const allTerminalsItem = document.createElement('div');
+        allTerminalsItem.className = 'manual-terminal-selector-item';
+        allTerminalsItem.dataset.terminalId = 'all';
+        if (this.todoSystem.manualGeneration.selectedTerminalId === 'all') {
+            allTerminalsItem.classList.add('selected');
+        }
+        allTerminalsItem.innerHTML = `
+            <span class="manual-terminal-selector-dot" style="background-color: #888888;"></span>
+            <span class="manual-terminal-selector-text">All terminals</span>
+        `;
+        dropdown.appendChild(allTerminalsItem);
+        
+        // Add items for each terminal (using the same logic as updateTerminalDropdowns)
+        this.terminals.forEach((terminalData, terminalId) => {
+            const item = document.createElement('div');
+            item.className = 'manual-terminal-selector-item';
+            item.dataset.terminalId = terminalId;
+            if (this.todoSystem.manualGeneration.selectedTerminalId === terminalId) {
+                item.classList.add('selected');
+            }
+            
+            item.innerHTML = `
+                <span class="manual-terminal-selector-dot" style="background-color: ${terminalData.color};"></span>
+                <span class="manual-terminal-selector-text">${terminalData.name}</span>
+            `;
+            
+            dropdown.appendChild(item);
+        });
+    }
+
+    updateManualModeDropdown() {
+        const dropdown = document.getElementById('manual-mode-selector-dropdown');
+        if (!dropdown) return;
+        
+        // Clear existing selected classes
+        dropdown.querySelectorAll('.manual-mode-option').forEach(option => {
+            option.classList.remove('selected');
+        });
+        
+        // Add selected class to current mode
+        const currentModeOption = dropdown.querySelector(`[data-mode="${this.todoSystem.manualGeneration.selectedMode}"]`);
+        if (currentModeOption) {
+            currentModeOption.classList.add('selected');
+        }
+    }
+
+    selectManualTerminal(item) {
+        const terminalId = item.dataset.terminalId;
+        this.todoSystem.manualGeneration.selectedTerminalId = terminalId === 'all' ? 'all' : parseInt(terminalId);
+        
+        // Update UI
+        this.updateManualGenerationUI();
+        
+        // Hide dropdown
+        document.getElementById('manual-terminal-selector-dropdown').style.display = 'none';
+    }
+
+    selectManualMode(item) {
+        const mode = item.dataset.mode;
+        this.todoSystem.manualGeneration.selectedMode = mode;
+        
+        // Show/hide custom prompt section
+        const customPromptSection = document.getElementById('custom-prompt-section');
+        if (mode === 'custom') {
+            customPromptSection.style.display = 'block';
+            // Focus on the input if it exists
+            const customPromptInput = document.getElementById('custom-prompt-input');
+            if (customPromptInput) {
+                customPromptInput.value = this.todoSystem.manualGeneration.customPrompt;
+                customPromptInput.focus();
+            }
+        } else {
+            customPromptSection.style.display = 'none';
+        }
+        
+        // Update UI
+        this.updateManualGenerationUI();
+        
+        // Hide dropdown
+        document.getElementById('manual-mode-selector-dropdown').style.display = 'none';
+    }
+
+    updateManualGenerationUI() {
+        // Update terminal selector button
+        const terminalSelectorBtn = document.getElementById('manual-terminal-selector-btn');
+        const terminalSelectorDot = terminalSelectorBtn?.querySelector('.manual-terminal-selector-dot');
+        const terminalSelectorText = terminalSelectorBtn?.querySelector('.manual-terminal-selector-text');
+        
+        if (terminalSelectorBtn && terminalSelectorDot && terminalSelectorText) {
+            if (this.todoSystem.manualGeneration.selectedTerminalId === 'all') {
+                terminalSelectorDot.style.backgroundColor = '#888888';
+                terminalSelectorText.textContent = 'All terminals';
+            } else {
+                const terminalData = this.terminals.get(this.todoSystem.manualGeneration.selectedTerminalId);
+                if (terminalData) {
+                    terminalSelectorDot.style.backgroundColor = terminalData.color;
+                    terminalSelectorText.textContent = terminalData.name;
+                }
+            }
+        }
+        
+        // Update mode selector button
+        const modeSelectorBtn = document.getElementById('manual-mode-selector-btn');
+        const modeSelectorText = modeSelectorBtn?.querySelector('.manual-mode-selector-text');
+        
+        if (modeSelectorText) {
+            const mode = this.todoSystem.manualGeneration.selectedMode;
+            modeSelectorText.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+        }
+    }
+
+    async handleManualGeneration() {
+        if (this.todoSystem.manualGeneration.isGenerating) {
+            return;
+        }
+        
+        this.todoSystem.manualGeneration.isGenerating = true;
+        this.setManualGenerationLoading(true);
+        
+        try {
+            const selectedTerminalId = this.todoSystem.manualGeneration.selectedTerminalId;
+            const mode = this.todoSystem.manualGeneration.selectedMode;
+            
+            if (selectedTerminalId === 'all') {
+                await this.generateTodosForAllTerminals(mode);
+            } else {
+                await this.generateTodosForTerminal(selectedTerminalId, mode);
+            }
+        } catch (error) {
+            this.logAction(`Error in manual generation: ${error.message}`, 'error');
+        } finally {
+            this.todoSystem.manualGeneration.isGenerating = false;
+            this.setManualGenerationLoading(false);
+        }
+    }
+
+    async generateTodosForAllTerminals(mode) {
+        let totalGenerated = 0;
+        
+        for (const [terminalId, terminalData] of this.terminals) {
+            if (terminalData.element && terminalData.terminal) {
+                try {
+                    const result = await this.generateTodosForTerminal(terminalId, mode);
+                    if (result.success) {
+                        totalGenerated += result.todos_created;
+                    }
+                } catch (error) {
+                    this.logAction(`Error generating todos for Terminal ${terminalId}: ${error.message}`, 'error');
+                }
+            }
+        }
+        
+        this.logAction(`Generated ${totalGenerated} todo items from all terminals`, 'success');
+        this.refreshTodos();
+    }
+
+    async generateTodosForTerminal(terminalId, mode) {
+        const terminal = this.terminals.get(terminalId);
+        if (!terminal || !terminal.element) {
+            this.logAction(`Terminal ${terminalId} not found or inactive`, 'error');
+            return { success: false, error: 'Terminal not found' };
+        }
+        
+        // Get clean text content from the terminal buffer
+        const terminalOutput = this.getCleanTerminalOutput(terminal.terminal);
+        this.logAction(`Generating todos from Terminal ${terminalId} (${mode} mode)`, 'info');
+        
+        const result = await this.generateTodosViaBackendWithMode(terminalId, terminalOutput, mode);
+        if (result.success) {
+            this.logAction(`Generated ${result.todos_created} todo items from Terminal ${terminalId}`, 'success');
+        } else {
+            this.logAction(`Todo generation failed for Terminal ${terminalId}: ${result.error}`, 'error');
+        }
+        
+        return result;
+    }
+
+    setManualGenerationLoading(isLoading) {
+        const generateBtn = document.getElementById('manual-generate-btn');
+        if (!generateBtn) return;
+        
+        const icon = generateBtn.querySelector('i');
+        
+        if (isLoading) {
+            generateBtn.classList.add('loading');
+            generateBtn.disabled = true;
+            if (icon) {
+                icon.setAttribute('data-lucide', 'loader');
+                // Force immediate icon update
+                if (typeof lucide !== 'undefined') {
+                    lucide.createIcons();
+                }
+            }
+            this.logAction('Manual todo generation started...', 'info');
+        } else {
+            generateBtn.classList.remove('loading');
+            generateBtn.disabled = false;
+            if (icon) {
+                icon.setAttribute('data-lucide', 'sparkles');
+                // Force immediate icon update
+                if (typeof lucide !== 'undefined') {
+                    lucide.createIcons();
+                }
+            }
+            this.logAction('Manual todo generation completed', 'success');
+        }
+    }
+
+    async generateTodosViaBackendWithMode(terminalId, terminalOutput, mode) {
+        try {
+            // Get the session ID for this specific terminal
+            let sessionId = this.terminalSessionMap.get(terminalId);
+            
+            // If no session ID found, create one
+            if (!sessionId) {
+                sessionId = await this.createBackendSession(terminalId);
+            }
+            
+            // Prepare the request body based on mode
+            const requestBody = {
+                terminal_session: sessionId,
+                terminal_output: terminalOutput,
+                mode: mode
+            };
+            
+            // Add custom prompt if mode is custom
+            if (mode === 'custom') {
+                requestBody.custom_prompt = this.todoSystem.manualGeneration.customPrompt;
+            }
+            
+            const response = await fetch('http://127.0.0.1:8001/api/todos/items/generate_from_output/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(requestBody)
+            });
+            
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const result = await response.json();
+            return result;
+        } catch (error) {
+            throw new Error(`Failed to generate todos via backend: ${error.message}`);
+        }
+    }
+
+    async saveCustomPrompt() {
+        try {
+            const response = await fetch('http://127.0.0.1:8001/api/settings/custom_prompt/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    prompt: this.todoSystem.manualGeneration.customPrompt
+                })
+            });
+            
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        } catch (error) {
+            console.warn('Failed to save custom prompt:', error);
+        }
+    }
+
+    async loadCustomPrompt() {
+        try {
+            const response = await fetch('http://127.0.0.1:8001/api/settings/custom_prompt/');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const data = await response.json();
+            this.todoSystem.manualGeneration.customPrompt = data.prompt || '';
+            
+            // Update the input if it exists
+            const customPromptInput = document.getElementById('custom-prompt-input');
+            if (customPromptInput) {
+                customPromptInput.value = this.todoSystem.manualGeneration.customPrompt;
+            }
+        } catch (error) {
+            console.warn('Failed to load custom prompt:', error);
         }
     }
     

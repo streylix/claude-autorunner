@@ -12,5 +12,5 @@ class QueuedMessageSerializer(serializers.ModelSerializer):
 class MessageHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = MessageHistory
-        fields = ['id', 'terminal_session', 'message', 'timestamp', 'source']
+        fields = ['id', 'terminal_session', 'message', 'timestamp', 'source', 'terminal_id', 'counter']
         read_only_fields = ['id', 'timestamp']

@@ -26,6 +26,7 @@ urlpatterns = [
     path("api/queue/", include("message_queue.urls")),
     path("api/voice/", include("voice.urls")),
     path("api/settings/", include("settings.urls")),
+    path("api/settings/", include("user_settings.urls")),
     path("api/todos/", include("todos.urls")),
 ]
 
