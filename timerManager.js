@@ -221,6 +221,10 @@ class TimerManager {
         this.timer.minutes = this.timer.originalValues.minutes;
         this.timer.seconds = this.timer.originalValues.seconds;
 
+        // Clear usage limit tracking when user manually stops timer
+        // This prevents the usage limit reset countdown from coming back
+        this.clearUsageLimitTracking();
+
         this.updateTimerUI();
         this.logAction('Timer stopped and reset', 'info');
     }

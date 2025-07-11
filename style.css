@@ -306,6 +306,68 @@ body {
     height: 16px;
 }
 
+/* Add terminal dropdown */
+.add-terminal-dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    z-index: 1000;
+    min-width: 250px;
+    max-width: 400px;
+    display: none;
+    animation: dropdownSlide 0.2s ease-out;
+}
+
+.add-terminal-dropdown-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-secondary);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.add-terminal-dropdown-item {
+    padding: 10px 16px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    width: 100%;
+    text-align: left;
+}
+
+.add-terminal-dropdown-item:hover {
+    background-color: var(--bg-secondary);
+}
+
+.add-terminal-dropdown-item.default-option {
+    font-weight: 600;
+    border-bottom: 1px solid var(--border-secondary);
+}
+
+.add-terminal-dropdown-item .directory-path {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.add-terminal-dropdown-item .directory-icon {
+    width: 16px;
+    height: 16px;
+    opacity: 0.7;
+}
+
 .close-terminal-btn {
     width: 24px;
     height: 24px;

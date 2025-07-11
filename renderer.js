@@ -40,7 +40,7 @@ class TerminalGUI {
         this.schedulingInProgress = false; // Prevent concurrent scheduling calls
         this.injectionCount = 0;
         this.keywordCount = 0;
-        this.planCount = 0;
+        this.promptCount = 0;
         this.currentlyInjectingMessages = new Set(); // Track messages being injected per terminal
         this.currentlyInjectingTerminals = new Set(); // Track which terminals are currently injecting
         this.terminalStabilityTimers = new Map(); // Track per-terminal stability start times
@@ -52,8 +52,10 @@ class TerminalGUI {
         this.continueTargetTerminals = new Set(); // Track terminals that should receive continue messages
         this.keywordResponseTerminals = new Map(); // Track terminals that need keyword responses
         this.processedUsageLimitMessages = new Set(); // Track processed usage limit messages to prevent duplicates
-        this.processedPlans = new Set(); // Track processed plans to prevent duplicates
+        this.processedPrompts = new Set(); // Track processed prompts to prevent duplicates
         this.currentDirectory = null; // Will be set when terminal starts or directory is detected
+        this.recentDirectories = []; // Track recent directories for dropdown
+        this.maxRecentDirectories = 5; // Maximum number of recent directories to keep
         this.isInjecting = false;
         this.messageIdCounter = 1;
         this.messageSequenceCounter = 0;
@@ -87,7 +89,7 @@ class TerminalGUI {
                     response: "do not credit yourself"
                 }
             ],
-            planRules: [], // Store detected plans
+            promptRules: [], // Store detected prompts
             // Add timer persistence
             timerHours: 0,
             timerMinutes: 0,
@@ -96,6 +98,7 @@ class TerminalGUI {
             messageQueue: [],
             // Add directory persistence
             currentDirectory: null,
+            recentDirectories: [],
             // Add sound effects preferences
             completionSoundEnabled: false,
             completionSoundFile: 'beep.wav',
@@ -668,6 +671,13 @@ class TerminalGUI {
             }
         }
         
+        // Load messages for this terminal if it's not terminal 1 (terminal 1 is handled in initialization)
+        if (id !== 1) {
+            this.loadMessagesForTerminal(id, false).catch(error => {
+                console.warn('Failed to load messages for terminal', id, ':', error);
+            });
+        }
+        
         return terminalData;
     }
     
@@ -793,7 +803,7 @@ class TerminalGUI {
             const terminalId = data.terminalId != null ? data.terminalId : 1;
             const terminalData = this.terminals.get(terminalId);
             
-            if (terminalData) {
+            if (terminalData && !terminalData.isClosing) {
                 terminalData.terminal.write('\r\n\x1b[31mTerminal process exited\x1b[0m\r\n');
                 // Handle autoscrolling for terminal exit message
                 this.handleTerminalOutput(terminalId);
@@ -1119,7 +1129,8 @@ class TerminalGUI {
             
             // Handle add terminal button
             if (e.target.closest('.add-terminal-btn')) {
-                this.addNewTerminal();
+                e.stopPropagation();
+                this.showAddTerminalDropdown(e.target.closest('.add-terminal-btn'));
                 return;
             }
             
@@ -1289,18 +1300,18 @@ class TerminalGUI {
             }
         });
 
-        // Plans modal listeners
+        // Prompts modal listeners
         document.getElementById('plan-count').addEventListener('click', () => {
-            this.openPlansModal();
+            this.openPromptsModal();
         });
 
         document.getElementById('plans-close').addEventListener('click', () => {
-            this.closePlansModal();
+            this.closePromptsModal();
         });
 
         document.getElementById('plans-modal').addEventListener('click', (e) => {
             if (e.target.id === 'plans-modal') {
-                this.closePlansModal();
+                this.closePromptsModal();
             }
         });
 
@@ -4077,7 +4088,7 @@ class TerminalGUI {
         const allTerminalsKeywordResult = this.checkForKeywordBlocking();
         
         // Check for plan detection in all terminals
-        this.checkForPlanDetection();
+        this.checkForPromptDetection();
         
         // Update injection blocking status based on all terminals
         const previouslyBlocked = this.injectionBlocked;
@@ -4320,26 +4331,12 @@ class TerminalGUI {
         // Also check for "Claude usage limit reached" message and parse the reset time
         const reachedMatch = data.match(/Claude usage limit reached\. Your limit will reset at (\d{1,2})(am|pm)/i);
         if (reachedMatch) {
-            // Check if usage limit detection should be auto-disabled (5 hours after first detection)
-            const usageLimitFirstDetected = await ipcRenderer.invoke('db-get-setting', 'usageLimitFirstDetected');
-            const now = Date.now();
-            const fiveHoursInMs = 5 * 60 * 60 * 1000; // 5 hours in milliseconds
+            const fullUsageLimitMessage = reachedMatch[0]; // Full matched message
             
-            if (usageLimitFirstDetected) {
-                const firstDetectedTime = parseInt(usageLimitFirstDetected);
-                const timeSinceFirstDetection = now - firstDetectedTime;
-                
-                if (timeSinceFirstDetection >= fiveHoursInMs) {
-                    const hoursElapsed = Math.round(timeSinceFirstDetection / (60 * 60 * 1000) * 10) / 10;
-                    this.logAction(`Usage limit detection auto-disabled (${hoursElapsed}h elapsed since first detection)`, 'info');
-                    // Clear the first detection timestamp
-                    await ipcRenderer.invoke('db-save-setting', 'usageLimitFirstDetected', null);
-                    return;
-                }
-            } else {
-                // First time detecting usage limit - store timestamp
-                await ipcRenderer.invoke('db-save-setting', 'usageLimitFirstDetected', now.toString());
-                this.logAction('Usage limit first detected - auto-disable timer set for 5 hours', 'info');
+            // Check if this is the same message as the last one processed
+            const lastUsageLimitMessage = await ipcRenderer.invoke('db-get-setting', 'lastUsageLimitMessage');
+            if (lastUsageLimitMessage === fullUsageLimitMessage) {
+                return; // Same message, don't trigger again
             }
             
             // Check if we're in the cooldown period after a previous reset
@@ -4415,6 +4412,7 @@ class TerminalGUI {
                                 // Update current directory for the active terminal
                                 if (terminalId === this.activeTerminalId) {
                                     this.currentDirectory = detectedDirectory;
+                                    this.updateRecentDirectories(detectedDirectory);
                                     // Update status display to show new directory
                                     this.updateStatusDisplay();
                                 }
@@ -4591,6 +4589,9 @@ class TerminalGUI {
                 this.showUsageLimitModal(resetHour, ampm);
                 await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTime', resetTimeString);
                 await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTimestamp', resetTimestamp);
+                
+                // Save the full message to prevent duplicate triggers
+                await ipcRenderer.invoke('db-save-setting', 'lastUsageLimitMessage', fullUsageLimitMessage);
             } else {
                 this.logAction(`Duplicate usage limit message for ${resetTimeString} ignored - modal already shown for this reset time`, 'info');
                 // Still mark as processed to prevent future processing in this session
@@ -4602,6 +4603,8 @@ class TerminalGUI {
             if (!this.processedUsageLimitMessages.has(resetTimeString)) {
                 this.processedUsageLimitMessages.add(resetTimeString);
                 this.showUsageLimitModal(resetHour, ampm);
+                // Save the full message to prevent duplicate triggers
+                await ipcRenderer.invoke('db-save-setting', 'lastUsageLimitMessage', fullUsageLimitMessage);
             }
         }
     }
@@ -4650,6 +4653,7 @@ class TerminalGUI {
         this.logAction('Usage limit auto-disable timer has been reset', 'info');
         return true;
     }
+
 
     showUsageLimitModal(resetHour, ampm, exactResetTime = null) {
         this.logAction(`DEBUG: showUsageLimitModal called with resetHour=${resetHour}, ampm=${ampm}, exactResetTime=${exactResetTime}`, 'info');
@@ -4954,7 +4958,7 @@ class TerminalGUI {
         document.getElementById('injection-count').textContent = this.injectionCount;
         document.getElementById('queue-count').textContent = this.messageQueue.length;
         document.getElementById('keyword-count').textContent = this.keywordCount;
-        document.getElementById('plan-count').textContent = this.planCount;
+        document.getElementById('plan-count').textContent = this.promptCount;
         
         // Update execution times in message list
         const executionTimeElements = document.querySelectorAll('.execution-time');
@@ -4975,7 +4979,7 @@ class TerminalGUI {
                     current_directory: this.currentDirectory || '~',
                     injection_count: this.injectionCount,
                     keyword_count: this.keywordCount,
-                    plan_count: this.planCount,
+                    prompt_count: this.promptCount,
                     terminal_count: this.terminals.size,
                     active_terminal_id: this.activeTerminalId,
                     terminal_id_counter: this.terminalIdCounter
@@ -4999,7 +5003,7 @@ class TerminalGUI {
                     this.currentDirectory = backendStats.current_directory || this.currentDirectory;
                     this.injectionCount = backendStats.injection_count || this.injectionCount;
                     this.keywordCount = backendStats.keyword_count || this.keywordCount;
-                    this.planCount = backendStats.plan_count || this.planCount;
+                    this.promptCount = backendStats.prompt_count || this.promptCount;
                     this.activeTerminalId = backendStats.active_terminal_id || this.activeTerminalId;
                     this.terminalIdCounter = backendStats.terminal_id_counter || this.terminalIdCounter;
                     
@@ -5054,6 +5058,7 @@ class TerminalGUI {
             if (result.success) {
                 // Update local state
                 this.currentDirectory = newPath;
+                this.updateRecentDirectories(newPath);
                 
                 // Save to preferences
                 this.preferences.currentDirectory = newPath;
@@ -5154,42 +5159,42 @@ class TerminalGUI {
         modal.classList.remove('show');
     }
 
-    openPlansModal() {
+    openPromptsModal() {
         const modal = document.getElementById('plans-modal');
         modal.classList.add('show');
-        this.updatePlansModal();
+        this.updatePromptsModal();
     }
 
-    closePlansModal() {
+    closePromptsModal() {
         const modal = document.getElementById('plans-modal');
         modal.classList.remove('show');
     }
 
-    updatePlansModal() {
-        const plansList = document.getElementById('plans-list');
+    updatePromptsModal() {
+        const promptsList = document.getElementById('plans-list');
         
-        if (this.preferences.planRules.length === 0) {
-            plansList.innerHTML = `
+        if (this.preferences.promptRules.length === 0) {
+            promptsList.innerHTML = `
                 <div class="plans-empty">
-                    <p>No plans detected yet. Plans will appear here when Claude provides planning options.</p>
+                    <p>No prompts detected yet. Prompts will appear here when Claude provides options.</p>
                 </div>
             `;
             return;
         }
 
-        const plansHTML = this.preferences.planRules.map(plan => `
+        const promptsHTML = this.preferences.promptRules.map(prompt => `
             <div class="plan-item">
                 <div class="plan-item-header">
-                    <span class="plan-item-date">${new Date(plan.timestamp).toLocaleString()}</span>
-                    <span class="plan-item-terminal">Terminal ${plan.terminalId}</span>
+                    <span class="plan-item-date">${new Date(prompt.timestamp).toLocaleString()}</span>
+                    <span class="plan-item-terminal">Terminal ${prompt.terminalId}</span>
                 </div>
                 <div class="plan-item-content">
-                    <pre>${plan.content}</pre>
+                    <pre>${prompt.content}</pre>
                 </div>
             </div>
         `).join('');
 
-        plansList.innerHTML = plansHTML;
+        promptsList.innerHTML = promptsHTML;
     }
 
     // Terminal search functionality
@@ -5472,28 +5477,35 @@ class TerminalGUI {
             return;
         }
 
-        const historyHTML = this.messageHistory.map(item => `
-            <div class="history-item">
-                <div class="history-item-header">
-                    <div class="history-item-info">
-                        <span class="history-item-date">${item.injectedAt}</span>
-                        <span class="history-item-meta">
-                            ${item.terminalId ? `Terminal ${item.terminalId}` : 'Unknown Terminal'}
-                            ${item.counter ? ` • #${item.counter}` : ''}
-                        </span>
+        const historyHTML = this.messageHistory.map(item => {
+            // Get terminal data to extract name and color
+            const terminalData = this.terminals.get(item.terminalId);
+            const terminalName = terminalData ? terminalData.name : `Terminal ${item.terminalId}`;
+            const terminalColor = terminalData ? terminalData.color : this.terminalColors[(item.terminalId - 1) % this.terminalColors.length];
+            
+            return `
+                <div class="history-item">
+                    <div class="history-item-header">
+                        <div class="history-item-info">
+                            <span class="history-item-date">${item.injectedAt}</span>
+                            <span class="history-item-meta" style="color: ${terminalColor};">
+                                ${item.terminalId ? terminalName : 'Unknown Terminal'}
+                                ${item.counter ? ` • #${item.counter}` : ''}
+                            </span>
+                        </div>
+                        <div class="history-item-actions">
+                            <button class="undo-btn" onclick="terminalGUI.undoFromHistory('${item.id}')" title="Add back to queue">
+                                <i data-lucide="undo-2"></i>
+                            </button>
+                            <button class="delete-btn" onclick="terminalGUI.deleteFromHistory('${item.id}')" title="Delete from history">
+                                <i data-lucide="trash-2"></i>
+                            </button>
+                        </div>
                     </div>
-                    <div class="history-item-actions">
-                        <button class="undo-btn" onclick="terminalGUI.undoFromHistory('${item.id}')" title="Add back to queue">
-                            <i data-lucide="undo-2"></i>
-                        </button>
-                        <button class="delete-btn" onclick="terminalGUI.deleteFromHistory('${item.id}')" title="Delete from history">
-                            <i data-lucide="trash-2"></i>
-                        </button>
-                    </div>
+                    <div class="history-item-content" style="color: ${terminalColor};">${this.escapeHtml(item.content)}</div>
                 </div>
-                <div class="history-item-content">${this.escapeHtml(item.content)}</div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
 
         historyList.innerHTML = historyHTML;
         
@@ -5692,17 +5704,20 @@ class TerminalGUI {
                 this.timerExpired = false;
             }
             
-            // Load message queue from database
+            // Load message queue from database - only terminal 1 messages initially
+            // This prevents race condition duplicates when messages target non-terminal-1 terminals
             const dbMessages = await ipcRenderer.invoke('db-get-messages');
-            this.messageQueue = dbMessages.map(msg => ({
-                id: msg.message_id,
-                content: msg.content,
-                processedContent: msg.processed_content,
-                executeAt: msg.execute_at,
-                createdAt: msg.created_at,
-                timestamp: msg.created_at, // For compatibility
-                terminalId: msg.terminal_id || 1 // Include terminal ID
-            }));
+            this.messageQueue = dbMessages
+                .filter(msg => (msg.terminal_id || 1) === 1) // Only load terminal 1 messages
+                .map(msg => ({
+                    id: msg.message_id,
+                    content: msg.content,
+                    processedContent: msg.processed_content,
+                    executeAt: msg.execute_at,
+                    createdAt: msg.created_at,
+                    timestamp: msg.created_at, // For compatibility
+                    terminalId: msg.terminal_id || 1 // Include terminal ID
+                }));
             
             // Synchronize messageIdCounter to avoid duplicate IDs
             if (this.messageQueue.length > 0) {
@@ -5712,10 +5727,10 @@ class TerminalGUI {
             this.updateMessageList();
             this.validateMessageIds(); // Debug: Check for ID conflicts after loading
             
-            // Sync messages from backend after loading local messages
-            this.logAction('About to sync messages from backend...', 'info');
-            await this.syncMessagesFromBackend(true); // verbose = true for initial sync
-            this.logAction('Finished syncing messages from backend', 'info');
+            // Sync messages from backend after loading local messages - only for terminal 1
+            this.logAction('About to sync messages from backend for terminal 1...', 'info');
+            await this.syncMessagesFromBackend(true, 1); // verbose = true for initial sync, terminal 1 only
+            this.logAction('Finished syncing messages from backend for terminal 1', 'info');
             
             // Load message history from database
             const dbHistory = await ipcRenderer.invoke('db-get-message-history');
@@ -5728,6 +5743,11 @@ class TerminalGUI {
             if (this.preferences.currentDirectory) {
                 this.currentDirectory = this.preferences.currentDirectory;
                 this.updateStatusDisplay();
+            }
+            
+            // Load recent directories
+            if (this.preferences.recentDirectories) {
+                this.recentDirectories = this.preferences.recentDirectories;
             }
             
             // Update UI elements safely
@@ -5783,8 +5803,8 @@ class TerminalGUI {
             // Load saved usage limit reset time and start auto-sync if available
             await this.loadUsageLimitResetTime();
             
-            // Synchronize planCount with loaded planRules
-            this.syncPlanCount();
+            // Synchronize promptCount with loaded promptRules
+            this.syncPromptCount();
             
             this.logAction('Preferences loaded successfully from database', 'success');
         } catch (error) {
@@ -5992,12 +6012,15 @@ class TerminalGUI {
         }
     }
 
-    async syncMessagesFromBackend(verbose = false) {
-        // Sync messages from backend for all terminal sessions
+    async syncMessagesFromBackend(verbose = false, specificTerminalId = null) {
+        // Sync messages from backend for all terminal sessions or specific terminal
         if (verbose) {
             this.logAction('syncMessagesFromBackend called, checking backend API client...', 'info');
             this.logAction(`Backend API client available: ${!!this.backendAPIClient}`, 'info');
             this.logAction(`Terminal session map size: ${this.terminalSessionMap.size}`, 'info');
+            if (specificTerminalId) {
+                this.logAction(`Syncing for specific terminal: ${specificTerminalId}`, 'info');
+            }
         }
         
         if (!this.backendAPIClient) {
@@ -6007,18 +6030,24 @@ class TerminalGUI {
         
         try {
             let totalNewMessages = 0;
-            // Get messages for each terminal session
+            // Get messages for each terminal session (filtered by specificTerminalId if provided)
             for (const [terminalId, sessionId] of this.terminalSessionMap) {
+                if (specificTerminalId && terminalId !== specificTerminalId) {
+                    continue; // Skip if we're only syncing for a specific terminal
+                }
+                
                 if (verbose) this.logAction(`Getting messages for terminal ${terminalId}, session ${sessionId}`, 'info');
                 const backendMessages = await this.backendAPIClient.getQueuedMessages(sessionId, 'pending');
                 const messages = backendMessages.results || backendMessages;
                 if (verbose) this.logAction(`Got ${messages.length} messages from backend for terminal ${terminalId}`, 'info');
                 
                 // Add backend messages that aren't already in local queue
+                // Improved duplicate detection to prevent race condition duplicates
                 for (const backendMsg of messages) {
                     const exists = this.messageQueue.some(msg => 
                         msg.backendId === backendMsg.id ||
-                        (msg.content === backendMsg.content && msg.terminalId === terminalId)
+                        (msg.content === backendMsg.content && msg.terminalId === terminalId && 
+                         Math.abs(msg.createdAt - new Date(backendMsg.created_at).getTime()) < 1000) // Within 1 second to handle slight timing differences
                     );
                     
                     if (!exists) {
@@ -6052,6 +6081,62 @@ class TerminalGUI {
             }
         } catch (error) {
             if (verbose) this.logAction(`Failed to sync messages from backend: ${error.message}`, 'error');
+        }
+    }
+
+    async loadMessagesForTerminal(terminalId, verbose = false) {
+        // Load messages for a specific terminal from database and backend
+        if (verbose) {
+            this.logAction(`Loading messages for terminal ${terminalId}`, 'info');
+        }
+        
+        try {
+            // Load messages from database for this terminal
+            const dbMessages = await ipcRenderer.invoke('db-get-messages');
+            const terminalMessages = dbMessages
+                .filter(msg => (msg.terminal_id || 1) === terminalId)
+                .map(msg => ({
+                    id: msg.message_id,
+                    content: msg.content,
+                    processedContent: msg.processed_content,
+                    executeAt: msg.execute_at,
+                    createdAt: msg.created_at,
+                    timestamp: msg.created_at,
+                    terminalId: msg.terminal_id || 1
+                }));
+            
+            // Add messages that aren't already in the queue
+            let addedCount = 0;
+            for (const message of terminalMessages) {
+                const exists = this.messageQueue.some(msg => 
+                    msg.id === message.id ||
+                    (msg.content === message.content && msg.terminalId === message.terminalId && msg.createdAt === message.createdAt)
+                );
+                
+                if (!exists) {
+                    // Update message ID counter if needed
+                    if (message.id >= this.messageIdCounter) {
+                        this.messageIdCounter = message.id + 1;
+                    }
+                    
+                    this.messageQueue.push(message);
+                    addedCount++;
+                }
+            }
+            
+            if (verbose && addedCount > 0) {
+                this.logAction(`Added ${addedCount} messages from database for terminal ${terminalId}`, 'success');
+            }
+            
+            // Sync from backend for this terminal
+            await this.syncMessagesFromBackend(verbose, terminalId);
+            
+            // Update UI
+            this.updateMessageList();
+            this.updateStatusDisplay();
+            
+        } catch (error) {
+            if (verbose) this.logAction(`Failed to load messages for terminal ${terminalId}: ${error.message}`, 'error');
         }
     }
 
@@ -6566,98 +6651,122 @@ class TerminalGUI {
         );
     }
 
-    checkTerminalForPlans(terminalOutput) {
+    extractTextBetweenMarkers(text, startMarker, endMarker) {
+        // Find the start marker
+        const startIndex = text.lastIndexOf(startMarker);
+        if (startIndex === -1) {
+            return null;
+        }
+        
+        // Find the end marker
+        const endIndex = text.indexOf(endMarker, startIndex);
+        if (endIndex === -1) {
+            return null;
+        }
+        
+        // Extract the text between markers
+        return text.substring(startIndex, endIndex + endMarker.length);
+    }
+
+    filterAlphabeticalLines(text) {
+        // Split into lines
+        const lines = text.split('\n');
+        
+        // Filter lines that contain primarily alphabetical content
+        const alphabeticalLines = lines.filter(line => {
+            const trimmedLine = line.trim();
+            // Skip empty lines
+            if (trimmedLine === '') return false;
+            
+            // Skip lines that are mostly symbols or numbers without letters
+            const letterCount = (trimmedLine.match(/[a-zA-Z]/g) || []).length;
+            const totalLength = trimmedLine.length;
+            
+            // Keep lines that are at least 30% letters
+            return letterCount > 0 && (letterCount / totalLength) >= 0.3;
+        });
+        
+        return alphabeticalLines.join('\n').trim();
+    }
+
+    checkTerminalForPrompts(terminalOutput) {
         // Ensure we have terminal output to check
         if (!terminalOutput || terminalOutput.trim() === '') {
             return { found: false };
         }
         
-        // Find the ╭ character which marks the start of the current Claude prompt area
-        const claudePromptStart = terminalOutput.lastIndexOf("╭");
-        if (claudePromptStart === -1) {
+        // Use dedicated function to extract text between markers
+        const promptArea = this.extractTextBetweenMarkers(terminalOutput, "╭", "╯");
+        if (!promptArea) {
             return { found: false };
         }
         
-        // Find the ╯ character which marks the end of the plan area
-        const claudePromptEnd = terminalOutput.indexOf("╯", claudePromptStart);
-        if (claudePromptEnd === -1) {
+        // Check if this area contains either trigger phrase
+        if (!promptArea.includes("No, keep planning") && !promptArea.includes("No, and tell Claude what to do differently")) {
             return { found: false };
         }
         
-        // Extract the text between ╭ and ╯
-        const planArea = terminalOutput.substring(claudePromptStart, claudePromptEnd + 1);
+        // Keep the full content including formatting and colors
+        // Remove only the markers but preserve everything else
+        let promptContent = promptArea.replace(/╭/g, '').replace(/╯/g, '');
         
-        // Check if this area contains "No, keep planning"
-        if (!planArea.includes("No, keep planning")) {
-            return { found: false };
-        }
+        // Clean up leading/trailing whitespace but preserve internal formatting
+        promptContent = promptContent.trim();
         
-        // Extract the plan content by removing the markers and numbered options
-        let planContent = planArea.replace(/╭/g, '').replace(/╯/g, '');
+        // Generate unique ID for the prompt
+        const promptId = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
         
-        // Remove numbered options (1. Yes, 2. No, keep planning, etc.)
-        planContent = planContent.replace(/^\d+\.\s*(Yes|No,?\s*keep\s*planning).*$/gim, '');
-        
-        // Filter to only alphabetical characters and numbers (with spaces)
-        planContent = planContent.replace(/[^a-zA-Z0-9\s]/g, '');
-        
-        // Clean up whitespace
-        planContent = planContent.trim();
-        
-        // Generate unique ID for the plan
-        const planId = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
-        
-        // Create plan object
-        const plan = {
-            id: planId,
-            content: planContent,
+        // Create prompt object
+        const prompt = {
+            id: promptId,
+            content: promptContent,
             timestamp: new Date().toISOString(),
             terminalId: this.activeTerminalId
         };
         
-        console.log('Plan detected:', plan);
+        console.log('Prompt detected:', prompt);
         
         return {
             found: true,
-            plan: plan
+            prompt: prompt
         };
     }
 
-    syncPlanCount() {
-        // Synchronize planCount with the actual length of planRules array
-        if (this.preferences.planRules && Array.isArray(this.preferences.planRules)) {
-            this.planCount = this.preferences.planRules.length;
+    syncPromptCount() {
+        // Synchronize promptCount with the actual length of promptRules array
+        if (this.preferences.promptRules && Array.isArray(this.preferences.promptRules)) {
+            this.promptCount = this.preferences.promptRules.length;
             this.updateStatusDisplay();
-            console.log(`Plan count synchronized: ${this.planCount} plans loaded`);
+            console.log(`Prompt count synchronized: ${this.promptCount} prompts loaded`);
         } else {
-            this.planCount = 0;
+            this.promptCount = 0;
             this.updateStatusDisplay();
         }
     }
 
-    checkForPlanDetection() {
-        // Check all terminals for plan detection
+    checkForPromptDetection() {
+        // Check all terminals for prompt detection
         for (const [terminalId, terminalData] of this.terminals) {
             if (!terminalData.lastOutput || terminalData.lastOutput.trim() === '') {
                 continue;
             }
             
-            const result = this.checkTerminalForPlans(terminalData.lastOutput);
+            const result = this.checkTerminalForPrompts(terminalData.lastOutput);
             if (result.found) {
                 // Check for duplicates using content comparison
-                const isDuplicate = this.preferences.planRules.some(existingPlan => 
-                    existingPlan.content === result.plan.content
+                const isDuplicate = this.preferences.promptRules.some(existingPrompt => 
+                    existingPrompt.content === result.prompt.content
                 );
                 
                 if (!isDuplicate) {
                     // Add to preferences
-                    this.preferences.planRules.push(result.plan);
+                    this.preferences.promptRules.push(result.prompt);
                     this.saveAllPreferences();
                     
                     // Update counter using sync method to ensure consistency
-                    this.syncPlanCount();
+                    this.syncPromptCount();
                     
-                    console.log(`Plan detected in Terminal ${terminalId} and added to list`);
+                    console.log(`Prompt detected in Terminal ${terminalId} and added to list`);
                     return result;
                 }
             }
@@ -7388,7 +7497,7 @@ class TerminalGUI {
     }
     
     // Multi-terminal management methods
-    async addNewTerminal() {
+    async addNewTerminal(startDirectory = null) {
         const terminalCount = this.terminals.size;
         if (terminalCount >= 4) {
             this.logAction('Maximum of 4 terminals reached', 'warning');
@@ -7468,7 +7577,13 @@ class TerminalGUI {
         }
         
         // Start terminal process
-        ipcRenderer.send('terminal-start', { terminalId: newId, directory: this.currentDirectory });
+        const directoryToUse = startDirectory || this.currentDirectory;
+        ipcRenderer.send('terminal-start', { terminalId: newId, directory: directoryToUse });
+        
+        // If we're starting in a specific directory, update recent directories
+        if (startDirectory) {
+            this.updateRecentDirectories(startDirectory);
+        }
         
         // Update dropdowns
         this.updateTerminalDropdowns();
@@ -7494,6 +7609,25 @@ class TerminalGUI {
         await this.saveTerminalState();
     }
     
+    updateRecentDirectories(directory) {
+        if (!directory || directory === '~' || directory === 'Loading...') return;
+        
+        // Remove the directory if it already exists in the list
+        this.recentDirectories = this.recentDirectories.filter(dir => dir !== directory);
+        
+        // Add the directory to the beginning of the list
+        this.recentDirectories.unshift(directory);
+        
+        // Keep only the most recent directories
+        if (this.recentDirectories.length > this.maxRecentDirectories) {
+            this.recentDirectories = this.recentDirectories.slice(0, this.maxRecentDirectories);
+        }
+        
+        // Save to preferences
+        this.preferences.recentDirectories = this.recentDirectories;
+        this.saveAllPreferences();
+    }
+
     updateTerminalButtonVisibility() {
         const terminalCount = this.terminals.size;
         
@@ -7535,12 +7669,18 @@ class TerminalGUI {
             return;
         }
         
+        // Mark terminal as closing to prevent exit message
+        terminalData.isClosing = true;
+        
         // Remove any messages assigned to this terminal from the queue
         this.messageQueue = this.messageQueue.filter(message => {
             const messageTerminalId = message.terminalId != null ? message.terminalId : this.activeTerminalId;
             return messageTerminalId !== terminalId;
         });
         this.updateMessageList();
+        
+        // Clear the terminal before closing
+        terminalData.terminal.clear();
         
         // Notify main process to close terminal process
         ipcRenderer.send('terminal-close', { terminalId });
@@ -7607,6 +7747,93 @@ class TerminalGUI {
     hideTerminalSelectorDropdown() {
         const dropdown = document.getElementById('terminal-selector-dropdown');
         dropdown.style.display = 'none';
+    }
+
+    showAddTerminalDropdown(button) {
+        // Hide any existing dropdown first
+        this.hideAddTerminalDropdown();
+        
+        // Create dropdown element
+        const dropdown = document.createElement('div');
+        dropdown.className = 'add-terminal-dropdown';
+        dropdown.id = 'add-terminal-dropdown';
+        
+        // Build dropdown content
+        let dropdownHTML = '<div class="add-terminal-dropdown-header">New Terminal Location</div>';
+        
+        // Add default option
+        dropdownHTML += `
+            <button class="add-terminal-dropdown-item default-option" data-directory="default">
+                <i class="directory-icon" data-lucide="home"></i>
+                <span class="directory-path">Default Directory</span>
+            </button>
+        `;
+        
+        // Add recent directories
+        if (this.recentDirectories.length > 0) {
+            this.recentDirectories.forEach(dir => {
+                const displayDir = dir.replace(/^\/Users\/[^\/]+/, '~');
+                dropdownHTML += `
+                    <button class="add-terminal-dropdown-item" data-directory="${dir}">
+                        <i class="directory-icon" data-lucide="folder"></i>
+                        <span class="directory-path" title="${dir}">${displayDir}</span>
+                    </button>
+                `;
+            });
+        }
+        
+        dropdown.innerHTML = dropdownHTML;
+        
+        // Position dropdown relative to button
+        const buttonRect = button.getBoundingClientRect();
+        const terminalWrapper = button.closest('.terminal-wrapper');
+        terminalWrapper.style.position = 'relative';
+        terminalWrapper.appendChild(dropdown);
+        
+        // Initialize Lucide icons in dropdown
+        if (window.lucide) {
+            window.lucide.createIcons();
+        }
+        
+        // Show dropdown
+        dropdown.style.display = 'block';
+        
+        // Add click handlers for dropdown items
+        dropdown.querySelectorAll('.add-terminal-dropdown-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const directory = item.dataset.directory;
+                this.hideAddTerminalDropdown();
+                
+                if (directory === 'default') {
+                    this.addNewTerminal();
+                } else {
+                    this.addNewTerminal(directory);
+                }
+            });
+        });
+        
+        // Close dropdown when clicking outside
+        setTimeout(() => {
+            document.addEventListener('click', this.addTerminalDropdownClickOutside = (e) => {
+                if (!e.target.closest('.add-terminal-dropdown') && !e.target.closest('.add-terminal-btn')) {
+                    this.hideAddTerminalDropdown();
+                }
+            });
+        }, 0);
+    }
+
+    hideAddTerminalDropdown() {
+        const dropdown = document.getElementById('add-terminal-dropdown');
+        if (dropdown) {
+            dropdown.remove();
+        }
+        
+        // Remove click outside listener
+        if (this.addTerminalDropdownClickOutside) {
+            document.removeEventListener('click', this.addTerminalDropdownClickOutside);
+            this.addTerminalDropdownClickOutside = null;
+        }
     }
     
     selectActiveTerminal(terminalId) {
