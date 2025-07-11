@@ -515,7 +515,7 @@ class TodoManager {
      * Toggle manual terminal selector dropdown
      */
     toggleManualTerminalSelector() {
-        const dropdown = document.getElementById('manual-terminal-dropdown');
+        const dropdown = document.getElementById('manual-terminal-selector-dropdown');
         if (dropdown) {
             dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
             if (dropdown.style.display === 'block') {
@@ -541,7 +541,7 @@ class TodoManager {
      * Update manual terminal dropdown with available terminals
      */
     updateManualTerminalDropdown() {
-        const dropdown = document.getElementById('manual-terminal-dropdown');
+        const dropdown = document.getElementById('manual-terminal-selector-dropdown');
         if (!dropdown) return;
 
         dropdown.innerHTML = '';

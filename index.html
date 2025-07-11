@@ -238,6 +238,9 @@
                 </div>
                 
                 <div class="input-section">
+                    <div class="image-preview-container" id="image-preview-container" style="display: none;">
+                        <div class="image-preview-list" id="image-preview-list"></div>
+                    </div>
                     <div class="input-container" id="drop-zone">
                         <div class="input-wrapper">
                             <div class="textarea-container">
@@ -542,6 +545,26 @@
                 <button type="button" class="hotkey-item" data-command="\t">
                     <span class="hotkey-label">Tab</span>
                     <span class="hotkey-desc">Complete</span>
+                </button>
+                <button type="button" class="hotkey-item" data-command="\x1b[Z">
+                    <span class="hotkey-label">Shift+Tab</span>
+                    <span class="hotkey-desc">Reverse tab</span>
+                </button>
+                <button type="button" class="hotkey-item" data-command="\x1b[1;2A">
+                    <span class="hotkey-label">Shift+Up</span>
+                    <span class="hotkey-desc">Select up</span>
+                </button>
+                <button type="button" class="hotkey-item" data-command="\x1b[1;2B">
+                    <span class="hotkey-label">Shift+Down</span>
+                    <span class="hotkey-desc">Select down</span>
+                </button>
+                <button type="button" class="hotkey-item" data-command="\x1b[1;2C">
+                    <span class="hotkey-label">Shift+Right</span>
+                    <span class="hotkey-desc">Select right</span>
+                </button>
+                <button type="button" class="hotkey-item" data-command="\x1b[1;2D">
+                    <span class="hotkey-label">Shift+Left</span>
+                    <span class="hotkey-desc">Select left</span>
                 </button>
             </div>
         </div>

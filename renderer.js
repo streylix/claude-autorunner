@@ -107,6 +107,8 @@ class TerminalGUI {
             promptedSoundKeywordsOnly: false,
             // Add message history
             messageHistory: [],
+            // Add usage limit waiting state persistence
+            usageLimitWaiting: false,
             // Background service preferences
             keepScreenAwake: true,
             showSystemNotifications: true,
@@ -138,6 +140,7 @@ class TerminalGUI {
         this.usageLimitModalShowing = false;
         this.usageLimitWaiting = false;
         this.usageLimitCooldownUntil = null; // Timestamp when usage limit detection cooldown ends
+        this.usageLimitTimerOriginalValues = null; // Store original timer values when setting usage limit timer
         
         // Voice recording state
         this.isRecording = false;
@@ -307,6 +310,11 @@ class TerminalGUI {
             // If timer was expired on startup, trigger injection manager
             if (this.timerExpired) {
                 this.injectionManager.onTimerExpired();
+            }
+            
+            // Update visual state after all initialization is complete
+            if (this.timerExpired || this.usageLimitWaiting) {
+                this.injectionManager.updateVisualState();
             }
             
             // Setup background service functionality
@@ -786,7 +794,6 @@ class TerminalGUI {
                 // Run detection functions for ALL terminals, not just active one
                 this.detectAutoContinuePrompt(data.content, terminalId);
                 await this.detectUsageLimit(data.content, terminalId);
-                this.detectDirectoryFromOutput(data.content, terminalId);
                 
                 // Handle autoscrolling for this specific terminal
                 this.handleTerminalOutput(terminalId);
@@ -914,11 +921,12 @@ class TerminalGUI {
                 const allowedInputHotkeys = [
                     // Navigation hotkeys
                     { key: 'k', cmd: true, shift: false }, // Cmd+K - Terminal selector
-                    { key: 'Tab', cmd: false, shift: true }, // Shift+Tab - Auto-continue toggle
+                    { key: 'Tab', cmd: false, shift: true }, // Shift+Tab - Cycle to next terminal
                     { key: 'p', cmd: true, shift: false }, // Cmd+P - Play/pause timer
                     { key: 'i', cmd: true, shift: false }, // Cmd+I - Manual injection
                     { key: 's', cmd: true, shift: true }, // Cmd+Shift+S - Stop timer
                     { key: 'v', cmd: true, shift: true }, // Cmd+Shift+V - Voice transcription
+                    { key: 'a', cmd: true, shift: true }, // Cmd+Shift+A - Auto-continue toggle
                     { key: 'f', cmd: true, shift: false }, // Cmd+F - Focus log search
                     { key: 'l', cmd: true, shift: true }, // Cmd+Shift+L - Clear log
                     { key: 'h', cmd: true, shift: true }, // Cmd+Shift+H - Message history
@@ -1000,17 +1008,28 @@ class TerminalGUI {
                 } else {
                     this.logAction('Cannot close last terminal - at least one terminal must remain open', 'warning');
                 }
-            } else if (e.shiftKey && e.key === 'Tab') {
-                // Toggle auto-continue
-                this.directLog('SHIFT+TAB DETECTED! Calling toggleAutoContinue()');
+            } else if (e.shiftKey && e.key === 'Tab' && !this.isCommandKey(e)) {
+                // Cycle to next terminal
+                this.directLog('SHIFT+TAB DETECTED! Calling cycleToNextTerminal()');
                 e.preventDefault();
-                this.toggleAutoContinue();
-                this.logAction('Auto-continue toggled via keyboard shortcut (Shift+Tab)', 'info');
+                this.cycleToNextTerminal();
+                this.logAction('Cycled to next terminal via keyboard shortcut (Shift+Tab)', 'info');
+            } else if (e.shiftKey && e.key === 'Tab' && this.isCommandKey(e)) {
+                // Cycle to previous terminal  
+                this.directLog('SHIFT+CMD+TAB DETECTED! Calling cycleToPreviousTerminal()');
+                e.preventDefault();
+                this.cycleToPreviousTerminal();
+                this.logAction('Cycled to previous terminal via keyboard shortcut (Cmd+Shift+Tab)', 'info');
             } else if (this.isCommandKey(e) && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
                 // Toggle voice transcription
                 e.preventDefault();
                 document.getElementById('voice-btn').click();
                 this.logAction('Voice transcription toggled via keyboard shortcut (Cmd+Shift+V)', 'info');
+            } else if (this.isCommandKey(e) && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
+                // Toggle auto-continue
+                e.preventDefault();
+                this.toggleAutoContinue();
+                this.logAction('Auto-continue toggled via keyboard shortcut (Cmd+Shift+A)', 'info');
             } else if (this.isCommandKey(e) && e.key === '/') {
                 // Focus message input
                 e.preventDefault();
@@ -1532,23 +1551,198 @@ class TerminalGUI {
             const messageInput = document.getElementById('message-input');
             const currentText = messageInput.value;
             
-            // Use original file paths directly and surround with quotes
-            const filePaths = Array.from(files).map(file => `'${file.path || file.name}'`);
-            const fileText = filePaths.join(' ');
+            // Separate images from other files
+            const imageFiles = [];
+            const otherFiles = [];
             
-            // Add files to current input with proper spacing
-            const separator = currentText && !currentText.endsWith(' ') ? ' ' : '';
-            messageInput.value = currentText + separator + fileText;
+            Array.from(files).forEach(file => {
+                const isImage = file.type && file.type.startsWith('image/');
+                if (isImage) {
+                    imageFiles.push(file);
+                } else {
+                    otherFiles.push(file);
+                }
+            });
             
-            // Focus on the input and place cursor at end
+            // Handle image files for preview
+            if (imageFiles.length > 0) {
+                await this.addImagePreviews(imageFiles);
+            }
+            
+            // Store file paths for later injection but don't add to input text
+            const allFiles = [...imageFiles, ...otherFiles];
+            if (!this.attachedFiles) {
+                this.attachedFiles = [];
+            }
+            
+            // Add new files to attached files list
+            allFiles.forEach(file => {
+                this.attachedFiles.push({
+                    path: file.path || file.name,
+                    file: file,
+                    isImage: file.type && file.type.startsWith('image/')
+                });
+            });
+            
+            // Focus on the input (no file paths added to text)
             messageInput.focus();
-            messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
             
             const fileNames = Array.from(files).map(file => file.name);
             this.logAction(`Added ${files.length} file(s) to current message: ${fileNames.join(', ')}`, 'success');
         } catch (error) {
             console.error('Error processing files:', error);
             this.logAction(`Error processing files: ${error.message}`, 'error');
+        }
+    }
+
+    async addImagePreviews(imageFiles) {
+        const previewContainer = document.getElementById('image-preview-container');
+        const previewList = document.getElementById('image-preview-list');
+        
+        if (!previewContainer || !previewList) return;
+        
+        // Initialize image previews array if not exists
+        if (!this.imagePreviews) {
+            this.imagePreviews = [];
+        }
+        
+        for (const file of imageFiles) {
+            const imageId = `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const imageData = {
+                id: imageId,
+                file: file,
+                path: file.path || file.name
+            };
+            
+            this.imagePreviews.push(imageData);
+            
+            // Create preview element
+            const previewItem = document.createElement('div');
+            previewItem.className = 'image-preview-item';
+            previewItem.dataset.imageId = imageId;
+            
+            // Create image element
+            const img = document.createElement('img');
+            img.src = URL.createObjectURL(file);
+            img.alt = file.name;
+            img.title = file.name;
+            
+            // Create remove button
+            const removeBtn = document.createElement('div');
+            removeBtn.className = 'image-preview-remove';
+            removeBtn.innerHTML = '×';
+            removeBtn.title = 'Remove image';
+            
+            // Add click handlers
+            img.addEventListener('click', () => this.showImagePreview(imageData));
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.removeImagePreview(imageId);
+            });
+            
+            previewItem.appendChild(img);
+            previewItem.appendChild(removeBtn);
+            previewList.appendChild(previewItem);
+        }
+        
+        // Show preview container
+        previewContainer.style.display = 'block';
+    }
+    
+    removeImagePreview(imageId) {
+        // Remove from array
+        const index = this.imagePreviews.findIndex(img => img.id === imageId);
+        if (index === -1) return;
+        
+        const imageData = this.imagePreviews[index];
+        this.imagePreviews.splice(index, 1);
+        
+        // Remove from DOM
+        const previewItem = document.querySelector(`[data-image-id="${imageId}"]`);
+        if (previewItem) {
+            // Clean up object URL
+            const img = previewItem.querySelector('img');
+            if (img && img.src.startsWith('blob:')) {
+                URL.revokeObjectURL(img.src);
+            }
+            previewItem.remove();
+        }
+        
+        // Remove from attached files array
+        if (this.attachedFiles) {
+            const attachedIndex = this.attachedFiles.findIndex(file => file.path === imageData.path);
+            if (attachedIndex !== -1) {
+                this.attachedFiles.splice(attachedIndex, 1);
+            }
+        }
+        
+        // Hide container if no more images
+        if (this.imagePreviews.length === 0) {
+            document.getElementById('image-preview-container').style.display = 'none';
+        }
+        
+        this.logAction(`Removed image: ${imageData.file.name}`, 'info');
+    }
+    
+    showImagePreview(imageData) {
+        // Create modal for full image preview
+        const modal = document.createElement('div');
+        modal.className = 'image-preview-modal';
+        
+        const img = document.createElement('img');
+        img.src = URL.createObjectURL(imageData.file);
+        img.alt = imageData.file.name;
+        img.title = `${imageData.file.name} - Click anywhere to close`;
+        
+        modal.appendChild(img);
+        document.body.appendChild(modal);
+        
+        // Close on click anywhere in modal
+        modal.addEventListener('click', (e) => {
+            URL.revokeObjectURL(img.src);
+            modal.remove();
+            document.removeEventListener('keydown', handleEscape);
+        });
+        
+        // Prevent image click from bubbling up to modal
+        img.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+        
+        // Close on escape key
+        const handleEscape = (e) => {
+            if (e.key === 'Escape') {
+                URL.revokeObjectURL(img.src);
+                modal.remove();
+                document.removeEventListener('keydown', handleEscape);
+            }
+        };
+        document.addEventListener('keydown', handleEscape);
+        
+        // Focus the modal for keyboard events
+        modal.focus();
+    }
+    
+    clearImagePreviews() {
+        const previewContainer = document.getElementById('image-preview-container');
+        const previewList = document.getElementById('image-preview-list');
+        
+        if (!previewList) return;
+        
+        // Clean up object URLs
+        previewList.querySelectorAll('img').forEach(img => {
+            if (img.src.startsWith('blob:')) {
+                URL.revokeObjectURL(img.src);
+            }
+        });
+        
+        // Clear DOM and array
+        previewList.innerHTML = '';
+        this.imagePreviews = [];
+        
+        // Hide container
+        if (previewContainer) {
+            previewContainer.style.display = 'none';
         }
     }
 
@@ -1599,16 +1793,28 @@ class TerminalGUI {
                 input.value = '';
                 return;
             }
+            // Prepare file paths for injection (images first, then other files)
+            let filePaths = '';
+            if (this.attachedFiles && this.attachedFiles.length > 0) {
+                const imageFiles = this.attachedFiles.filter(f => f.isImage);
+                const otherFiles = this.attachedFiles.filter(f => !f.isImage);
+                const allFiles = [...imageFiles, ...otherFiles];
+                const pathStrings = allFiles.map(f => `'${f.path}'`);
+                filePaths = pathStrings.join(' ') + (content ? ' ' : '');
+            }
+            
             const now = Date.now();
             const message = {
                 id: this.generateMessageId(),
-                content: content,
-                processedContent: content,
+                content: content, // Original user message text only
+                processedContent: filePaths + content, // File paths + user message for injection
                 executeAt: now,
                 createdAt: now,
                 timestamp: now, // For compatibility
                 terminalId: this.activeTerminalId, // Use currently selected terminal
-                sequence: ++this.messageSequenceCounter // Add sequence counter for proper ordering
+                sequence: ++this.messageSequenceCounter, // Add sequence counter for proper ordering
+                imagePreviews: this.imagePreviews ? [...this.imagePreviews] : [], // Copy current image previews
+                attachedFiles: this.attachedFiles ? [...this.attachedFiles] : [] // Copy attached files
             };
             
             this.messageQueue.push(message);
@@ -1617,6 +1823,10 @@ class TerminalGUI {
             this.updateMessageList();
             this.updateStatusDisplay();
             input.value = '';
+            
+            // Clear image previews and attached files after adding to queue
+            this.clearImagePreviews();
+            this.attachedFiles = [];
             
             // Reset input height after clearing
             this.autoResizeMessageInput(input);
@@ -1898,7 +2108,37 @@ class TerminalGUI {
             
             const content = document.createElement('div');
             content.className = 'message-content';
-            content.textContent = message.content;
+            
+            // Add image previews if present
+            if (message.imagePreviews && message.imagePreviews.length > 0) {
+                const imagePreviewContainer = document.createElement('div');
+                imagePreviewContainer.className = 'message-image-previews';
+                
+                const imagePreviewList = document.createElement('div');
+                imagePreviewList.className = 'message-image-preview-list';
+                
+                message.imagePreviews.forEach(imageData => {
+                    const previewItem = document.createElement('div');
+                    previewItem.className = 'message-image-preview-item';
+                    
+                    const img = document.createElement('img');
+                    img.src = URL.createObjectURL(imageData.file);
+                    img.alt = imageData.file.name;
+                    img.title = imageData.file.name;
+                    img.addEventListener('click', () => this.showImagePreview(imageData));
+                    
+                    previewItem.appendChild(img);
+                    imagePreviewList.appendChild(previewItem);
+                });
+                
+                imagePreviewContainer.appendChild(imagePreviewList);
+                content.appendChild(imagePreviewContainer);
+            }
+            
+            const textContent = document.createElement('div');
+            textContent.className = 'message-text-content';
+            textContent.textContent = message.content;
+            content.appendChild(textContent);
             
             const meta = document.createElement('div');
             meta.className = 'message-meta';
@@ -2303,6 +2543,12 @@ class TerminalGUI {
             return;
         }
 
+        // Clear any existing timer interval before starting a new one
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+            this.timerInterval = null;
+        }
+
         this.timerActive = true;
         this.timerExpired = false;
         this.updateTimerUI();
@@ -2363,6 +2609,8 @@ class TerminalGUI {
         this.injectionInProgress = false;
         this.injectionPausedByTimer = false; // Clear timer pause flag
         this.usageLimitWaiting = false;
+        this.usageLimitTimerOriginalValues = null; // Clear stored timer values
+        this.savePreferences(); // Save usage limit state
         this.timerHours = 0;
         this.timerMinutes = 0;
         this.timerSeconds = 0;
@@ -2411,7 +2659,23 @@ class TerminalGUI {
             this.timerMinutes = 59;
             this.timerSeconds = 59;
         } else {
-            // Timer expired
+            // Timer reached 00:00:00
+            
+            // If we're waiting for usage limit reset, restart the timer instead of expiring
+            if (this.usageLimitWaiting && this.usageLimitTimerOriginalValues) {
+                this.logAction('Usage limit timer reached 00:00:00 - restarting countdown', 'info');
+                
+                // Reset to original values
+                this.timerHours = this.usageLimitTimerOriginalValues.hours;
+                this.timerMinutes = this.usageLimitTimerOriginalValues.minutes;
+                this.timerSeconds = this.usageLimitTimerOriginalValues.seconds;
+                
+                // Continue the timer
+                this.updateTimerUI();
+                return; // Don't mark as expired
+            }
+            
+            // Normal timer expiry
             this.timerExpired = true;
             this.timerActive = false;
             if (this.timerInterval) {
@@ -2429,10 +2693,11 @@ class TerminalGUI {
             // Notify injection manager
             this.injectionManager.onTimerExpired();
             
-            // If we were waiting for usage limit reset, clear the waiting state
+            // If we were waiting for usage limit reset (shouldn't happen with the new logic above)
             if (this.usageLimitWaiting) {
                 this.logAction(`Timer expiration: clearing usageLimitWaiting. Current state - injectionInProgress: ${this.injectionInProgress}, queueLength: ${this.messageQueue.length}`, 'info');
                 this.usageLimitWaiting = false;
+                this.savePreferences(); // Save usage limit state
                 this.injectionManager.onUsageLimitReset();
                 this.logAction('Usage limit reset time reached - resuming auto injection', 'success');
                 
@@ -4359,6 +4624,7 @@ class TerminalGUI {
             // Pause injection until user makes a choice
             this.pauseInProgressInjection();
             this.usageLimitWaiting = true;
+            this.savePreferences(); // Save usage limit state
             this.injectionManager.onUsageLimitDetected();
             
             // Check if we've already shown modal for this specific reset time
@@ -4490,10 +4756,31 @@ class TerminalGUI {
             const minutes = Math.floor((totalSeconds % 3600) / 60);
             const seconds = totalSeconds % 60;
             
+            // Don't update timer for usage limits over 5 hours (likely previous limit still active)
+            if (hours >= 5) {
+                this.logAction(`Usage limit timer would be ${hours}h ${minutes}m - ignoring as it likely refers to previous usage limit that has been lifted`, 'info');
+                return;
+            }
+            
             // Stop auto injection and set timer
             this.pauseInProgressInjection();
             this.usageLimitWaiting = true;
+            this.savePreferences(); // Save usage limit state
             this.injectionManager.onUsageLimitDetected();
+            
+            // Clear any existing timer before setting new one
+            if (this.timerInterval) {
+                clearInterval(this.timerInterval);
+                this.timerInterval = null;
+                this.timerActive = false;
+            }
+            
+            // Store original timer values for reset after expiry
+            this.usageLimitTimerOriginalValues = {
+                hours: hours,
+                minutes: minutes,
+                seconds: seconds
+            };
             
             // Set timer values
             this.timerHours = hours;
@@ -4501,12 +4788,8 @@ class TerminalGUI {
             this.timerSeconds = seconds;
             this.timerExpired = false;
             
-            // Start timer if not already active
-            if (!this.timerActive) {
-                this.startTimer();
-            } else {
-                this.updateTimerUI();
-            }
+            // Always start the timer (since we cleared any existing one)
+            this.startTimer();
             
             // Save this reset time and timestamp to prevent duplicate timer updates
             await ipcRenderer.invoke('db-set-app-state', 'usageLimitTimerLastResetTime', resetTimeString);
@@ -4533,6 +4816,9 @@ class TerminalGUI {
             
             // Clear cooldown period when manually clearing tracking
             this.usageLimitCooldownUntil = null;
+            
+            // Clear stored timer values
+            this.usageLimitTimerOriginalValues = null;
             
             this.logAction('Cleared usage limit tracking data, session memory, and cooldown period', 'info');
         } catch (error) {
@@ -4797,6 +5083,8 @@ class TerminalGUI {
             // User chose "No thanks" - clear pending reset info and resume normal operation
             this.pendingUsageLimitReset = null;
             this.usageLimitWaiting = false;
+            this.usageLimitTimerOriginalValues = null; // Clear stored timer values
+            this.savePreferences(); // Save usage limit state
             this.injectionManager.onUsageLimitReset(); // Reset injection manager state
             
             // Resume injection if there are messages queued
@@ -5750,6 +6038,12 @@ class TerminalGUI {
                 this.recentDirectories = this.preferences.recentDirectories;
             }
             
+            // Restore usage limit waiting state
+            if (this.preferences.usageLimitWaiting !== undefined) {
+                this.usageLimitWaiting = this.preferences.usageLimitWaiting;
+                this.logAction(`Restored usageLimitWaiting state: ${this.usageLimitWaiting}`, 'info');
+            }
+            
             // Update UI elements safely
             const autoscrollEnabledEl = document.getElementById('autoscroll-enabled');
             if (autoscrollEnabledEl) autoscrollEnabledEl.checked = this.autoscrollEnabled;
@@ -5816,6 +6110,7 @@ class TerminalGUI {
     async savePreferences() {
         // Update preferences object with current values before saving
         this.preferences.currentDirectory = this.currentDirectory;
+        this.preferences.usageLimitWaiting = this.usageLimitWaiting;
         await this.saveAllPreferences();
     }
 
@@ -6846,6 +7141,7 @@ class TerminalGUI {
         this.timerSeconds = seconds;
         this.timerExpired = false;
         this.usageLimitWaiting = true;
+        this.savePreferences(); // Save usage limit state
         this.injectionManager.onUsageLimitDetected();
         
         // Start the timer if not already active
@@ -7875,6 +8171,40 @@ class TerminalGUI {
         this.updateStatusDisplay();
         this.saveTerminalState();
         this.logAction(`Selected ${terminalData.name}`, 'info');
+    }
+    
+    cycleToNextTerminal() {
+        const terminalIds = Array.from(this.terminals.keys()).sort((a, b) => a - b);
+        if (terminalIds.length <= 1) return;
+        
+        const currentIndex = terminalIds.indexOf(this.activeTerminalId);
+        const nextIndex = (currentIndex + 1) % terminalIds.length;
+        const nextTerminalId = terminalIds[nextIndex];
+        
+        this.switchToTerminal(nextTerminalId);
+        
+        // Focus the terminal after switching
+        const terminalData = this.terminals.get(nextTerminalId);
+        if (terminalData && terminalData.terminal) {
+            terminalData.terminal.focus();
+        }
+    }
+    
+    cycleToPreviousTerminal() {
+        const terminalIds = Array.from(this.terminals.keys()).sort((a, b) => a - b);
+        if (terminalIds.length <= 1) return;
+        
+        const currentIndex = terminalIds.indexOf(this.activeTerminalId);
+        const previousIndex = currentIndex === 0 ? terminalIds.length - 1 : currentIndex - 1;
+        const previousTerminalId = terminalIds[previousIndex];
+        
+        this.switchToTerminal(previousTerminalId);
+        
+        // Focus the terminal after switching
+        const terminalData = this.terminals.get(previousTerminalId);
+        if (terminalData && terminalData.terminal) {
+            terminalData.terminal.focus();
+        }
     }
     
     updateTerminalDropdowns() {

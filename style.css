@@ -934,6 +934,196 @@ body {
     padding: 15px;
 }
 
+.image-preview-container {
+    margin-bottom: 12px;
+    border: 1px solid #3f3f46;
+    border-radius: 8px;
+    background: #27272a;
+    padding: 8px;
+}
+
+.image-preview-list {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 4px 0;
+    scrollbar-width: thin;
+    scrollbar-color: #52525b #27272a;
+}
+
+.image-preview-list::-webkit-scrollbar {
+    height: 6px;
+}
+
+.image-preview-list::-webkit-scrollbar-track {
+    background: #27272a;
+    border-radius: 3px;
+}
+
+.image-preview-list::-webkit-scrollbar-thumb {
+    background: #52525b;
+    border-radius: 3px;
+}
+
+.image-preview-list::-webkit-scrollbar-thumb:hover {
+    background: #71717a;
+}
+
+.image-preview-item {
+    position: relative;
+    flex-shrink: 0;
+    width: 60px;
+    height: 60px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #52525b;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.image-preview-item:hover {
+    border-color: #007acc;
+    transform: scale(1.05);
+}
+
+.image-preview-item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.image-preview-remove {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    width: 16px;
+    height: 16px;
+    background: #ef4444;
+    border: 1px solid #27272a;
+    border-radius: 50%;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: bold;
+    color: white;
+    line-height: 1;
+}
+
+.image-preview-item:hover .image-preview-remove {
+    display: flex;
+}
+
+.image-preview-remove:hover {
+    background: #dc2626;
+}
+
+/* Message image previews in queue */
+.message-image-previews {
+    margin-bottom: 8px;
+    padding: 6px;
+    background: #1c1c1e;
+    border-radius: 6px;
+    border: 1px solid #3f3f46;
+}
+
+.message-image-preview-list {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 2px 0;
+    scrollbar-width: thin;
+    scrollbar-color: #52525b #1c1c1e;
+}
+
+.message-image-preview-list::-webkit-scrollbar {
+    height: 4px;
+}
+
+.message-image-preview-list::-webkit-scrollbar-track {
+    background: #1c1c1e;
+    border-radius: 2px;
+}
+
+.message-image-preview-list::-webkit-scrollbar-thumb {
+    background: #52525b;
+    border-radius: 2px;
+}
+
+.message-image-preview-item {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid #52525b;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.message-image-preview-item:hover {
+    border-color: #007acc;
+    transform: scale(1.1);
+}
+
+.message-image-preview-item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.message-text-content {
+    word-wrap: break-word;
+}
+
+/* Image preview modal */
+.image-preview-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+    animation: modalFadeIn 0.2s ease-out;
+}
+
+.image-preview-modal img {
+    max-width: 90%;
+    max-height: 90%;
+    object-fit: contain;
+    border-radius: 8px;
+    cursor: zoom-out;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    animation: modalImageZoomIn 0.2s ease-out;
+}
+
+@keyframes modalFadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes modalImageZoomIn {
+    from {
+        transform: scale(0.8);
+        opacity: 0;
+    }
+    to {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
 .input-container {
     margin-bottom: 15px;
 }

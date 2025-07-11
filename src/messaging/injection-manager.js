@@ -28,8 +28,23 @@ class InjectionManager {
      * Initialize the injection manager
      */
     initialize() {
+        // Sync with GUI's restored state
+        this.syncWithGUIState();
         // Set up periodic checks for injection opportunities
         this.startPeriodicChecks();
+    }
+    
+    /**
+     * Sync internal state with GUI's restored state
+     */
+    syncWithGUIState() {
+        if (this.gui.usageLimitWaiting) {
+            this.usageLimitWaiting = true;
+            this.gui.logAction('InjectionManager: Synced usageLimitWaiting state from restored preferences', 'info');
+        }
+        if (this.gui.timerExpired) {
+            this.timerExpired = true;
+        }
     }
     
     /**
