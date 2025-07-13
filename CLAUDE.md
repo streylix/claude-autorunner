@@ -10,16 +10,30 @@ python test_auto_injector.py start connect wait 15 screenshot "before" [test the
 ```
 
 **THEN YOU MUST:**
-1. **Read BOTH screenshots** with your vision capabilities
-2. **Visually confirm** the change is working as expected
-3. **Verify** no UI elements are broken or missing
-4. **Check** that buttons/functionality actually respond correctly
+1. **Use unbiased Claude review process** - DO NOT analyze screenshots yourself
+2. **Send screenshots to separate Claude process** for objective assessment
+3. **Use review command** for automated unbiased analysis
+4. **Verify** no UI elements are broken or missing based on Claude review
+
+**🤖 UNBIASED SCREENSHOT REVIEW PROCESS:**
+```bash
+# For detailed comparison with difference highlighting
+python test_auto_injector.py compare "before" "after" "description of expected change"
+
+# For unbiased Claude review (MANDATORY for all visual verification)
+python test_auto_injector.py review "before" "after" "description of expected change"
+```
 
 **❌ NEVER say "task complete" without:**
-- Running the test script
-- Taking before/after screenshots  
-- Actually looking at the screenshots with your eyes
-- Confirming the change works visually
+- Running the test script with before/after screenshots
+- Getting unbiased Claude review of the screenshots
+- Confirming the change works based on external review
+- Using review command to validate visual changes
+
+**⚠️ DO NOT ANALYZE SCREENSHOTS YOURSELF:**
+- Always use the `review` command to send screenshots to separate Claude
+- Never rely on your own visual analysis - use external Claude for objectivity
+- The review process prevents confirmation bias and ensures accurate assessment
 
 **💡 QUICK IMPROVEMENT TIPS:**
 - Add `data-test-id` to any new interactive elements
@@ -57,7 +71,24 @@ Always use this script for testing changes. It provides automated UI interaction
 
 **Required Test Script Pattern:**
 ```bash
-python test_auto_injector.py start connect wait 15 screenshot "before_test" [actions] screenshot "after_test"
+python test_auto_injector.py start connect wait 15 screenshot "before_test" [actions] screenshot "after_test" review "before_test" "after_test" "description of change"
+```
+
+**Enhanced Testing Commands:**
+```bash
+# Close specific terminals by ID
+close_terminal <terminal-id>
+
+# Detailed screenshot comparison with difference highlighting
+compare "before" "after" "terminal close functionality test"
+
+# Unbiased Claude review (MANDATORY for verification)
+review "before" "after" "tested terminal close button functionality"
+
+# Console log debugging (AUTOMATIC after connect)
+main_logs      # Show main process logs (Node.js/Electron errors)
+logs           # Show renderer console logs (browser JavaScript)
+all_logs       # Show both main process and renderer logs
 ```
 
 **Essential Elements for Testing:**
@@ -119,12 +150,45 @@ python test_auto_injector.py start connect wait 15 screenshot "before_test" [act
 - Auto-continue functionality
 - Plan mode operations
 
+**Console Log Debugging:**
+The test script automatically captures and displays console logs after every `connect` command. This provides visibility into:
+
+**Main Process Logs** (Node.js/Electron):
+- Module loading errors (e.g., "Cannot find module './src/messaging/injection-manager'")
+- File system operations and errors
+- IPC communication between main and renderer processes
+- Service worker and database errors
+- Application startup and initialization
+
+**Renderer Process Logs** (Browser JavaScript):
+- JavaScript console.log, console.error, console.warn output
+- Uncaught JavaScript errors and exceptions
+- Unhandled promise rejections
+- Security warnings (CSP violations)
+- Runtime errors in UI components
+
+**Key Debugging Commands:**
+```bash
+# Logs are automatically shown after connect, but can also be called manually:
+python test_auto_injector.py start connect main_logs    # Main process only
+python test_auto_injector.py start connect logs         # Renderer only  
+python test_auto_injector.py start connect all_logs     # Both processes
+```
+
+**Common Error Patterns to Look For:**
+- `[SEVERE] node:internal/modules/cjs/loader` - Module loading failures
+- `Failed to delete the database: Database IO error` - Storage issues
+- `Uncaught Error:` - JavaScript runtime errors
+- `Cannot find module` - Missing dependencies
+- `Security Warning` - CSP and security configuration issues
+
 **Failure Indicators:**
 - Timer shows "Cannot start timer - time not set"
 - Messages remain in queue without processing
 - UI elements not responding to clicks
 - Missing or incorrect visual feedback
 - Error messages in action log
+- Console errors appearing in main_logs or renderer logs
 
 ## 🔴 TESTING ENFORCEMENT RULES 🔴
 
