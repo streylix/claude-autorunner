@@ -2,6 +2,31 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🚨 MANDATORY FOR CLAUDE CODE: ALWAYS TEST & VERIFY 🚨
+
+**EVERY SINGLE CHANGE REQUIRES:**
+```bash
+python test_auto_injector.py start connect wait 15 screenshot "before" [test the change] screenshot "after"
+```
+
+**THEN YOU MUST:**
+1. **Read BOTH screenshots** with your vision capabilities
+2. **Visually confirm** the change is working as expected
+3. **Verify** no UI elements are broken or missing
+4. **Check** that buttons/functionality actually respond correctly
+
+**❌ NEVER say "task complete" without:**
+- Running the test script
+- Taking before/after screenshots  
+- Actually looking at the screenshots with your eyes
+- Confirming the change works visually
+
+**💡 QUICK IMPROVEMENT TIPS:**
+- Add `data-test-id` to any new interactive elements
+- Use specific test actions that target your changes
+- Wait 2-3 seconds after UI interactions for proper rendering
+- Test edge cases (clicking buttons, entering text, modal interactions)
+
 ## Commands
 
 ### Development Commands
@@ -19,16 +44,124 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cd backend && python manage.py migrate` - Run database migrations
 
 ### Testing and Validation
-- Always run `./run.sh` before completing tasks (required by Cursor rules in `.cursor/rules/always-run.mdc`)
-- The `run.sh` script provides detailed feedback about the current project state
-- **Note**: `run.sh` does not actually test it, it is an input system that is for glitching cursor to save request costs
+
+**Primary Test Script: `test_auto_injector.py`**
+Always use this script for testing changes. It provides automated UI interaction and verification capabilities.
+
+**Critical Testing Requirements:**
+1. **Always use `start` command** - Never assume the app is running
+2. **Wait for proper loading** - Use `wait 15` after `start` and `wait 2` between commands
+3. **Take before/after screenshots** - Visual verification is mandatory
+4. **Read and compare screenshots** - Verify changes actually worked
+5. **Complete testing cycle** - Only mark tasks complete when functionality is confirmed
+
+**Required Test Script Pattern:**
+```bash
+python test_auto_injector.py start connect wait 15 screenshot "before_test" [actions] screenshot "after_test"
+```
+
+**Essential Elements for Testing:**
+
+**Data-Test-ID Requirements:**
+- Every interactive button MUST have unique `data-test-id` attributes
+- Timer inputs: `timer-hours-input`, `timer-minutes-input`, `timer-seconds-input`
+- Timer controls: `timer-save-btn`, `timer-cancel-btn`, `timer-play-pause-btn`
+- Navigation: `settings-btn`, `add-terminal-btn`, `send-btn`
+- Queue controls: `inject-now-btn`, `clear-queue-header-btn`
+- Modal controls: All modal close buttons, action buttons
+
+**Key Functional Areas to Test:**
+1. **Message Queue System**
+   - Add messages to queue
+   - Verify queue count updates
+   - Test auto-injection timing
+   - Verify message execution in terminal
+
+2. **Timer Functionality**
+   - Open timer edit (Cmd+B or click timer-edit-btn)
+   - Set timer values using proper input data-test-ids
+   - Save timer settings
+   - Start/pause timer operations
+   - Verify countdown and auto-injection
+
+3. **Terminal Operations**
+   - Create new terminals
+   - Switch between terminals
+   - Verify terminal output
+   - Test command execution
+
+4. **Settings and Configuration**
+   - Open settings modal
+   - Modify configuration options
+   - Verify settings persistence
+   - Test keyboard shortcuts
+
+**Auto-Inject Testing Protocol:**
+1. Queue a test command (e.g., `echo 'test' > output.txt`)
+2. Set timer to short duration (5-10 seconds)
+3. Start timer and wait for injection
+4. Verify file creation or terminal output
+5. Check action logs for injection events
+
+**Screenshot Verification Requirements:**
+- Capture before state showing initial UI
+- Document each interaction step
+- Capture final state showing changes
+- Verify visual indicators (queue counts, timer display, status changes)
+- Check for error states or unexpected behavior
+
+**Common Test Scenarios:**
+- Basic message queuing and injection
+- Timer setting and countdown
+- Multi-terminal coordination
+- Settings modal interactions
+- Voice transcription (if applicable)
+- Auto-continue functionality
+- Plan mode operations
+
+**Failure Indicators:**
+- Timer shows "Cannot start timer - time not set"
+- Messages remain in queue without processing
+- UI elements not responding to clicks
+- Missing or incorrect visual feedback
+- Error messages in action log
+
+## 🔴 TESTING ENFORCEMENT RULES 🔴
+
+**FOR CLAUDE CODE SPECIFICALLY:**
+
+1. **BEFORE making ANY code changes** - Take a "before" screenshot to establish baseline
+2. **AFTER making ANY code changes** - IMMEDIATELY run the test script
+3. **ALWAYS use this exact pattern:**
+   ```bash
+   python test_auto_injector.py start connect wait 15 screenshot "before_[description]" [relevant test actions] screenshot "after_[description]"
+   ```
+4. **REQUIRED verification steps:**
+   - Read both before/after screenshots visually
+   - Confirm expected changes are visible
+   - Verify no regressions or broken functionality
+   - Check that all UI elements are properly identified with data-test-ids
+
+5. **NEVER COMPLETE A TASK without:**
+   - Running the test script successfully
+   - Visually confirming the changes work
+   - Seeing evidence in screenshots that functionality is working
+
+**Common test patterns to use:**
+- **Button changes:** Test clicking the modified button
+- **UI changes:** Test the affected interface area  
+- **Timer changes:** Test timer setting and auto-injection
+- **Queue changes:** Test message queuing and processing
+- **Settings changes:** Test opening/modifying settings
+
+**Remember:** This application has complex interactions between UI, timers, queues, and terminal processes. The ONLY reliable way to verify changes is through the visual testing framework.
 
 ## Architecture
 
 Auto-Injector is an advanced terminal automation suite built as an Electron desktop application. It enhances the Claude Code terminal experience with message queuing, voice-to-text transcription, smart auto-continue features, and multi-terminal orchestration.
 
 ### Core Components
-
+YOU ARE LIKELY BEING RAN WITHIN THIS SCRIPT!!!!! ONLY RUN `npm run` OR `pkill` RARELY
 **Main Process (`main.js`)**
 - Electron main process handling window management, system tray, and IPC
 - Spawns terminal processes using `node-pty` 

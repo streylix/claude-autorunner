@@ -20,10 +20,10 @@
                 <div class="action-log-header">
                     <span class="action-log-title" id="sidebar-title">Action Log</span>
                     <div class="sidebar-nav-buttons">
-                        <button class="icon-btn sidebar-nav-btn active" id="action-log-nav-btn" title="Action Log">
+                        <button class="icon-btn sidebar-nav-btn active" id="action-log-nav-btn" title="Action Log" data-test-id="action-log-nav-btn">
                             <i data-lucide="scroll-text"></i>
                         </button>
-                        <button class="icon-btn sidebar-nav-btn" id="todo-nav-btn" title="To-Do">
+                        <button class="icon-btn sidebar-nav-btn" id="todo-nav-btn" title="To-Do" data-test-id="todo-nav-btn">
                             <i data-lucide="check-square"></i>
                         </button>
                     </div>
@@ -33,7 +33,7 @@
                 <div class="sidebar-view" id="action-log-view">
                     <div class="action-log-search">
                         <input type="text" id="log-search" placeholder="Search logs... (Cmd+F)" class="log-search-input hotkey-enabled" data-hotkey="Cmd+F">
-                        <button class="icon-btn" id="search-clear-btn" title="Clear search">
+                        <button class="icon-btn" id="search-clear-btn" title="Clear search" data-test-id="search-clear-btn">
                             <i data-lucide="x"></i>
                         </button>
                     </div>
@@ -44,7 +44,7 @@
                         </div>
                     </div>
                     <div class="sidebar-footer">
-                        <button class="footer-btn hotkey-enabled" id="clear-log-btn" title="Clear all logs" data-hotkey="Cmd+Shift+L">
+                        <button class="footer-btn hotkey-enabled" id="clear-log-btn" title="Clear all logs" data-hotkey="Cmd+Shift+L" data-test-id="clear-log-btn">
                             <i data-lucide="eraser"></i>
                             Clear all logs
                         </button>
@@ -55,7 +55,7 @@
                 <div class="sidebar-view" id="todo-view" style="display: none;">
                     <div class="todo-search">
                         <input type="text" id="todo-search" placeholder="Search todos..." class="log-search-input">
-                        <button class="icon-btn" id="todo-search-clear-btn" title="Clear search">
+                        <button class="icon-btn" id="todo-search-clear-btn" title="Clear search" data-test-id="todo-search-clear-btn">
                             <i data-lucide="x"></i>
                         </button>
                     </div>
@@ -74,7 +74,7 @@
                         <div class="manual-generation-controls">
                             <div class="manual-dropdowns-group">
                                 <div class="manual-generation-selector">
-                                    <button class="manual-terminal-selector-btn" id="manual-terminal-selector-btn">
+                                    <button class="manual-terminal-selector-btn" id="manual-terminal-selector-btn" data-test-id="manual-terminal-selector-btn">
                                         <span class="manual-terminal-selector-dot" style="background-color: #007acc;"></span>
                                         <span class="manual-terminal-selector-text">Terminal 1</span>
                                         <i data-lucide="chevron-down"></i>
@@ -84,18 +84,18 @@
                                     </div>
                                 </div>
                                 <div class="manual-generation-mode">
-                                    <button class="manual-mode-selector-btn" id="manual-mode-selector-btn">
+                                    <button class="manual-mode-selector-btn" id="manual-mode-selector-btn" data-test-id="manual-mode-selector-btn">
                                         <span class="manual-mode-selector-text">Verify</span>
                                         <i data-lucide="chevron-down"></i>
                                     </button>
                                     <div class="manual-mode-selector-dropdown" id="manual-mode-selector-dropdown" style="display: none;">
-                                        <div class="manual-mode-option" data-mode="verify">Verify</div>
-                                        <div class="manual-mode-option" data-mode="explain">Explain</div>
-                                        <div class="manual-mode-option" data-mode="custom">Custom</div>
+                                        <div class="manual-mode-option" data-mode="verify" data-test-id="mode-option-verify">Verify</div>
+                                        <div class="manual-mode-option" data-mode="explain" data-test-id="mode-option-explain">Explain</div>
+                                        <div class="manual-mode-option" data-mode="custom" data-test-id="mode-option-custom">Custom</div>
                                     </div>
                                 </div>
                             </div>
-                            <button class="manual-generate-btn" id="manual-generate-btn" title="Generate todos from terminal output">
+                            <button class="manual-generate-btn" id="manual-generate-btn" title="Generate todos from terminal output" data-test-id="manual-generate-btn">
                                 <i data-lucide="sparkles"></i>
                             </button>
                         </div>
@@ -104,11 +104,11 @@
                         </div>
                     </div>
                     <div class="sidebar-footer">
-                        <button class="footer-btn" id="clear-todos-btn" title="Clear completed todos">
+                        <button class="footer-btn" id="clear-todos-btn" title="Clear completed todos" data-test-id="clear-todos-btn">
                             <i data-lucide="check"></i>
                             Clear completed
                         </button>
-                        <button class="footer-btn" id="clear-all-todos-btn" title="Clear all todos">
+                        <button class="footer-btn" id="clear-all-todos-btn" title="Clear all todos" data-test-id="clear-all-todos-btn">
                             <i data-lucide="trash-2"></i>
                             Clear all
                         </button>
@@ -121,12 +121,12 @@
                     <div class="terminal-wrapper" data-terminal-id="1">
                         <div class="terminal-header">
                             <div class="terminal-title-wrapper">
-                                <button class="icon-btn close-terminal-btn hotkey-enabled" style="display: none;" title="Close terminal" onclick="window.terminalGUI.closeTerminal(1)" data-hotkey="Cmd+Shift+W">
+                                <button class="icon-btn close-terminal-btn hotkey-enabled" style="display: none;" title="Close terminal" onclick="window.terminalGUI.closeTerminal(1)" data-hotkey="Cmd+Shift+W" data-test-id="close-terminal-btn">
                                     <i data-lucide="x"></i>
                                 </button>
                                 <span class="terminal-color-dot" style="background-color: #007acc;"></span>
                                 <span class="terminal-title editable" contenteditable="false">Terminal 1</span>
-                                <button class="icon-btn add-terminal-btn hotkey-enabled" id="add-terminal-btn" title="Add new terminal" data-hotkey="Cmd+T">
+                                <button class="icon-btn add-terminal-btn hotkey-enabled" id="add-terminal-btn" title="Add new terminal" data-hotkey="Cmd+T" data-test-id="add-terminal-btn">
                                     <i data-lucide="plus"></i>
                                 </button>
                             </div>
@@ -140,14 +140,14 @@
                                     <input type="text" class="search-input" placeholder="Search in terminal..." />
                                 </div>
                                 <div class="search-controls">
-                                    <button class="search-btn search-prev" title="Previous match">
+                                    <button class="search-btn search-prev" title="Previous match" data-test-id="search-prev-btn">
                                         <i data-lucide="chevron-up"></i>
                                     </button>
-                                    <button class="search-btn search-next" title="Next match">
+                                    <button class="search-btn search-next" title="Next match" data-test-id="search-next-btn">
                                         <i data-lucide="chevron-down"></i>
                                     </button>
                                     <span class="search-matches">0/0</span>
-                                    <button class="search-btn search-close" title="Close search">
+                                    <button class="search-btn search-close" title="Close search" data-test-id="search-close-btn">
                                         <i data-lucide="x"></i>
                                     </button>
                                 </div>
@@ -162,7 +162,7 @@
                     <div class="section-header">
                         <span class="status-title">Status</span>
                         <div class="status-actions">
-                            <span class="settings-cog hotkey-enabled" id="settings-btn" title="Open Settings" data-hotkey="Cmd+S">
+                            <span class="settings-cog hotkey-enabled" id="settings-btn" title="Open Settings" data-hotkey="Cmd+S" data-test-id="settings-btn">
                                 <i data-lucide="settings"></i>
                             </span>
                         </div>
@@ -198,17 +198,17 @@
                         <div class="timer-controls-row">
                             <label>Auto-inject at</label>
                             <div class="timer-buttons">
-                                <button type="button" id="timer-stop-btn" class="timer-btn timer-stop hotkey-enabled" title="Stop timer" style="display: none;" data-hotkey="Cmd+Shift+S">
+                                <button type="button" id="timer-stop-btn" class="timer-btn timer-stop hotkey-enabled" title="Stop timer" style="display: none;" data-hotkey="Cmd+Shift+S" data-test-id="timer-stop-btn">
                                     <i data-lucide="square"></i>
                                 </button>
-                                <button type="button" id="timer-play-pause-btn" class="timer-btn hotkey-enabled" title="Start/Pause timer" data-hotkey="Cmd+P">
+                                <button type="button" id="timer-play-pause-btn" class="timer-btn hotkey-enabled" title="Start/Pause timer" data-hotkey="Cmd+P" data-test-id="timer-play-pause-btn">
                                     <i data-lucide="play"></i>
                                 </button>
                             </div>
                         </div>
                         <div class="timer-display-row">
-                            <div class="timer-display" id="timer-display">00:00:00</div>
-                            <button type="button" id="timer-edit-btn" class="timer-edit-btn hotkey-enabled" title="Edit timer" data-hotkey="Cmd+B">
+                            <div class="timer-display" id="timer-display" data-test-id="timer-display">00:00:00</div>
+                            <button type="button" id="timer-edit-btn" class="timer-edit-btn hotkey-enabled" title="Edit timer" data-hotkey="Cmd+B" data-test-id="timer-edit-btn">
                                 <i data-lucide="edit-3"></i>
                             </button>
                             <span id="timer-waiting-status" class="timer-waiting-status" style="display: none;">Waiting...</span>
@@ -221,13 +221,13 @@
                     <div class="section-header">
                         <span class="queue-title">Message Queue</span>
                         <div class="queue-actions">
-                            <button class="icon-btn hotkey-enabled" id="message-history-btn" title="View message history" data-hotkey="Cmd+Shift+H">
+                            <button class="icon-btn hotkey-enabled" id="message-history-btn" title="View message history" data-hotkey="Cmd+Shift+H" data-test-id="message-history-btn">
                                 <i data-lucide="history"></i>
                             </button>
-                            <button class="icon-btn hotkey-enabled" id="inject-now-btn" title="Inject next message now" data-hotkey="Cmd+I">
+                            <button class="icon-btn hotkey-enabled" id="inject-now-btn" title="Inject next message now" data-hotkey="Cmd+I" data-test-id="inject-now-btn">
                                 <i data-lucide="arrow-left-from-line"></i>
                             </button>
-                            <button class="icon-btn hotkey-enabled" id="clear-queue-header-btn" title="Clear all queued messages" data-hotkey="Cmd+Shift+.">
+                            <button class="icon-btn hotkey-enabled" id="clear-queue-header-btn" title="Clear all queued messages" data-hotkey="Cmd+Shift+." data-test-id="clear-queue-header-btn">
                                 <i data-lucide="trash-2"></i>
                             </button>
                         </div>
@@ -244,15 +244,15 @@
                     <div class="input-container" id="drop-zone">
                         <div class="input-wrapper">
                             <div class="textarea-container">
-                                <textarea id="message-input" placeholder="Type your command here... (Cmd+/ to focus, Enter to send)" rows="3" title="Enter command to add to message queue"></textarea>
-                                <button type="button" class="hotkey-btn" id="hotkey-btn" title="Insert hotkeys/commands">
+                                <textarea id="message-input" placeholder="Type your command here... (Cmd+/ to focus, Enter to send)" rows="3" title="Enter command to add to message queue" data-test-id="message-input"></textarea>
+                                <button type="button" class="hotkey-btn" id="hotkey-btn" title="Insert hotkeys/commands" data-test-id="hotkey-btn">
                                     <i data-lucide="keyboard"></i>
                                 </button>
                             </div>
                             <div class="input-actions">
                                 <div class="left-controls">
                                     <div class="terminal-selector">
-                                        <button class="terminal-selector-btn hotkey-enabled" id="terminal-selector-btn" data-hotkey="Cmd+K">
+                                        <button class="terminal-selector-btn hotkey-enabled" id="terminal-selector-btn" data-hotkey="Cmd+K" data-test-id="terminal-selector-btn">
                                             <span class="terminal-selector-dot" style="background-color: #007acc;"></span>
                                             <span class="terminal-selector-text">Terminal 1</span>
                                             <i data-lucide="chevron-up"></i>
@@ -261,18 +261,18 @@
                                             <!-- Dropdown items will be dynamically generated -->
                                         </div>
                                     </div>
-                                    <button type="button" class="auto-continue-btn hotkey-enabled" id="auto-continue-btn" title="Auto-continue on prompts" data-hotkey="Shift+Tab">
+                                    <button type="button" class="auto-continue-btn hotkey-enabled" id="auto-continue-btn" title="Auto-continue on prompts" data-hotkey="Shift+Tab" data-test-id="auto-continue-btn">
                                         <i data-lucide="fast-forward"></i>
                                     </button>
-                                    <button type="button" class="plan-mode-btn hotkey-enabled" id="plan-mode-btn" title="Plan mode - wrap messages with claude-flow" data-hotkey="Cmd+Shift+U">
+                                    <button type="button" class="plan-mode-btn hotkey-enabled" id="plan-mode-btn" title="Plan mode - wrap messages with claude-flow" data-hotkey="Cmd+Shift+U" data-test-id="plan-mode-btn">
                                         <i data-lucide="clipboard"></i>
                                     </button>
                                 </div>
                                 <div class="button-group">
-                                    <button type="button" id="voice-btn" class="voice-button hotkey-enabled" title="Voice transcription" data-hotkey="Cmd+Shift+V">
+                                    <button type="button" id="voice-btn" class="voice-button hotkey-enabled" title="Voice transcription" data-hotkey="Cmd+Shift+V" data-test-id="voice-btn">
                                         <i data-lucide="mic"></i>
                                     </button>
-                                    <button type="button" id="send-btn" class="send-button hotkey-enabled" title="Add message to queue (Enter)" data-hotkey="Enter">
+                                    <button type="button" id="send-btn" class="send-button hotkey-enabled" title="Add message to queue (Enter)" data-hotkey="Enter" data-test-id="send-btn">
                                         <i data-lucide="send-horizontal"></i>
                                     </button>
                                 </div>
@@ -298,7 +298,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3>Settings</h3>
-                <button class="modal-close" id="settings-close" title="Close settings">&times;</button>
+                <button class="modal-close" id="settings-close" title="Close settings" data-test-id="settings-close-btn">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="setting-group">
@@ -345,7 +345,7 @@
                             <div class="sound-selection-row">
                                 <select id="completion-sound-select" class="setting-select">
                                 </select>
-                                <button type="button" id="test-completion-sound-btn" class="setting-btn setting-btn-small">
+                                <button type="button" id="test-completion-sound-btn" class="setting-btn setting-btn-small" data-test-id="test-completion-sound-btn">
                                     <i data-lucide="volume-2"></i>
                                     Test
                                 </button>
@@ -356,7 +356,7 @@
                             <div class="sound-selection-row">
                                 <select id="injection-sound-select" class="setting-select">
                                 </select>
-                                <button type="button" id="test-injection-sound-btn" class="setting-btn setting-btn-small">
+                                <button type="button" id="test-injection-sound-btn" class="setting-btn setting-btn-small" data-test-id="test-injection-sound-btn">
                                     <i data-lucide="volume-2"></i>
                                     Test
                                 </button>
@@ -370,7 +370,7 @@
                             <div class="sound-selection-row">
                                 <select id="prompted-sound-select" class="setting-select">
                                 </select>
-                                <button type="button" id="test-prompted-sound-btn" class="setting-btn setting-btn-small">
+                                <button type="button" id="test-prompted-sound-btn" class="setting-btn setting-btn-small" data-test-id="test-prompted-sound-btn">
                                     <i data-lucide="volume-2"></i>
                                     Test
                                 </button>
@@ -395,7 +395,7 @@
                         <div class="keyword-add-row">
                             <input type="text" id="new-keyword" placeholder="Enter keyword..." class="keyword-input">
                             <input type="text" id="new-response" placeholder="Enter response..." class="response-input">
-                            <button id="add-keyword-btn" class="add-keyword-btn" title="Add keyword rule">
+                            <button id="add-keyword-btn" class="add-keyword-btn" title="Add keyword rule" data-test-id="add-keyword-btn">
                                 <i data-lucide="plus"></i>
                             </button>
                         </div>
@@ -514,8 +514,8 @@
                 <h3>You've hit your limit</h3>
                 <p class="usage-limit-subtitle">Queue messages for <span id="reset-time"></span>?</p>
                 <div class="usage-limit-actions">
-                    <button class="cancel-btn" id="usage-limit-no">No thanks</button>
-                    <button class="save-btn" id="usage-limit-yes">Sure <span id="usage-countdown">10</span>s</button>
+                    <button class="cancel-btn" id="usage-limit-no" data-test-id="usage-limit-no-btn">No thanks</button>
+                    <button class="save-btn" id="usage-limit-yes" data-test-id="usage-limit-yes-btn">Sure <span id="usage-countdown">10</span>s</button>
                 </div>
             </div>
         </div>
@@ -527,10 +527,10 @@
             <div class="modal-header">
                 <h3>Message History</h3>
                 <div class="modal-header-actions">
-                    <button class="setting-btn" id="clear-history-btn" title="Clear all history">
+                    <button class="setting-btn" id="clear-history-btn" title="Clear all history" data-test-id="clear-history-btn">
                         <i data-lucide="trash-2"></i>
                     </button>
-                    <button class="modal-close" id="message-history-close" title="Close history">&times;</button>
+                    <button class="modal-close" id="message-history-close" title="Close history" data-test-id="message-history-close-btn">&times;</button>
                 </div>
             </div>
             <div class="modal-body">
@@ -548,7 +548,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3>Detected Prompts</h3>
-                <button class="modal-close" id="plans-close" title="Close prompts">&times;</button>
+                <button class="modal-close" id="plans-close" title="Close prompts" data-test-id="plans-close-btn">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="plans-container">
@@ -568,47 +568,47 @@
                 <span>Terminal Commands</span>
             </div>
             <div class="hotkey-list">
-                <button type="button" class="hotkey-item" data-command="^C">
+                <button type="button" class="hotkey-item" data-command="^C" data-test-id="hotkey-ctrl-c">
                     <span class="hotkey-label">Ctrl+C</span>
                     <span class="hotkey-desc">Interrupt</span>
                 </button>
-                <button type="button" class="hotkey-item" data-command="^Z">
+                <button type="button" class="hotkey-item" data-command="^Z" data-test-id="hotkey-ctrl-z">
                     <span class="hotkey-label">Ctrl+Z</span>
                     <span class="hotkey-desc">Suspend</span>
                 </button>
-                <button type="button" class="hotkey-item" data-command="^D">
+                <button type="button" class="hotkey-item" data-command="^D" data-test-id="hotkey-ctrl-d">
                     <span class="hotkey-label">Ctrl+D</span>
                     <span class="hotkey-desc">EOF</span>
                 </button>
-                <button type="button" class="hotkey-item" data-command="\x1b">
+                <button type="button" class="hotkey-item" data-command="\x1b" data-test-id="hotkey-escape">
                     <span class="hotkey-label">Esc</span>
                     <span class="hotkey-desc">Escape</span>
                 </button>
-                <button type="button" class="hotkey-item" data-command="\r">
+                <button type="button" class="hotkey-item" data-command="\r" data-test-id="hotkey-enter">
                     <span class="hotkey-label">Enter</span>
                     <span class="hotkey-desc">Execute</span>
                 </button>
-                <button type="button" class="hotkey-item" data-command="\t">
+                <button type="button" class="hotkey-item" data-command="\t" data-test-id="hotkey-tab">
                     <span class="hotkey-label">Tab</span>
                     <span class="hotkey-desc">Complete</span>
                 </button>
-                <button type="button" class="hotkey-item" data-command="\x1b[Z">
+                <button type="button" class="hotkey-item" data-command="\x1b[Z" data-test-id="hotkey-shift-tab">
                     <span class="hotkey-label">Shift+Tab</span>
                     <span class="hotkey-desc">Reverse tab</span>
                 </button>
-                <button type="button" class="hotkey-item" data-command="\x1b[1;2A">
+                <button type="button" class="hotkey-item" data-command="\x1b[1;2A" data-test-id="hotkey-shift-up">
                     <span class="hotkey-label">Shift+Up</span>
                     <span class="hotkey-desc">Select up</span>
                 </button>
-                <button type="button" class="hotkey-item" data-command="\x1b[1;2B">
+                <button type="button" class="hotkey-item" data-command="\x1b[1;2B" data-test-id="hotkey-shift-down">
                     <span class="hotkey-label">Shift+Down</span>
                     <span class="hotkey-desc">Select down</span>
                 </button>
-                <button type="button" class="hotkey-item" data-command="\x1b[1;2C">
+                <button type="button" class="hotkey-item" data-command="\x1b[1;2C" data-test-id="hotkey-shift-right">
                     <span class="hotkey-label">Shift+Right</span>
                     <span class="hotkey-desc">Select right</span>
                 </button>
-                <button type="button" class="hotkey-item" data-command="\x1b[1;2D">
+                <button type="button" class="hotkey-item" data-command="\x1b[1;2D" data-test-id="hotkey-shift-left">
                     <span class="hotkey-label">Shift+Left</span>
                     <span class="hotkey-desc">Select left</span>
                 </button>

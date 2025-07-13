@@ -2,6 +2,24 @@
 
 This is a tool that enhances the Claude Code terminal experience. Queue messages, convert speech to prompts, smart auto-continue with keyword detection, completion sounds and more!
 
+## 🚨 FOR ALL AI AGENTS: MANDATORY TESTING PROTOCOL 🚨
+
+**⚠️ BEFORE MAKING ANY CODE CHANGES TO THIS APPLICATION:**
+
+```bash
+python test_auto_injector.py start connect wait 15 screenshot "before_change" [test your changes] screenshot "after_change"
+```
+
+**✅ REQUIRED VERIFICATION:**
+- Take before/after screenshots 
+- Read screenshots with vision capabilities
+- Confirm changes work visually
+- Verify no functionality is broken
+
+**❌ DO NOT complete tasks without running this test script!**
+
+This application has complex UI interactions, timers, queues, and terminal processes. Visual verification is the ONLY reliable way to confirm changes work correctly.
+
 ![Auto-Injector Main Interface](./docs/images/main-interface.png)
 
 ## 🌟 Revolutionary Features

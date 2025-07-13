@@ -900,9 +900,25 @@ class TerminalGUI {
                     return;
                 }
                 
-                // Block all other global hotkeys when settings modal is open
+                // Define global hotkeys that should work even when settings modal is open
+                const allowedGlobalHotkeys = [
+                    { key: 't', cmd: true, shift: false }, // Cmd+T - Add terminal
+                    { key: 'w', cmd: true, shift: true }, // Cmd+Shift+W - Close terminal
+                    { key: 'i', cmd: true, shift: false }, // Cmd+I - Manual injection
+                    { key: 'p', cmd: true, shift: false }, // Cmd+P - Play/pause timer
+                    { key: 'k', cmd: true, shift: false }, // Cmd+K - Terminal selector
+                ];
+                
+                // Check if current hotkey is in allowed global list
+                const isAllowedGlobalHotkey = allowedGlobalHotkeys.some(hotkey => 
+                    e.key === hotkey.key && 
+                    this.isCommandKey(e) === hotkey.cmd && 
+                    e.shiftKey === hotkey.shift
+                );
+                
+                // Block all other global hotkeys when settings modal is open (except allowed ones)
                 // Allow shift key for normal typing in input fields
-                if (this.isCommandKey(e) || (e.altKey && !this.isTypingInInputField(e))) {
+                if ((this.isCommandKey(e) && !isAllowedGlobalHotkey) || (e.altKey && !this.isTypingInInputField(e))) {
                     e.preventDefault();
                     return;
                 }
@@ -1265,6 +1281,11 @@ class TerminalGUI {
         });
 
         document.getElementById('timer-edit-btn').addEventListener('click', (e) => {
+            this.openTimerEditDropdown(e);
+        });
+        
+        // Timer display click handler - allows clicking on the timer display itself
+        document.getElementById('timer-display').addEventListener('click', (e) => {
             this.openTimerEditDropdown(e);
         });
 
@@ -2921,23 +2942,23 @@ class TerminalGUI {
                 <div class="timer-edit-form">
                     <div class="timer-segments-row">
                         <div class="timer-segment" data-segment="hours">
-                            <input type="text" class="timer-segment-input" value="${String(this.timerHours).padStart(2, '0')}" maxlength="2" data-segment="hours">
+                            <input type="text" class="timer-segment-input" value="${String(this.timerHours).padStart(2, '0')}" maxlength="2" data-segment="hours" data-test-id="timer-hours-input">
                             <span class="timer-segment-label">HH</span>
                         </div>
                         <span class="timer-separator">:</span>
                         <div class="timer-segment" data-segment="minutes">
-                            <input type="text" class="timer-segment-input" value="${String(this.timerMinutes).padStart(2, '0')}" maxlength="2" data-segment="minutes">
+                            <input type="text" class="timer-segment-input" value="${String(this.timerMinutes).padStart(2, '0')}" maxlength="2" data-segment="minutes" data-test-id="timer-minutes-input">
                             <span class="timer-segment-label">MM</span>
                         </div>
                         <span class="timer-separator">:</span>
                         <div class="timer-segment" data-segment="seconds">
-                            <input type="text" class="timer-segment-input" value="${String(this.timerSeconds).padStart(2, '0')}" maxlength="2" data-segment="seconds">
+                            <input type="text" class="timer-segment-input" value="${String(this.timerSeconds).padStart(2, '0')}" maxlength="2" data-segment="seconds" data-test-id="timer-seconds-input">
                             <span class="timer-segment-label">SS</span>
                         </div>
                     </div>
                     <div class="timer-edit-actions">
-                        <button class="timer-edit-btn-action timer-save-btn" id="save-timer">Done</button>
-                        <button class="timer-edit-btn-action timer-cancel-btn" id="cancel-timer">Cancel</button>
+                        <button class="timer-edit-btn-action timer-save-btn" id="save-timer" data-test-id="timer-save-btn">Done</button>
+                        <button class="timer-edit-btn-action timer-cancel-btn" id="cancel-timer" data-test-id="timer-cancel-btn">Cancel</button>
                     </div>
                 </div>
             </div>
