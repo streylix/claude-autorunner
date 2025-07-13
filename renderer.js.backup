@@ -5,22 +5,21 @@ const { SearchAddon } = require('@xterm/addon-search');
 const { WebLinksAddon } = require('@xterm/addon-web-links');
 const InjectionManager = require('./src/messaging/injection-manager');
 
-// Import new modular components
-const PlatformUtils = require('./src/utils/platform-utils');
-const DomUtils = require('./src/utils/dom-utils');
-const ValidationUtils = require('./src/utils/validation');
-const IPCHandler = require('./src/core/ipc-handler');
-
 class TerminalGUI {
     constructor() {
-        // Initialize utility classes
-        this.platformUtils = new PlatformUtils();
-        this.validationUtils = new ValidationUtils();
-        this.ipcHandler = new IPCHandler();
-        
-        // Platform detection for keyboard shortcuts (keep for backward compatibility)
-        this.isMac = this.platformUtils.isMac;
-        this.keySymbols = this.platformUtils.keySymbols;
+        // Platform detection for keyboard shortcuts
+        this.isMac = process.platform === 'darwin';
+        this.keySymbols = this.isMac ? {
+            cmd: '⌘',
+            shift: '⇧',
+            ctrl: '⌃',
+            alt: '⌥'
+        } : {
+            cmd: 'Ctrl',
+            shift: 'Shift',
+            ctrl: 'Ctrl',
+            alt: 'Alt'
+        };
         
         // Multi-terminal support
         this.terminals = new Map(); // Map of terminal ID to terminal data
@@ -30,7 +29,7 @@ class TerminalGUI {
         this.terminalSessionMap = new Map(); // Map of terminal ID to backend session UUID
         
         // Application session ID for statistics
-        this.sessionId = this.validationUtils.generateSessionId('app');
+        this.sessionId = `app-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
         // Legacy single terminal references (will be updated to use active terminal)
         this.terminal = null;
@@ -191,7 +190,14 @@ class TerminalGUI {
 
     // Utility method to safely add event listeners
     safeAddEventListener(elementId, event, handler) {
-        return DomUtils.safeAddEventListener(elementId, event, handler);
+        const element = document.getElementById(elementId);
+        if (element) {
+            element.addEventListener(event, handler);
+            return true;
+        } else {
+            console.warn(`Element with ID '${elementId}' not found - skipping event listener`);
+            return false;
+        }
     }
 
     setupConsoleErrorProtection() {
@@ -343,21 +349,66 @@ class TerminalGUI {
     }
 
     formatKeyboardShortcut(shortcut) {
-        return this.platformUtils.formatKeyboardShortcut(shortcut);
+        // Convert keyboard shortcuts to platform-specific format
+        // Example: "Ctrl+Shift+P" -> "⌘⇧P" on Mac or "Ctrl+Shift+P" on other platforms
+        if (this.isMac) {
+            return shortcut
+                .replace(/Cmd\+/g, this.keySymbols.cmd)
+                .replace(/Ctrl\+/g, this.keySymbols.cmd)
+                .replace(/Shift\+/g, this.keySymbols.shift)
+                .replace(/Alt\+/g, this.keySymbols.alt)
+                .replace(/Meta\+/g, this.keySymbols.cmd);
+        } else {
+            return shortcut
+                .replace(/Cmd\+/g, 'Ctrl+');
+        }
     }
 
     // Helper function to detect the correct modifier key for the platform
     isCommandKey(e) {
-        return this.platformUtils.isCommandKey(e);
+        return this.isMac ? e.metaKey : e.ctrlKey;
     }
 
     // Helper function to check if user is typing in an input field
     isTypingInInputField(e) {
-        return this.platformUtils.isTypingInInputField(e);
+        return e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
     }
 
     updatePlatformSpecificShortcuts() {
-        this.platformUtils.updatePlatformSpecificShortcuts();
+        // Update all elements with data-hotkey attributes
+        const hotkeyElements = document.querySelectorAll('[data-hotkey]');
+        
+        this.directLog(`Updating ${hotkeyElements.length} hotkey elements, isMac: ${this.isMac}`);
+        
+        hotkeyElements.forEach(element => {
+            const originalShortcut = element.getAttribute('data-hotkey');
+            const formattedShortcut = this.formatKeyboardShortcut(originalShortcut);
+            element.setAttribute('data-hotkey', formattedShortcut);
+            
+            this.directLog(`Updated hotkey: "${originalShortcut}" -> "${formattedShortcut}"`);
+            
+            // Also update title attributes if they contain keyboard shortcuts
+            const title = element.getAttribute('title');
+            if (title && (title.includes('Cmd+') || title.includes('Ctrl+') || title.includes('Shift+') || title.includes('Alt+'))) {
+                const formattedTitle = this.formatKeyboardShortcut(title);
+                element.setAttribute('title', formattedTitle);
+                this.directLog(`Updated title: "${title}" -> "${formattedTitle}"`);
+            }
+        });
+
+        // Update placeholder text that mentions keyboard shortcuts
+        const messageInput = document.getElementById('message-input');
+        if (messageInput && messageInput.placeholder) {
+            const placeholder = messageInput.placeholder;
+            if (placeholder.includes('Cmd+') || placeholder.includes('Ctrl+')) {
+                const formattedPlaceholder = this.formatKeyboardShortcut(placeholder);
+                messageInput.placeholder = formattedPlaceholder;
+                this.directLog(`Updated placeholder: "${placeholder}" -> "${formattedPlaceholder}"`);
+            }
+        }
+        
+        // Force a DOM update to ensure CSS sees the new attributes
+        document.body.offsetHeight; // Trigger reflow
     }
 
     initializeTerminal() {
@@ -1746,7 +1797,7 @@ class TerminalGUI {
     }
 
     generateMessageId() {
-        return this.validationUtils.generateId();
+        return this.messageIdCounter++;
     }
 
     validateMessageIds() {
@@ -3957,10 +4008,6 @@ class TerminalGUI {
                 this.currentlyInjectingMessageId = null;
                 this.updateMessageList();
                 this.updateStatusDisplay();
-                
-                // Notify injection manager with plan mode flag
-                const wasPlanMode = method === 'plan-mode';
-                this.injectionManager.onInjectionComplete(message.id, wasPlanMode);
                 
                 this.logAction(`Manual injection complete via ${method}: "${message.content.substring(0, 50)}..."`, 'success');
             };

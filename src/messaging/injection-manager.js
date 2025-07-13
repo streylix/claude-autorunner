@@ -447,12 +447,11 @@ class InjectionManager {
                 break;
                 
             case 'plan-mode-waiting':
-                // Waiting for plan mode delay - yellow/active, show countdown
+                // Waiting for plan mode delay - yellow/active, show waiting
                 display.classList.add('active'); // Keep timer yellow/amber
                 if (waitingStatus) {
                     waitingStatus.style.display = 'inline';
-                    const remainingSeconds = this.getRemainingPlanModeDelay();
-                    waitingStatus.textContent = `Plan mode delay: ${remainingSeconds}s`;
+                    waitingStatus.textContent = 'Waiting...';
                 }
                 if (injectionStatus) injectionStatus.style.display = 'none';
                 if (editBtn) editBtn.style.display = 'none';
