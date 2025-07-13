@@ -22,6 +22,10 @@ class InjectionManager {
         // Injection scheduling
         this.schedulingTimer = null;
         this.injectionCheckInterval = 100; // Check every 100ms for ready terminals
+        
+        // Plan mode delay tracking
+        this.lastPlanModeCompletionTime = null;
+        this.planModeDelay = 30000; // 30 seconds delay after plan mode
     }
     
     /**
@@ -93,6 +97,7 @@ class InjectionManager {
      */
     onTimerStopped() {
         this.timerExpired = false;
+        this.lastPlanModeCompletionTime = null; // Clear plan mode delay when timer is stopped
         this.cancelAllInjections();
         this.updateVisualState();
     }
@@ -139,6 +144,17 @@ class InjectionManager {
         // Don't schedule if timer not expired
         if (!this.timerExpired) {
             return;
+        }
+        
+        // Check for plan mode delay (30 seconds after last plan mode injection)
+        if (this.lastPlanModeCompletionTime) {
+            const timeSinceLastPlanMode = Date.now() - this.lastPlanModeCompletionTime;
+            if (timeSinceLastPlanMode < this.planModeDelay) {
+                const remainingDelay = this.planModeDelay - timeSinceLastPlanMode;
+                this.gui.logAction(`Waiting ${Math.ceil(remainingDelay / 1000)} more seconds before next injection (plan mode delay)`, 'info');
+                this.updateVisualState();
+                return;
+            }
         }
         
         this.injectionSchedulingInProgress = true;
@@ -286,12 +302,18 @@ class InjectionManager {
     /**
      * Called when an injection completes
      */
-    onInjectionComplete(messageId) {
+    onInjectionComplete(messageId, wasPlanMode = false) {
         const terminalId = this.activeInjections.get(messageId);
         
         if (terminalId) {
             this.activeInjections.delete(messageId);
             this.busyTerminals.delete(terminalId);
+        }
+        
+        // Track plan mode completion time for 30-second delay
+        if (wasPlanMode) {
+            this.lastPlanModeCompletionTime = Date.now();
+            this.gui.logAction('Plan mode injection completed - starting 30-second delay before next injection', 'info');
         }
         
         // Check for more injections
@@ -314,6 +336,25 @@ class InjectionManager {
     }
     
     /**
+     * Check if plan mode delay is currently active
+     */
+    isPlanModeDelayActive() {
+        if (!this.lastPlanModeCompletionTime) return false;
+        const timeSinceLastPlanMode = Date.now() - this.lastPlanModeCompletionTime;
+        return timeSinceLastPlanMode < this.planModeDelay;
+    }
+    
+    /**
+     * Get remaining plan mode delay in seconds
+     */
+    getRemainingPlanModeDelay() {
+        if (!this.isPlanModeDelayActive()) return 0;
+        const timeSinceLastPlanMode = Date.now() - this.lastPlanModeCompletionTime;
+        const remainingMs = this.planModeDelay - timeSinceLastPlanMode;
+        return Math.ceil(remainingMs / 1000);
+    }
+    
+    /**
      * Update visual state of timer based on current injection state
      */
     updateVisualState() {
@@ -328,6 +369,9 @@ class InjectionManager {
         } else if (this.usageLimitWaiting) {
             // Waiting for usage limit reset
             newState = 'usage-limit-waiting';
+        } else if (this.isPlanModeDelayActive()) {
+            // Waiting for plan mode delay to complete
+            newState = 'plan-mode-waiting';
         } else if (this.activeInjections.size > 0) {
             // Actively injecting
             newState = 'injecting';
@@ -402,6 +446,18 @@ class InjectionManager {
                 if (editBtn) editBtn.style.display = 'none';
                 break;
                 
+            case 'plan-mode-waiting':
+                // Waiting for plan mode delay - yellow/active, show countdown
+                display.classList.add('active'); // Keep timer yellow/amber
+                if (waitingStatus) {
+                    waitingStatus.style.display = 'inline';
+                    const remainingSeconds = this.getRemainingPlanModeDelay();
+                    waitingStatus.textContent = `Plan mode delay: ${remainingSeconds}s`;
+                }
+                if (injectionStatus) injectionStatus.style.display = 'none';
+                if (editBtn) editBtn.style.display = 'none';
+                break;
+                
             case 'paused':
                 // Injection paused - grey, show "Paused"
                 // No special class (grey)
@@ -438,6 +494,8 @@ class InjectionManager {
             busyTerminals: this.busyTerminals.size,
             availableTerminals: this.getAvailableTerminals().length,
             usageLimitWaiting: this.usageLimitWaiting,
+            planModeDelayActive: this.isPlanModeDelayActive(),
+            remainingPlanModeDelay: this.getRemainingPlanModeDelay(),
             visualState: this.lastVisualState
         };
     }

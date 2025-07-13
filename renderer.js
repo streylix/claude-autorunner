@@ -480,7 +480,7 @@ class TerminalGUI {
                     </button>
                     <span class="terminal-color-dot" style="background-color: ${color};"></span>
                     <span class="terminal-title editable" contenteditable="false">${termData.name || `Terminal ${id}`}</span>
-                    <button class="icon-btn add-terminal-btn" title="Add new terminal" style="display: none;">
+                    <button class="icon-btn add-terminal-btn" title="Add new terminal" style="display: none;" data-test-id="add-terminal-btn">
                         <i data-lucide="plus"></i>
                     </button>
                 </div>
@@ -1150,17 +1150,26 @@ class TerminalGUI {
             // Handle close terminal button
             const closeBtn = e.target.closest('.close-terminal-btn');
             if (closeBtn) {
+                console.log('Close button clicked, element:', closeBtn);
+                console.log('Close button dataset:', closeBtn.dataset);
                 const terminalId = parseInt(closeBtn.dataset.terminalId);
+                console.log('Parsed terminal ID:', terminalId, 'Terminals size:', this.terminals.size);
                 if (terminalId && this.terminals.size > 1) {
+                    this.logAction(`Closing terminal ${terminalId}`, 'info');
                     this.closeTerminal(terminalId);
+                } else {
+                    console.log('Cannot close terminal:', terminalId ? 'Only one terminal left' : 'Invalid terminal ID');
                 }
                 return;
             }
             
             // Handle add terminal button
-            if (e.target.closest('.add-terminal-btn')) {
+            const addBtn = e.target.closest('.add-terminal-btn');
+            if (addBtn) {
+                console.log('Add terminal button clicked');
                 e.stopPropagation();
-                this.showAddTerminalDropdown(e.target.closest('.add-terminal-btn'));
+                this.logAction('Creating new terminal...', 'info');
+                this.addNewTerminal();
                 return;
             }
             
@@ -3434,13 +3443,16 @@ class TerminalGUI {
                     setTimeout(() => {
                         // Step 3: Inject ^C (additional)
                         this.typeMessage('^C', () => {
-                            setTimeout(() => {
-                                // Step 4: Inject the wrapped message
-                                // Escape the message content to prevent shell injection issues
-                                const escapedContent = message.content.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ').replace(/\r/g, '');
-                                const wrappedMessage = this.planModeCommand.replace('{message}', escapedContent);
-                                this.typeMessage(wrappedMessage, callback);
-                            }, this.getRandomDelay(100, 200));
+                            // Step 4: Inject ANOTHER ^C
+                            this.typeMessage('^C', () => {
+                                setTimeout(() => {
+                                    // Step 5: Inject the wrapped message
+                                    // Escape the message content to prevent shell injection issues
+                                    const escapedContent = message.content.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ').replace(/\r/g, '');
+                                    const wrappedMessage = this.planModeCommand.replace('{message}', escapedContent);
+                                    this.typeMessage(wrappedMessage, callback);
+                                }, this.getRandomDelay(100, 500));
+                            });
                         });
                     }, this.getRandomDelay(100, 200));
                 });
@@ -4281,8 +4293,8 @@ class TerminalGUI {
                     this.deleteMessage(message.id); // Move message deletion to after injection cleanup
                     this.setTerminalStatusDisplay('', terminalId);
                     
-                    // Notify injection manager that injection is complete
-                    this.injectionManager.onInjectionComplete(message.id);
+                    // Notify injection manager that injection is complete with plan mode flag
+                    this.injectionManager.onInjectionComplete(message.id, true); // true = was plan mode
                     
                     // Clear injection in progress if no more messages being processed
                     if (this.currentlyInjectingMessages.size === 0) {
@@ -4307,7 +4319,7 @@ class TerminalGUI {
                     this.setTerminalStatusDisplay('', terminalId);
                     
                     // Notify injection manager that injection is complete
-                    this.injectionManager.onInjectionComplete(message.id);
+                    this.injectionManager.onInjectionComplete(message.id, false); // false = not plan mode
                     
                     // Clear injection in progress if no more messages being processed
                     if (this.currentlyInjectingMessages.size === 0) {
@@ -8013,12 +8025,12 @@ class TerminalGUI {
         terminalWrapper.innerHTML = `
             <div class="terminal-header">
                 <div class="terminal-title-wrapper">
-                    <button class="icon-btn close-terminal-btn" title="Close terminal" data-terminal-id="${newId}">
+                    <button class="icon-btn close-terminal-btn" title="Close terminal" data-terminal-id="${newId}" data-test-id="close-terminal-btn">
                         <i data-lucide="x"></i>
                     </button>
                     <span class="terminal-color-dot" style="background-color: ${color};"></span>
                     <span class="terminal-title editable" contenteditable="false">Terminal ${newId}</span>
-                    <button class="icon-btn add-terminal-btn" title="Add new terminal" style="display: none;">
+                    <button class="icon-btn add-terminal-btn" title="Add new terminal" style="display: none;" data-test-id="add-terminal-btn">
                         <i data-lucide="plus"></i>
                     </button>
                 </div>
@@ -8181,6 +8193,14 @@ class TerminalGUI {
         // Notify main process to close terminal process
         ipcRenderer.send('terminal-close', { terminalId });
         
+        // If this was the active terminal, switch to another one BEFORE removing it
+        if (terminalId === this.activeTerminalId) {
+            const availableIds = Array.from(this.terminals.keys()).filter(id => id !== terminalId);
+            if (availableIds.length > 0) {
+                this.switchToTerminal(availableIds[0]);
+            }
+        }
+        
         // Dispose of terminal
         terminalData.terminal.dispose();
         
@@ -8191,26 +8211,42 @@ class TerminalGUI {
         this.terminalSessionMap.delete(terminalId);
         await this.saveTerminalSessionMapping();
         
-        // Remove DOM element
+        // Remove DOM element AFTER switching terminals
         const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
         if (terminalWrapper) {
+            console.log('Removing terminal wrapper for ID:', terminalId);
             terminalWrapper.remove();
+        } else {
+            console.warn('Terminal wrapper not found for ID:', terminalId);
         }
         
-        // If this was the active terminal, switch to another one
-        if (terminalId === this.activeTerminalId) {
-            const availableIds = Array.from(this.terminals.keys());
-            if (availableIds.length > 0) {
-                this.switchToTerminal(availableIds[0]);
-            }
+        // Update container count after removing DOM element
+        const terminalsContainer = document.getElementById('terminals-container');
+        terminalsContainer.setAttribute('data-terminal-count', this.terminals.size);
+        console.log('Updated terminal count to:', this.terminals.size);
+        
+        // If the closed terminal was selected in manual generation, reset to 'all'
+        if (this.todoSystem && this.todoSystem.manualGeneration && 
+            this.todoSystem.manualGeneration.selectedTerminalId === terminalId) {
+            this.todoSystem.manualGeneration.selectedTerminalId = 'all';
+        }
+        
+        // Clear terminal state data from sidebar controller
+        if (this.sidebarController) {
+            this.sidebarController.clearTerminalStateData(terminalId);
         }
         
         // Update button visibility
         this.updateTerminalButtonVisibility();
         
-        // Update container count
-        const terminalsContainer = document.getElementById('terminals-container');
-        terminalsContainer.setAttribute('data-terminal-count', this.terminals.size);
+        // Update dropdown contents to remove references to closed terminal
+        this.updateTerminalDropdowns();
+        this.updateManualTerminalDropdown();
+        
+        // Update the manual generation UI to reflect any changes
+        if (this.todoSystem && this.todoSystem.manualGeneration) {
+            this.updateManualGenerationUI();
+        }
         
         // Resize remaining terminals to fit new layout
         setTimeout(() => {
