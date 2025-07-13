@@ -17,7 +17,8 @@ class TimerManager {
             isRunning: false,
             isPaused: false,
             intervalId: null,
-            originalValues: { hours: 0, minutes: 0, seconds: 0 }
+            originalValues: { hours: 0, minutes: 0, seconds: 0 },
+            hasNaturallyCompleted: false
         };
         
         this.usageLimitSync = {
@@ -174,6 +175,7 @@ class TimerManager {
 
         this.timer.isRunning = true;
         this.timer.isPaused = false;
+        this.timer.hasNaturallyCompleted = false; // Reset completion flag when starting timer
         
         this.timer.intervalId = setInterval(() => {
             this.decrementTimer();
@@ -210,6 +212,7 @@ class TimerManager {
     stopTimer() {
         this.timer.isRunning = false;
         this.timer.isPaused = false;
+        this.timer.hasNaturallyCompleted = false; // Reset completion flag when manually stopping
         
         if (this.timer.intervalId) {
             clearInterval(this.timer.intervalId);
@@ -265,11 +268,15 @@ class TimerManager {
     onTimerComplete() {
         this.timer.isRunning = false;
         this.timer.isPaused = false;
+        this.timer.hasNaturallyCompleted = true;
         
         if (this.timer.intervalId) {
             clearInterval(this.timer.intervalId);
             this.timer.intervalId = null;
         }
+
+        // Immediately stop usage limit sync to prevent timer from restarting
+        this.stopUsageLimitSync();
 
         this.updateTimerUI();
         this.logAction('Timer completed!', 'success');
@@ -311,6 +318,7 @@ class TimerManager {
         this.timer.hours = hours;
         this.timer.minutes = minutes;
         this.timer.seconds = seconds;
+        this.timer.hasNaturallyCompleted = false; // Reset completion flag when setting new timer
         
         // Update original values
         this.timer.originalValues = { hours, minutes, seconds };
@@ -494,6 +502,12 @@ class TimerManager {
      */
     syncTimerWithUsageLimit() {
         if (!this.usageLimitSync.resetTime) return;
+
+        // Don't sync if timer has naturally completed - let it stay at zero
+        if (this.timer.hasNaturallyCompleted) {
+            this.logAction('Timer has naturally completed - skipping usage limit sync', 'info');
+            return;
+        }
 
         try {
             const now = new Date();

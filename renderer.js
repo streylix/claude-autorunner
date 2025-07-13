@@ -60,6 +60,8 @@ class TerminalGUI {
         this.messageIdCounter = 1;
         this.messageSequenceCounter = 0;
         this.autoContinueEnabled = false;
+        this.planModeEnabled = false;
+        this.planModeCommand = 'npx claude-flow@alpha sparc mode --type "dev" --task-description "{message}" --claude';
         this.lastTerminalOutput = '';
         this.autoscrollEnabled = true;
         this.autoscrollDelay = 3000;
@@ -921,7 +923,7 @@ class TerminalGUI {
                 const allowedInputHotkeys = [
                     // Navigation hotkeys
                     { key: 'k', cmd: true, shift: false }, // Cmd+K - Terminal selector
-                    { key: 'Tab', cmd: false, shift: true }, // Shift+Tab - Cycle to next terminal
+                    { key: 'Tab', cmd: false, shift: true }, // Shift+Tab - Toggle auto-continue
                     { key: 'p', cmd: true, shift: false }, // Cmd+P - Play/pause timer
                     { key: 'i', cmd: true, shift: false }, // Cmd+I - Manual injection
                     { key: 's', cmd: true, shift: true }, // Cmd+Shift+S - Stop timer
@@ -994,6 +996,11 @@ class TerminalGUI {
                 e.preventDefault();
                 this.clearActionLog();
                 this.logAction('Action log cleared via keyboard shortcut (Cmd+Shift+L)', 'info');
+            } else if (this.isCommandKey(e) && e.shiftKey && (e.key === 'U' || e.key === 'u')) {
+                // Toggle plan mode
+                e.preventDefault();
+                this.togglePlanMode();
+                this.logAction('Plan mode toggled via keyboard shortcut (Cmd+Shift+U)', 'info');
             } else if (this.isCommandKey(e) && e.key === 't') {
                 // Add new terminal
                 e.preventDefault();
@@ -1009,27 +1016,15 @@ class TerminalGUI {
                     this.logAction('Cannot close last terminal - at least one terminal must remain open', 'warning');
                 }
             } else if (e.shiftKey && e.key === 'Tab' && !this.isCommandKey(e)) {
-                // Cycle to next terminal
-                this.directLog('SHIFT+TAB DETECTED! Calling cycleToNextTerminal()');
+                // Toggle auto-continue
                 e.preventDefault();
-                this.cycleToNextTerminal();
-                this.logAction('Cycled to next terminal via keyboard shortcut (Shift+Tab)', 'info');
-            } else if (e.shiftKey && e.key === 'Tab' && this.isCommandKey(e)) {
-                // Cycle to previous terminal  
-                this.directLog('SHIFT+CMD+TAB DETECTED! Calling cycleToPreviousTerminal()');
-                e.preventDefault();
-                this.cycleToPreviousTerminal();
-                this.logAction('Cycled to previous terminal via keyboard shortcut (Cmd+Shift+Tab)', 'info');
+                this.toggleAutoContinue();
+                this.logAction('Auto-continue toggled via keyboard shortcut (Shift+Tab)', 'info');
             } else if (this.isCommandKey(e) && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
                 // Toggle voice transcription
                 e.preventDefault();
                 document.getElementById('voice-btn').click();
                 this.logAction('Voice transcription toggled via keyboard shortcut (Cmd+Shift+V)', 'info');
-            } else if (this.isCommandKey(e) && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
-                // Toggle auto-continue
-                e.preventDefault();
-                this.toggleAutoContinue();
-                this.logAction('Auto-continue toggled via keyboard shortcut (Cmd+Shift+A)', 'info');
             } else if (this.isCommandKey(e) && e.key === '/') {
                 // Focus message input
                 e.preventDefault();
@@ -1184,6 +1179,9 @@ class TerminalGUI {
         });
 
         document.getElementById('inject-now-btn').addEventListener('click', (e) => {
+            console.log('=== INJECT BUTTON CLICKED ===');
+            console.log('Message queue length:', this.messageQueue.length);
+            console.log('Message queue:', this.messageQueue);
             e.preventDefault();
             e.stopPropagation();
             
@@ -1211,10 +1209,24 @@ class TerminalGUI {
             this.preferences.autoContinueEnabled = this.autoContinueEnabled;
             this.saveAllPreferences();
             this.updateAutoContinueButtonState();
+            this.updatePlanModeButtonState();
             if (this.autoContinueEnabled) {
                 this.logAction('Auto-continue enabled - will respond to prompts', 'info');
             } else {
                 this.logAction('Auto-continue disabled', 'info');
+            }
+        });
+
+        // Plan mode button listener
+        this.safeAddEventListener('plan-mode-btn', 'click', (e) => {
+            this.planModeEnabled = !this.planModeEnabled;
+            this.preferences.planModeEnabled = this.planModeEnabled;
+            this.saveAllPreferences();
+            this.updatePlanModeButtonState();
+            if (this.planModeEnabled) {
+                this.logAction('Plan mode enabled - messages will be wrapped with claude-flow command', 'info');
+            } else {
+                this.logAction('Plan mode disabled', 'info');
             }
         });
 
@@ -1446,6 +1458,14 @@ class TerminalGUI {
             this.preferences.automaticTodoGeneration = e.target.checked;
             this.saveAllPreferences();
             this.logAction(`Automatic todo generation ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+        });
+
+        // Plan mode command setting
+        document.getElementById('plan-mode-command').addEventListener('change', (e) => {
+            this.planModeCommand = e.target.value;
+            this.preferences.planModeCommand = e.target.value;
+            this.saveAllPreferences();
+            this.logAction('Plan mode command updated', 'info');
         });
 
         // System theme change listener
@@ -1814,8 +1834,10 @@ class TerminalGUI {
                 terminalId: this.activeTerminalId, // Use currently selected terminal
                 sequence: ++this.messageSequenceCounter, // Add sequence counter for proper ordering
                 imagePreviews: this.imagePreviews ? [...this.imagePreviews] : [], // Copy current image previews
-                attachedFiles: this.attachedFiles ? [...this.attachedFiles] : [] // Copy attached files
+                attachedFiles: this.attachedFiles ? [...this.attachedFiles] : [], // Copy attached files
+                wrapWithPlan: this.planModeEnabled // Default to current plan mode state
             };
+            
             
             this.messageQueue.push(message);
             this.updateTrayBadge();
@@ -1972,6 +1994,17 @@ class TerminalGUI {
         }
     }
 
+    updatePlanModeButtonState() {
+        const planModeBtn = document.getElementById('plan-mode-btn');
+        if (planModeBtn) {
+            if (this.planModeEnabled) {
+                planModeBtn.classList.add('enabled');
+            } else {
+                planModeBtn.classList.remove('enabled');
+            }
+        }
+    }
+
     toggleAutoContinue() {
         this.autoContinueEnabled = !this.autoContinueEnabled;
         this.preferences.autoContinueEnabled = this.autoContinueEnabled;
@@ -2010,18 +2043,6 @@ class TerminalGUI {
             } else {
                 autoContinueBtn.classList.remove('enabled');
             }
-        }
-    }
-
-    toggleAutoContinue() {
-        this.autoContinueEnabled = !this.autoContinueEnabled;
-        this.preferences.autoContinueEnabled = this.autoContinueEnabled;
-        this.saveAllPreferences();
-        this.updateAutoContinueButtonState();
-        if (this.autoContinueEnabled) {
-            this.logAction('Auto-continue enabled', 'success');
-        } else {
-            this.logAction('Auto-continue disabled', 'info');
         }
     }
 
@@ -2173,6 +2194,7 @@ class TerminalGUI {
                 e.stopPropagation();
                 this.deleteMessage(message.id);
             });
+            
             
             const optionsBtn = document.createElement('button');
             optionsBtn.className = 'message-options-btn';
@@ -3294,6 +3316,7 @@ class TerminalGUI {
     }
 
     injectMessageAndContinueQueue() {
+        console.log('=== injectMessageAndContinueQueue called ===');
         this.validateInjectionState('injectMessageAndContinueQueue');
         if (this.messageQueue.length === 0) {
             this.scheduleNextInjection();
@@ -3314,43 +3337,122 @@ class TerminalGUI {
         this.logAction(`Sequential injection: "${message.content}"`, 'success');
         this.showSystemNotification('Message Injected', `Injecting: ${message.content.substring(0, 50)}${message.content.length > 50 ? '...' : ''}`);
         
-        // Type the message
-        this.typeMessage(message.processedContent, () => {
-            this.injectionCount++;
-            this.saveToMessageHistory(message, this.activeTerminalId, this.injectionCount); // Save to history after successful injection
-            this.updateStatusDisplay();
-            this.updateMessageList();
-            
-            // Send Enter key with random delay for human-like behavior
-            const enterDelay = this.getRandomDelay(150, 300);
-            setTimeout(() => {
-                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
+        // Handle plan mode wrapping and Ctrl+C injection
+        console.log('Sequential injection - message:', message);
+        // Handle backward compatibility - if wrapWithPlan is undefined, use global plan mode
+        const shouldWrapWithPlan = message.wrapWithPlan !== undefined ? message.wrapWithPlan : this.planModeEnabled;
+        if (shouldWrapWithPlan) {
+            this.injectMessageWithPlanMode(message, () => {
+                this.injectionCount++;
+                this.saveToMessageHistory(message, this.activeTerminalId, this.injectionCount);
+                this.updateStatusDisplay();
+                this.updateMessageList();
                 
-                // Add post-injection delay to ensure command has time to start executing
-                // This prevents the next message from being injected too quickly
-                const postInjectionDelay = this.getRandomDelay(500, 800);
+                // Send Enter key with random delay for human-like behavior
+                const enterDelay = this.getRandomDelay(150, 300);
                 setTimeout(() => {
-                    this.isInjecting = false;
-                    // Don't reset injectionInProgress here - keep it true for the entire sequence
-                    this.currentlyInjectingMessageId = null; // Clear injecting message tracking
-                    this.updateTerminalStatusIndicator(); // Use new status system
-                    this.updateMessageList(); // Update UI to clear injecting state
+                    ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
                     
-                    // Continue with next message after a short delay (only for timer-based injection)
-                    // Move this inside the post-injection delay to ensure proper sequencing
-                    if (this.timerExpired) {
-                        const nextMessageDelay = this.getRandomDelay(800, 1200);
-                        setTimeout(() => {
-                            this.scheduleNextInjection();
-                        }, nextMessageDelay);
-                    } else {
-                        // Manual injection complete - reset all states
-                        this.injectionInProgress = false;
-                        this.logAction('Manual injection complete - stopped after one message', 'info');
-                    }
-                }, postInjectionDelay);
+                    // Add post-injection delay to ensure command has time to start executing
+                    const postInjectionDelay = this.getRandomDelay(500, 800);
+                    setTimeout(() => {
+                        this.isInjecting = false;
+                        this.currentlyInjectingMessageId = null;
+                        this.scheduleNextInjection();
+                    }, postInjectionDelay);
+                }, enterDelay);
+            });
+        } else {
+            // Type the message normally
+            this.typeMessage(message.processedContent, () => {
+                this.injectionCount++;
+                this.saveToMessageHistory(message, this.activeTerminalId, this.injectionCount); // Save to history after successful injection
+                this.updateStatusDisplay();
+                this.updateMessageList();
                 
-            }, enterDelay);
+                // Send Enter key with random delay for human-like behavior
+                const enterDelay = this.getRandomDelay(150, 300);
+                setTimeout(() => {
+                    ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
+                    
+                    // Add post-injection delay to ensure command has time to start executing
+                    // This prevents the next message from being injected too quickly
+                    const postInjectionDelay = this.getRandomDelay(500, 800);
+                    setTimeout(() => {
+                        this.isInjecting = false;
+                        // Don't reset injectionInProgress here - keep it true for the entire sequence
+                        this.currentlyInjectingMessageId = null; // Clear injecting message tracking
+                        this.updateTerminalStatusIndicator(); // Use new status system
+                        this.updateMessageList(); // Update UI to clear injecting state
+                        
+                        // Continue with next message after a short delay (only for timer-based injection)
+                        // Move this inside the post-injection delay to ensure proper sequencing
+                        if (this.timerExpired) {
+                            const nextMessageDelay = this.getRandomDelay(800, 1200);
+                            setTimeout(() => {
+                                this.scheduleNextInjection();
+                            }, nextMessageDelay);
+                        } else {
+                            // Manual injection complete - reset all states
+                            this.injectionInProgress = false;
+                            this.logAction('Manual injection complete - stopped after one message', 'info');
+                        }
+                    }, postInjectionDelay);
+                    
+                }, enterDelay);
+            });
+        }
+    }
+
+    injectMessageWithPlanMode(message, callback) {
+        // Step 1: Inject ^C^C
+        this.typeMessage('^C^C', () => {
+            setTimeout(() => {
+                // Step 2: Inject ^C
+                this.typeMessage('^C', () => {
+                    setTimeout(() => {
+                        // Step 3: Inject ^C (additional)
+                        this.typeMessage('^C', () => {
+                            setTimeout(() => {
+                                // Step 4: Inject the wrapped message
+                                // Escape the message content to prevent shell injection issues
+                                const escapedContent = message.content.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ').replace(/\r/g, '');
+                                const wrappedMessage = this.planModeCommand.replace('{message}', escapedContent);
+                                this.typeMessage(wrappedMessage, callback);
+                            }, this.getRandomDelay(100, 200));
+                        });
+                    }, this.getRandomDelay(100, 200));
+                });
+            }, this.getRandomDelay(100, 200));
+        });
+    }
+
+    injectMessageWithPlanModeToTerminal(message, terminalId, callback) {
+        // Step 1: Inject ^C^C to specific terminal
+        this.typeMessageToTerminal('^C^C', terminalId, () => {
+            setTimeout(() => {
+                // Step 2: Inject ^C
+                this.typeMessageToTerminal('^C', terminalId, () => {
+                    setTimeout(() => {
+                        // Step 3: Inject ^C (additional)
+                        this.typeMessageToTerminal('^C', terminalId, () => {
+                            setTimeout(() => {
+                                // Step 4: Inject the wrapped message
+                                // Escape the message content to prevent shell injection issues
+                                const escapedContent = message.content.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ').replace(/\r/g, '');
+                                const wrappedMessage = this.planModeCommand.replace('{message}', escapedContent);
+                                this.typeMessageToTerminal(wrappedMessage, terminalId, () => {
+                                    setTimeout(() => {
+                                        // Step 5: Press Enter to execute the command
+                                        ipcRenderer.send('terminal-input', { terminalId: terminalId, data: '\r' });
+                                        if (callback) callback();
+                                    }, this.getRandomDelay(100, 200));
+                                });
+                            }, this.getRandomDelay(100, 200));
+                        });
+                    }, this.getRandomDelay(100, 200));
+                });
+            }, this.getRandomDelay(100, 200));
         });
     }
 
@@ -3757,7 +3859,7 @@ class TerminalGUI {
                 if (terminalStatus && terminalStatus.isRunning) {
                     this.setTerminalStatusDisplay('running', terminalId);
                 } else if (terminalStatus && terminalStatus.isPrompting) {
-                    this.setTerminalStatusDisplay('prompted', terminalId);
+                    this.setTerminalStatusDisplay('', terminalId);
                 } else {
                     this.setTerminalStatusDisplay('', terminalId);
                 }
@@ -3822,6 +3924,7 @@ class TerminalGUI {
     }
 
     manualInjectNextMessage() {
+        console.log('=== manualInjectNextMessage called ===');
         if (this.messageQueue.length === 0) {
             this.logAction('No messages in queue to inject', 'warning');
             return;
@@ -3883,21 +3986,32 @@ class TerminalGUI {
             }, 30000); // 30 second timeout
             
             try {
-                // Use the existing typeMessage method which handles control sequences properly
-                this.typeMessage(message.content, () => {
-                    clearTimeout(injectionTimeout);
-                    
-                    // Send Enter after typing (unless it's a control sequence that doesn't need it)
-                    const hasControlSequence = /(\^[A-Z]|\\x1b|\\r|\\t)/g.test(message.content);
-                    
-                    if (!hasControlSequence) {
-                        setTimeout(() => {
-                            ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
-                        }, 100);
-                    }
-                    
-                    completeInjection('typeMessage');
-                });
+                // Handle plan mode wrapping for manual injection
+                console.log('Manual injection - message:', message);
+                // Handle backward compatibility - if wrapWithPlan is undefined, use global plan mode
+                const shouldWrapWithPlan = message.wrapWithPlan !== undefined ? message.wrapWithPlan : this.planModeEnabled;
+                if (shouldWrapWithPlan) {
+                    this.injectMessageWithPlanMode(message, () => {
+                        clearTimeout(injectionTimeout);
+                        completeInjection('plan-mode');
+                    });
+                } else {
+                    // Use the existing typeMessage method which handles control sequences properly
+                    this.typeMessage(message.content, () => {
+                        clearTimeout(injectionTimeout);
+                        
+                        // Send Enter after typing (unless it's a control sequence that doesn't need it)
+                        const hasControlSequence = /(\^[A-Z]|\\x1b|\\r|\\t)/g.test(message.content);
+                        
+                        if (!hasControlSequence) {
+                            setTimeout(() => {
+                                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
+                            }, 100);
+                        }
+                        
+                        completeInjection('typeMessage');
+                    });
+                }
             } catch (error) {
                 clearTimeout(injectionTimeout);
                 
@@ -3932,6 +4046,7 @@ class TerminalGUI {
     }
     
     processMessageBatch(messages) {
+        console.log('=== processMessageBatch called ===', messages);
         if (messages.length === 0 || this.isInjecting) return;
         
         this.isInjecting = true;
@@ -3945,25 +4060,50 @@ class TerminalGUI {
                 const message = messages[index];
                 this.logAction(`Processing batch message: "${message.content}"`, 'info');
                 
-                this.typeMessage(message.processedContent, () => {
-                    this.injectionCount++;
-                    this.saveToMessageHistory(message, this.activeTerminalId, this.injectionCount); // Save to history after successful injection
-                    this.updateStatusDisplay();
-                    
-                    setTimeout(() => {
-                        ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
-                        index++;
+                // Handle plan mode wrapping for batch injection
+                console.log('Batch injection - message:', message);
+                // Handle backward compatibility - if wrapWithPlan is undefined, use global plan mode
+                const shouldWrapWithPlan = message.wrapWithPlan !== undefined ? message.wrapWithPlan : this.planModeEnabled;
+                if (shouldWrapWithPlan) {
+                    this.injectMessageWithPlanMode(message, () => {
+                        this.injectionCount++;
+                        this.saveToMessageHistory(message, this.activeTerminalId, this.injectionCount);
+                        this.updateStatusDisplay();
                         
-                        if (index < messages.length) {
-                            setTimeout(processNext, 1000);
-                        } else {
-                            this.isInjecting = false;
-                            this.setTerminalStatusDisplay('', firstMessageTerminalId);
-                            this.logAction('Batch injection completed successfully', 'success');
-                            this.scheduleNextInjection(); // Schedule any remaining messages
-                        }
-                    }, 200);
-                });
+                        setTimeout(() => {
+                            index++;
+                            
+                            if (index < messages.length) {
+                                setTimeout(processNext, 1000);
+                            } else {
+                                this.isInjecting = false;
+                                this.setTerminalStatusDisplay('', firstMessageTerminalId);
+                                this.logAction('Batch injection completed successfully', 'success');
+                                this.scheduleNextInjection(); // Schedule any remaining messages
+                            }
+                        }, 200);
+                    });
+                } else {
+                    this.typeMessage(message.processedContent, () => {
+                        this.injectionCount++;
+                        this.saveToMessageHistory(message, this.activeTerminalId, this.injectionCount); // Save to history after successful injection
+                        this.updateStatusDisplay();
+                        
+                        setTimeout(() => {
+                            ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
+                            index++;
+                            
+                            if (index < messages.length) {
+                                setTimeout(processNext, 1000);
+                            } else {
+                                this.isInjecting = false;
+                                this.setTerminalStatusDisplay('', firstMessageTerminalId);
+                                this.logAction('Batch injection completed successfully', 'success');
+                                this.scheduleNextInjection(); // Schedule any remaining messages
+                            }
+                        }, 200);
+                    });
+                }
             }
         };
         
@@ -4103,30 +4243,61 @@ class TerminalGUI {
             }
         }
         
-        this.typeMessageToTerminal(message.processedContent, terminalId, () => {
-            this.injectionCount++;
-            this.saveToMessageHistory(message, terminalId, this.injectionCount);
-            this.updateStatusDisplay();
-            
-            setTimeout(() => {
-                ipcRenderer.send('terminal-input', { terminalId, data: '\r' });
-                this.currentlyInjectingMessages.delete(message.id);
-                this.currentlyInjectingTerminals.delete(terminalId); // Remove from busy terminals
-                this.deleteMessage(message.id); // Move message deletion to after injection cleanup
-                this.setTerminalStatusDisplay('', terminalId);
+        // Handle plan mode wrapping for timer injection
+        // Handle backward compatibility - if wrapWithPlan is undefined, use global plan mode
+        const shouldWrapWithPlan = message.wrapWithPlan !== undefined ? message.wrapWithPlan : this.planModeEnabled;
+        
+        if (shouldWrapWithPlan) {
+            // Use plan mode injection with terminal-specific handling
+            this.injectMessageWithPlanModeToTerminal(message, terminalId, () => {
+                this.injectionCount++;
+                this.saveToMessageHistory(message, terminalId, this.injectionCount);
+                this.updateStatusDisplay();
                 
-                // Notify injection manager that injection is complete
-                this.injectionManager.onInjectionComplete(message.id);
+                setTimeout(() => {
+                    this.currentlyInjectingMessages.delete(message.id);
+                    this.currentlyInjectingTerminals.delete(terminalId); // Remove from busy terminals
+                    this.deleteMessage(message.id); // Move message deletion to after injection cleanup
+                    this.setTerminalStatusDisplay('', terminalId);
+                    
+                    // Notify injection manager that injection is complete
+                    this.injectionManager.onInjectionComplete(message.id);
+                    
+                    // Clear injection in progress if no more messages being processed
+                    if (this.currentlyInjectingMessages.size === 0) {
+                        this.injectionInProgress = false;
+                    }
+                    
+                    // Schedule next injection
+                    this.scheduleNextInjection();
+                }, 200);
+            });
+        } else {
+            this.typeMessageToTerminal(message.processedContent, terminalId, () => {
+                this.injectionCount++;
+                this.saveToMessageHistory(message, terminalId, this.injectionCount);
+                this.updateStatusDisplay();
                 
-                // Clear injection in progress if no more messages being processed
-                if (this.currentlyInjectingMessages.size === 0) {
-                    this.injectionInProgress = false;
-                }
-                
-                // Schedule next injection
-                this.scheduleNextInjection();
-            }, 200);
-        });
+                setTimeout(() => {
+                    ipcRenderer.send('terminal-input', { terminalId, data: '\r' });
+                    this.currentlyInjectingMessages.delete(message.id);
+                    this.currentlyInjectingTerminals.delete(terminalId); // Remove from busy terminals
+                    this.deleteMessage(message.id); // Move message deletion to after injection cleanup
+                    this.setTerminalStatusDisplay('', terminalId);
+                    
+                    // Notify injection manager that injection is complete
+                    this.injectionManager.onInjectionComplete(message.id);
+                    
+                    // Clear injection in progress if no more messages being processed
+                    if (this.currentlyInjectingMessages.size === 0) {
+                        this.injectionInProgress = false;
+                    }
+                    
+                    // Schedule next injection
+                    this.scheduleNextInjection();
+                }, 200);
+            });
+        }
     }
 
     typeMessageToTerminal(message, terminalId, callback) {
@@ -5957,6 +6128,8 @@ class TerminalGUI {
             this.autoscrollEnabled = this.preferences.autoscrollEnabled !== undefined ? this.preferences.autoscrollEnabled : true;
             this.autoscrollDelay = this.preferences.autoscrollDelay || 3000;
             this.autoContinueEnabled = this.preferences.autoContinueEnabled || false;
+            this.planModeEnabled = this.preferences.planModeEnabled || false;
+            this.planModeCommand = this.preferences.planModeCommand || 'npx claude-flow@alpha sparc mode --type "dev" --task-description "{message}" --claude';
             
             // Load saved timer values, but check if target datetime has passed
             if (this.preferences.timerTargetDateTime) {
@@ -6052,6 +6225,7 @@ class TerminalGUI {
             if (autoscrollDelayEl) autoscrollDelayEl.value = this.autoscrollDelay;
             
             this.updateAutoContinueButtonState();
+            this.updatePlanModeButtonState();
             
             const themeSelectEl = document.getElementById('theme-select');
             if (themeSelectEl) themeSelectEl.value = this.preferences.theme || 'dark';
@@ -6080,7 +6254,12 @@ class TerminalGUI {
             const automaticTodoGenerationEl = document.getElementById('automatic-todo-generation');
             if (automaticTodoGenerationEl) automaticTodoGenerationEl.checked = this.preferences.automaticTodoGeneration !== undefined ? this.preferences.automaticTodoGeneration : true;
             
+            // Update plan mode settings UI
+            const planModeCommandEl = document.getElementById('plan-mode-command');
+            if (planModeCommandEl) planModeCommandEl.value = this.planModeCommand;
+            
             this.updateAutoContinueButtonState();
+            this.updatePlanModeButtonState();
             
             // Apply theme
             this.applyTheme(this.preferences.theme || 'dark');
@@ -8371,6 +8550,40 @@ class TerminalGUI {
             dropdown.appendChild(item);
         });
         
+        // Add Plan Mode option styled like terminals
+        const messagePlanState = message ? message.wrapWithPlan : undefined;
+        const currentPlanState = messagePlanState !== undefined ? messagePlanState : this.planModeEnabled;
+        
+        const planModeItem = document.createElement('div');
+        planModeItem.className = 'terminal-selector-item plan-mode';
+        if (currentPlanState) {
+            planModeItem.classList.add('selected');
+        }
+        
+        planModeItem.innerHTML = `
+            <span class="plan-mode-icon">
+                <i data-lucide="clipboard"></i>
+            </span>
+            <span>Plan mode</span>
+        `;
+        
+        planModeItem.addEventListener('click', () => {
+            this.toggleMessagePlanMode(messageId);
+            // Small delay to ensure state is saved before removing dropdown
+            setTimeout(() => {
+                dropdown.remove();
+            }, 10);
+        });
+        
+        dropdown.appendChild(planModeItem);
+        
+        // Initialize Lucide icons for the clipboard icon
+        setTimeout(() => {
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+        }, 0);
+        
         // Position dropdown
         const btnRect = optionsBtn.getBoundingClientRect();
         const messageRect = messageItem.getBoundingClientRect();
@@ -8409,6 +8622,40 @@ class TerminalGUI {
         }
         
         this.logAction(`Updated message to inject into ${terminalData.name}`, 'info');
+    }
+    
+    togglePlanMode() {
+        this.planModeEnabled = !this.planModeEnabled;
+        this.preferences.planModeEnabled = this.planModeEnabled;
+        this.saveAllPreferences();
+        this.updatePlanModeButtonState();
+        
+        if (this.planModeEnabled) {
+            this.logAction('Plan mode enabled - messages will be wrapped with claude-flow command', 'info');
+        } else {
+            this.logAction('Plan mode disabled', 'info');
+        }
+    }
+    
+    toggleMessagePlanMode(messageId) {
+        const message = this.messageQueue.find(m => m.id === messageId);
+        if (!message) return;
+        
+        // Cycle through: undefined (auto) -> true (on) -> false (off) -> undefined (auto)
+        if (message.wrapWithPlan === undefined) {
+            message.wrapWithPlan = true;
+            this.logAction('Message plan mode enabled', 'info');
+        } else if (message.wrapWithPlan === true) {
+            message.wrapWithPlan = false;
+            this.logAction('Message plan mode disabled', 'info');
+        } else {
+            message.wrapWithPlan = undefined;
+            this.logAction('Message plan mode set to auto (follow global setting)', 'info');
+        }
+        
+        // Save the updated message queue and update the UI
+        this.saveMessageQueue();
+        this.updateMessageList();
     }
     
     
