@@ -89,6 +89,14 @@ class InjectionManager {
      */
     onTimerExpired() {
         this.timerExpired = true;
+        // Clear usage limit state when timer expires to prevent interference
+        if (this.usageLimitWaiting) {
+            this.gui.logAction('InjectionManager: Clearing usage limit state on timer expiration', 'info');
+            this.usageLimitWaiting = false;
+            if (this.gui) {
+                this.gui.usageLimitWaiting = false;
+            }
+        }
         this.checkAndScheduleInjections();
     }
     
@@ -115,6 +123,11 @@ class InjectionManager {
      */
     onUsageLimitReset() {
         this.usageLimitWaiting = false;
+        // Clear usage limit state from GUI as well
+        if (this.gui) {
+            this.gui.usageLimitWaiting = false;
+            this.gui.logAction('InjectionManager: Cleared usage limit waiting state', 'info');
+        }
         if (this.timerExpired) {
             this.checkAndScheduleInjections();
         }
@@ -246,7 +259,15 @@ class InjectionManager {
         }
         
         const stableDuration = now - stableStartTime;
-        const requiredStableDuration = 5000; // 5 seconds
+        
+        // Use 30 seconds if last injection was in plan mode, otherwise 5 seconds
+        let requiredStableDuration = 5000; // 5 seconds default
+        if (this.lastPlanModeCompletionTime) {
+            const timeSinceLastPlanMode = Date.now() - this.lastPlanModeCompletionTime;
+            if (timeSinceLastPlanMode < this.planModeDelay) {
+                requiredStableDuration = 30000; // 30 seconds for plan mode
+            }
+        }
         
         return stableDuration >= requiredStableDuration;
     }

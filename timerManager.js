@@ -291,10 +291,8 @@ class TimerManager {
             this.showTimerNotification();
         }
 
-        // Auto-reset to original values
-        setTimeout(() => {
-            this.resetTimer();
-        }, 2000);
+        // Timer completed - stay at 0 instead of auto-reset
+        // Note: User can manually reset using the reset button if needed
     }
 
     /**

@@ -470,10 +470,6 @@
                             <span class="setting-text">Claude Flow Command</span>
                         </label>
                         <select id="plan-mode-command" class="setting-select">
-                            <!-- SPARC Development -->
-                            <option value='npx claude-flow@alpha sparc mode --type "dev" --task-description "{message}" --claude'>SPARC Dev - Standard development mode</option>
-                            <option value='npx claude-flow@alpha sparc mode --type "neural-tdd" --auto-learn --task-description "{message}" --claude'>SPARC Neural TDD - AI-enhanced test-driven development</option>
-                            
                             <!-- Hive-Mind Intelligence -->
                             <option value='npx claude-flow@alpha hive-mind spawn "{message}" --agents 5 --strategy development --claude'>Hive-Mind Dev - Queen-led coordination (5 agents)</option>
                             <option value='npx claude-flow@alpha hive-mind spawn "{message}" --agents 8 --strategy parallel --memory-namespace default --claude'>Hive-Mind Advanced - Full coordination (8 agents)</option>
@@ -482,20 +478,8 @@
                             <option value='npx claude-flow@alpha swarm "{message}" --strategy development --claude'>Swarm Development - Basic swarm coordination</option>
                             <option value='npx claude-flow@alpha swarm "{message}" --strategy research --neural-patterns enabled --claude'>Swarm Research - Enhanced research capabilities</option>
                             
-                            <!-- Workflow Automation -->
-                            <option value='npx claude-flow@alpha workflow create --name "Development Pipeline" --parallel && npx claude-flow@alpha task orchestrate --task "{message}" --strategy adaptive --claude'>Workflow Pipeline - Automated development flow</option>
-                            
                             <!-- GitHub Integration -->
                             <option value='npx claude-flow@alpha github gh-coordinator analyze --analysis-type code_quality && npx claude-flow@alpha task orchestrate --task "{message}" --claude'>GitHub Coordinator - Repository analysis and coordination</option>
-                            
-                            <!-- Security & Analysis -->
-                            <option value='npx claude-flow@alpha security scan --target ./ --depth thorough && npx claude-flow@alpha task orchestrate --task "{message}" --priority high --claude'>Security Analysis - Comprehensive security review</option>
-                            
-                            <!-- Neural Computing -->
-                            <option value='npx claude-flow@alpha neural train --pattern coordination --data current-context && npx claude-flow@alpha task orchestrate --task "{message}" --strategy adaptive --claude'>Neural Enhanced - AI pattern learning</option>
-                            
-                            <!-- Performance Optimization -->
-                            <option value='npx claude-flow@alpha bottleneck analyze --auto-optimize && npx claude-flow@alpha task orchestrate --task "{message}" --strategy balanced --claude'>Performance Optimizer - Bottleneck analysis and optimization</option>
                         </select>
                         <p class="setting-help">Selected command will wrap your messages with the appropriate Claude Flow orchestration.</p>
                     </div>

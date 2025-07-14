@@ -1,0 +1,81 @@
+{
+  "sessionId": "session-1752506338568-q9b2gt83b",
+  "checkpointId": "checkpoint-1752506368570-6d5jg2xr1",
+  "checkpointName": "auto-save-1752506368570",
+  "timestamp": "2025-07-14T15:19:28.571Z",
+  "data": {
+    "timestamp": "2025-07-14T15:19:28.570Z",
+    "changeCount": 5,
+    "changesByType": {
+      "swarm_created": [
+        {
+          "type": "swarm_created",
+          "data": {
+            "swarmId": "swarm-1752506338565-z5mb2mmlv",
+            "swarmName": "hive-1752506338429",
+            "objective": "The plan mode activated or plan mode detected message that appears in a message for the message queue. Either it's too big or the container that contains the message and the timestamp is too small. This is likely because the hover buttons take up that entire space below. Even though that space is not used. So maybe calculate the height of the three dot buttons or not the three dot buttons. I mean it has the three dots. The edit delete and three dot button panel uses the entire height of the right side of the message. So calculate the height of the timestamp and the plan mode activated thing. So that way they can actually fit on the entire container. Because it's good but right now it just wraps and it looks strange and it's kind of visually unappealing. So yeah do that and then also plan mode activated should be like hot should be green. The color should be green of the text. That way it's more visually apparent that that's the mode that it's in.",
+            "workerCount": 8
+          },
+          "timestamp": "2025-07-14T15:18:58.569Z"
+        }
+      ],
+      "agent_activity": [
+        {
+          "type": "agent_activity",
+          "data": {
+            "agentId": "worker-swarm-1752506338565-z5mb2mmlv-0",
+            "activity": "spawned",
+            "data": {
+              "type": "researcher",
+              "name": "Researcher Worker 1"
+            }
+          },
+          "timestamp": "2025-07-14T15:18:58.570Z"
+        },
+        {
+          "type": "agent_activity",
+          "data": {
+            "agentId": "worker-swarm-1752506338565-z5mb2mmlv-1",
+            "activity": "spawned",
+            "data": {
+              "type": "coder",
+              "name": "Coder Worker 2"
+            }
+          },
+          "timestamp": "2025-07-14T15:18:58.570Z"
+        },
+        {
+          "type": "agent_activity",
+          "data": {
+            "agentId": "worker-swarm-1752506338565-z5mb2mmlv-2",
+            "activity": "spawned",
+            "data": {
+              "type": "analyst",
+              "name": "Analyst Worker 3"
+            }
+          },
+          "timestamp": "2025-07-14T15:18:58.570Z"
+        },
+        {
+          "type": "agent_activity",
+          "data": {
+            "agentId": "worker-swarm-1752506338565-z5mb2mmlv-3",
+            "activity": "spawned",
+            "data": {
+              "type": "tester",
+              "name": "Tester Worker 4"
+            }
+          },
+          "timestamp": "2025-07-14T15:18:58.570Z"
+        }
+      ]
+    },
+    "statistics": {
+      "tasksProcessed": 0,
+      "tasksCompleted": 0,
+      "memoryUpdates": 0,
+      "agentActivities": 4,
+      "consensusDecisions": 0
+    }
+  }
+}

@@ -249,6 +249,51 @@ YOU ARE LIKELY BEING RAN WITHIN THIS SCRIPT!!!!! ONLY RUN `npm run` OR `pkill` R
 - Settings modal with extensive configuration options
 - Todo list and action log sidebars
 
+### Codebase Function Analysis
+
+**ALWAYS run function analysis before making changes to avoid duplicates:**
+
+```bash
+python analyze_functions.py
+```
+
+This script analyzes `main.js` and `renderer.js` to extract:
+- All function declarations, methods, and arrow functions
+- Line counts and locations for each function
+- Function purposes based on naming patterns
+- Class structure and method organization
+
+**Key Benefits:**
+- Prevents creation of duplicate functionality
+- Helps identify existing functions before writing new ones
+- Provides overview of code organization and complexity
+- Assists in debugging by locating specific functions
+
+**Function Categories in the Codebase:**
+- **Terminal operations**: Functions managing pty processes, terminal UI, and shell communication
+- **Message queue system**: Functions handling FIFO queuing, injection scheduling, and typing simulation
+- **User interface management**: Functions controlling modals, buttons, dropdowns, and visual feedback
+- **Timer and scheduling**: Functions managing countdown timers and auto-injection timing
+- **Event handling**: Functions processing user interactions, keyboard shortcuts, and callbacks
+- **Data persistence**: Functions saving/loading settings, message history, and application state
+- **Voice transcription**: Functions handling audio recording and speech-to-text processing
+- **Initialization and setup**: Functions configuring components and establishing connections
+
+**Example Usage:**
+```bash
+# Analyze specific files
+python analyze_functions.py main.js renderer.js
+
+# Get full report saved to function_analysis_report.md
+python analyze_functions.py
+```
+
+**Before coding, check if functionality already exists:**
+1. Run `python analyze_functions.py` 
+2. Search the output for functions related to your task
+3. Examine existing functions before writing new ones
+4. Avoid creating duplicate or conflicting functionality
+
 ### Key Features
 
 **Terminal Integration**
