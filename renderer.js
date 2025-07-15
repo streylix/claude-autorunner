@@ -644,6 +644,7 @@ class TerminalGUI {
                 // Run detection functions for ALL terminals, not just active one
                 this.detectAutoContinuePrompt(data.content, terminalId);
                 await this.detectUsageLimit(data.content, terminalId);
+                this.detectCwdChange(data.content, terminalId);
                 // Handle autoscrolling for this specific terminal
                 this.handleTerminalOutput(terminalId);
                 // Update active terminal references only for the active terminal
@@ -3866,6 +3867,33 @@ class TerminalGUI {
         }, 50); // 50ms between characters for realistic typing speed
         // Store reference for potential cancellation
         this.currentTypeInterval = typeInterval;
+    }
+    detectCwdChange(data, terminalId = this.activeTerminalId) {
+        // Get the terminal data for the specific terminal
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) return;
+        
+        // Strip ANSI escape codes from the data before processing
+        // More comprehensive ANSI escape code removal
+        const cleanData = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\[[0-9;]*m/g, '');
+        
+        // Regex pattern to detect 'cwd: /path/to/directory'
+        // More flexible pattern that handles various whitespace and formatting
+        const cwdRegex = /cwd:\s*([^\s\r\n\x1b]+)/i;
+        const match = cleanData.match(cwdRegex);
+        
+        if (match && match[1]) {
+            const newDirectory = match[1];
+            terminalData.directory = newDirectory;
+            
+            // Update active terminal references if this is the active terminal
+            if (terminalId === this.activeTerminalId) {
+                this.currentDirectory = newDirectory;
+                this.updateStatusDisplay();
+                this.savePreferences();
+                this.logAction(`Directory changed to: ${newDirectory}`, 'info');
+            }
+        }
     }
     detectAutoContinuePrompt(data, terminalId = this.activeTerminalId) {
         // Get the terminal data for the specific terminal
