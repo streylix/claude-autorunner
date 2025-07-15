@@ -29,12 +29,12 @@ show_usage() {
     exit 1
 }
 
-# Function to get terminal session ID by number
-get_terminal_session() {
+# Function to get ALL terminal session IDs by number
+get_terminal_sessions() {
     local terminal_num=$1
     local terminal_name="Terminal $terminal_num"
     
-    # Get all terminal sessions and find the most recent one with the matching name
+    # Get all terminal sessions and find ALL sessions with the matching name
     local session_data=$(curl -s "$API_BASE_URL/terminal/sessions/" 2>/dev/null)
     
     if [ $? -ne 0 ]; then
@@ -42,22 +42,23 @@ get_terminal_session() {
         return 1
     fi
     
-    # Parse JSON to find the terminal session ID
-    local session_id=$(echo "$session_data" | python3 -c "
+    # Parse JSON to find ALL terminal session IDs with matching name
+    local session_ids=$(echo "$session_data" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
+session_ids = []
 for session in data:
     if session['name'] == '$terminal_name':
-        print(session['id'])
-        break
+        session_ids.append(session['id'])
+print(' '.join(session_ids))
 " 2>/dev/null)
     
-    if [ -z "$session_id" ]; then
+    if [ -z "$session_ids" ]; then
         echo -e "${RED}Error: Terminal $terminal_num not found${NC}" >&2
         return 1
     fi
     
-    echo "$session_id"
+    echo "$session_ids"
     return 0
 }
 
@@ -132,18 +133,31 @@ main() {
     
     echo -e "${YELLOW}Adding message to Terminal $terminal_num...${NC}"
     
-    # Get terminal session ID
-    session_id=$(get_terminal_session "$terminal_num")
+    # Get ALL terminal session IDs for this terminal
+    session_ids=$(get_terminal_sessions "$terminal_num")
     if [ $? -ne 0 ]; then
         exit 1
     fi
     
-    # Add message to queue
-    if add_message "$message" "$session_id"; then
-        echo -e "${GREEN}✓ Successfully added message to Terminal $terminal_num queue:${NC}"
+    # Add message to ALL matching sessions
+    local success_count=0
+    local total_count=0
+    
+    for session_id in $session_ids; do
+        ((total_count++))
+        if add_message "$message" "$session_id"; then
+            ((success_count++))
+        fi
+    done
+    
+    if [ $success_count -eq $total_count ]; then
+        echo -e "${GREEN}✓ Successfully added message to Terminal $terminal_num queue ($success_count/$total_count sessions):${NC}"
+        echo "  \"$message\""
+    elif [ $success_count -gt 0 ]; then
+        echo -e "${YELLOW}⚠ Partially added message to Terminal $terminal_num queue ($success_count/$total_count sessions):${NC}"
         echo "  \"$message\""
     else
-        echo -e "${RED}✗ Failed to add message to queue${NC}" >&2
+        echo -e "${RED}✗ Failed to add message to any Terminal $terminal_num sessions${NC}" >&2
         exit 1
     fi
 }

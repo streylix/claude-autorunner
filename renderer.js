@@ -23,6 +23,7 @@ class TerminalGUI {
         this.activeTerminalId = 1;
         this.terminalIdCounter = 1;
         this.terminalColors = ['#007acc', '#28ca42', '#ff5f57', '#ffbe2e', '#af52de', '#5ac8fa'];
+        this.pendingTerminalData = new Map(); // Queue data for terminals not yet initialized
         this.terminalSessionMap = new Map(); // Map of terminal ID to backend session UUID
         // Application session ID for statistics
         this.sessionId = this.validationUtils.generateSessionId('app');
@@ -245,8 +246,8 @@ class TerminalGUI {
                 const isBackendAvailable = await this.backendAPIClient.isBackendAvailable();
                 if (isBackendAvailable) {
                     console.log('Backend is available - enabling enhanced persistence');
-                    // Sync existing backend sessions with frontend terminals
-                    await this.syncTerminalSessions();
+                    // Force sync all backend sessions with frontend terminals
+                    await this.forceSyncAllSessions();
                     // Load status from backend
                     await this.loadStatusFromBackend();
                     // Start polling for message updates instead of WebSocket (for now)
@@ -481,69 +482,63 @@ class TerminalGUI {
             isPrompting: false,
             lastUpdate: Date.now()
         });
-        // Open terminal in container
+        // Open terminal in container - with retry logic for DOM readiness
         const terminalContainer = document.querySelector(`[data-terminal-container="${id}"]`);
         if (terminalContainer) {
-            terminal.open(terminalContainer);
-            // Store the terminal container element for later access
-            terminalData.element = terminalContainer;
-            // Fit terminal to container
+            try {
+                terminal.open(terminalContainer);
+                // Store the terminal container element for later access
+                terminalData.element = terminalContainer;
+            } catch (error) {
+                console.error('Error opening terminal in container:', error);
+                // Retry after a short delay
+                setTimeout(() => {
+                    try {
+                        terminal.open(terminalContainer);
+                        terminalData.element = terminalContainer;
+                    } catch (retryError) {
+                        console.error('Retry failed for terminal container:', retryError);
+                        this.handleTerminalError(id, retryError);
+                    }
+                }, 100);
+                return;
+            }
+        } else {
+            console.error('Terminal container not found for ID:', id);
+            // Retry finding the container after a short delay
             setTimeout(() => {
-                fitAddon.fit();
-            }, 10);
-            // Handle terminal input
-            terminal.onData((data) => {
-                ipcRenderer.send('terminal-input', { terminalId: id, data });
-            });
-            // Handle scroll events for autoscroll
-            setTimeout(() => {
-                const terminalViewport = terminalContainer.querySelector('.xterm-viewport');
-                if (terminalViewport) {
-                    terminalViewport.addEventListener('scroll', () => {
-                        this.handleScroll(id);
-                    });
+                const retryContainer = document.querySelector(`[data-terminal-container="${id}"]`);
+                if (retryContainer) {
+                    try {
+                        terminal.open(retryContainer);
+                        terminalData.element = retryContainer;
+                        this.processPendingTerminalData(id);
+                        this.setupTerminalEventHandlers(id, terminal, terminalData);
+                        // Setup terminal process after successful retry
+                        this.setupTerminalProcess(id, terminal, terminalData);
+                    } catch (error) {
+                        console.error('Error opening terminal in retry container:', error);
+                        this.handleTerminalError(id, error);
+                    }
+                } else {
+                    console.error('Terminal container still not found after retry for ID:', id);
                 }
-            }, 100);
-            // Add click handler to focus terminal when clicked
-            terminalContainer.addEventListener('click', () => {
-                console.log('Terminal container clicked, focusing terminal:', id);
-                terminal.focus();
-                this.switchToTerminal(id);
-            });
-            // Handle terminal resize
-            terminal.onResize(({ cols, rows }) => {
-                ipcRenderer.send('terminal-resize', { terminalId: id, cols, rows });
-            });
+            }, 500);
+            return;
         }
-        // If this is the first terminal, set legacy references and start terminal process
-        if (id === 1) {
-            this.terminal = terminal;
-            this.fitAddon = fitAddon;
-            // Load saved directory
-            const savedDirectory = this.preferences.currentDirectory;
-            console.log('Starting terminal with saved directory:', savedDirectory);
-            if (savedDirectory) {
-                this.currentDirectory = savedDirectory;
-                terminalData.directory = savedDirectory;
-                this.logAction(`Starting terminal in saved directory: ${savedDirectory}`, 'info');
-            } else {
-                this.logAction('Starting terminal in default directory', 'info');
-            }
-            // Start terminal process
-            console.log('Sending terminal-start IPC message...');
-            ipcRenderer.send('terminal-start', { terminalId: id, directory: savedDirectory });
-            // Get initial directory from main process if none saved
-            if (!savedDirectory) {
-                console.log('Requesting current working directory...');
-                ipcRenderer.send('get-cwd', { terminalId: id });
-            }
-            // Create backend session if API client is available
-            if (this.backendAPIClient) {
-                this.createBackendSession(id).catch(error => {
-                    console.warn('Failed to create backend session for terminal', id, ':', error);
-                });
-            }
-        }
+        
+        // Fit terminal to container
+        setTimeout(() => {
+            fitAddon.fit();
+            // Process any pending terminal data after terminal is ready
+            this.processPendingTerminalData(id);
+        }, 10);
+        
+        // Setup terminal event handlers
+        this.setupTerminalEventHandlers(id, terminal, terminalData);
+        
+        // Setup terminal process
+        this.setupTerminalProcess(id, terminal, terminalData);
         // Load messages for this terminal if it's not terminal 1 (terminal 1 is handled in initialization)
         if (id !== 1) {
             this.loadMessagesForTerminal(id, false).catch(error => {
@@ -638,8 +633,22 @@ class TerminalGUI {
         ipcRenderer.on('terminal-data', async (event, data) => {
             const terminalId = data.terminalId != null ? data.terminalId : 1;
             const terminalData = this.terminals.get(terminalId);
+            if (terminalData && terminalData.terminal) {
+                try {
+                    terminalData.terminal.write(data.content);
+                } catch (error) {
+                    console.error('Error writing to terminal:', error);
+                    // Try to reinitialize terminal if write fails
+                    this.handleTerminalError(terminalId, error);
+                    return;
+                }
+            } else {
+                console.warn('Terminal data not available for terminal ID:', terminalId);
+                // Queue the data for later processing
+                this.queueTerminalData(terminalId, data);
+                return;
+            }
             if (terminalData) {
-                terminalData.terminal.write(data.content);
                 terminalData.lastOutput = data.content;
                 // Run detection functions for ALL terminals, not just active one
                 this.detectAutoContinuePrompt(data.content, terminalId);
@@ -5863,19 +5872,74 @@ class TerminalGUI {
         try {
             const sessions = await this.backendAPIClient.getTerminalSessions();
             const existingSessions = sessions.results || sessions;
-            // For each existing session, try to match with terminal names
+            
+            // Group sessions by terminal name and get the most recent one for each
+            const sessionsByTerminal = new Map();
             for (const session of existingSessions) {
                 const match = session.name.match(/Terminal (\d+)/);
                 if (match) {
                     const terminalId = parseInt(match[1]);
-                    if (!this.terminalSessionMap.has(terminalId)) {
-                        this.terminalSessionMap.set(terminalId, session.id);
+                    const existing = sessionsByTerminal.get(terminalId);
+                    
+                    // Keep the most recent session (by updated_at timestamp)
+                    if (!existing || new Date(session.updated_at) > new Date(existing.updated_at)) {
+                        sessionsByTerminal.set(terminalId, session);
                     }
                 }
             }
+            
+            // Map the most recent session for each terminal
+            for (const [terminalId, session] of sessionsByTerminal) {
+                if (!this.terminalSessionMap.has(terminalId)) {
+                    this.terminalSessionMap.set(terminalId, session.id);
+                    this.logAction(`Mapped Terminal ${terminalId} to backend session ${session.id}`, 'info');
+                }
+            }
+            
             await this.saveTerminalSessionMapping();
+            this.logAction(`Synced ${sessionsByTerminal.size} terminal sessions from backend`, 'info');
         } catch (error) {
             console.error('Failed to sync terminal sessions:', error);
+        }
+    }
+    async forceSyncAllSessions() {
+        // Force sync all backend sessions, replacing existing mappings
+        if (!this.backendAPIClient) return;
+        try {
+            const sessions = await this.backendAPIClient.getTerminalSessions();
+            const existingSessions = sessions.results || sessions;
+            
+            // Clear existing mappings
+            this.terminalSessionMap.clear();
+            
+            // Group sessions by terminal name and get the most recent one for each
+            const sessionsByTerminal = new Map();
+            for (const session of existingSessions) {
+                const match = session.name.match(/Terminal (\d+)/);
+                if (match) {
+                    const terminalId = parseInt(match[1]);
+                    const existing = sessionsByTerminal.get(terminalId);
+                    
+                    // Keep the most recent session (by updated_at timestamp)
+                    if (!existing || new Date(session.updated_at) > new Date(existing.updated_at)) {
+                        sessionsByTerminal.set(terminalId, session);
+                    }
+                }
+            }
+            
+            // Map the most recent session for each terminal
+            for (const [terminalId, session] of sessionsByTerminal) {
+                this.terminalSessionMap.set(terminalId, session.id);
+                this.logAction(`Force mapped Terminal ${terminalId} to backend session ${session.id}`, 'info');
+            }
+            
+            await this.saveTerminalSessionMapping();
+            this.logAction(`Force synced ${sessionsByTerminal.size} terminal sessions from backend`, 'success');
+            
+            // Immediately sync messages after remapping
+            await this.syncMessagesFromBackend(true);
+        } catch (error) {
+            console.error('Failed to force sync terminal sessions:', error);
         }
     }
     async checkAndMigrateLocalStorageData() {
@@ -8588,6 +8652,148 @@ class TerminalGUI {
             item.style.display = matches ? 'flex' : 'none';
         });
     }
+    
+    // Terminal error handling and data queuing
+    handleTerminalError(terminalId, error) {
+        console.error(`Terminal ${terminalId} error:`, error);
+        this.logAction(`Terminal ${terminalId} error: ${error.message}`, 'error');
+        
+        // Try to reinitialize the terminal after a short delay
+        setTimeout(() => {
+            const terminalData = this.terminals.get(terminalId);
+            if (terminalData && !terminalData.terminal) {
+                console.log(`Attempting to reinitialize terminal ${terminalId}`);
+                this.reinitializeTerminal(terminalId);
+            }
+        }, 1000);
+    }
+    
+    queueTerminalData(terminalId, data) {
+        if (!this.pendingTerminalData.has(terminalId)) {
+            this.pendingTerminalData.set(terminalId, []);
+        }
+        this.pendingTerminalData.get(terminalId).push(data);
+        
+        // Limit queue size to prevent memory issues
+        const queue = this.pendingTerminalData.get(terminalId);
+        if (queue.length > 100) {
+            queue.splice(0, queue.length - 100);
+        }
+        
+        console.log(`Queued data for terminal ${terminalId}, queue size: ${queue.length}`);
+    }
+    
+    processPendingTerminalData(terminalId) {
+        const queue = this.pendingTerminalData.get(terminalId);
+        if (!queue || queue.length === 0) return;
+        
+        console.log(`Processing ${queue.length} pending data items for terminal ${terminalId}`);
+        const terminalData = this.terminals.get(terminalId);
+        
+        if (terminalData && terminalData.terminal) {
+            while (queue.length > 0) {
+                const data = queue.shift();
+                try {
+                    terminalData.terminal.write(data.content);
+                    terminalData.lastOutput = data.content;
+                    this.detectAutoContinuePrompt(data.content, terminalId);
+                    this.detectUsageLimit(data.content, terminalId);
+                    this.detectCwdChange(data.content, terminalId);
+                } catch (error) {
+                    console.error('Error processing pending terminal data:', error);
+                    break;
+                }
+            }
+        }
+    }
+    
+    reinitializeTerminal(terminalId) {
+        const terminalContainer = document.querySelector(`[data-terminal-container="${terminalId}"]`);
+        if (!terminalContainer) {
+            console.error(`Terminal container not found for ID: ${terminalId}`);
+            return;
+        }
+        
+        // Clear existing terminal if it exists
+        const existingTerminalData = this.terminals.get(terminalId);
+        if (existingTerminalData && existingTerminalData.terminal) {
+            existingTerminalData.terminal.dispose();
+        }
+        
+        // Recreate the terminal
+        this.createTerminal(terminalId);
+        
+        // Process any pending data
+        this.processPendingTerminalData(terminalId);
+    }
+    
+    setupTerminalEventHandlers(id, terminal, terminalData) {
+        const terminalContainer = terminalData.element;
+        if (!terminalContainer) {
+            console.error('Terminal container not available for event handlers');
+            return;
+        }
+        
+        // Handle terminal input
+        terminal.onData((data) => {
+            ipcRenderer.send('terminal-input', { terminalId: id, data });
+        });
+        
+        // Handle scroll events for autoscroll
+        setTimeout(() => {
+            const terminalViewport = terminalContainer.querySelector('.xterm-viewport');
+            if (terminalViewport) {
+                terminalViewport.addEventListener('scroll', () => {
+                    this.handleScroll(id);
+                });
+            }
+        }, 100);
+        
+        // Add click handler to focus terminal when clicked
+        terminalContainer.addEventListener('click', () => {
+            console.log('Terminal container clicked, focusing terminal:', id);
+            terminal.focus();
+            this.switchToTerminal(id);
+        });
+        
+        // Handle terminal resize
+        terminal.onResize(({ cols, rows }) => {
+            ipcRenderer.send('terminal-resize', { terminalId: id, cols, rows });
+        });
+    }
+    
+    setupTerminalProcess(id, terminal, terminalData) {
+        // If this is the first terminal, set legacy references and start terminal process
+        if (id === 1) {
+            this.terminal = terminal;
+            this.fitAddon = terminalData.fitAddon;
+            // Load saved directory
+            const savedDirectory = this.preferences.currentDirectory;
+            console.log('Starting terminal with saved directory:', savedDirectory);
+            if (savedDirectory) {
+                this.currentDirectory = savedDirectory;
+                terminalData.directory = savedDirectory;
+                this.logAction(`Starting terminal in saved directory: ${savedDirectory}`, 'info');
+            } else {
+                this.logAction('Starting terminal in default directory', 'info');
+            }
+            // Start terminal process
+            console.log('Sending terminal-start IPC message...');
+            ipcRenderer.send('terminal-start', { terminalId: id, directory: savedDirectory });
+            // Get initial directory from main process if none saved
+            if (!savedDirectory) {
+                console.log('Requesting current working directory...');
+                ipcRenderer.send('get-cwd', { terminalId: id });
+            }
+            // Create backend session if API client is available
+            if (this.backendAPIClient) {
+                this.createBackendSession(id).catch(error => {
+                    console.warn('Failed to create backend session for terminal', id, ':', error);
+                });
+            }
+        }
+    }
+    
     escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
