@@ -6991,7 +6991,8 @@ class TerminalGUI {
         // Remove from terminal session mapping
         this.terminalSessionMap.delete(terminalId);
         await this.saveTerminalSessionMapping();
-        // Remove DOM element AFTER switching terminals
+        
+        // Remove DOM element FIRST to ensure clean state
         const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
         if (terminalWrapper) {
             console.log('Removing terminal wrapper for ID:', terminalId);
@@ -6999,10 +7000,14 @@ class TerminalGUI {
         } else {
             console.warn('Terminal wrapper not found for ID:', terminalId);
         }
-        // Update container count after removing DOM element
+        
+        // Update container count AFTER removing DOM element
         const terminalsContainer = document.getElementById('terminals-container');
         terminalsContainer.setAttribute('data-terminal-count', this.terminals.size);
         console.log('Updated terminal count to:', this.terminals.size);
+        
+        // Force a synchronous reflow before layout refresh to ensure DOM changes are applied
+        terminalsContainer.offsetHeight;
         
         // Force grid layout reflow by temporarily clearing and rebuilding the container
         this.refreshTerminalLayout();
@@ -7041,6 +7046,25 @@ class TerminalGUI {
         const terminalsContainer = document.getElementById('terminals-container');
         const currentCount = terminalsContainer.getAttribute('data-terminal-count');
         
+        // Verify the DOM state matches the expected terminal count
+        const actualTerminalWrappers = terminalsContainer.querySelectorAll('.terminal-wrapper');
+        const expectedCount = parseInt(currentCount) || 0;
+        
+        if (actualTerminalWrappers.length !== expectedCount) {
+            console.warn(`Terminal count mismatch: DOM has ${actualTerminalWrappers.length} terminals, expected ${expectedCount}`);
+            // Force cleanup of any orphaned terminal wrappers
+            actualTerminalWrappers.forEach(wrapper => {
+                const terminalId = parseInt(wrapper.getAttribute('data-terminal-id'));
+                if (terminalId && !this.terminals.has(terminalId)) {
+                    console.log('Removing orphaned terminal wrapper:', terminalId);
+                    wrapper.remove();
+                }
+            });
+            // Update count to match actual state
+            const finalCount = terminalsContainer.querySelectorAll('.terminal-wrapper').length;
+            terminalsContainer.setAttribute('data-terminal-count', finalCount);
+        }
+        
         // Temporarily remove the count attribute to force CSS re-evaluation
         terminalsContainer.removeAttribute('data-terminal-count');
         
@@ -7048,7 +7072,10 @@ class TerminalGUI {
         terminalsContainer.offsetHeight;
         
         // Restore the count attribute
-        terminalsContainer.setAttribute('data-terminal-count', currentCount);
+        terminalsContainer.setAttribute('data-terminal-count', this.terminals.size);
+        
+        // Force another reflow to apply new CSS rules
+        terminalsContainer.offsetHeight;
         
         // Ensure all terminals are properly sized
         setTimeout(() => {
@@ -7279,6 +7306,17 @@ class TerminalGUI {
             }
         });
         
+        // Clean up any orphaned terminal wrappers that might still exist in DOM
+        const terminalsContainer = document.getElementById('terminals-container');
+        const allTerminalWrappers = terminalsContainer.querySelectorAll('.terminal-wrapper');
+        allTerminalWrappers.forEach(wrapper => {
+            const terminalId = parseInt(wrapper.getAttribute('data-terminal-id'));
+            if (terminalId && !validTerminalIds.includes(terminalId)) {
+                console.log('Removing orphaned terminal wrapper for terminal:', terminalId);
+                wrapper.remove();
+            }
+        });
+        
         // Also clean up any timer dropdowns that might be misidentified as terminal tabs
         const timerDropdowns = document.querySelectorAll('.timer-edit-dropdown');
         timerDropdowns.forEach(dropdown => {
@@ -7292,6 +7330,10 @@ class TerminalGUI {
                 dropdown.remove();
             }
         });
+        
+        // Update the terminal count to ensure consistency
+        const finalTerminalCount = terminalsContainer.querySelectorAll('.terminal-wrapper').length;
+        terminalsContainer.setAttribute('data-terminal-count', finalTerminalCount);
         
         // Force update both dropdowns after cleanup
         this.updateTerminalDropdowns();
