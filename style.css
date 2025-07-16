@@ -396,7 +396,8 @@ body {
 
 .terminals-container {
     flex: 1;
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 1px;
     background-color: var(--border-primary);
     overflow: hidden;
@@ -404,29 +405,46 @@ body {
     min-width: 0;
 }
 
-/* Terminal layout configurations */
-.terminals-container[data-terminal-count="1"] {
-    grid-template-columns: 1fr;
-    grid-template-rows: 1fr;
+/* Two-row layout for terminals */
+.terminals-row {
+    flex: 1;
+    display: flex;
+    gap: 1px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    min-height: 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--text-secondary) var(--bg-tertiary);
 }
 
+/* Webkit scrollbar styling for horizontal scroll */
+.terminals-row::-webkit-scrollbar {
+    height: 6px;
+}
+
+.terminals-row::-webkit-scrollbar-track {
+    background: var(--bg-tertiary);
+}
+
+.terminals-row::-webkit-scrollbar-thumb {
+    background: var(--text-secondary);
+    border-radius: 3px;
+}
+
+.terminals-row::-webkit-scrollbar-thumb:hover {
+    background: var(--text-primary);
+}
+
+/* Single row layout for 1-2 terminals */
+.terminals-container[data-terminal-count="1"],
 .terminals-container[data-terminal-count="2"] {
-    grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr;
+    flex-direction: row;
 }
 
-.terminals-container[data-terminal-count="3"] {
-    grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 1fr;
-}
-
-.terminals-container[data-terminal-count="3"] .terminal-wrapper:first-child {
-    grid-column: 1 / -1;
-}
-
-.terminals-container[data-terminal-count="4"] {
-    grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 1fr;
+.terminals-container[data-terminal-count="1"] .terminal-wrapper,
+.terminals-container[data-terminal-count="2"] .terminal-wrapper {
+    flex: 1;
+    min-width: 300px;
 }
 
 .terminal-wrapper {
@@ -435,6 +453,21 @@ body {
     flex-direction: column;
     position: relative;
     overflow: hidden;
+    flex: 0 0 auto;
+    min-width: 300px;
+    width: calc(50% - 0.5px); /* Default to 50% width for two-column layout */
+}
+
+/* Single terminal takes full width */
+.terminals-container[data-terminal-count="1"] .terminal-wrapper {
+    width: 100%;
+    min-width: 0;
+}
+
+/* For 3+ terminals in two-row layout, each terminal wrapper within a row */
+.terminals-row .terminal-wrapper {
+    width: 400px; /* Fixed width for horizontal scrolling */
+    flex: 0 0 400px;
 }
 
 .terminal-wrapper.search-active .terminal-container {

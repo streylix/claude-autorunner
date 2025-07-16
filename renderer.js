@@ -55,7 +55,7 @@ class TerminalGUI {
         this.messageSequenceCounter = 0;
         this.autoContinueEnabled = false;
         this.planModeEnabled = false;
-        this.planModeCommand = 'npx claude-flow@alpha sparc mode --type "dev" --task-description "{message}" --claude';
+        this.planModeCommand = 'npx claude-flow@alpha hive-mind spawn "{message}" --agents 5 --strategy development --claude';
         this.lastTerminalOutput = '';
         this.autoscrollEnabled = true;
         this.autoscrollDelay = 3000;
@@ -402,10 +402,10 @@ class TerminalGUI {
                 </div>
             </div>
         `;
-        // Add to container
-        const terminalsContainer = document.getElementById('terminals-container');
-        terminalsContainer.appendChild(terminalWrapper);
+        // Add to container using the new layout management
+        this.addTerminalToLayout(terminalWrapper, this.terminals.size + 1);
         // Update layout
+        const terminalsContainer = document.getElementById('terminals-container');
         terminalsContainer.setAttribute('data-terminal-count', this.terminals.size + 1);
         // Create terminal instance
         this.createTerminal(id);
@@ -5323,7 +5323,7 @@ class TerminalGUI {
             this.autoscrollDelay = this.preferences.autoscrollDelay || 3000;
             this.autoContinueEnabled = this.preferences.autoContinueEnabled || false;
             this.planModeEnabled = this.preferences.planModeEnabled || false;
-            this.planModeCommand = this.preferences.planModeCommand || 'npx claude-flow@alpha sparc mode --type "dev" --task-description "{message}" --claude';
+            this.planModeCommand = this.preferences.planModeCommand || 'npx claude-flow@alpha hive-mind spawn "{message}" --agents 5 --strategy development --claude';
             // Load saved timer values, but check if target datetime has passed
             if (this.preferences.timerTargetDateTime) {
                 const targetDate = new Date(this.preferences.timerTargetDateTime);
@@ -6923,15 +6923,71 @@ class TerminalGUI {
         this.playCompletionSound();
         this.logAction('Auto-injection process completed', 'success');
     }
+    
+    // Layout management for terminals
+    addTerminalToLayout(terminalWrapper, totalCount) {
+        const terminalsContainer = document.getElementById('terminals-container');
+        
+        if (totalCount <= 2) {
+            // For 1-2 terminals, add directly to container (single row layout)
+            terminalsContainer.appendChild(terminalWrapper);
+        } else {
+            // For 3+ terminals, use two-row layout
+            this.ensureTwoRowLayout();
+            
+            // Calculate which row to add to (alternating pattern for balance)
+            const existingTerminals = terminalsContainer.querySelectorAll('.terminal-wrapper').length;
+            const topRow = terminalsContainer.querySelector('.terminals-row:first-child');
+            const bottomRow = terminalsContainer.querySelector('.terminals-row:last-child');
+            
+            // Add to the row with fewer terminals, or alternate if equal
+            const topRowCount = topRow.children.length;
+            const bottomRowCount = bottomRow.children.length;
+            
+            if (topRowCount <= bottomRowCount) {
+                topRow.appendChild(terminalWrapper);
+            } else {
+                bottomRow.appendChild(terminalWrapper);
+            }
+        }
+    }
+    
+    ensureTwoRowLayout() {
+        const terminalsContainer = document.getElementById('terminals-container');
+        let topRow = terminalsContainer.querySelector('.terminals-row:first-child');
+        let bottomRow = terminalsContainer.querySelector('.terminals-row:last-child');
+        
+        // If no rows exist, create them and move existing terminals
+        if (!topRow) {
+            // Create two rows
+            topRow = document.createElement('div');
+            topRow.className = 'terminals-row';
+            bottomRow = document.createElement('div');
+            bottomRow.className = 'terminals-row';
+            
+            // Move existing terminal wrappers to rows
+            const existingWrappers = Array.from(terminalsContainer.querySelectorAll('.terminal-wrapper'));
+            existingWrappers.forEach((wrapper, index) => {
+                if (index % 2 === 0) {
+                    topRow.appendChild(wrapper);
+                } else {
+                    bottomRow.appendChild(wrapper);
+                }
+            });
+            
+            // Clear container and add rows
+            terminalsContainer.innerHTML = '';
+            terminalsContainer.appendChild(topRow);
+            terminalsContainer.appendChild(bottomRow);
+        }
+    }
+    
     // Multi-terminal management methods
     async addNewTerminal(startDirectory = null) {
         const terminalCount = this.terminals.size;
-        if (terminalCount >= 4) {
-            this.logAction('Maximum of 4 terminals reached', 'warning');
-            return;
-        }
         this.terminalIdCounter++;
         const newId = this.terminalIdCounter;
+        
         // Create new terminal wrapper HTML
         const terminalWrapper = document.createElement('div');
         terminalWrapper.className = 'terminal-wrapper';
@@ -6973,10 +7029,12 @@ class TerminalGUI {
                 </div>
             </div>
         `;
-        // Add to container
-        const terminalsContainer = document.getElementById('terminals-container');
-        terminalsContainer.appendChild(terminalWrapper);
+        
+        // Add to container using the new layout management
+        this.addTerminalToLayout(terminalWrapper, terminalCount + 1);
+        
         // Update layout
+        const terminalsContainer = document.getElementById('terminals-container');
         terminalsContainer.setAttribute('data-terminal-count', terminalCount + 1);
         // Create terminal instance
         const terminalData = this.createTerminal(newId);
@@ -7039,20 +7097,18 @@ class TerminalGUI {
         closeButtons.forEach(btn => {
             btn.style.display = terminalCount > 1 ? 'inline-flex' : 'none';
         });
-        // Show/hide add buttons (hide when 4 terminals, show on last terminal when 3 or fewer)
+        // Show/hide add buttons (show only on the last terminal)
         const addButtons = document.querySelectorAll('.add-terminal-btn');
         addButtons.forEach(btn => {
             btn.style.display = 'none'; // Hide all first
         });
-        // Show add button only on the last terminal if we have 3 or fewer terminals
-        if (terminalCount < 4) {
-            const terminalWrappers = document.querySelectorAll('.terminal-wrapper');
-            if (terminalWrappers.length > 0) {
-                const lastWrapper = terminalWrappers[terminalWrappers.length - 1];
-                const addBtn = lastWrapper.querySelector('.add-terminal-btn');
-                if (addBtn) {
-                    addBtn.style.display = 'inline-flex';
-                }
+        // Show add button only on the last terminal
+        const terminalWrappers = document.querySelectorAll('.terminal-wrapper');
+        if (terminalWrappers.length > 0) {
+            const lastWrapper = terminalWrappers[terminalWrappers.length - 1];
+            const addBtn = lastWrapper.querySelector('.add-terminal-btn');
+            if (addBtn) {
+                addBtn.style.display = 'inline-flex';
             }
         }
     }
@@ -7144,45 +7200,75 @@ class TerminalGUI {
     }
     
     refreshTerminalLayout() {
-        // Force grid layout reflow by temporarily manipulating the container
         const terminalsContainer = document.getElementById('terminals-container');
-        const currentCount = terminalsContainer.getAttribute('data-terminal-count');
+        const currentCount = this.terminals.size;
         
-        // Verify the DOM state matches the expected terminal count
-        const actualTerminalWrappers = terminalsContainer.querySelectorAll('.terminal-wrapper');
-        const expectedCount = parseInt(currentCount) || 0;
+        // Clean up any orphaned terminal wrappers
+        const allWrappers = terminalsContainer.querySelectorAll('.terminal-wrapper');
+        allWrappers.forEach(wrapper => {
+            const terminalId = parseInt(wrapper.getAttribute('data-terminal-id'));
+            if (terminalId && !this.terminals.has(terminalId)) {
+                console.log('Removing orphaned terminal wrapper:', terminalId);
+                wrapper.remove();
+            }
+        });
         
-        if (actualTerminalWrappers.length !== expectedCount) {
-            console.warn(`Terminal count mismatch: DOM has ${actualTerminalWrappers.length} terminals, expected ${expectedCount}`);
-            // Force cleanup of any orphaned terminal wrappers
-            actualTerminalWrappers.forEach(wrapper => {
-                const terminalId = parseInt(wrapper.getAttribute('data-terminal-id'));
-                if (terminalId && !this.terminals.has(terminalId)) {
-                    console.log('Removing orphaned terminal wrapper:', terminalId);
-                    wrapper.remove();
-                }
-            });
-            // Update count to match actual state
-            const finalCount = terminalsContainer.querySelectorAll('.terminal-wrapper').length;
-            terminalsContainer.setAttribute('data-terminal-count', finalCount);
+        // Get remaining valid terminal wrappers
+        const validWrappers = Array.from(terminalsContainer.querySelectorAll('.terminal-wrapper'));
+        
+        if (currentCount <= 2) {
+            // For 1-2 terminals, use single row layout
+            // Remove any existing row structure
+            const rows = terminalsContainer.querySelectorAll('.terminals-row');
+            if (rows.length > 0) {
+                // Move terminals back to main container
+                validWrappers.forEach(wrapper => {
+                    terminalsContainer.appendChild(wrapper);
+                });
+                // Remove row containers
+                rows.forEach(row => row.remove());
+            }
+        } else {
+            // For 3+ terminals, ensure two-row layout
+            this.reorganizeTerminalsIntoRows(validWrappers);
         }
         
-        // Temporarily remove the count attribute to force CSS re-evaluation
-        terminalsContainer.removeAttribute('data-terminal-count');
+        // Update terminal count attribute
+        terminalsContainer.setAttribute('data-terminal-count', currentCount);
         
-        // Force a reflow
+        // Force a reflow and resize terminals
         terminalsContainer.offsetHeight;
-        
-        // Restore the count attribute
-        terminalsContainer.setAttribute('data-terminal-count', this.terminals.size);
-        
-        // Force another reflow to apply new CSS rules
-        terminalsContainer.offsetHeight;
-        
-        // Ensure all terminals are properly sized
         setTimeout(() => {
             this.resizeAllTerminals();
         }, 50);
+    }
+    
+    reorganizeTerminalsIntoRows(terminalWrappers) {
+        const terminalsContainer = document.getElementById('terminals-container');
+        
+        // Create or get existing rows
+        let topRow = terminalsContainer.querySelector('.terminals-row:first-child');
+        let bottomRow = terminalsContainer.querySelector('.terminals-row:last-child');
+        
+        if (!topRow || topRow === bottomRow) {
+            // Clear container and create new rows
+            terminalsContainer.innerHTML = '';
+            topRow = document.createElement('div');
+            topRow.className = 'terminals-row';
+            bottomRow = document.createElement('div');
+            bottomRow.className = 'terminals-row';
+            terminalsContainer.appendChild(topRow);
+            terminalsContainer.appendChild(bottomRow);
+        }
+        
+        // Redistribute terminals evenly between rows
+        terminalWrappers.forEach((wrapper, index) => {
+            if (index % 2 === 0) {
+                topRow.appendChild(wrapper);
+            } else {
+                bottomRow.appendChild(wrapper);
+            }
+        });
     }
     
     toggleTerminalSelectorDropdown() {
