@@ -15,6 +15,89 @@ python test_auto_injector.py start connect wait 15 screenshot "before" [test the
 3. **Use review command** for automated unbiased analysis
 4. **Verify** no UI elements are broken or missing based on Claude review
 
+**SUGGEST NEW CHANGES**
+this directory has a file called `addmsg`, run this by doing `./addmsg "<message>" <terminal_number>`. Each message should ONLY contain future prompts to give claude code for improving the system. After every prmopt you complete, I want you to run this command AT LEAST ONCE at the end, writing a propmt for claude code on what to implement later to improve the system, things like:
+
+**QUEUE MANAGEMENT COMMANDS**
+
+This directory also includes powerful queue management commands:
+
+### `./addmsg` - Add Messages to Queue
+**Usage:** `./addmsg "message content" [terminal_number]`
+**Examples:**
+- `./addmsg "ls -la" 1` - Add command to Terminal 1
+- `./addmsg "git status" 2` - Add command to Terminal 2
+- `./addmsg "echo hello"` - Add to Terminal 1 (default)
+
+### `./listmsg` - List Messages in Queue
+**Usage:** `./listmsg [terminal_number] [status] [options]`
+**Examples:**
+- `./listmsg` - List all messages from all sources
+- `./listmsg 1` - List all messages for Terminal 1
+- `./listmsg 1 pending` - List pending messages for Terminal 1
+- `./listmsg --local` - List only local frontend messages
+- `./listmsg --backend` - List only backend API messages
+- `./listmsg --count` - Show count summary only
+
+**Options:**
+- `--local` - Show only local frontend messages
+- `--backend` - Show only backend API messages  
+- `--count` - Show count summary only
+- `--help` - Show help message
+
+**Data Sources:**
+- **Backend API**: Django SQLite database (`/Users/ethan/claude code bot/backend/db.sqlite3`)
+- **Frontend Storage**: JSON file (`~/Library/Application Support/auto-injector/auto-injector-data.json`)
+- **Dual Storage**: Messages persist in both locations for redundancy
+
+**Message States:**
+- `pending` - Queued for execution
+- `injected` - Successfully executed
+- `cancelled` - Cancelled before execution
+
+**IMPORTANT for Claude Code:** Always use `./listmsg --count` to check queue status before adding new messages. Use `./listmsg 1 pending` to see what's queued for specific terminals.
+- Code optimizations
+- Improvements to the tester to expand your capabilities
+- UX improvements
+- Visual improvements
+- Feature implementations
+
+ALWAYS INCLUDE REMINDERS NOT TO RUN pkill ON ELECTRON EVER BECAUSE YOU ARE IN THAT PROCESS AND IT WILL BREAK EVERYTHING
+
+BE VERY SPECIFIC and reference the codebase to be as precise as possible to ensure your implementation gets properly implemented by future claude code instances, ALSO: if it is something not related to the current context, be sure to add a 'clear' message like:
+`./addmsg "/clear" 1` to prevent the agent from being overwhelmed with unnecessary data
+
+Even though YOU SHOULD BE RUNNING `./addmsg "./clear" 1` INBETWEEN EACH MESSAGE, YOU SHOULD STILL ALWAYS FOCUS ON IMPROVING THE IMPLEMENTATIONS MADE AND ENSURING THEY WORK WELL (refining the existing code) BEFORE ADDING NEW FEATURES, think about it like you're a developer, would rather have fully functioning features before making new features as well, but don't be discouraged from making new features
+
+MAKE PERIODIC CHECKS, run: `./addmsg "Look at the last 5 commits and review the changes made and ensure they are up to standard coding practices and function well in the system" 1` TO ENSURE YOU AREN'T MAKING BAD CODE
+
+**VERY VERY IMPORTANT: ONLY WRITE `addmsg` PROMPTS FOR THINGS YOU ARE ABSOLUTELY SURE ABOUT, AS IN, DO RESEARCH ON THE CODEBASE BEFORE SUGGESTING SOMETHING TO BE SURE IT ISNT ALREADY ADDED OR IMPLEMENTED DIFFERENTLY**
+
+To ensure the loop continues and prevent hallucinations always run `./addmsg "/sparc:researcher identify if <claudes_idea> is in the codebase, if not, run addmsg to add the change with detailed instructions on how to do it properly" 1` as the last message to intelligently gain research on the idea and safely check if it already exists and if it is a good idea
+
+**RESEARCH FINDINGS FROM ADDMSG LOOP:**
+- Current terminal limit: 4 terminals hardcoded at line 435 in src/terminal/terminal-manager.js
+- Renderer.js contains 923 functions making it difficult to maintain - needs modular architecture
+- Terminal typing speed is fixed regardless of message length, causing slow injection for long messages
+- Sidebars are fixed width and cannot be resized by users
+- Message queue only exists in memory and is lost on restart
+- Terminal search functionality is basic and lacks advanced features like regex support
+
+**PRIORITY IMPROVEMENTS IDENTIFIED:**
+1. Horizontal scrolling for unlimited terminals (maintain 4-visible pattern)
+2. Modular architecture refactoring (split renderer.js into specialized managers)
+3. Adaptive typing speed based on message length
+4. Resizable sidebar functionality 
+5. Persistent message queue with crash recovery
+6. Advanced terminal search with regex and history
+
+DO NOT JUST USE THESE EXAMPLES, THINK FOR YOURSELF
+NEVER NEVER NEVER GO TO MAIN, STAY IN THE 'regenerative-testing' BRANCH
+
+After each prompt, update this file (CLAUDE.md) to improve your ability to add messages to the queue and other areas to be smarter
+
+
+**IMPORTANT: ALWAYS COMMIT (but do not push) YOUR CHANGES AFTER EACH PROPMPT**
 **🤖 UNBIASED SCREENSHOT REVIEW PROCESS:**
 ```bash
 # For detailed comparison with difference highlighting
