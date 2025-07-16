@@ -98,6 +98,9 @@ class TerminalGUI {
             // Add sound effects preferences
             completionSoundEnabled: false,
             completionSoundFile: 'beep.wav',
+            // Add sidebar width persistence
+            leftSidebarWidth: 300,
+            rightSidebarWidth: 400,
             injectionSoundFile: 'click.wav',
             promptedSoundFile: 'gmod.wav',
             promptedSoundKeywordsOnly: false,
@@ -261,6 +264,7 @@ class TerminalGUI {
             // Restore terminal data after terminals are created
             this.restoreTerminalData();
             this.setupEventListeners();
+            this.setupResizeHandlers();
             // Initialize injection manager after terminal setup
             this.injectionManager.initialize();
             this.initializeLucideIcons();
@@ -628,6 +632,110 @@ class TerminalGUI {
         this.saveAllPreferences();
         this.logAction('Theme changed to: ' + theme, 'info');
     }
+    setupResizeHandlers() {
+        // Left sidebar resize handle
+        const leftHandle = document.getElementById('resize-handle-left');
+        const leftSidebar = document.getElementById('action-log-sidebar');
+        const rightHandle = document.getElementById('resize-handle-right');
+        const rightSidebar = document.getElementById('right-sidebar');
+        const mainContent = document.querySelector('.main-content');
+        
+        let isResizing = false;
+        let currentHandle = null;
+        let startX = 0;
+        let startWidth = 0;
+        
+        // Helper function to get saved widths from preferences
+        const getSavedWidths = () => {
+            return {
+                leftWidth: this.preferences.leftSidebarWidth || 300,
+                rightWidth: this.preferences.rightSidebarWidth || 400
+            };
+        };
+        
+        // Apply saved widths on initialization
+        const savedWidths = getSavedWidths();
+        leftSidebar.style.width = `${savedWidths.leftWidth}px`;
+        rightSidebar.style.width = `${savedWidths.rightWidth}px`;
+        
+        // Mouse down handler
+        const handleMouseDown = (e, handle, sidebar, isLeft) => {
+            isResizing = true;
+            currentHandle = handle;
+            startX = e.clientX;
+            startWidth = parseInt(window.getComputedStyle(sidebar).width, 10);
+            
+            handle.classList.add('resizing');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            
+            e.preventDefault();
+        };
+        
+        // Mouse move handler
+        const handleMouseMove = (e) => {
+            if (!isResizing) return;
+            
+            const sidebar = currentHandle === leftHandle ? leftSidebar : rightSidebar;
+            const isLeft = currentHandle === leftHandle;
+            const diff = isLeft ? (e.clientX - startX) : (startX - e.clientX);
+            const newWidth = Math.max(
+                parseInt(window.getComputedStyle(sidebar).minWidth, 10),
+                Math.min(
+                    parseInt(window.getComputedStyle(sidebar).maxWidth, 10),
+                    startWidth + diff
+                )
+            );
+            
+            sidebar.style.width = `${newWidth}px`;
+            
+            // Resize all terminals after sidebar resize
+            this.resizeAllTerminals();
+        };
+        
+        // Mouse up handler
+        const handleMouseUp = () => {
+            if (!isResizing) return;
+            
+            isResizing = false;
+            currentHandle.classList.remove('resizing');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            currentHandle = null;
+            
+            // Save the new widths to preferences
+            this.preferences.leftSidebarWidth = parseInt(leftSidebar.style.width, 10);
+            this.preferences.rightSidebarWidth = parseInt(rightSidebar.style.width, 10);
+            this.saveAllPreferences();
+            
+            // Final resize to ensure terminals fit properly
+            setTimeout(() => this.resizeAllTerminals(), 100);
+        };
+        
+        // Add event listeners
+        leftHandle.addEventListener('mousedown', (e) => handleMouseDown(e, leftHandle, leftSidebar, true));
+        rightHandle.addEventListener('mousedown', (e) => handleMouseDown(e, rightHandle, rightSidebar, false));
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            // Ensure sidebars don't exceed viewport
+            const viewportWidth = window.innerWidth;
+            const minTerminalWidth = 400;
+            const maxSidebarWidth = (viewportWidth - minTerminalWidth) / 2;
+            
+            if (parseInt(leftSidebar.style.width, 10) > maxSidebarWidth) {
+                leftSidebar.style.width = `${maxSidebarWidth}px`;
+            }
+            if (parseInt(rightSidebar.style.width, 10) > maxSidebarWidth) {
+                rightSidebar.style.width = `${maxSidebarWidth}px`;
+            }
+            
+            this.resizeAllTerminals();
+        });
+    }
+    
     setupEventListeners() {
         // IPC listeners for terminal data (updated for multi-terminal)
         ipcRenderer.on('terminal-data', async (event, data) => {

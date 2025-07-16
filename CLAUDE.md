@@ -387,3 +387,7 @@ python analyze_functions.py
 ### Ethical Guidelines
 - Never kill the system
 - Do not kill the process ever
+
+NEVER run pkill -f
+      "Electron.*auto-injector"
+      && sleep 2) or anything similar

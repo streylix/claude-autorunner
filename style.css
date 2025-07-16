@@ -205,19 +205,19 @@ body {
 
 .action-log-sidebar {
     width: 300px;
-    min-width: 300px;
-    max-width: 300px;
+    min-width: 200px;
+    max-width: 500px;
     background-color: var(--bg-primary);
     border-right: 1px solid var(--border-primary);
+    position: relative;
     display: flex;
     flex-direction: column;
     overflow: hidden;
 }
 
 .terminal-section {
-    width: calc(100vw - 700px); /* Fixed width: viewport minus both sidebars */
-    max-width: calc(100vw - 700px);
-    min-width: 500px; /* Minimum usable terminal width */
+    flex: 1;
+    min-width: 400px; /* Minimum usable terminal width */
     display: flex;
     flex-direction: column;
     background-color: var(--bg-secondary);
@@ -526,10 +526,11 @@ body {
 
 .sidebar {
     width: 400px;
-    min-width: 400px;
-    max-width: 400px;
+    min-width: 300px;
+    max-width: 600px;
     flex-shrink: 0;
     background-color: var(--bg-primary);
+    position: relative;
     display: flex;
     flex-direction: column;
     border-left: 1px solid var(--border-primary);
@@ -540,35 +541,34 @@ body {
 @media (max-width: 1400px) {
     .action-log-sidebar {
         width: 280px;
-        min-width: 280px;
-        max-width: 280px;
+        min-width: 200px;
+        max-width: 400px;
     }
     .sidebar {
         width: 350px;
-        min-width: 350px;
-        max-width: 350px;
+        min-width: 250px;
+        max-width: 500px;
     }
     .terminal-section {
-        width: calc(100vw - 630px);
-        max-width: calc(100vw - 630px);
+        flex: 1;
+        min-width: 350px;
     }
 }
 
 @media (max-width: 1200px) {
     .action-log-sidebar {
         width: 250px;
-        min-width: 250px;
-        max-width: 250px;
+        min-width: 180px;
+        max-width: 350px;
     }
     .sidebar {
         width: 300px;
-        min-width: 300px;
-        max-width: 300px;
+        min-width: 250px;
+        max-width: 450px;
     }
     .terminal-section {
-        width: calc(100vw - 550px);
-        max-width: calc(100vw - 550px);
-        min-width: 400px;
+        flex: 1;
+        min-width: 300px;
     }
 }
 
@@ -578,13 +578,12 @@ body {
     }
     .sidebar {
         width: 300px;
-        min-width: 300px;
-        max-width: 300px;
+        min-width: 250px;
+        max-width: 400px;
     }
     .terminal-section {
-        width: calc(100vw - 300px);
-        max-width: calc(100vw - 300px);
-        min-width: 400px;
+        flex: 1;
+        min-width: 300px;
     }
 }
 
@@ -2816,6 +2815,34 @@ body {
     color: var(--accent-error);
     background-color: rgba(255, 95, 87, 0.1);
     border-color: var(--accent-error);
+}
+
+/* Resize Handles */
+.resize-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    cursor: col-resize;
+    background: transparent;
+    z-index: 100;
+    transition: background-color 0.2s;
+}
+
+.resize-handle:hover {
+    background-color: var(--accent-primary);
+}
+
+.resize-handle.resizing {
+    background-color: var(--accent-primary);
+}
+
+.resize-handle-left {
+    right: -2px;
+}
+
+.resize-handle-right {
+    left: -2px;
 }
 
 /* To-Do Styles */
