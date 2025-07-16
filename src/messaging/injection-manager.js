@@ -159,17 +159,6 @@ class InjectionManager {
             return;
         }
         
-        // Check for plan mode delay (30 seconds after last plan mode injection)
-        if (this.lastPlanModeCompletionTime) {
-            const timeSinceLastPlanMode = Date.now() - this.lastPlanModeCompletionTime;
-            if (timeSinceLastPlanMode < this.planModeDelay) {
-                const remainingDelay = this.planModeDelay - timeSinceLastPlanMode;
-                this.gui.logAction(`Waiting ${Math.ceil(remainingDelay / 1000)} more seconds before next injection (plan mode delay)`, 'info');
-                this.updateVisualState();
-                return;
-            }
-        }
-        
         this.injectionSchedulingInProgress = true;
         
         try {

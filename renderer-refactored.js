@@ -112,7 +112,7 @@ class TerminalGUI {
         // Auto-continue and plan mode
         this.autoContinueEnabled = false;
         this.planModeEnabled = false;
-        this.planModeCommand = 'npx claude-flow@alpha sparc mode --type "dev" --task-description "{message}" --claude';
+        this.planModeCommand = 'npx claude-flow@alpha hive-mind spawn "{message}" --agents 5 --strategy development --claude';
         
         // Default preferences structure
         this.preferences = this.getDefaultPreferences();

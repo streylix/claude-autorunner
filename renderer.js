@@ -6624,14 +6624,24 @@ class TerminalGUI {
         if (!stableStartTime) {
             // Just became ready - start timing
             this.terminalStabilityTimers.set(terminalId, now);
-            this.logAction(`Terminal ${terminalId} became ready - starting 5-second stability timer`, 'info');
+            this.logAction(`Terminal ${terminalId} became ready - starting stability timer`, 'info');
             return false;
         }
         // Check if stable long enough
         const stableDuration = now - stableStartTime;
-        const requiredStableDuration = 5000; // 5 seconds
+        
+        // Use 30 seconds if last injection was in plan mode, otherwise 5 seconds
+        let requiredStableDuration = 5000; // 5 seconds default
+        if (this.injectionManager && this.injectionManager.lastPlanModeCompletionTime) {
+            const timeSinceLastPlanMode = Date.now() - this.injectionManager.lastPlanModeCompletionTime;
+            if (timeSinceLastPlanMode < this.injectionManager.planModeDelay) {
+                requiredStableDuration = 30000; // 30 seconds for plan mode
+            }
+        }
+        
         if (stableDuration >= requiredStableDuration) {
-            this.logAction(`Terminal ${terminalId} stable for ${stableDuration}ms - ready for injection`, 'success');
+            const delayType = requiredStableDuration === 30000 ? '30-second plan mode' : '5-second standard';
+            this.logAction(`Terminal ${terminalId} stable for ${stableDuration}ms (${delayType} delay) - ready for injection`, 'success');
             return true;
         }
         return false;
