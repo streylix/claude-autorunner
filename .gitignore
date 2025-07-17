@@ -238,9 +238,9 @@ package-lock.json
 
 coordination
 claude-todo
-.swarm
-.hive-mind
+.swarm/
+.hive-mind/
 .claude
-tests
-scripts
+tests/
+scripts/
 playwright-report
