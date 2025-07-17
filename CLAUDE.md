@@ -59,6 +59,12 @@ python test_auto_injector.py review "before" "after" "description of expected ch
 
 ### Testing and Validation
 
+**Virtual Environment Requirement:**
+ALWAYS use the `test_env` virtual environment when running the test script:
+```bash
+source test_env/bin/activate && python test_auto_injector.py [commands]
+```
+
 **Primary Test Script: `test_auto_injector.py`**
 Always use this script for testing changes. It provides automated UI interaction and verification capabilities.
 

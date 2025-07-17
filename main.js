@@ -323,34 +323,67 @@ function setupIpcHandlers() {
     const cwd = startDirectory || process.cwd();
     safeLog('Starting terminal', terminalId, 'with shell:', shell, 'cwd:', cwd);
     
-    const terminalProcess = pty.spawn(shell, [], {
-      name: 'xterm-color',
-      cols: 80,
-      rows: 24,
-      cwd: cwd,
-      env: process.env
-    });
-    safeLog('Terminal', terminalId, 'process spawned successfully');
+    try {
+      const terminalProcess = pty.spawn(shell, [], {
+        name: 'xterm-color',
+        cols: 80,
+        rows: 24,
+        cwd: cwd,
+        env: process.env
+      });
+      safeLog('Terminal', terminalId, 'process spawned successfully');
 
-    // Store in map
-    ptyProcesses.set(terminalId, terminalProcess);
-    
-    // Legacy support for terminal 1
-    if (terminalId === 1) {
-      ptyProcess = terminalProcess;
-    }
-
-    terminalProcess.onData((data) => {
-      event.reply('terminal-data', { terminalId, content: data });
-    });
-
-    terminalProcess.onExit(() => {
-      event.reply('terminal-exit', { terminalId });
-      ptyProcesses.delete(terminalId);
+      // Store in map
+      ptyProcesses.set(terminalId, terminalProcess);
+      
+      // Legacy support for terminal 1
       if (terminalId === 1) {
-        ptyProcess = null;
+        ptyProcess = terminalProcess;
       }
-    });
+
+      terminalProcess.onData((data) => {
+        event.reply('terminal-data', { terminalId, content: data });
+      });
+
+      terminalProcess.onExit(() => {
+        event.reply('terminal-exit', { terminalId });
+        ptyProcesses.delete(terminalId);
+        if (terminalId === 1) {
+          ptyProcess = null;
+        }
+      });
+    } catch (error) {
+      safeLog('Failed to spawn terminal', terminalId, 'Error:', error.message);
+      // Try fallback approaches
+      try {
+        // Try with simpler environment
+        const terminalProcess = pty.spawn('/bin/bash', [], {
+          name: 'xterm-color',
+          cols: 80,
+          rows: 24,
+          cwd: cwd,
+          env: { PATH: process.env.PATH, HOME: process.env.HOME, USER: process.env.USER }
+        });
+        safeLog('Terminal', terminalId, 'spawned successfully with fallback bash');
+        ptyProcesses.set(terminalId, terminalProcess);
+        if (terminalId === 1) {
+          ptyProcess = terminalProcess;
+        }
+        terminalProcess.onData((data) => {
+          event.reply('terminal-data', { terminalId, content: data });
+        });
+        terminalProcess.onExit(() => {
+          event.reply('terminal-exit', { terminalId });
+          ptyProcesses.delete(terminalId);
+          if (terminalId === 1) {
+            ptyProcess = null;
+          }
+        });
+      } catch (fallbackError) {
+        safeLog('Fallback terminal spawn also failed:', fallbackError.message);
+        event.reply('terminal-error', { terminalId, error: fallbackError.message });
+      }
+    }
   });
 
   ipcMain.on('terminal-input', (event, options) => {
