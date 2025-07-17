@@ -3859,6 +3859,24 @@ class TerminalGUI {
             });
         }
     }
+    
+    // Calculate adaptive typing speed based on message length
+    calculateTypingSpeed(messageLength) {
+        // Base speed for short messages (50ms)
+        const baseSpeed = 50;
+        
+        if (messageLength <= 100) {
+            // Normal speed for short messages
+            return baseSpeed;
+        } else if (messageLength <= 500) {
+            // Faster speed for medium messages (30ms)
+            return 30;
+        } else {
+            // Very fast speed for long messages (15ms)
+            return 15;
+        }
+    }
+    
     typeMessageToTerminal(message, terminalId, callback) {
         // Check if message contains escape sequences that should be sent directly
         const escapePatterns = [
@@ -3899,6 +3917,7 @@ class TerminalGUI {
         }
         // Otherwise, type character by character as normal
         let index = 0;
+        const typingSpeed = this.calculateTypingSpeed(message.length);
         const typeInterval = setInterval(() => {
             // Check if injection was cancelled (but skip this check for keyword responses)
             const isKeywordResponse = this.keywordBlockingActive;
@@ -3913,7 +3932,7 @@ class TerminalGUI {
                 clearInterval(typeInterval);
                 if (callback) callback();
             }
-        }, 50); // 50ms delay between characters
+        }, typingSpeed); // Adaptive typing speed based on message length
     }
     typeMessage(message, callback) {
         // Check if message contains escape sequences that should be sent directly
@@ -3958,6 +3977,7 @@ class TerminalGUI {
         }
         // Otherwise, type character by character as normal
         let index = 0;
+        const typingSpeed = this.calculateTypingSpeed(message.length);
         const typeInterval = setInterval(() => {
             // Check if injection was cancelled
             if (!this.injectionInProgress) {
@@ -3981,7 +4001,7 @@ class TerminalGUI {
                 clearInterval(typeInterval);
                 if (callback) callback();
             }
-        }, 50); // 50ms between characters for realistic typing speed
+        }, typingSpeed); // Adaptive typing speed based on message length
         // Store reference for potential cancellation
         this.currentTypeInterval = typeInterval;
     }
