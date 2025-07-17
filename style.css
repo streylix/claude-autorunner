@@ -53,6 +53,24 @@
     --terminal-4: #ffbe2e;
     --terminal-5: #af52de;
     --terminal-6: #5ac8fa;
+    --terminal-7: #ff6b9d;
+    --terminal-8: #4ecdc4;
+    --terminal-9: #ffa726;
+    --terminal-10: #7986cb;
+    --terminal-11: #26c6da;
+    --terminal-12: #66bb6a;
+    --terminal-13: #ef5350;
+    --terminal-14: #ab47bc;
+    --terminal-15: #ffc107;
+    --terminal-16: #42a5f5;
+    --terminal-17: #26a69a;
+    --terminal-18: #ec407a;
+    --terminal-19: #9ccc65;
+    --terminal-20: #ff7043;
+    --terminal-21: #5c6bc0;
+    --terminal-22: #29b6f6;
+    --terminal-23: #78909c;
+    --terminal-24: #8bc34a;
 }
 
 /* Light theme (Catppuccin Latte) */
@@ -103,6 +121,24 @@
     --terminal-4: #df8e1d;
     --terminal-5: #ea76cb;
     --terminal-6: #179299;
+    --terminal-7: #e64398;
+    --terminal-8: #209cee;
+    --terminal-9: #fa7c50;
+    --terminal-10: #8839ef;
+    --terminal-11: #04a5e5;
+    --terminal-12: #40a02b;
+    --terminal-13: #d20f39;
+    --terminal-14: #8839ef;
+    --terminal-15: #df8e1d;
+    --terminal-16: #1e66f5;
+    --terminal-17: #179299;
+    --terminal-18: #ea76cb;
+    --terminal-19: #40a02b;
+    --terminal-20: #fe640b;
+    --terminal-21: #7287fd;
+    --terminal-22: #04a5e5;
+    --terminal-23: #6c6f85;
+    --terminal-24: #40a02b;
 }
 
 /* System theme detection */

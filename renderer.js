@@ -22,7 +22,12 @@ class TerminalGUI {
         this.terminals = new Map(); // Map of terminal ID to terminal data
         this.activeTerminalId = 1;
         this.terminalIdCounter = 1;
-        this.terminalColors = ['#007acc', '#28ca42', '#ff5f57', '#ffbe2e', '#af52de', '#5ac8fa'];
+        this.terminalColors = [
+            '#007acc', '#28ca42', '#ff5f57', '#ffbe2e', '#af52de', '#5ac8fa',
+            '#ff6b9d', '#4ecdc4', '#ffa726', '#7986cb', '#26c6da', '#66bb6a',
+            '#ef5350', '#ab47bc', '#ffc107', '#42a5f5', '#26a69a', '#ec407a',
+            '#9ccc65', '#ff7043', '#5c6bc0', '#29b6f6', '#78909c', '#8bc34a'
+        ];
         this.pendingTerminalData = new Map(); // Queue data for terminals not yet initialized
         this.terminalSessionMap = new Map(); // Map of terminal ID to backend session UUID
         // Application session ID for statistics
@@ -1090,16 +1095,21 @@ class TerminalGUI {
             currentTerminalElement.addEventListener('click', (e) => {
                 e.stopPropagation();
                 
-                // Get the active terminal name from the status display
+                // Get the active terminal name and color from the status display
                 const terminalNameElement = document.getElementById('status-terminal-name');
+                const terminalDotElement = document.getElementById('status-terminal-dot');
                 const terminalName = terminalNameElement ? terminalNameElement.textContent : '';
+                const terminalColor = terminalDotElement ? terminalDotElement.style.backgroundColor : '';
                 
-                // Find the terminal wrapper with matching title
+                // Find the terminal wrapper with matching title AND color
                 const allWrappers = document.querySelectorAll('.terminal-wrapper');
                 let activeWrapper = null;
                 allWrappers.forEach(wrapper => {
                     const titleElement = wrapper.querySelector('.terminal-title');
-                    if (titleElement && titleElement.textContent === terminalName) {
+                    const colorDotElement = wrapper.querySelector('.terminal-color-dot');
+                    const wrapperColor = colorDotElement ? colorDotElement.style.backgroundColor : '';
+                    
+                    if (titleElement && titleElement.textContent === terminalName && wrapperColor === terminalColor) {
                         activeWrapper = wrapper;
                     }
                 });
@@ -7588,22 +7598,28 @@ class TerminalGUI {
     scrollToActiveTerminal() {
         console.log('=== scrollToActiveTerminal called ===');
         
-        // Get the active terminal name from the status display (same method as click handler)
+        // Get the active terminal name and color from the status display (same method as click handler)
         const terminalNameElement = document.getElementById('status-terminal-name');
+        const terminalDotElement = document.getElementById('status-terminal-dot');
         const terminalName = terminalNameElement ? terminalNameElement.textContent : '';
+        const terminalColor = terminalDotElement ? terminalDotElement.style.backgroundColor : '';
         console.log('Terminal name from status:', terminalName);
+        console.log('Terminal color from status:', terminalColor);
         
         if (!terminalName) {
             this.logAction('Terminal name not found in status display', 'error');
             return;
         }
         
-        // Find the terminal wrapper with matching title (same method as click handler)
+        // Find the terminal wrapper with matching title AND color (same method as click handler)
         const allWrappers = document.querySelectorAll('.terminal-wrapper');
         let activeWrapper = null;
         allWrappers.forEach(wrapper => {
             const titleElement = wrapper.querySelector('.terminal-title');
-            if (titleElement && titleElement.textContent === terminalName) {
+            const colorDotElement = wrapper.querySelector('.terminal-color-dot');
+            const wrapperColor = colorDotElement ? colorDotElement.style.backgroundColor : '';
+            
+            if (titleElement && titleElement.textContent === terminalName && wrapperColor === terminalColor) {
                 activeWrapper = wrapper;
             }
         });
