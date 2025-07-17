@@ -362,7 +362,59 @@ class TerminalGUI {
         // Handle window resize for all terminals
         window.addEventListener('resize', () => {
             this.resizeAllTerminals();
+            // Recalculate terminal selector text on window resize
+            this.updateTerminalSelectorText();
+            // Update dropdown widths when window is resized
+            this.updateTerminalDropdowns();
+            this.updateManualTerminalDropdown();
         });
+        
+        // Add resize observer for sidebar to handle sidebar resizing
+        const sidebar = document.getElementById('right-sidebar');
+        if (sidebar && window.ResizeObserver) {
+            let resizeTimeout;
+            const resizeObserver = new ResizeObserver(() => {
+                // Throttle updates to prevent excessive calculations during resize
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    // Update terminal selector and dropdown widths when sidebar is resized
+                    this.updateTerminalSelectorText();
+                    this.updateTerminalDropdowns();
+                    this.updateManualTerminalDropdown();
+                }, 50); // 50ms throttle
+            });
+            resizeObserver.observe(sidebar);
+        }
+        
+        // Add resize observer for input actions area to handle layout changes
+        const inputActions = document.querySelector('.input-actions');
+        if (inputActions && window.ResizeObserver) {
+            let inputResizeTimeout;
+            const inputResizeObserver = new ResizeObserver(() => {
+                // Throttle updates to prevent excessive calculations during resize
+                clearTimeout(inputResizeTimeout);
+                inputResizeTimeout = setTimeout(() => {
+                    // Update terminal selector width when input actions area changes
+                    this.updateTerminalSelectorText();
+                }, 50); // 50ms throttle
+            });
+            inputResizeObserver.observe(inputActions);
+        }
+        
+        // Add resize observer for terminal section to handle layout changes
+        const terminalSection = document.querySelector('.terminal-section');
+        if (terminalSection && window.ResizeObserver) {
+            let terminalResizeTimeout;
+            const terminalResizeObserver = new ResizeObserver(() => {
+                // Throttle updates to prevent excessive calculations during resize
+                clearTimeout(terminalResizeTimeout);
+                terminalResizeTimeout = setTimeout(() => {
+                    // Update terminal selector width when terminal section changes
+                    this.updateTerminalSelectorText();
+                }, 50); // 50ms throttle
+            });
+            terminalResizeObserver.observe(terminalSection);
+        }
         // Very frequent state saving to ensure terminal names persist during quick refreshes
         setInterval(() => {
             this.saveTerminalState();
@@ -5783,6 +5835,10 @@ class TerminalGUI {
             this.updateTerminalDropdowns();
             this.updateManualTerminalDropdown();
             this.switchToTerminal(this.activeTerminalId);
+            // Ensure terminal selector has proper dynamic width after restoration
+            setTimeout(() => {
+                this.updateTerminalSelectorText();
+            }, 100); // Small delay to ensure DOM is fully updated
             // Clear saved data after applying
             this.savedTerminalData = null;
         }
@@ -7567,6 +7623,155 @@ class TerminalGUI {
         // Use the main switchToTerminal function for consistency
         this.switchToTerminal(terminalId);
     }
+    
+    // Update terminal selector text for the active terminal
+    updateTerminalSelectorText() {
+        const activeTerminalData = this.terminals.get(this.activeTerminalId);
+        if (!activeTerminalData) return;
+        
+        const selectorText = document.querySelector('.terminal-selector-text');
+        const selectorBtn = document.getElementById('terminal-selector-btn');
+        if (selectorText && selectorBtn) {
+            const display = this.calculateOptimalTerminalDisplay(activeTerminalData.name);
+            selectorText.textContent = display.text;
+            selectorText.title = activeTerminalData.name;
+            selectorBtn.style.width = display.width + 'px';
+        }
+    }
+    
+    // Calculate optimal terminal selector width and text based on available space
+    calculateOptimalTerminalDisplay(terminalName) {
+        const selectorBtn = document.getElementById('terminal-selector-btn');
+        const leftControls = document.querySelector('.left-controls');
+        const inputActions = document.querySelector('.input-actions');
+        const sidebar = document.getElementById('right-sidebar');
+        
+        if (!selectorBtn || !leftControls || !inputActions) {
+            return { width: 120, text: terminalName }; // Default width if elements not ready
+        }
+        
+        // Check if elements have been laid out yet
+        if (inputActions.offsetWidth === 0) {
+            return { width: 120, text: terminalName }; // Default width if not laid out yet
+        }
+        
+        // Calculate available space more accurately
+        const inputActionsWidth = inputActions.offsetWidth;
+        const leftControlsChildren = Array.from(leftControls.children);
+        const otherControlsWidth = leftControlsChildren.reduce((total, child) => {
+            if (child.classList.contains('terminal-selector')) {
+                return total; // Skip the terminal selector itself
+            }
+            return total + child.offsetWidth;
+        }, 0);
+        
+        // Account for gaps between elements (8px per gap)
+        const gaps = (leftControlsChildren.length - 1) * 8;
+        
+        // Get right side controls (button-group) actual width
+        const buttonGroup = document.querySelector('.button-group');
+        const rightControlsWidth = buttonGroup ? buttonGroup.offsetWidth : 100;
+        
+        // Calculate available width for terminal selector more accurately
+        const sidebarWidth = sidebar ? sidebar.offsetWidth : 400;
+        const terminalSection = document.querySelector('.terminal-section');
+        const terminalSectionWidth = terminalSection ? terminalSection.offsetWidth : 0;
+        
+        // Calculate maximum width based on terminal section width (which accounts for sidebar resizing)
+        const maxViewportWidth = Math.min(
+            window.innerWidth - sidebarWidth - 100, // Respect sidebar and add reasonable margin
+            terminalSectionWidth - 50 // Ensure we don't exceed terminal section width
+        );
+        
+        // Calculate based on actual available space in input actions
+        // Use smaller safety margin when space is constrained
+        const preliminarySpace = inputActionsWidth - otherControlsWidth - gaps - rightControlsWidth;
+        const safetyMargin = preliminarySpace > 300 ? 15 : 5; // Even smaller safety margins
+        const spaceInInputActions = preliminarySpace - safetyMargin;
+        
+        const availableWidth = Math.min(spaceInInputActions, maxViewportWidth);
+        
+        // Debug logging to understand the calculation (uncomment if needed)
+        // console.log('Terminal selector width calculation:', {
+        //     inputActionsWidth,
+        //     otherControlsWidth,
+        //     gaps,
+        //     rightControlsWidth,
+        //     spaceInInputActions,
+        //     sidebarWidth,
+        //     terminalSectionWidth,
+        //     maxViewportWidth,
+        //     availableWidth,
+        //     terminalName
+        // });
+        
+        // Minimum and maximum widths - be even more aggressive about reducing size
+        const minWidth = 70; // Further reduced minimum width
+        const maxWidth = Math.min(350, Math.max(minWidth, availableWidth)); // Even more aggressive calculation
+        
+        // Calculate how much text can fit at this width
+        // Use canvas to measure text more accurately
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        context.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif';
+        
+        const dotWidth = 8;
+        const chevronWidth = 18;
+        const padding = 10; // Further reduced padding for more compact sizing
+        const availableTextWidth = maxWidth - dotWidth - chevronWidth - padding;
+        
+        // Check if the full text fits
+        const fullTextWidth = context.measureText(terminalName).width;
+        const maxChars = fullTextWidth <= availableTextWidth ? terminalName.length : Math.floor(availableTextWidth / 7); // Fallback to average char width
+        
+        let displayText = terminalName;
+        
+        // Only truncate if the full text doesn't fit
+        if (fullTextWidth > availableTextWidth && availableTextWidth > 30) {
+            // Smart truncation - try to keep meaningful parts
+            if (terminalName.includes('/')) {
+                const parts = terminalName.split('/');
+                const lastPart = parts[parts.length - 1];
+                const truncatedText = '.../' + lastPart;
+                if (context.measureText(truncatedText).width <= availableTextWidth) {
+                    displayText = truncatedText;
+                } else {
+                    // Truncate from the beginning
+                    let truncated = terminalName.substring(0, Math.max(1, maxChars - 3)) + '...';
+                    while (context.measureText(truncated).width > availableTextWidth && truncated.length > 4) {
+                        truncated = terminalName.substring(0, truncated.length - 4) + '...';
+                    }
+                    displayText = truncated;
+                }
+            } else if (maxChars > 6) {
+                // Show beginning and end
+                const startChars = Math.floor((maxChars - 3) / 2);
+                const endChars = maxChars - 3 - startChars;
+                displayText = terminalName.substring(0, startChars) + '...' + terminalName.substring(terminalName.length - endChars);
+            } else {
+                // Simple truncation
+                let truncated = terminalName.substring(0, Math.max(1, maxChars - 3)) + '...';
+                while (context.measureText(truncated).width > availableTextWidth && truncated.length > 4) {
+                    truncated = terminalName.substring(0, truncated.length - 4) + '...';
+                }
+                displayText = truncated;
+            }
+        }
+        
+        // Calculate optimal width based on actual text length
+        const actualTextWidth = context.measureText(displayText).width;
+        
+        // Calculate tight optimal width - only use what's needed
+        const optimalWidth = Math.max(minWidth, Math.min(maxWidth, actualTextWidth + dotWidth + chevronWidth + padding));
+        
+        // If we're in a constrained space, prioritize compactness even more
+        const constrainedWidth = availableWidth < 250 ? 
+            Math.max(minWidth, actualTextWidth + dotWidth + chevronWidth + padding) : 
+            optimalWidth;
+        
+        return { width: constrainedWidth, text: displayText };
+    }
+    
     switchToTerminal(terminalId) {
         console.log('switchToTerminal called with terminalId:', terminalId);
         const terminalData = this.terminals.get(terminalId);
@@ -7587,7 +7792,14 @@ class TerminalGUI {
         console.log('Updating selector button:', selectorBtn, selectorDot, selectorText);
         console.log('Setting color to:', terminalData.color, 'and text to:', terminalData.name);
         if (selectorDot) selectorDot.style.backgroundColor = terminalData.color;
-        if (selectorText) selectorText.textContent = terminalData.name;
+        if (selectorText) {
+            const display = this.calculateOptimalTerminalDisplay(terminalData.name);
+            selectorText.textContent = display.text;
+            // Store the full name as a title for tooltip
+            selectorText.title = terminalData.name;
+            // Set the dynamic width
+            selectorBtn.style.width = display.width + 'px';
+        }
         // Update dropdown to show new selection
         this.updateTerminalDropdowns();
         this.updateManualTerminalDropdown();
@@ -7710,6 +7922,9 @@ class TerminalGUI {
         if (!dropdown) return;
         // Clear existing items
         dropdown.innerHTML = '';
+        
+        let maxWidth = 0;
+        
         // Add items for each terminal
         this.terminals.forEach((terminalData, terminalId) => {
             const item = document.createElement('div');
@@ -7728,7 +7943,35 @@ class TerminalGUI {
                 this.hideTerminalSelectorDropdown();
             });
             dropdown.appendChild(item);
+            
+            // Calculate width needed for this item
+            const tempItem = item.cloneNode(true);
+            tempItem.style.visibility = 'hidden';
+            tempItem.style.position = 'absolute';
+            tempItem.style.width = 'auto';
+            tempItem.style.whiteSpace = 'nowrap';
+            document.body.appendChild(tempItem);
+            const itemWidth = tempItem.offsetWidth;
+            document.body.removeChild(tempItem);
+            
+            maxWidth = Math.max(maxWidth, itemWidth);
         });
+        
+        // Set the dropdown width to fit the longest item
+        const sidebar = document.getElementById('right-sidebar');
+        const sidebarWidth = sidebar ? sidebar.offsetWidth : 400;
+        const terminalSection = document.querySelector('.terminal-section');
+        const terminalSectionWidth = terminalSection ? terminalSection.offsetWidth : 0;
+        const viewportWidth = window.innerWidth;
+        
+        // Calculate maximum allowed width considering both viewport and terminal section constraints
+        const maxAllowedWidth = Math.min(
+            viewportWidth - sidebarWidth - 50, // 50px safety margin from viewport
+            terminalSectionWidth - 100 // 100px safety margin from terminal section
+        );
+        
+        const finalWidth = Math.min(maxWidth + 10, maxAllowedWidth); // 10px extra padding
+        dropdown.style.width = finalWidth + 'px';
     }
     
     cleanupOrphanedTerminalSelectorItems() {
@@ -7853,7 +8096,14 @@ class TerminalGUI {
                     this.updateManualTerminalDropdown();
                     // Update selector if this is the active terminal
                     if (terminalId === this.activeTerminalId) {
-                        document.querySelector('.terminal-selector-text').textContent = newText;
+                        const selectorText = document.querySelector('.terminal-selector-text');
+                        const selectorBtn = document.getElementById('terminal-selector-btn');
+                        if (selectorText && selectorBtn) {
+                            const display = this.calculateOptimalTerminalDisplay(newText);
+                            selectorText.textContent = display.text;
+                            selectorText.title = newText;
+                            selectorBtn.style.width = display.width + 'px';
+                        }
                     }
                     // Update backend session name if available
                     if (this.backendAPIClient) {
@@ -8639,6 +8889,9 @@ class TerminalGUI {
         if (!this.todoSystem || !this.todoSystem.manualGeneration) return;
         // Clear existing items
         dropdown.innerHTML = '';
+        
+        let maxWidth = 0;
+        
         // Add "All terminals" option first
         const allTerminalsItem = document.createElement('div');
         allTerminalsItem.className = 'manual-terminal-selector-item';
@@ -8651,6 +8904,17 @@ class TerminalGUI {
             <span class="manual-terminal-selector-text">All terminals</span>
         `;
         dropdown.appendChild(allTerminalsItem);
+        
+        // Calculate width for All Terminals item
+        const tempItem = allTerminalsItem.cloneNode(true);
+        tempItem.style.visibility = 'hidden';
+        tempItem.style.position = 'absolute';
+        tempItem.style.width = 'auto';
+        tempItem.style.whiteSpace = 'nowrap';
+        document.body.appendChild(tempItem);
+        maxWidth = Math.max(maxWidth, tempItem.offsetWidth);
+        document.body.removeChild(tempItem);
+        
         // Add items for each terminal (using the same logic as updateTerminalDropdowns)
         this.terminals.forEach((terminalData, terminalId) => {
             const item = document.createElement('div');
@@ -8664,7 +8928,35 @@ class TerminalGUI {
                 <span class="manual-terminal-selector-text">${terminalData.name}</span>
             `;
             dropdown.appendChild(item);
+            
+            // Calculate width needed for this item
+            const tempItem = item.cloneNode(true);
+            tempItem.style.visibility = 'hidden';
+            tempItem.style.position = 'absolute';
+            tempItem.style.width = 'auto';
+            tempItem.style.whiteSpace = 'nowrap';
+            document.body.appendChild(tempItem);
+            const itemWidth = tempItem.offsetWidth;
+            document.body.removeChild(tempItem);
+            
+            maxWidth = Math.max(maxWidth, itemWidth);
         });
+        
+        // Set the dropdown width to fit the longest item
+        const sidebar = document.getElementById('right-sidebar');
+        const sidebarWidth = sidebar ? sidebar.offsetWidth : 400;
+        const terminalSection = document.querySelector('.terminal-section');
+        const terminalSectionWidth = terminalSection ? terminalSection.offsetWidth : 0;
+        const viewportWidth = window.innerWidth;
+        
+        // Calculate maximum allowed width considering both viewport and terminal section constraints
+        const maxAllowedWidth = Math.min(
+            viewportWidth - sidebarWidth - 50, // 50px safety margin from viewport
+            terminalSectionWidth - 100 // 100px safety margin from terminal section
+        );
+        
+        const finalWidth = Math.min(maxWidth + 10, maxAllowedWidth); // 10px extra padding
+        dropdown.style.width = finalWidth + 'px';
     }
     updateManualModeDropdown() {
         const dropdown = document.getElementById('manual-mode-selector-dropdown');

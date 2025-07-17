@@ -269,12 +269,24 @@ body {
     justify-content: space-between;
     padding: 0 15px;
     border-bottom: 1px solid var(--border-primary);
+    /* Ensure header stays at fixed height even when content wraps */
+    overflow: hidden;
 }
 
 .terminal-title {
     font-size: 14px;
     color: var(--text-secondary);
     font-weight: 500;
+    /* Size to content with max width to prevent overlap */
+    max-width: calc(100% - 120px); /* Reserve space for status indicators */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    /* Don't use flex: 1 - let it be sized to content */
+    flex-shrink: 1;
+    min-width: 0;
+    /* Ensure vertical centering */
+    line-height: 1.2;
 }
 
 .terminal-status {
@@ -542,6 +554,11 @@ body {
     display: flex;
     align-items: center;
     gap: 6px;
+    flex: 1;
+    min-width: 0; /* Allow flex item to shrink */
+    /* Ensure content stays aligned in center of header */
+    height: 40px;
+    overflow: visible; /* Allow title to extend if needed during editing */
 }
 
 .terminal-color-dot {
@@ -567,6 +584,12 @@ body {
     outline: none;
     border: 1px solid var(--accent-primary);
     padding: 1px 3px;
+    /* Just remove ellipsis behavior during editing */
+    white-space: nowrap;
+    overflow: visible;
+    text-overflow: clip;
+    /* Keep normal positioning */
+    position: static;
 }
 
 .terminal-container {
@@ -591,7 +614,7 @@ body {
 .sidebar {
     width: 400px;
     min-width: 300px;
-    max-width: 600px;
+    max-width: min(600px, 40vw); /* Responsive max width based on viewport */
     flex-shrink: 0;
     background-color: var(--bg-primary);
     position: relative;
@@ -1405,12 +1428,13 @@ body {
 }
 
 .terminal-selector-btn {
-    width: auto;
-    min-width: 100px;
+    width: auto; /* Will be set dynamically by JS */
+    min-width: 70px; /* Further reduced minimum width */
+    max-width: calc(100vw - 700px); /* Dynamic max width based on viewport and sidebar space */
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 0 8px;
+    gap: 3px; /* Reduced gap for more compact spacing */
+    padding: 0 5px; /* Further reduced padding for more compact sizing */
     height: 28px;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-primary);
@@ -1419,7 +1443,7 @@ body {
     font-size: 12px;
     cursor: pointer;
     transition: all 0.2s;
-    flex-shrink: 0;
+    flex-shrink: 1; /* Allow shrinking when needed */
 }
 
 .terminal-selector-btn:hover {
@@ -1437,6 +1461,9 @@ body {
 .terminal-selector-text {
     flex: 1;
     text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .terminal-selector-btn i {
@@ -1457,6 +1484,7 @@ body {
     z-index: 1000;
     overflow: hidden;
     min-width: 120px;
+    max-width: calc(100vw - 600px); /* Dynamic max width based on viewport and sidebar space */
     width: auto;
 }
 
@@ -1470,6 +1498,16 @@ body {
     position: relative;
     font-size: 12px;
     white-space: nowrap;
+    overflow: hidden;
+    max-width: calc(100vw - 600px); /* Dynamic max width based on viewport and sidebar space */
+}
+
+.terminal-selector-item span:not(.terminal-selector-dot) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
 }
 
 .terminal-selector-item:hover {
@@ -1492,12 +1530,16 @@ body {
     gap: 8px;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+    min-width: 0;
 }
 
 .left-controls {
     display: flex;
     gap: 8px;
     align-items: center;
+    flex: 1;
+    min-width: 0;
 }
 
 .left-controls .terminal-selector {
@@ -3799,7 +3841,7 @@ body {
 .manual-terminal-selector-btn {
     width: auto;
     min-width: 80px;
-    max-width: 140px;
+    max-width: calc(100vw - 700px); /* Dynamic max width based on viewport and sidebar space */
     display: flex;
     align-items: center;
     gap: 6px;
@@ -3854,6 +3896,7 @@ body {
     z-index: 1000;
     overflow: hidden;
     min-width: 120px;
+    max-width: calc(100vw - 600px); /* Dynamic max width based on viewport and sidebar space */
     width: auto;
 }
 
@@ -3867,6 +3910,16 @@ body {
     position: relative;
     font-size: 12px;
     white-space: nowrap;
+    overflow: hidden;
+    max-width: 250px; /* Limit dropdown width */
+}
+
+.manual-terminal-selector-item span:not(.manual-terminal-selector-dot) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
 }
 
 .manual-terminal-selector-item:hover {
