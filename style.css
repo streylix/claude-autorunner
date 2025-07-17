@@ -3660,6 +3660,7 @@ body {
     opacity: 0;
     transition: opacity 0.2s ease;
     margin-bottom: 4px;
+    pointer-events: none;
 }
 
 .hotkey-enabled:hover::after {
@@ -3699,6 +3700,7 @@ body {
     opacity: 0;
     transition: opacity 0.2s ease;
     margin-bottom: -4px;
+    pointer-events: none;
 }
 
 .hotkey-enabled:hover::before {
