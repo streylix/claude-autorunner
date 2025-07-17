@@ -672,6 +672,67 @@ body {
     color: var(--accent-primary);
 }
 
+.status-value .terminal-color-dot {
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.status-value #status-terminal-name {
+    vertical-align: middle;
+}
+
+.status-value.clickable {
+    cursor: pointer;
+}
+
+.status-value.clickable:hover {
+    color: var(--accent-primary);
+}
+
+/* Terminal header pulse animation */
+@keyframes terminal-pulse {
+    0% {
+        background-color: var(--bg-primary) !important;
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(64, 169, 255, 0);
+        border: 2px solid transparent;
+    }
+    25% {
+        background-color: rgba(64, 169, 255, 0.8) !important;
+        transform: scale(1.05);
+        box-shadow: 0 0 0 8px rgba(64, 169, 255, 0.6);
+        border: 2px solid rgba(64, 169, 255, 1);
+    }
+    50% {
+        background-color: rgba(64, 169, 255, 1) !important;
+        transform: scale(1.08);
+        box-shadow: 0 0 0 16px rgba(64, 169, 255, 0.4);
+        border: 2px solid rgba(255, 255, 255, 0.8);
+    }
+    75% {
+        background-color: rgba(64, 169, 255, 0.6) !important;
+        transform: scale(1.03);
+        box-shadow: 0 0 0 10px rgba(64, 169, 255, 0.3);
+        border: 2px solid rgba(64, 169, 255, 0.8);
+    }
+    100% {
+        background-color: var(--bg-primary) !important;
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(64, 169, 255, 0);
+        border: 2px solid transparent;
+    }
+}
+
+.terminal-header.highlight-animation {
+    animation: terminal-pulse 1.5s ease-in-out !important;
+    position: relative !important;
+    z-index: 1000 !important;
+    border-radius: 6px !important;
+    transition: none !important;
+    overflow: visible !important;
+    background-color: rgba(64, 169, 255, 0.8) !important;
+}
+
 .section-header {
     display: flex;
     justify-content: space-between;

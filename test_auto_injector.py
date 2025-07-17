@@ -14,6 +14,7 @@ Usage:
 Commands:
     screenshot <name>                    - Take a screenshot with given name
     click <data-test-id>                 - Click element by data-test-id
+    click_id <element-id>                - Click element by id attribute
     close_terminal <terminal-id>         - Close specific terminal by ID
     type <text> [input-id]              - Type text into input (default: message-input)
     wait <seconds>                      - Wait for specified seconds
@@ -235,6 +236,34 @@ class AutoInjectorTester:
         except Exception as e:
             print(f"Error clicking element with test-id '{test_id}': {e}")
             return False
+    
+    def click_by_id(self, element_id):
+        """Click an element by its id attribute."""
+        if not self.driver:
+            print("Error: Not connected to app. Use 'connect' command first.")
+            return False
+            
+        try:
+            # Try direct JavaScript execution first
+            js_click = f"document.getElementById('{element_id}').click();"
+            self.driver.execute_script(js_click)
+            print(f"Clicked element with id: {element_id} (via JavaScript)")
+            return True
+        except Exception as e:
+            print(f"JavaScript click failed, trying Selenium click: {e}")
+            try:
+                element = self.wait.until(
+                    EC.element_to_be_clickable((By.ID, element_id))
+                )
+                element.click()
+                print(f"Clicked element with id: {element_id} (via Selenium)")
+                return True
+            except TimeoutException:
+                print(f"Element with id '{element_id}' not found or not clickable")
+                return False
+            except Exception as e:
+                print(f"Error clicking element with id '{element_id}': {e}")
+                return False
     
     def click_close_terminal_by_id(self, terminal_id):
         """Click the close button for a specific terminal ID."""
@@ -556,6 +585,12 @@ class AutoInjectorTester:
                     result = False
                 else:
                     result = self.click_by_test_id(args[0])
+            elif cmd == "click_id":
+                if not args:
+                    print("Error: click_id requires an element id")
+                    result = False
+                else:
+                    result = self.click_by_id(args[0])
             elif cmd == "close_terminal":
                 if not args:
                     print("Error: close_terminal requires a terminal ID")

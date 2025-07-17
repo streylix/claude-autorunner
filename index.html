@@ -171,6 +171,13 @@
                     </div>
                     <div class="status-info">
                         <div class="status-item">
+                            <span class="status-label">Terminal Selected:</span>
+                            <span class="status-value clickable" id="current-terminal" title="Click to scroll to terminal">
+                                <span class="terminal-color-dot" id="status-terminal-dot" style="background-color: #007acc;"></span>
+                                <span id="status-terminal-name">Terminal 1</span>
+                            </span>
+                        </div>
+                        <div class="status-item">
                             <span class="status-label">Directory:</span>
                             <span class="status-value directory-path tooltip" id="current-directory" title="Click to change directory">/Users/ethan/claude code bot
                                 <span class="tooltip-text" id="directory-tooltip">/Users/ethan/claude code bot</span>
@@ -187,10 +194,6 @@
                         <div class="status-item">
                             <span class="status-label">Keywords:</span>
                             <span class="status-value" id="keyword-count">0</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-label">Prompts:</span>
-                            <span class="status-value clickable" id="plan-count" title="Click to view prompts">0</span>
                         </div>
                     </div>
                 </div>
@@ -523,23 +526,6 @@
                 <div class="history-list" id="history-list">
                     <div class="history-empty">
                         <p>No message history yet. Messages will appear here after they are successfully injected.</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Plans Modal -->
-    <div id="plans-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Detected Prompts</h3>
-                <button class="modal-close" id="plans-close" title="Close prompts" data-test-id="plans-close-btn">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="plans-container">
-                    <div class="plans-list" id="plans-list">
-                        <!-- Prompts will be populated here -->
                     </div>
                 </div>
             </div>

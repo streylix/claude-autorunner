@@ -35,7 +35,6 @@ class TerminalGUI {
         this.schedulingInProgress = false; // Prevent concurrent scheduling calls
         this.injectionCount = 0;
         this.keywordCount = 0;
-        this.promptCount = 0;
         this.currentlyInjectingMessages = new Set(); // Track messages being injected per terminal
         this.currentlyInjectingTerminals = new Set(); // Track which terminals are currently injecting
         this.terminalStabilityTimers = new Map(); // Track per-terminal stability start times
@@ -85,7 +84,6 @@ class TerminalGUI {
                     response: "do not credit yourself"
                 }
             ],
-            promptRules: [], // Store detected prompts
             // Add timer persistence
             timerHours: 0,
             timerMinutes: 0,
@@ -1086,6 +1084,52 @@ class TerminalGUI {
         document.getElementById('current-directory').addEventListener('click', () => {
             this.openDirectoryBrowser();
         });
+        // Terminal status click handler - scroll to terminal and highlight
+        const currentTerminalElement = document.getElementById('current-terminal');
+        if (currentTerminalElement) {
+            currentTerminalElement.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                // Get the active terminal name from the status display
+                const terminalNameElement = document.getElementById('status-terminal-name');
+                const terminalName = terminalNameElement ? terminalNameElement.textContent : '';
+                
+                // Find the terminal wrapper with matching title
+                const allWrappers = document.querySelectorAll('.terminal-wrapper');
+                let activeWrapper = null;
+                allWrappers.forEach(wrapper => {
+                    const titleElement = wrapper.querySelector('.terminal-title');
+                    if (titleElement && titleElement.textContent === terminalName) {
+                        activeWrapper = wrapper;
+                    }
+                });
+                
+                // Apply pulse effect to the active terminal header
+                if (activeWrapper) {
+                    const terminalHeader = activeWrapper.querySelector('.terminal-header');
+                    if (terminalHeader) {
+                        terminalHeader.style.transition = 'background-color 0.3s ease';
+                        
+                        // Create 3 pulses
+                        const pulse = (count) => {
+                            if (count > 0) {
+                                terminalHeader.style.backgroundColor = 'rgba(64, 169, 255, 0.8)';
+                                setTimeout(() => {
+                                    terminalHeader.style.backgroundColor = '';
+                                    setTimeout(() => pulse(count - 1), 200);
+                                }, 300);
+                            } else {
+                                terminalHeader.style.transition = '';
+                            }
+                        };
+                        
+                        pulse(3);
+                    }
+                }
+                
+                this.scrollToActiveTerminal();
+            });
+        }
         document.getElementById('clear-queue-header-btn').addEventListener('click', () => {
             this.clearQueue();
         });
@@ -1271,18 +1315,6 @@ class TerminalGUI {
         document.getElementById('clear-history-btn').addEventListener('click', () => {
             if (confirm('Are you sure you want to clear all message history? This cannot be undone.')) {
                 this.clearMessageHistory();
-            }
-        });
-        // Prompts modal listeners
-        document.getElementById('plan-count').addEventListener('click', () => {
-            this.openPromptsModal();
-        });
-        document.getElementById('plans-close').addEventListener('click', () => {
-            this.closePromptsModal();
-        });
-        document.getElementById('plans-modal').addEventListener('click', (e) => {
-            if (e.target.id === 'plans-modal') {
-                this.closePromptsModal();
             }
         });
         // Settings controls
@@ -4115,8 +4147,6 @@ class TerminalGUI {
         }
         // Check all terminals for keyword blocking (global check for injection blocking)
         const allTerminalsKeywordResult = this.checkForKeywordBlocking();
-        // Check for plan detection in all terminals
-        this.checkForPromptDetection();
         // Update injection blocking status based on all terminals
         const previouslyBlocked = this.injectionBlocked;
         this.injectionBlocked = hasEscToInterrupt || allTerminalsKeywordResult.blocked;
@@ -4855,6 +4885,20 @@ class TerminalGUI {
         }
     }
     updateStatusDisplay() {
+        // Update terminal information
+        const activeTerminal = this.terminals.get(this.activeTerminalId);
+        if (activeTerminal) {
+            const terminalDotElement = document.getElementById('status-terminal-dot');
+            const terminalNameElement = document.getElementById('status-terminal-name');
+            if (terminalDotElement) {
+                terminalDotElement.style.backgroundColor = activeTerminal.color;
+            }
+            if (terminalNameElement) {
+                terminalNameElement.textContent = activeTerminal.name;
+            }
+        }
+        
+        // Update directory information
         const directoryElement = document.getElementById('current-directory');
         const tooltipElement = document.getElementById('directory-tooltip');
         const displayDirectory = this.currentDirectory || 'Loading...';
@@ -4863,7 +4907,6 @@ class TerminalGUI {
         document.getElementById('injection-count').textContent = this.injectionCount;
         document.getElementById('queue-count').textContent = this.messageQueue.length;
         document.getElementById('keyword-count').textContent = this.keywordCount;
-        document.getElementById('plan-count').textContent = this.promptCount;
         // Update execution times in message list
         const executionTimeElements = document.querySelectorAll('.execution-time');
         executionTimeElements.forEach((element, index) => {
@@ -4881,7 +4924,6 @@ class TerminalGUI {
                     current_directory: this.currentDirectory || '~',
                     injection_count: this.injectionCount,
                     keyword_count: this.keywordCount,
-                    prompt_count: this.promptCount,
                     terminal_count: this.terminals.size,
                     active_terminal_id: this.activeTerminalId,
                     terminal_id_counter: this.terminalIdCounter
@@ -4903,7 +4945,6 @@ class TerminalGUI {
                     this.currentDirectory = backendStats.current_directory || this.currentDirectory;
                     this.injectionCount = backendStats.injection_count || this.injectionCount;
                     this.keywordCount = backendStats.keyword_count || this.keywordCount;
-                    this.promptCount = backendStats.prompt_count || this.promptCount;
                     this.activeTerminalId = backendStats.active_terminal_id || this.activeTerminalId;
                     this.terminalIdCounter = backendStats.terminal_id_counter || this.terminalIdCounter;
                     // Update the display with loaded values
@@ -5028,38 +5069,6 @@ class TerminalGUI {
     closeMessageHistoryModal() {
         const modal = document.getElementById('message-history-modal');
         modal.classList.remove('show');
-    }
-    openPromptsModal() {
-        const modal = document.getElementById('plans-modal');
-        modal.classList.add('show');
-        this.updatePromptsModal();
-    }
-    closePromptsModal() {
-        const modal = document.getElementById('plans-modal');
-        modal.classList.remove('show');
-    }
-    updatePromptsModal() {
-        const promptsList = document.getElementById('plans-list');
-        if (this.preferences.promptRules.length === 0) {
-            promptsList.innerHTML = `
-                <div class="plans-empty">
-                    <p>No prompts detected yet. Prompts will appear here when Claude provides options.</p>
-                </div>
-            `;
-            return;
-        }
-        const promptsHTML = this.preferences.promptRules.map(prompt => `
-            <div class="plan-item">
-                <div class="plan-item-header">
-                    <span class="plan-item-date">${new Date(prompt.timestamp).toLocaleString()}</span>
-                    <span class="plan-item-terminal">Terminal ${prompt.terminalId}</span>
-                </div>
-                <div class="plan-item-content">
-                    <pre>${prompt.content}</pre>
-                </div>
-            </div>
-        `).join('');
-        promptsList.innerHTML = promptsHTML;
     }
     // Terminal search functionality
     toggleTerminalSearch(terminalId) {
@@ -5585,8 +5594,6 @@ class TerminalGUI {
             await this.populateSoundEffects();
             // Load saved usage limit reset time and start auto-sync if available
             await this.loadUsageLimitResetTime();
-            // Synchronize promptCount with loaded promptRules
-            this.syncPromptCount();
             this.logAction('Preferences loaded successfully from database', 'success');
         } catch (error) {
             console.error('Error loading preferences:', error);
@@ -6393,76 +6400,6 @@ class TerminalGUI {
             return letterCount > 0 && (letterCount / totalLength) >= 0.3;
         });
         return alphabeticalLines.join('\n').trim();
-    }
-    checkTerminalForPrompts(terminalOutput) {
-        // Ensure we have terminal output to check
-        if (!terminalOutput || terminalOutput.trim() === '') {
-            return { found: false };
-        }
-        // Use dedicated function to extract text between markers
-        const promptArea = this.extractTextBetweenMarkers(terminalOutput, "╭", "╯");
-        if (!promptArea) {
-            return { found: false };
-        }
-        // Check if this area contains either trigger phrase
-        if (!promptArea.includes("No, keep planning") && !promptArea.includes("No, and tell Claude what to do differently")) {
-            return { found: false };
-        }
-        // Keep the full content including formatting and colors
-        // Remove only the markers but preserve everything else
-        let promptContent = promptArea.replace(/╭/g, '').replace(/╯/g, '');
-        // Clean up leading/trailing whitespace but preserve internal formatting
-        promptContent = promptContent.trim();
-        // Generate unique ID for the prompt
-        const promptId = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
-        // Create prompt object
-        const prompt = {
-            id: promptId,
-            content: promptContent,
-            timestamp: new Date().toISOString(),
-            terminalId: this.activeTerminalId
-        };
-        console.log('Prompt detected:', prompt);
-        return {
-            found: true,
-            prompt: prompt
-        };
-    }
-    syncPromptCount() {
-        // Synchronize promptCount with the actual length of promptRules array
-        if (this.preferences.promptRules && Array.isArray(this.preferences.promptRules)) {
-            this.promptCount = this.preferences.promptRules.length;
-            this.updateStatusDisplay();
-            console.log(`Prompt count synchronized: ${this.promptCount} prompts loaded`);
-        } else {
-            this.promptCount = 0;
-            this.updateStatusDisplay();
-        }
-    }
-    checkForPromptDetection() {
-        // Check all terminals for prompt detection
-        for (const [terminalId, terminalData] of this.terminals) {
-            if (!terminalData.lastOutput || terminalData.lastOutput.trim() === '') {
-                continue;
-            }
-            const result = this.checkTerminalForPrompts(terminalData.lastOutput);
-            if (result.found) {
-                // Check for duplicates using content comparison
-                const isDuplicate = this.preferences.promptRules.some(existingPrompt => 
-                    existingPrompt.content === result.prompt.content
-                );
-                if (!isDuplicate) {
-                    // Add to preferences
-                    this.preferences.promptRules.push(result.prompt);
-                    this.saveAllPreferences();
-                    // Update counter using sync method to ensure consistency
-                    this.syncPromptCount();
-                    console.log(`Prompt detected in Terminal ${terminalId} and added to list`);
-                    return result;
-                }
-            }
-        }
-        return { found: false };
     }
     checkForKeywordBlocking() {
         // Check all terminals for keyword blocking
@@ -7647,6 +7584,83 @@ class TerminalGUI {
         this.updateStatusDisplay();
         this.saveTerminalState();
         this.logAction(`Selected ${terminalData.name}`, 'info');
+    }
+    scrollToActiveTerminal() {
+        console.log('=== scrollToActiveTerminal called ===');
+        
+        // Get the active terminal name from the status display (same method as click handler)
+        const terminalNameElement = document.getElementById('status-terminal-name');
+        const terminalName = terminalNameElement ? terminalNameElement.textContent : '';
+        console.log('Terminal name from status:', terminalName);
+        
+        if (!terminalName) {
+            this.logAction('Terminal name not found in status display', 'error');
+            return;
+        }
+        
+        // Find the terminal wrapper with matching title (same method as click handler)
+        const allWrappers = document.querySelectorAll('.terminal-wrapper');
+        let activeWrapper = null;
+        allWrappers.forEach(wrapper => {
+            const titleElement = wrapper.querySelector('.terminal-title');
+            if (titleElement && titleElement.textContent === terminalName) {
+                activeWrapper = wrapper;
+            }
+        });
+        
+        console.log('Terminal wrapper found:', activeWrapper);
+        if (!activeWrapper) {
+            this.logAction(`Terminal wrapper not found for ${terminalName}`, 'error');
+            return;
+        }
+        
+        // Get the terminals container for horizontal scrolling
+        const terminalsContainer = document.getElementById('terminals-container');
+        if (!terminalsContainer) {
+            this.logAction('Terminals container not found', 'error');
+            return;
+        }
+        
+        // Always scroll horizontally to center the selected terminal
+        const scrollLeft = activeWrapper.offsetLeft - (terminalsContainer.offsetWidth / 2) + (activeWrapper.offsetWidth / 2);
+        terminalsContainer.scrollTo({
+            left: scrollLeft,
+            behavior: 'smooth'
+        });
+        
+        // Add highlight animation to terminal header (always trigger animation)
+        const terminalHeader = activeWrapper.querySelector('.terminal-header');
+        if (terminalHeader) {
+            console.log('Adding pulse animation to terminal header');
+            // Create a pulsing effect with background color changes
+            let pulseCount = 0;
+            const maxPulses = 3;
+            
+            const doPulse = () => {
+                // Pulse to accent color
+                terminalHeader.style.backgroundColor = 'rgba(64, 169, 255, 0.8)';
+                terminalHeader.style.transition = 'background-color 0.3s ease';
+                
+                setTimeout(() => {
+                    // Return to normal
+                    terminalHeader.style.backgroundColor = '';
+                    
+                    pulseCount++;
+                    if (pulseCount < maxPulses) {
+                        setTimeout(doPulse, 200);
+                    } else {
+                        // Clean up
+                        terminalHeader.style.transition = '';
+                    }
+                }, 300);
+            };
+            
+            doPulse();
+        }
+        
+        // Always trigger the animation even if we can't scroll, to show which terminal is active
+        
+        this.logAction(`Scrolled to ${this.terminals.get(this.activeTerminalId).name}`, 'info');
     }
     cycleToNextTerminal() {
         const terminalIds = Array.from(this.terminals.keys()).sort((a, b) => a - b);
