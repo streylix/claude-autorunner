@@ -242,3 +242,5 @@ claude-todo
 .hive-mind
 .claude
 tests
+scripts
+playwright-report
