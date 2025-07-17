@@ -58,11 +58,11 @@ function getIcon() {
   const iconOptions = [];
   
   if (process.platform === 'darwin') {
-    iconOptions.push('logo.png', 'icon.icns');
+    iconOptions.push('assets/icons/logo.png', 'assets/icons/icon.icns');
   } else if (process.platform === 'win32') {
-    iconOptions.push('icon.ico', 'logo.png');
+    iconOptions.push('assets/icons/icon.ico', 'assets/icons/logo.png');
   } else {
-    iconOptions.push('logo.png', 'icon.icns');
+    iconOptions.push('assets/icons/logo.png', 'assets/icons/icon.icns');
   }
   
   for (const iconFile of iconOptions) {
@@ -120,7 +120,7 @@ async function writeDataFile(data) {
 
 
 function createTray() {
-  const iconPath = getIcon() || path.join(__dirname, 'logo.png');
+  const iconPath = getIcon() || path.join(__dirname, 'assets/icons/logo.png');
   tray = new Tray(iconPath);
 
   const contextMenu = Menu.buildFromTemplate([
@@ -278,7 +278,7 @@ app.whenReady().then(() => {
   // Set dock icon (macOS specific)
   if (process.platform === 'darwin') {
     try {
-      const logoIconPath = path.join(__dirname, 'logo.png');
+      const logoIconPath = path.join(__dirname, 'assets/icons/logo.png');
       safeLog('Setting dock icon from:', logoIconPath);
       app.dock.setIcon(logoIconPath);
     } catch (error) {

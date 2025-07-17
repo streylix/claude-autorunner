@@ -14,7 +14,9 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "build": "electron-builder"
+    "build": "electron-builder",
+    "rebuild": "electron-rebuild",
+    "postinstall": "electron-rebuild"
   },
   "build": {
     "appId": "com.auto.injector",
@@ -38,7 +40,8 @@
   },
   "devDependencies": {
     "electron": "^27.0.0",
-    "electron-builder": "^24.6.4"
+    "electron-builder": "^24.6.4",
+    "electron-rebuild": "^3.2.9"
   },
   "dependencies": {
     "@xenova/transformers": "^2.17.2",
