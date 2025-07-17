@@ -61,7 +61,7 @@ class TerminalGUI {
             autoscrollDelay: 3000,
             autoContinueEnabled: false,
             planModeEnabled: false,
-            planModeCommand: 'npx claude-flow@alpha sparc mode --type "dev" --task-description "{message}" --claude',
+            planModeCommand: 'npx claude-flow@alpha hive-mind spawn "{message}" --agents 5 --strategy development --claude',
             defaultDuration: 5,
             defaultUnit: 'seconds',
             theme: 'dark',
