@@ -5600,7 +5600,7 @@ class TerminalGUI {
             this.updateKeywordRulesDisplay();
             // Update sound settings visibility
             this.updateSoundSettingsVisibility();
-            // Populate sound effects from soundeffects folder
+            // Populate sound effects from assets/soundeffects folder
             await this.populateSoundEffects();
             // Load saved usage limit reset time and start auto-sync if available
             await this.loadUsageLimitResetTime();
@@ -6923,7 +6923,7 @@ class TerminalGUI {
             return;
         }
         try {
-            const audio = new Audio(`./soundeffects/${filename}`);
+            const audio = new Audio(`./assets/soundeffects/${filename}`);
             audio.volume = 0.5; // Set volume to 50%
             audio.play().catch(error => {
                 console.error('Error playing sound:', error);
@@ -6943,7 +6943,7 @@ class TerminalGUI {
             return;
         }
         try {
-            const audio = new Audio(`./soundeffects/${soundFile}`);
+            const audio = new Audio(`./assets/soundeffects/${soundFile}`);
             audio.volume = 0.5; // Set volume to 50%
             audio.play().catch(error => {
                 console.error('Error playing completion sound:', error);
@@ -6963,7 +6963,7 @@ class TerminalGUI {
             return;
         }
         try {
-            const audio = new Audio(`./soundeffects/${soundFile}`);
+            const audio = new Audio(`./assets/soundeffects/${soundFile}`);
             audio.volume = 0.5; // Set volume to 50%
             audio.play().catch(error => {
                 console.error('Error playing injection sound:', error);
@@ -6999,7 +6999,7 @@ class TerminalGUI {
             return;
         }
         try {
-            const audio = new Audio(`./soundeffects/${soundFile}`);
+            const audio = new Audio(`./assets/soundeffects/${soundFile}`);
             audio.volume = 0.5; // Set volume to 50%
             audio.play().catch(error => {
                 console.error('Error playing prompted sound:', error);

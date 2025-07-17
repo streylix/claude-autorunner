@@ -230,7 +230,15 @@ addmsg
 listmsg
 CLAUDE.md
 claude-flow
+test-results
 
 analyze_functions.py
 test_auto_injector.py
 package-lock.json
+
+coordination
+claude-todo
+.swarm
+.hive-mind
+.claude
+tests

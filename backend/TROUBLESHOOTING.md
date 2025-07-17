@@ -50,7 +50,7 @@ cp .env.example .env
 
 ### Option 1: Quick Start (Recommended)
 ```bash
-./start_simple.sh
+./scripts/scripts/start_simple.sh
 ```
 - Starts frontend immediately
 - Backend runs in background
@@ -58,7 +58,7 @@ cp .env.example .env
 
 ### Option 2: Wait for Backend
 ```bash
-./start_with_backend.sh
+./scripts/start_with_backend.sh
 ```
 - Waits for backend to be ready
 - May timeout if backend has issues
@@ -107,7 +107,7 @@ The Electron app is designed to work with or without the Django backend:
 
 ## Log Files
 
-- **Backend logs**: `backend/backend.log` (when using start_simple.sh)
+- **Backend logs**: `backend/backend.log` (when using scripts/start_simple.sh)
 - **Frontend logs**: Check the Electron app's developer console (Cmd+Option+I)
 
 ## Getting Help

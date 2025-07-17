@@ -44,10 +44,10 @@ python manage.py migrate
 
 # Start both backend and frontend (with waiting for backend)
 cd ..
-./start_with_backend.sh
+./scripts/start_with_backend.sh
 
 # OR start immediately without waiting (recommended)
-./start_simple.sh
+./scripts/start_simple.sh
 ```
 
 ## 📄 License

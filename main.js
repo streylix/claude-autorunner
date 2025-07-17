@@ -601,7 +601,7 @@ function setupIpcHandlers() {
   // Get sound effects files
   ipcMain.handle('get-sound-effects', async () => {
     try {
-      const soundEffectsDir = path.join(__dirname, 'soundeffects');
+      const soundEffectsDir = path.join(__dirname, 'assets', 'soundeffects');
       const files = await fs.readdir(soundEffectsDir);
       
       // Filter for audio files only

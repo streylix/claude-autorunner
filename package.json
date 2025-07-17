@@ -20,13 +20,13 @@
     "appId": "com.auto.injector",
     "productName": "Auto-Injector",
     "mac": {
-      "icon": "icon.icns"
+      "icon": "assets/icons/icon.icns"
     },
     "win": {
-      "icon": "icon.ico"
+      "icon": "assets/icons/icon.ico"
     },
     "linux": {
-      "icon": "icon.png"
+      "icon": "assets/icons/icon.png"
     },
     "files": [
       "**/*",
