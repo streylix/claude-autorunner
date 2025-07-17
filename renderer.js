@@ -158,6 +158,12 @@ class TerminalGUI {
             lastUpdate: Date.now()
         };
         this.terminalStatuses = new Map(); // Per-terminal status tracking
+        
+        // Event-driven status update system
+        this.enableFallbackPolling = false; // Disable fallback polling by default
+        this.statusUpdateTimeouts = new Map(); // Debouncing timeouts per terminal
+        this.lastStatusUpdateTime = new Map(); // Last update time per terminal
+        this.lastProcessedOutput = new Map(); // Last processed output per terminal for change detection
         // 3-minute delay mechanism for todo generation
         this.terminalStabilityTracking = new Map(); // Track stability for each terminal
         this.todoGenerationCooldown = 3 * 60 * 1000; // 3 minutes in milliseconds
@@ -829,6 +835,8 @@ class TerminalGUI {
                 this.detectCwdChange(data.content, terminalId);
                 // Handle autoscrolling for this specific terminal
                 this.handleTerminalOutput(terminalId);
+                // Event-driven status update triggered by terminal output
+                this.updateTerminalStatusFromOutput(terminalId, data.content);
                 // Update active terminal references only for the active terminal
                 if (terminalId === this.activeTerminalId) {
                     this.terminal = terminalData.terminal;
@@ -3487,10 +3495,16 @@ class TerminalGUI {
         callback();
     }
     startTerminalStatusScanning() {
-        // Start continuous scanning every 10ms
-        this.terminalScanInterval = setInterval(() => {
-            this.scanAndUpdateTerminalStatus();
-        }, 10);
+        // Event-driven status scanning - no polling needed
+        // Status updates are now triggered by terminal output events
+        this.terminalScanInterval = null;
+        
+        // Optional fallback polling at much lower frequency (500ms) for edge cases
+        if (this.enableFallbackPolling) {
+            this.terminalScanInterval = setInterval(() => {
+                this.scanAndUpdateTerminalStatus();
+            }, 500);
+        }
     }
     stopTerminalStatusScanning() {
         if (this.terminalScanInterval) {
@@ -5072,6 +5086,101 @@ class TerminalGUI {
         // Always autoscroll when enabled and user is not interacting
         if (this.autoscrollEnabled && !terminalData.userInteracting) {
             this.scrollToBottom(terminalId);
+        }
+    }
+    
+    // Event-driven status update system
+    updateTerminalStatusFromOutput(terminalId, outputContent) {
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) return;
+        
+        // Debounce rapid updates to prevent excessive processing
+        const now = Date.now();
+        const lastUpdate = this.lastStatusUpdateTime?.get(terminalId) || 0;
+        const debounceDelay = 50; // 50ms debounce
+        
+        if (now - lastUpdate < debounceDelay) {
+            // Clear existing timeout and set new one
+            if (this.statusUpdateTimeouts?.has(terminalId)) {
+                clearTimeout(this.statusUpdateTimeouts.get(terminalId));
+            }
+            
+            // Initialize maps if needed
+            if (!this.statusUpdateTimeouts) this.statusUpdateTimeouts = new Map();
+            if (!this.lastStatusUpdateTime) this.lastStatusUpdateTime = new Map();
+            
+            // Set debounced update
+            const timeoutId = setTimeout(() => {
+                this.performStatusUpdate(terminalId, outputContent);
+                this.lastStatusUpdateTime.set(terminalId, Date.now());
+                this.statusUpdateTimeouts.delete(terminalId);
+            }, debounceDelay);
+            
+            this.statusUpdateTimeouts.set(terminalId, timeoutId);
+            return;
+        }
+        
+        // Immediate update if not debounced
+        this.performStatusUpdate(terminalId, outputContent);
+        if (!this.lastStatusUpdateTime) this.lastStatusUpdateTime = new Map();
+        this.lastStatusUpdateTime.set(terminalId, now);
+    }
+    
+    // Perform the actual status update with change detection
+    performStatusUpdate(terminalId, outputContent) {
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) return;
+        
+        // Simple change detection - only update if content actually changed
+        if (!this.lastProcessedOutput) this.lastProcessedOutput = new Map();
+        const lastProcessed = this.lastProcessedOutput.get(terminalId) || '';
+        
+        // Get last 500 characters for comparison (more efficient than full content)
+        const currentSnippet = outputContent.slice(-500);
+        const lastSnippet = lastProcessed.slice(-500);
+        
+        if (currentSnippet === lastSnippet) {
+            // No change in recent output, skip status update
+            return;
+        }
+        
+        // Store processed output for next comparison
+        this.lastProcessedOutput.set(terminalId, outputContent);
+        
+        // Perform the actual status scan for this terminal only
+        this.scanSingleTerminalStatus(terminalId, terminalData);
+        
+        // Update global status if this is the active terminal
+        if (terminalId === this.activeTerminalId && this.terminalStatuses.has(terminalId)) {
+            const activeStatus = this.terminalStatuses.get(terminalId);
+            this.currentTerminalStatus.isRunning = activeStatus.isRunning;
+            this.currentTerminalStatus.isPrompting = activeStatus.isPrompting;
+            this.currentTerminalStatus.lastUpdate = activeStatus.lastUpdate;
+        }
+    }
+    
+    // Cleanup function for event-driven status update system
+    cleanupTerminalStatusTracking(terminalId) {
+        // Clear any pending debounced updates
+        if (this.statusUpdateTimeouts && this.statusUpdateTimeouts.has(terminalId)) {
+            clearTimeout(this.statusUpdateTimeouts.get(terminalId));
+            this.statusUpdateTimeouts.delete(terminalId);
+        }
+        
+        // Remove terminal from tracking maps
+        if (this.lastStatusUpdateTime) {
+            this.lastStatusUpdateTime.delete(terminalId);
+        }
+        if (this.lastProcessedOutput) {
+            this.lastProcessedOutput.delete(terminalId);
+        }
+        if (this.terminalStatuses) {
+            this.terminalStatuses.delete(terminalId);
+        }
+        
+        // Remove from other terminal tracking systems
+        if (this.terminalStabilityTracking) {
+            this.terminalStabilityTracking.delete(terminalId);
         }
     }
     handleScroll(terminalId = this.activeTerminalId) {
@@ -7379,6 +7488,9 @@ class TerminalGUI {
         // Remove from terminal session mapping
         this.terminalSessionMap.delete(terminalId);
         await this.saveTerminalSessionMapping();
+        
+        // Cleanup event-driven status update system
+        this.cleanupTerminalStatusTracking(terminalId);
         
         // Remove DOM element FIRST to ensure clean state
         const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
