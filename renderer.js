@@ -8071,27 +8071,116 @@ class TerminalGUI {
     setupTerminalSelectorKeyboard(dropdown) {
         const items = dropdown.querySelectorAll('.terminal-selector-item');
         let selectedIndex = Array.from(items).findIndex(item => item.classList.contains('selected'));
+        let typeBuffer = '';
+        let typeTimeout = null;
+        
+        const clearTypeBuffer = () => {
+            typeBuffer = '';
+            if (typeTimeout) {
+                clearTimeout(typeTimeout);
+                typeTimeout = null;
+            }
+        };
+        
+        const findTerminalByTyping = (buffer) => {
+            const lowerBuffer = buffer.toLowerCase();
+            const itemArray = Array.from(items);
+            
+            // Find first terminal whose name starts with the typed characters
+            const matchIndex = itemArray.findIndex(item => {
+                const terminalName = item.querySelector('.terminal-selector-text').textContent.toLowerCase();
+                return terminalName.startsWith(lowerBuffer);
+            });
+            
+            if (matchIndex !== -1) {
+                selectedIndex = matchIndex;
+                this.highlightTerminalItem(items, selectedIndex);
+            }
+        };
+        
         const keyHandler = (e) => {
-            if (e.key === 'ArrowDown') {
+            // Number keys 1-9 and 0 (0 = 10th terminal)
+            if (e.key >= '1' && e.key <= '9' && !e.metaKey && !e.ctrlKey && !e.altKey) {
                 e.preventDefault();
+                const index = parseInt(e.key) - 1;
+                if (index < items.length) {
+                    selectedIndex = index;
+                    this.highlightTerminalItem(items, selectedIndex);
+                    // Auto-select after number key press
+                    setTimeout(() => {
+                        const terminalId = parseInt(items[selectedIndex].dataset.terminalId);
+                        this.switchToTerminal(terminalId);
+                        dropdown.style.display = 'none';
+                        document.removeEventListener('keydown', keyHandler);
+                    }, 100);
+                }
+            } else if (e.key === '0' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+                e.preventDefault();
+                const index = 9; // 0 represents the 10th terminal
+                if (index < items.length) {
+                    selectedIndex = index;
+                    this.highlightTerminalItem(items, selectedIndex);
+                    // Auto-select after number key press
+                    setTimeout(() => {
+                        const terminalId = parseInt(items[selectedIndex].dataset.terminalId);
+                        this.switchToTerminal(terminalId);
+                        dropdown.style.display = 'none';
+                        document.removeEventListener('keydown', keyHandler);
+                    }, 100);
+                }
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                clearTypeBuffer();
                 selectedIndex = (selectedIndex + 1) % items.length;
                 this.highlightTerminalItem(items, selectedIndex);
             } else if (e.key === 'ArrowUp') {
                 e.preventDefault();
+                clearTypeBuffer();
                 selectedIndex = selectedIndex <= 0 ? items.length - 1 : selectedIndex - 1;
                 this.highlightTerminalItem(items, selectedIndex);
             } else if (e.key === 'Enter') {
                 e.preventDefault();
+                clearTypeBuffer();
                 const terminalId = parseInt(items[selectedIndex].dataset.terminalId);
                 this.switchToTerminal(terminalId);
                 dropdown.style.display = 'none';
                 document.removeEventListener('keydown', keyHandler);
             } else if (e.key === 'Escape') {
                 e.preventDefault();
+                clearTypeBuffer();
                 dropdown.style.display = 'none';
                 document.removeEventListener('keydown', keyHandler);
+            } else if (e.key.length === 1 && e.key.match(/[a-zA-Z0-9\s]/)) {
+                // Handle typing to search
+                e.preventDefault();
+                typeBuffer += e.key;
+                
+                // Clear the type buffer after 1 second of no typing
+                if (typeTimeout) clearTimeout(typeTimeout);
+                typeTimeout = setTimeout(clearTypeBuffer, 1000);
+                
+                findTerminalByTyping(typeBuffer);
+            } else if (e.key === 'Backspace') {
+                // Allow backspace in type buffer
+                e.preventDefault();
+                if (typeBuffer.length > 0) {
+                    typeBuffer = typeBuffer.slice(0, -1);
+                    if (typeBuffer) {
+                        findTerminalByTyping(typeBuffer);
+                    }
+                }
             }
         };
+        
+        // Clean up type buffer when dropdown closes
+        const originalRemoveListener = document.removeEventListener.bind(document);
+        document.removeEventListener = function(event, handler) {
+            if (event === 'keydown' && handler === keyHandler) {
+                clearTypeBuffer();
+            }
+            return originalRemoveListener.call(this, event, handler);
+        };
+        
         document.addEventListener('keydown', keyHandler);
     }
     highlightTerminalItem(items, index) {
