@@ -2,93 +2,13 @@
 
 This is a tool that enhances the Claude Code terminal experience. Queue messages, convert speech to prompts, smart auto-continue with keyword detection, completion sounds and more!
 
-## 🚨 FOR ALL AI AGENTS: MANDATORY TESTING PROTOCOL 🚨
-
-**⚠️ BEFORE MAKING ANY CODE CHANGES TO THIS APPLICATION:**
-
-```bash
-python test_auto_injector.py start connect wait 15 screenshot "before_change" [test your changes] screenshot "after_change"
-```
-
-**✅ REQUIRED VERIFICATION:**
-- Take before/after screenshots 
-- Read screenshots with vision capabilities
-- Confirm changes work visually
-- Verify no functionality is broken
-
-**❌ DO NOT complete tasks without running this test script!**
-
-This application has complex UI interactions, timers, queues, and terminal processes. Visual verification is the ONLY reliable way to confirm changes work correctly.
+Now introducing *Advanced Plan Mode* which intuitively utilizes Claude Flow for better propmt execution.
 
 ![Auto-Injector Main Interface](./docs/images/main-interface.png)
 
 ## 🌟 Revolutionary Features
 
 ![Settings view](./docs/images/sound-settings.png)
-
-### 🎤 **Voice-to-Text Transcription**
-Transform spoken commands into queued terminal instructions with state-of-the-art voice recognition powered by OpenAI's Whisper model.
-
-- **One-click voice recording** with visual feedback
-- **Automatic transcription** using advanced AI models
-- **Smart punctuation** and command formatting
-- **Multi-language support** for international workflows
-- **Noise cancellation** for clear command capture
-
-### 🖥️ **Multi-Terminal Orchestration**
-Manage and coordinate multiple terminal sessions simultaneously with intelligent routing and visual organization.
-
-- **Unlimited terminal sessions** with color-coded identification
-- **Smart message routing** to specific terminals
-- **Terminal-specific queue targeting** for complex workflows
-- **Visual terminal status indicators** (idle, busy, prompting)
-- **Synchronized command execution** across terminals
-- **Round-robin and manual terminal assignment**
-
-### 🤖 **AI Usage Limit Detection**
-Intelligent detection and handling of Claude AI's usage limits with automatic recovery mechanisms.
-
-- **Automatic usage limit detection** from Claude's responses
-- **Smart queue preservation** during rate limits
-- **Countdown timer synchronization** with Claude's reset time
-- **Automatic resume** when limits reset
-- **Visual progress indicators** for limit recovery
-- **Queue state persistence** across limit events
-
-### 🔊 **Advanced Sound Cue System**
-Professional audio feedback system with context-aware notifications and customizable sound profiles.
-
-- **Completion notifications** when injection sequences finish
-- **Terminal idle detection** for accurate timing
-- **Half-Life 2 themed sound pack** included
-- **Custom sound import** support
-
-### 🚫 **Intelligent Keyword Blocking**
-Sophisticated keyword detection system preventing unwanted auto-continuation and protecting against dangerous operations.
-
-- **Real-time keyword scanning** in terminal output
-- **Customizable blocking rules** with regex support
-- **Automatic response injection** for blocked prompts
-- **Visual blocking indicators** in the action log
-- **Default safety keywords** pre-configured
-- **Override capabilities** for trusted operations
-
-### ⚡ **Smart Auto-Continue Evolution**
-Next-generation auto-continue system that intelligently processes entire workflows while respecting safety boundaries.
-
-**Intelligent Processing:**
-- Automatically continues through ALL prompts and confirmations
-- Detects and respects keyword-blocked scenarios
-- Handles multi-step installations and configurations
-- Manages interactive command sequences
-- Preserves user safety with smart boundaries
-
-**Advanced Features:**
-- **Trust prompt detection** for elevated operations
-- **Usage limit awareness** with pause/resume
-- **Multi-terminal coordination** during auto-continue
-- **Visual status tracking** of auto-continue state
-- **Emergency stop** capabilities (Escape key)
 
 ## 🚀 Quick Start Guide
 
@@ -101,10 +21,6 @@ Next-generation auto-continue system that intelligently processes entire workflo
 
 #### Option 1: Electron Only (Basic)
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/auto-injector.git
-cd auto-injector
-
 # Install dependencies
 npm install
 
@@ -116,10 +32,6 @@ npm start
 For enhanced functionality including persistent memory, voice processing, and advanced features:
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/auto-injector.git
-cd auto-injector
-
 # Install Electron dependencies
 npm install
 
@@ -136,92 +48,6 @@ cd ..
 
 # OR start immediately without waiting (recommended)
 ./start_simple.sh
-```
-
-### 🐍 Django Backend Features
-
-The optional Django backend running on port 8001 provides:
-
-- **🔄 Persistent Memory** - Sessions, queues, and settings survive app restarts
-- **🎙️ Enhanced Voice Processing** - Server-side speech recognition with multiple engines
-- **📡 WebSocket Support** - Real-time terminal communication
-- **🗃️ Advanced Storage** - SQLite database for all application data
-- **🔌 REST API** - Full API access for automation and integration
-- **⚡ Performance** - Offload processing from Electron to dedicated server
-
-**Backend API Endpoints:**
-- `http://127.0.0.1:8001/api/terminal/` - Terminal session management
-- `http://127.0.0.1:8001/api/queue/` - Message queue operations  
-- `http://127.0.0.1:8001/api/voice/` - Voice transcription services
-- `http://127.0.0.1:8001/api/settings/` - Persistent settings storage
-- `http://127.0.0.1:8001/api/todos/` - AI-powered todo generation system
-
-See `backend/README.md` for complete API documentation.
-
-### First Run Setup
-1. **Launch the app** - Terminal will initialize automatically
-2. **Grant permissions** - Allow terminal and microphone access when prompted
-3. **Configure settings** - Access via the gear icon
-4. **Test voice input** - Click the microphone button and speak a command
-5. **Create first automation** - Type or speak commands to queue
-
-## 🔧 Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+I` | Inject next message immediately |
-| `Ctrl+Shift+V` | Toggle voice transcription |
-| `Ctrl+T` | Create new terminal |
-| `Ctrl+1-4` | Switch message context to terminal 1-4 |
-| `Shift + Tab` | Toggle auto-continue |
-| `Ctrl+P` | Play/pause timer |
-
-## 🏗️ Architecture Overview
-
-### Core Components
-- **Main Process**: Electron main process managing system integration
-- **Renderer Process**: React-like terminal GUI with state management  
-- **Terminal Engine**: node-pty based terminal emulation
-- **Voice Engine**: Whisper API integration for transcription
-- **Queue Manager**: Sophisticated FIFO processing with timing
-- **Injection System**: Character-by-character typing simulation
-
-### Data Flow
-```
-Voice Input → Transcription → Message Queue → Injection Manager → Terminal
-     ↓              ↓               ↓               ↓              ↓
-Microphone → Whisper API → Processing → Scheduling → Execution → Output
-```
-
-## 🛡️ Security & Privacy
-
-### Security Features
-- **Keyword blocking** prevents dangerous commands
-- **Terminal sandboxing** for isolated execution
-- **No cloud dependency** - runs entirely locally
-- **Encrypted preferences** storage
-- **Session isolation** between terminals
-
-### Privacy Commitment
-- Voice data processed locally when possible
-- No telemetry or usage tracking
-- All automation data stays on your machine
-- Open source for full transparency
-
-## 🤝 Contributing
-
-We welcome contributions! See our [Contributing Guide](CONTRIBUTING.md) for details.
-
-### Development Setup
-```bash
-# Development mode with hot reload
-npm run dev
-
-# Run tests
-npm test
-
-# Build for distribution
-npm run build
 ```
 
 ## 📄 License

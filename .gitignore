@@ -225,3 +225,12 @@ ehthumbs.db
 Thumbs.db
 test_env
 test_screenshots
+.roomodes
+addmsg
+listmsg
+CLAUDE.md
+claude-flow
+
+analyze_functions.py
+test_auto_injector.py
+package-lock.json
