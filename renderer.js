@@ -815,6 +815,13 @@ class TerminalGUI {
         const messageInput = document.getElementById('message-input');
         messageInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
+                // Check if terminal selector dropdown is open
+                const terminalDropdown = document.getElementById('terminal-selector-dropdown');
+                if (terminalDropdown && terminalDropdown.style.display === 'block') {
+                    // Terminal selector is open, don't handle Enter here
+                    return;
+                }
+                
                 e.preventDefault();
                 this.addMessageToQueue();
             }
