@@ -1150,15 +1150,15 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 12px;
-    height: 12px;
-    margin-right: 4px;
+    width: 16px;
+    height: 16px;
+    margin-right: 6px;
 }
 
 .plan-mode-icon i {
-    width: 12px;
-    height: 12px;
-    color: var(--text-secondary);
+    width: 14px;
+    height: 14px;
+    color: var(--text-primary);
 }
 
 /* Green checkmark for plan mode when selected */
@@ -1242,21 +1242,23 @@ body {
 
 .image-preview-remove {
     position: absolute;
-    top: -4px;
-    right: -4px;
-    width: 16px;
-    height: 16px;
+    top: -6px;
+    right: -6px;
+    width: 20px;
+    height: 20px;
     background: #ef4444;
-    border: 1px solid #27272a;
+    border: 2px solid #27272a;
     border-radius: 50%;
     display: none;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: bold;
     color: white;
     line-height: 1;
+    z-index: 10;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .image-preview-item:hover .image-preview-remove {
@@ -1430,7 +1432,7 @@ body {
 .terminal-selector-btn {
     width: auto; /* Will be set dynamically by JS */
     min-width: 70px; /* Further reduced minimum width */
-    max-width: calc(100vw - 700px); /* Dynamic max width based on viewport and sidebar space */
+    max-width: calc(100vw - 400px); /* Allow more space for terminal selector */
     display: flex;
     align-items: center;
     gap: 3px; /* Reduced gap for more compact spacing */
@@ -1484,7 +1486,7 @@ body {
     z-index: 1000;
     overflow: hidden;
     min-width: 120px;
-    max-width: calc(100vw - 600px); /* Dynamic max width based on viewport and sidebar space */
+    max-width: calc(100vw - 300px); /* Allow more space for terminal dropdown */
     width: auto;
 }
 
@@ -1492,14 +1494,14 @@ body {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 30px 6px 10px;
+    padding: 6px 60px 6px 10px;
     cursor: pointer;
     transition: background-color 0.2s;
     position: relative;
     font-size: 12px;
     white-space: nowrap;
     overflow: hidden;
-    max-width: calc(100vw - 600px); /* Dynamic max width based on viewport and sidebar space */
+    max-width: calc(100vw - 300px); /* Allow more space for terminal dropdown */
 }
 
 .terminal-selector-item span:not(.terminal-selector-dot) {
@@ -3841,7 +3843,7 @@ body {
 .manual-terminal-selector-btn {
     width: auto;
     min-width: 80px;
-    max-width: calc(100vw - 700px); /* Dynamic max width based on viewport and sidebar space */
+    max-width: calc(100vw - 400px); /* Allow more space for terminal selector */
     display: flex;
     align-items: center;
     gap: 6px;
@@ -3896,7 +3898,7 @@ body {
     z-index: 1000;
     overflow: hidden;
     min-width: 120px;
-    max-width: calc(100vw - 600px); /* Dynamic max width based on viewport and sidebar space */
+    max-width: calc(100vw - 300px); /* Allow more space for terminal dropdown */
     width: auto;
 }
 
@@ -3911,7 +3913,7 @@ body {
     font-size: 12px;
     white-space: nowrap;
     overflow: hidden;
-    max-width: 250px; /* Limit dropdown width */
+    max-width: calc(100vw - 300px); /* Allow more space for terminal dropdown */
 }
 
 .manual-terminal-selector-item span:not(.manual-terminal-selector-dot) {

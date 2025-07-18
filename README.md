@@ -4,7 +4,7 @@ This is a tool that enhances the Claude Code terminal experience. Queue messages
 
 Now introducing *Advanced Plan Mode* which intuitively utilizes Claude Flow for better propmt execution.
 
-![Auto-Injector Main Interface](./docs/images/main-interface.png)
+![Auto-Injector Demo](./injectortest.gif)
 
 ## 🌟 Revolutionary Features
 

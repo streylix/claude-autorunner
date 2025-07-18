@@ -602,12 +602,12 @@ class TerminalGUI {
             return;
         }
         
-        // Fit terminal to container
+        // Fit terminal to container - delay to ensure layout stability
         setTimeout(() => {
             fitAddon.fit();
             // Process any pending terminal data after terminal is ready
             this.processPendingTerminalData(id);
-        }, 10);
+        }, 150);
         
         // Setup terminal event handlers
         this.setupTerminalEventHandlers(id, terminal, terminalData);
@@ -810,7 +810,8 @@ class TerminalGUI {
     setupEventListeners() {
         // IPC listeners for terminal data (updated for multi-terminal)
         ipcRenderer.on('terminal-data', async (event, data) => {
-            const terminalId = data.terminalId != null ? data.terminalId : 1;
+            if (data.terminalId == null) return;
+            const terminalId = data.terminalId;
             const terminalData = this.terminals.get(terminalId);
             if (terminalData && terminalData.terminal) {
                 try {
@@ -845,7 +846,8 @@ class TerminalGUI {
             }
         });
         ipcRenderer.on('terminal-exit', (event, data) => {
-            const terminalId = data.terminalId != null ? data.terminalId : 1;
+            if (data.terminalId == null) return;
+            const terminalId = data.terminalId;
             const terminalData = this.terminals.get(terminalId);
             if (terminalData && !terminalData.isClosing) {
                 terminalData.terminal.write('\r\n\x1b[31mTerminal process exited\x1b[0m\r\n');
@@ -854,7 +856,8 @@ class TerminalGUI {
             }
         });
         ipcRenderer.on('cwd-response', (event, data) => {
-            const terminalId = data.terminalId != null ? data.terminalId : 1;
+            if (data.terminalId == null) return;
+            const terminalId = data.terminalId;
             const terminalData = this.terminals.get(terminalId);
             if (terminalData) {
                 terminalData.directory = data.cwd;
@@ -1135,6 +1138,7 @@ class TerminalGUI {
         // Add auto-resize functionality to message input
         messageInput.addEventListener('input', () => {
             this.autoResizeMessageInput(messageInput);
+            this.checkImagePathsInInput(messageInput);
         });
         // Add focus event to enable auto-resize
         messageInput.addEventListener('focus', () => {
@@ -1685,6 +1689,26 @@ class TerminalGUI {
             document.getElementById('image-preview-container').style.display = 'none';
         }
         this.logAction(`Removed image: ${imageData.file.name}`, 'info');
+    }
+    
+    checkImagePathsInInput(messageInput) {
+        if (!this.imagePreviews || this.imagePreviews.length === 0) return;
+        
+        const inputText = messageInput.value;
+        const imagesToRemove = [];
+        
+        // Check each image preview to see if its path is still in the input
+        this.imagePreviews.forEach(imageData => {
+            const imagePath = imageData.path;
+            if (!inputText.includes(imagePath)) {
+                imagesToRemove.push(imageData.id);
+            }
+        });
+        
+        // Remove images that are no longer referenced in the input
+        imagesToRemove.forEach(imageId => {
+            this.removeImagePreview(imageId);
+        });
     }
     showImagePreview(imageData) {
         // Create modal for full image preview
@@ -5945,9 +5969,7 @@ class TerminalGUI {
             this.updateManualTerminalDropdown();
             this.switchToTerminal(this.activeTerminalId);
             // Ensure terminal selector has proper dynamic width after restoration
-            setTimeout(() => {
-                this.updateTerminalSelectorText();
-            }, 100); // Small delay to ensure DOM is fully updated
+            this.updateTerminalSelectorTextWhenReady();
             // Clear saved data after applying
             this.savedTerminalData = null;
         }
@@ -7750,6 +7772,31 @@ class TerminalGUI {
             selectorBtn.style.width = display.width + 'px';
         }
     }
+
+    updateTerminalSelectorTextWhenReady() {
+        const activeTerminalData = this.terminals.get(this.activeTerminalId);
+        if (!activeTerminalData) return;
+        
+        const selectorText = document.querySelector('.terminal-selector-text');
+        const selectorBtn = document.getElementById('terminal-selector-btn');
+        const inputActions = document.querySelector('.input-actions');
+        
+        if (!selectorText || !selectorBtn || !inputActions) {
+            // Elements not ready, try again after DOM update
+            requestAnimationFrame(() => this.updateTerminalSelectorTextWhenReady());
+            return;
+        }
+        
+        // Check if layout is complete
+        if (inputActions.offsetWidth === 0) {
+            // Layout not complete, try again after next frame
+            requestAnimationFrame(() => this.updateTerminalSelectorTextWhenReady());
+            return;
+        }
+        
+        // DOM is ready, update immediately
+        this.updateTerminalSelectorText();
+    }
     
     // Calculate optimal terminal selector width and text based on available space
     calculateOptimalTerminalDisplay(terminalName) {
@@ -7817,9 +7864,9 @@ class TerminalGUI {
         //     terminalName
         // });
         
-        // Minimum and maximum widths - be even more aggressive about reducing size
-        const minWidth = 70; // Further reduced minimum width
-        const maxWidth = Math.min(350, Math.max(minWidth, availableWidth)); // Even more aggressive calculation
+        // Minimum and maximum widths - allow more space when available
+        const minWidth = 70; // Minimum width for very constrained spaces
+        const maxWidth = Math.max(minWidth, Math.min(800, availableWidth)); // Allow up to 800px if space is available
         
         // Calculate how much text can fit at this width
         // Use canvas to measure text more accurately
@@ -7835,6 +7882,15 @@ class TerminalGUI {
         // Check if the full text fits
         const fullTextWidth = context.measureText(terminalName).width;
         const maxChars = fullTextWidth <= availableTextWidth ? terminalName.length : Math.floor(availableTextWidth / 7); // Fallback to average char width
+        
+        // Debug text measurement (uncomment if needed)
+        // console.log('Text measurement:', {
+        //     terminalName,
+        //     fullTextWidth,
+        //     availableTextWidth,
+        //     maxWidth,
+        //     willFit: fullTextWidth <= availableTextWidth
+        // });
         
         let displayText = terminalName;
         

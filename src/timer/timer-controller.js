@@ -575,6 +575,9 @@ class TimerController {
         // Save to preferences
         this.saveTimerPreferences(targetDateTime);
 
+        // Notify injection manager that timer has been reset/updated
+        this.gui.injectionManager?.onTimerStopped();
+
         this.updateTimerUI();
 
         if (!silent) {
