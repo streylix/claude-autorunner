@@ -1255,9 +1255,26 @@ class TerminalGUI {
             }
         });
         // Terminal selector dropdown
+        // Single click shows dropdown, double click navigates to current terminal
+        let clickTimeout = null;
         document.getElementById('terminal-selector-btn').addEventListener('click', (e) => {
             e.stopPropagation();
-            this.toggleTerminalSelectorDropdown();
+            
+            if (clickTimeout) {
+                // This is a double click
+                clearTimeout(clickTimeout);
+                clickTimeout = null;
+                // Navigate to current terminal (horizontal scroll)
+                this.scrollToActiveTerminal();
+                this.logAction('Double-clicked terminal selector - navigating to current terminal', 'info');
+            } else {
+                // This is a single click - wait to see if there's a second click
+                clickTimeout = setTimeout(() => {
+                    // Single click confirmed - show dropdown
+                    this.toggleTerminalSelectorDropdown();
+                    clickTimeout = null;
+                }, 300); // 300ms delay to detect double click
+            }
         });
         document.getElementById('inject-now-btn').addEventListener('click', (e) => {
             console.log('=== INJECT BUTTON CLICKED ===');
@@ -3764,7 +3781,8 @@ class TerminalGUI {
                         const hasControlSequence = /(\^[A-Z]|\\x1b|\\r|\\t)/g.test(message.content);
                         if (!hasControlSequence) {
                             setTimeout(() => {
-                                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
+                                const terminalId = message.terminalId != null ? message.terminalId : this.activeTerminalId;
+                                ipcRenderer.send('terminal-input', { terminalId: terminalId, data: '\r' });
                             }, 100);
                         }
                         completeInjection('typeMessage');
@@ -3775,12 +3793,13 @@ class TerminalGUI {
                 // Fallback: direct input if typeMessage fails
                 this.logAction(`TypeMessage failed, using direct input: ${error.message}`, 'warning');
                 try {
-                    ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: message.content });
+                    const terminalId = message.terminalId != null ? message.terminalId : this.activeTerminalId;
+                    ipcRenderer.send('terminal-input', { terminalId: terminalId, data: message.content });
                     // Send Enter if not a control sequence
                     const hasControlSequence = /(\^[A-Z]|\\x1b|\\r|\\t)/g.test(message.content);
                     if (!hasControlSequence) {
                         setTimeout(() => {
-                            ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: '\r' });
+                            ipcRenderer.send('terminal-input', { terminalId: terminalId, data: '\r' });
                         }, 100);
                     }
                     completeInjection('directInput');
@@ -4143,8 +4162,10 @@ class TerminalGUI {
                 return;
             }
             if (index < message.length) {
-                // Use the active terminal for legacy typeMessage calls
-                ipcRenderer.send('terminal-input', { terminalId: this.activeTerminalId, data: message[index] });
+                // Get terminal ID from the current message being injected
+                const currentMessage = this.messageQueue.find(m => m.id === this.currentlyInjectingMessageId);
+                const terminalId = currentMessage ? currentMessage.terminalId || this.activeTerminalId : this.activeTerminalId;
+                ipcRenderer.send('terminal-input', { terminalId: terminalId, data: message[index] });
                 index++;
             } else {
                 clearInterval(typeInterval);
@@ -4955,7 +4976,7 @@ class TerminalGUI {
                 } else {
                     this.logAction(`Terminal ${terminalId} completion sound cancelled - status changed`, 'info');
                 }
-            }, 100);
+            }, 1000);
         }
     }
     checkStatusChangeSounds(previousStatus, currentStatus, terminalId) {
@@ -7973,6 +7994,8 @@ class TerminalGUI {
         this.updateManualTerminalDropdown();
         this.updateStatusDisplay();
         this.saveTerminalState();
+        // Scroll to the selected terminal horizontally
+        this.scrollToActiveTerminal();
         this.logAction(`Selected ${terminalData.name}`, 'info');
     }
     scrollToActiveTerminal() {
@@ -8503,7 +8526,7 @@ class TerminalGUI {
                         const terminalId = parseInt(items[selectedIndex].dataset.terminalId);
                         this.switchToTerminal(terminalId);
                         dropdown.style.display = 'none';
-                        document.removeEventListener('keydown', keyHandler);
+                        document.removeEventListener('keydown', keyHandler, true);
                     }, 100);
                 }
             } else if (e.key === '0' && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -8517,7 +8540,7 @@ class TerminalGUI {
                         const terminalId = parseInt(items[selectedIndex].dataset.terminalId);
                         this.switchToTerminal(terminalId);
                         dropdown.style.display = 'none';
-                        document.removeEventListener('keydown', keyHandler);
+                        document.removeEventListener('keydown', keyHandler, true);
                     }, 100);
                 }
             } else if (e.key === 'ArrowDown') {
@@ -8541,7 +8564,7 @@ class TerminalGUI {
             }
         };
         
-        document.addEventListener('keydown', keyHandler);
+        document.addEventListener('keydown', keyHandler, true);
     }
     highlightTerminalItem(items, index) {
         items.forEach((item, i) => {
