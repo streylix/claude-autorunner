@@ -158,6 +158,9 @@ class InjectionManager {
         if (!this.timerExpired) {
             return;
         }
+
+        // Debug logging to help identify stuck timer issues
+        this.gui.logAction(`InjectionManager: checkAndScheduleInjections - timerExpired: ${this.timerExpired}, usageLimitWaiting: ${this.usageLimitWaiting}, injectionPaused: ${this.gui.injectionPaused}, messageQueue: ${messageQueue.length}`, 'info');
         
         this.injectionSchedulingInProgress = true;
         
@@ -174,6 +177,7 @@ class InjectionManager {
             
             if (availableTerminals.length === 0) {
                 // All terminals busy - show waiting state
+                this.gui.logAction(`InjectionManager: No available terminals for injection. Total terminals: ${this.gui.terminals.size}, Busy: ${this.busyTerminals.size}`, 'info');
                 this.updateVisualState();
                 return;
             }
@@ -258,7 +262,15 @@ class InjectionManager {
             }
         }
         
-        return stableDuration >= requiredStableDuration;
+        const isReady = stableDuration >= requiredStableDuration;
+        
+        // Add debug logging for terminals that aren't ready
+        if (!isReady) {
+            const remainingTime = Math.ceil((requiredStableDuration - stableDuration) / 1000);
+            this.gui.logAction(`Terminal ${terminalId} not ready - waiting ${remainingTime}s (${requiredStableDuration === 30000 ? 'plan mode delay' : 'stability'})`, 'info');
+        }
+        
+        return isReady;
     }
     
     /**

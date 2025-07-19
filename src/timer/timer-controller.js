@@ -716,6 +716,12 @@ class TimerController {
                 return false;
             }
 
+            // Check if usage limit timer is longer than 5 hours - don't auto-set timer
+            if (hours > 5) {
+                this.gui.logAction(`Usage limit timer would be ${hours}h ${minutes}m - ignoring as it exceeds 5-hour threshold`, 'info');
+                return false;
+            }
+
             // Store current timer values if not already stored
             if (!this.usageLimitTimerOriginalValues) {
                 this.usageLimitTimerOriginalValues = {
