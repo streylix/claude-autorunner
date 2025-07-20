@@ -1673,7 +1673,8 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     align-items: center;
 }
 
-.voice-button {
+/* Voice Button - High Specificity Implementation */
+#voice-btn.voice-button {
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
     border-radius: 50%;
@@ -1683,50 +1684,53 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s;
+    transition: all 0.2s ease;
     color: var(--text-secondary);
     flex-shrink: 0;
 }
 
-
-.voice-button:hover {
+#voice-btn.voice-button:hover {
     background-color: var(--bg-quaternary);
     color: var(--text-primary);
     transform: scale(1.05);
+    box-shadow: 0 0 10px rgba(0, 122, 204, 0.4);
 }
 
-.voice-button:active {
-    transform: scale(0.95);
-}
-
-#voice-btn.recording {
+/* Recording State - Red with pulse */
+#voice-btn.voice-button.recording {
     background-color: #ff0000 !important;
     color: #ffffff !important;
-    border: 3px solid #ff0000 !important;
-    transform: scale(1.1) !important;
+    border: 2px solid #ff0000 !important;
+    animation: recording-pulse 1s infinite !important;
+    transform: scale(1) !important;
 }
 
-#voice-btn.recording:hover {
-    background-color: #ff0000 !important;
+/* Processing State - Blue spinning */
+#voice-btn.voice-button.processing {
+    background-color: #007acc !important;
     color: #ffffff !important;
-    transform: scale(1.1) !important;
+    border: 2px solid #007acc !important;
+    animation: processing-spin 1s linear infinite !important;
+    transform: rotate(0deg) !important;
 }
 
-#voice-btn.processing {
-    background-color: #ffcc00 !important;
-    color: #000000 !important;
-    border: 3px solid #ffcc00 !important;
+/* Simple, working animations */
+@keyframes recording-pulse {
+    0%, 100% { 
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.4);
+    }
+    50% { 
+        transform: scale(1.1);
+        box-shadow: 0 0 0 6px rgba(255, 0, 0, 0.1);
+    }
 }
 
-#voice-btn.processing:hover {
-    background-color: #ffcc00 !important;
-    color: #000000 !important;
+@keyframes processing-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
 }
 
-.voice-button i {
-    width: 16px;
-    height: 16px;
-}
 
 @keyframes pulse {
     0% { opacity: 1; }
@@ -1734,20 +1738,6 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     100% { opacity: 1; }
 }
 
-@keyframes recording-pulse {
-    0% { 
-        box-shadow: 0 0 0 2px rgba(255, 95, 87, 0.4);
-        background-color: var(--accent-error);
-    }
-    50% { 
-        box-shadow: 0 0 0 6px rgba(255, 95, 87, 0.1);
-        background-color: #ff4136;
-    }
-    100% { 
-        box-shadow: 0 0 0 2px rgba(255, 95, 87, 0.4);
-        background-color: var(--accent-error);
-    }
-}
 
 @keyframes blink {
     0%, 50% { opacity: 1; }

@@ -24,7 +24,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/terminal/", include("terminal.urls")),
     path("api/queue/", include("message_queue.urls")),
-    path("api/voice/", include("voice.urls")),
+    path("api/voice/", include("voice_transcription.urls")),
     path("api/settings/", include("settings.urls")),
     path("api/settings/", include("user_settings.urls")),
     path("api/todos/", include("todos.urls")),

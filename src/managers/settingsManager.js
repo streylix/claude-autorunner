@@ -39,12 +39,6 @@ class SettingsManager {
             minimizeToTray: true,
             startMinimized: false,
             automaticTodoGeneration: false,
-            voiceTranscription: {
-                minDuration: 0.5,
-                minRMS: 0.01,
-                minPeak: 0.1,
-                enabled: true
-            }
         };
     }
 

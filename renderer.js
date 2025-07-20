@@ -137,10 +137,12 @@ class TerminalGUI {
         this.usageLimitWaiting = false;
         this.usageLimitCooldownUntil = null; // Timestamp when usage limit detection cooldown ends
         this.usageLimitTimerOriginalValues = null; // Store original timer values when setting usage limit timer
-        // Voice recording state
+        
+        // Voice transcription state
         this.isRecording = false;
-        this.mediaRecorder = null;
-        this.audioChunks = [];
+        this.speechRecognition = null;
+        this.speechResult = '';
+        
         // Message editing state
         this.editingMessageId = null;
         this.originalEditContent = null;
@@ -1031,6 +1033,7 @@ class TerminalGUI {
         this.safeAddEventListener('send-btn', 'click', () => {
             this.addMessageToQueue();
         });
+        
         // Voice transcription button
         this.safeAddEventListener('voice-btn', 'click', () => {
             this.toggleVoiceRecording();
@@ -1223,7 +1226,7 @@ class TerminalGUI {
             } else if (this.isCommandKey(e) && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
                 // Toggle voice transcription
                 e.preventDefault();
-                document.getElementById('voice-btn').click();
+                this.toggleVoiceRecording();
                 this.logAction('Voice transcription toggled (Cmd+Shift+V)', 'info');
             } else if (this.isCommandKey(e) && e.key === '/') {
                 // Focus message input
@@ -1612,6 +1615,7 @@ class TerminalGUI {
             this.saveAllPreferences();
             this.logAction(`Prompted sound changed to: ${e.target.value || 'None'}`, 'info');
         });
+        
         this.safeAddEventListener('test-completion-sound-btn', 'click', () => {
             this.testCompletionSound();
         });
@@ -2104,172 +2108,7 @@ class TerminalGUI {
             }
         }
     }
-    async toggleVoiceRecording() {
-        if (this.isRecording) {
-            this.stopRecording();
-        } else {
-            await this.startRecording();
-        }
-    }
-    async startRecording() {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            // Try to use WAV format if supported, otherwise use default
-            let options = {};
-            if (MediaRecorder.isTypeSupported('audio/wav')) {
-                options = { mimeType: 'audio/wav' };
-            } else if (MediaRecorder.isTypeSupported('audio/webm;codecs=pcm')) {
-                options = { mimeType: 'audio/webm;codecs=pcm' };
-            } else if (MediaRecorder.isTypeSupported('audio/webm')) {
-                options = { mimeType: 'audio/webm' };
-            }
-            this.mediaRecorder = new MediaRecorder(stream, options);
-            this.audioChunks = [];
-            console.log('MediaRecorder format:', this.mediaRecorder.mimeType);
-            this.mediaRecorder.ondataavailable = (event) => {
-                this.audioChunks.push(event.data);
-            };
-            this.mediaRecorder.onstop = () => {
-                this.processRecording();
-            };
-            this.mediaRecorder.start();
-            this.isRecording = true;
-            // Set recording state directly 
-            const voiceBtn = document.getElementById('voice-btn');
-            voiceBtn.classList.remove('processing');
-            voiceBtn.classList.add('recording');
-            this.logAction('Voice recording started', 'info');
-        } catch (error) {
-            this.logAction(`Voice recording error: ${error.message}`, 'error');
-        }
-    }
-    stopRecording() {
-        if (this.mediaRecorder && this.isRecording) {
-            this.mediaRecorder.stop();
-            this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
-            this.isRecording = false;
-            // Don't change button state here - processRecording will handle it
-            this.logAction('Voice recording stopped', 'info');
-        }
-    }
-    async processRecording() {
-        try {
-            const voiceBtn = document.getElementById('voice-btn');
-            voiceBtn.classList.remove('recording');
-            voiceBtn.classList.add('processing');
-            const icon = voiceBtn.querySelector('i');
-            if (icon) {
-                icon.setAttribute('data-lucide', 'loader');
-            }
-            lucide.createIcons();
-            
-            const audioBlob = new Blob(this.audioChunks, { type: this.mediaRecorder.mimeType });
-            
-            // Get voice transcription settings
-            const voiceSettings = this.preferences.voiceTranscription || {
-                minDuration: 0.5,
-                minRMS: 0.01,
-                minPeak: 0.1,
-                enabled: true
-            };
-            
-            if (!voiceSettings.enabled) {
-                this.logAction('Voice transcription is disabled in settings.', 'warning');
-                return;
-            }
-            
-            // Check minimum duration
-            const audioDuration = await this.getAudioDuration(audioBlob);
-            if (audioDuration < voiceSettings.minDuration) {
-                this.logAction(`Recording too short (${audioDuration.toFixed(1)}s). Minimum ${voiceSettings.minDuration}s required.`, 'warning');
-                return;
-            }
-            
-            // Check audio energy level
-            const hasEnoughAudio = await this.analyzeAudioEnergy(audioBlob, voiceSettings);
-            if (!hasEnoughAudio) {
-                this.logAction('Audio level too low. Speak louder or check microphone.', 'warning');
-                return;
-            }
-            
-            const arrayBuffer = await audioBlob.arrayBuffer();
-            const audioBuffer = Buffer.from(arrayBuffer);
-            // Send to main process for transcription
-            const transcription = await ipcRenderer.invoke('transcribe-audio', audioBuffer);
-            if (transcription && transcription.trim() && transcription.trim() !== 'No speech detected') {
-                const messageInput = document.getElementById('message-input');
-                const currentValue = messageInput.value;
-                const newValue = currentValue ? `${currentValue} ${transcription}` : transcription;
-                messageInput.value = newValue;
-                this.autoResizeMessageInput(messageInput);
-                this.logAction(`Voice transcribed: "${transcription}"`, 'success');
-            } else {
-                this.logAction('No speech detected. Try speaking more clearly into the microphone.', 'warning');
-            }
-        } catch (error) {
-            this.logAction(`Transcription error: ${error.message}`, 'error');
-        } finally {
-            // Clear processing state and return to normal
-            const voiceBtn = document.getElementById('voice-btn');
-            voiceBtn.classList.remove('processing', 'recording');
-            const icon = voiceBtn.querySelector('i');
-            if (icon) {
-                icon.setAttribute('data-lucide', 'mic');
-            }
-            lucide.createIcons();
-        }
-    }
-    async getAudioDuration(audioBlob) {
-        return new Promise((resolve) => {
-            const audio = new Audio();
-            audio.onloadedmetadata = () => {
-                resolve(audio.duration);
-            };
-            audio.onerror = () => {
-                // If we can't get duration, assume it's valid
-                resolve(1.0);
-            };
-            audio.src = URL.createObjectURL(audioBlob);
-        });
-    }
-    async analyzeAudioEnergy(audioBlob, voiceSettings = null) {
-        try {
-            const arrayBuffer = await audioBlob.arrayBuffer();
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-            
-            // Analyze first channel (mono or left channel)
-            const channelData = audioBuffer.getChannelData(0);
-            
-            // Calculate RMS (Root Mean Square) energy
-            let sum = 0;
-            let maxAmp = 0;
-            for (let i = 0; i < channelData.length; i++) {
-                const amp = Math.abs(channelData[i]);
-                sum += amp * amp;
-                maxAmp = Math.max(maxAmp, amp);
-            }
-            
-            const rms = Math.sqrt(sum / channelData.length);
-            
-            // Use configurable thresholds or defaults
-            const settings = voiceSettings || { minRMS: 0.01, minPeak: 0.1 };
-            const minRMS = settings.minRMS || 0.01;
-            const minPeak = settings.minPeak || 0.1;
-            
-            const hasEnoughEnergy = rms > minRMS && maxAmp > minPeak;
-            
-            console.log(`Audio analysis: RMS=${rms.toFixed(4)}, Peak=${maxAmp.toFixed(4)}, Thresholds=(${minRMS}, ${minPeak}), Valid=${hasEnoughEnergy}`);
-            
-            await audioContext.close();
-            return hasEnoughEnergy;
-            
-        } catch (error) {
-            console.warn('Audio energy analysis failed:', error);
-            // If analysis fails, assume audio is valid
-            return true;
-        }
-    }
+    
     updateAutoContinueButtonState() {
         const autoContinueBtn = document.getElementById('auto-continue-btn');
         if (autoContinueBtn) {
@@ -2280,6 +2119,7 @@ class TerminalGUI {
             }
         }
     }
+    
     updatePlanModeButtonState() {
         const planModeBtn = document.getElementById('plan-mode-btn');
         if (planModeBtn) {
@@ -2290,41 +2130,239 @@ class TerminalGUI {
             }
         }
     }
-    toggleAutoContinue() {
-        this.autoContinueEnabled = !this.autoContinueEnabled;
-        this.preferences.autoContinueEnabled = this.autoContinueEnabled;
-        this.saveAllPreferences();
-        this.updateAutoContinueButtonState();
-        if (this.autoContinueEnabled) {
-            this.logAction('Auto-continue enabled', 'success');
+    
+    // LOCAL Voice transcription using Whisper backend
+    async toggleVoiceRecording() {
+        if (this.isRecording) {
+            this.stopRecording();
         } else {
-            this.logAction('Auto-continue disabled', 'info');
+            await this.startRecording();
         }
     }
-    updateVoiceButtonState() {
+    
+    async startRecording() {
+        try {
+            console.log('🎤 Starting LOCAL voice transcription with Whisper...');
+            
+            // Check for MediaRecorder support
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                throw new Error('Voice recording not supported in this browser. Please use a modern browser.');
+            }
+            
+            // Check if backend is available
+            const backendAvailable = await this.checkBackendHealth();
+            if (!backendAvailable) {
+                throw new Error('Voice transcription backend not available. Please ensure the backend service is running.');
+            }
+            
+            // Request microphone access
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    sampleRate: 16000,
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true
+                }
+            });
+            
+            // Initialize MediaRecorder
+            this.mediaRecorder = new MediaRecorder(stream, {
+                mimeType: this.getSupportedMimeType()
+            });
+            
+            this.audioChunks = [];
+            this.isRecording = true;
+            
+            // Set up event handlers
+            this.mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    this.audioChunks.push(event.data);
+                }
+            };
+            
+            this.mediaRecorder.onstop = async () => {
+                console.log('🎙️ Recording stopped, processing audio...');
+                await this.processAudioRecording();
+            };
+            
+            this.mediaRecorder.onstart = () => {
+                console.log('🎙️ Voice recording started');
+                this.updateVoiceButtonState('recording');
+                this.logAction('Voice recording started (LOCAL Whisper)', 'info');
+            };
+            
+            // Start recording
+            this.mediaRecorder.start();
+            
+        } catch (error) {
+            console.error('❌ Failed to start voice recording:', error);
+            this.logAction(`Voice recording failed: ${error.message}`, 'error');
+            this.resetVoiceButton();
+        }
+    }
+    
+    async checkBackendHealth() {
+        try {
+            const response = await fetch('http://localhost:8001/api/voice/health/');
+            return response.ok;
+        } catch (error) {
+            console.error('Backend health check failed:', error);
+            return false;
+        }
+    }
+    
+    getSupportedMimeType() {
+        const types = [
+            'audio/webm;codecs=opus',
+            'audio/webm',
+            'audio/ogg;codecs=opus',
+            'audio/wav'
+        ];
+        
+        for (const type of types) {
+            if (MediaRecorder.isTypeSupported(type)) {
+                return type;
+            }
+        }
+        return 'audio/webm'; // fallback
+    }
+    
+    async processAudioRecording() {
+        try {
+            if (this.audioChunks.length === 0) {
+                throw new Error('No audio data recorded');
+            }
+            
+            // Create audio blob
+            const audioBlob = new Blob(this.audioChunks, { 
+                type: this.getSupportedMimeType() 
+            });
+            
+            // Show processing state
+            this.updateVoiceButtonState('processing');
+            this.logAction('Processing audio with Whisper...', 'info');
+            
+            // Send to backend for transcription
+            const formData = new FormData();
+            formData.append('audio_file', audioBlob, 'recording.webm');
+            formData.append('model', 'base'); // Use base model for speed/accuracy balance
+            
+            const response = await fetch('http://localhost:8001/api/voice/transcribe/', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const result = await response.json();
+            
+            if (result.success && result.text) {
+                this.speechResult = result.text.trim();
+                
+                console.log(`📝 Transcription completed: "${this.speechResult}"`);
+                this.logAction(`Transcribed: "${this.speechResult}" (${result.processing_time?.toFixed(2)}s, ${result.model_used})`, 'success');
+                
+                // Process the transcription
+                this.processTranscription();
+            } else {
+                throw new Error(result.error || 'Transcription failed');
+            }
+            
+        } catch (error) {
+            console.error('❌ Audio processing failed:', error);
+            this.logAction(`Transcription failed: ${error.message}`, 'error');
+        } finally {
+            this.resetVoiceButton();
+            this.cleanupRecording();
+        }
+    }
+    
+    cleanupRecording() {
+        // Stop all audio tracks
+        if (this.mediaRecorder && this.mediaRecorder.stream) {
+            this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
+        }
+        
+        // Clear audio chunks
+        this.audioChunks = [];
+        this.mediaRecorder = null;
+    }
+    
+    stopRecording() {
+        if (this.mediaRecorder && this.isRecording) {
+            console.log('🛑 Stopping voice recording...');
+            this.mediaRecorder.stop();
+            this.isRecording = false;
+            this.updateVoiceButtonState('processing');
+        }
+    }
+    
+    processTranscription() {
+        try {
+            console.log(`📝 Processing transcription: "${this.speechResult}"`);
+            
+            if (this.speechResult && this.speechResult.trim()) {
+                // Add transcription to message input
+                const messageInput = document.getElementById('message-input');
+                const currentValue = messageInput.value;
+                const newValue = currentValue ? `${currentValue} ${this.speechResult.trim()}` : this.speechResult.trim();
+                messageInput.value = newValue;
+                
+                // Auto-resize input and focus
+                this.autoResizeMessageInput(messageInput);
+                messageInput.focus();
+                
+                this.logAction(`Voice transcribed: "${this.speechResult.trim()}"`, 'success');
+            } else {
+                this.logAction('No speech detected. Try speaking more clearly.', 'warning');
+            }
+            
+        } catch (error) {
+            console.error('❌ Transcription processing failed:', error);
+            this.logAction(`Processing failed: ${error.message}`, 'error');
+        } finally {
+            this.resetVoiceButton();
+        }
+    }
+    
+    updateVoiceButtonState(state) {
         const voiceBtn = document.getElementById('voice-btn');
         const icon = voiceBtn.querySelector('i');
+        
+        if (!voiceBtn || !icon) return;
+        
+        // Remove all state classes
         voiceBtn.classList.remove('recording', 'processing');
-        if (icon) {
-            if (this.isRecording) {
+        
+        console.log(`🎨 Voice button state: ${state}`);
+        
+        switch (state) {
+            case 'recording':
                 voiceBtn.classList.add('recording');
                 icon.setAttribute('data-lucide', 'mic');
-            } else {
+                console.log('🔴 Added recording class');
+                break;
+            case 'processing':
+                voiceBtn.classList.add('processing');
+                icon.setAttribute('data-lucide', 'loader');
+                console.log('🔵 Added processing class');
+                break;
+            default:
                 icon.setAttribute('data-lucide', 'mic');
-            }
+                console.log('⚫ Reset to idle state');
         }
+        
         lucide.createIcons();
+        
+        // Debug: Log current classes
+        console.log(`🎨 Current classes: ${voiceBtn.className}`);
     }
-    updateAutoContinueButtonState() {
-        const autoContinueBtn = document.getElementById('auto-continue-btn');
-        if (autoContinueBtn) {
-            if (this.autoContinueEnabled) {
-                autoContinueBtn.classList.add('enabled');
-            } else {
-                autoContinueBtn.classList.remove('enabled');
-            }
-        }
+    
+    resetVoiceButton() {
+        this.isRecording = false;
+        this.speechResult = '';
+        this.speechRecognition = null;
+        this.updateVoiceButtonState('idle');
     }
+    
     handleMessageUpdate() {
         const input = document.getElementById('message-input');
         const content = input.value.trim();
