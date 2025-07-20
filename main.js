@@ -5,6 +5,10 @@ const os = require('os');
 const fs = require('fs').promises;
 // @xenova/transformers will be dynamically imported in the transcription handler
 
+// Import unified storage system
+const unifiedStore = require('./src/storage/unified-store');
+const MigrationHelper = require('./src/storage/migration-helper');
+
 let mainWindow;
 let ptyProcess; // Legacy single process support
 const ptyProcesses = new Map(); // Map of terminal ID to pty process
@@ -81,39 +85,76 @@ function getIcon() {
   return undefined;
 }
 
-function initDataStorage() {
+async function initUnifiedStorage() {
   try {
-    // Create data file in app data directory for persistence
-    const userDataPath = app.getPath('userData');
-    dataFilePath = path.join(userDataPath, 'auto-injector-data.json');
+    safeLog('🔄 Initializing unified storage system...');
     
-    safeLog('Data storage initialized at:', dataFilePath);
+    // Run migration from legacy storage
+    const migrationSuccess = await MigrationHelper.migrateLegacyData();
+    
+    if (migrationSuccess) {
+      safeLog('✅ Storage migration completed successfully');
+    } else {
+      safeLog('⚠️ Storage migration had issues, using defaults');
+    }
+    
+    // Validate store health
+    const isHealthy = unifiedStore.validateStore();
+    if (!isHealthy) {
+      throw new Error('Store validation failed');
+    }
+    
+    // Log storage stats
+    const stats = unifiedStore.getStats();
+    safeLog('📊 Storage initialized:', {
+      path: stats.path,
+      size: `${Math.round(stats.size / 1024)}KB`,
+      messages: stats.messageCount,
+      history: stats.historyCount,
+      healthy: stats.isHealthy
+    });
+    
+    return true;
   } catch (error) {
-    try { console.error('Failed to initialize data storage:', error); } catch (e) { /* ignore */ }
+    try { 
+      console.error('❌ Failed to initialize unified storage:', error); 
+      // Attempt recovery
+      safeLog('🚑 Attempting storage recovery...');
+      unifiedStore.clear(); // Start fresh if corrupted
+      return false;
+    } catch (e) { 
+      /* ignore */ 
+    }
   }
 }
 
+// Legacy functions kept for compatibility during transition
 async function readDataFile() {
-  try {
-    const data = await fs.readFile(dataFilePath, 'utf8');
-    return JSON.parse(data);
-  } catch (error) {
-    // File doesn't exist or is invalid, return default structure
-    return {
-      settings: {},
-      messages: [],
-      messageHistory: [],
-      appState: {}
-    };
-  }
+  // Redirect to unified store
+  return {
+    settings: await unifiedStore.getAllSettings(),
+    messages: await unifiedStore.getMessages(),
+    messageHistory: await unifiedStore.getMessageHistory(),
+    appState: await unifiedStore.getAppState()
+  };
 }
 
 async function writeDataFile(data) {
+  // Redirect to unified store with atomic operations
   try {
-    await fs.writeFile(dataFilePath, JSON.stringify(data, null, 2), 'utf8');
+    if (data.settings) await unifiedStore.saveAllSettings(data.settings);
+    if (data.messages) await unifiedStore.saveMessages(data.messages);
+    if (data.messageHistory) {
+      // Clear and repopulate history
+      await unifiedStore.clearHistory();
+      for (const item of data.messageHistory) {
+        await unifiedStore.addToHistory(item);
+      }
+    }
+    if (data.appState) await unifiedStore.saveAppState(data.appState);
     return true;
   } catch (error) {
-    try { console.error('Failed to write data file:', error); } catch (e) { /* ignore */ }
+    try { console.error('❌ Failed to write via unified store:', error); } catch (e) { /* ignore */ }
     return false;
   }
 }
@@ -270,8 +311,8 @@ function showNotification(title, body) {
   }
 }
 
-app.whenReady().then(() => {
-  initDataStorage();
+app.whenReady().then(async () => {
+  await initUnifiedStorage();
   createTray();
   createWindow();
   
@@ -311,6 +352,88 @@ app.on('activate', () => {
   }
 });
 
+async function clearCorruptedTerminalState(terminalId, invalidDirectory) {
+  try {
+    safeLog('Clearing corrupted terminal state for terminal', terminalId, 'with invalid directory:', invalidDirectory);
+    
+    // Get current terminal state
+    const currentState = await unifiedStore.getTerminalState();
+    
+    if (currentState && currentState.terminals) {
+      // Filter out terminals with the invalid directory or the specific terminal ID
+      const cleanedTerminals = currentState.terminals.filter(terminal => {
+        const shouldRemove = terminal.id === terminalId || 
+                           (invalidDirectory && terminal.directory === invalidDirectory);
+        
+        if (shouldRemove) {
+          safeLog('Removing corrupted terminal from state:', { 
+            id: terminal.id, 
+            directory: terminal.directory,
+            reason: terminal.id === terminalId ? 'failed_terminal' : 'invalid_directory'
+          });
+        }
+        
+        return !shouldRemove;
+      });
+      
+      // If we removed terminals, update the state
+      if (cleanedTerminals.length !== currentState.terminals.length) {
+        const cleanedState = {
+          ...currentState,
+          terminals: cleanedTerminals,
+          // Reset to first terminal if active terminal was removed
+          activeTerminalId: cleanedTerminals.length > 0 ? cleanedTerminals[0].id : 1,
+          // Update counter to prevent ID conflicts
+          terminalIdCounter: cleanedTerminals.length > 0 ? 
+            Math.max(...cleanedTerminals.map(t => t.id)) + 1 : 1
+        };
+        
+        // If no terminals remain, create a default one
+        if (cleanedTerminals.length === 0) {
+          cleanedState.terminals = [{
+            id: 1,
+            name: 'Terminal 1',
+            color: '#007acc',
+            directory: process.cwd()
+          }];
+          cleanedState.activeTerminalId = 1;
+          cleanedState.terminalIdCounter = 2;
+        }
+        
+        await unifiedStore.setTerminalState(cleanedState);
+        safeLog('Successfully cleared corrupted terminal state. Remaining terminals:', cleanedState.terminals.length);
+        
+        // Notify renderer about the state change
+        if (mainWindow) {
+          mainWindow.webContents.send('terminal-state-cleaned', {
+            clearedTerminalId: terminalId,
+            invalidDirectory: invalidDirectory,
+            remainingTerminals: cleanedState.terminals.length
+          });
+        }
+      }
+    }
+  } catch (error) {
+    safeLog('Failed to clear corrupted terminal state:', error.message);
+    // If we can't clear the state, try to reset it completely
+    try {
+      const defaultState = {
+        activeTerminalId: 1,
+        terminalIdCounter: 2,
+        terminals: [{
+          id: 1,
+          name: 'Terminal 1',
+          color: '#007acc',
+          directory: process.cwd()
+        }]
+      };
+      await unifiedStore.setTerminalState(defaultState);
+      safeLog('Reset terminal state to defaults after clear failure');
+    } catch (resetError) {
+      safeLog('Failed to reset terminal state to defaults:', resetError.message);
+    }
+  }
+}
 
 function setupIpcHandlers() {
   // Terminal handling
@@ -319,17 +442,74 @@ function setupIpcHandlers() {
     const startDirectory = options.directory || null;
     
     safeLog('Received terminal-start request, terminalId:', terminalId, 'directory:', startDirectory);
-    const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/zsh';
-    const cwd = startDirectory || process.cwd();
-    safeLog('Starting terminal', terminalId, 'with shell:', shell, 'cwd:', cwd);
+    
+    // Validate directory exists and is accessible
+    let validatedCwd = process.cwd();
+    let directoryValidationResult = 'default';
+    
+    if (startDirectory) {
+      try {
+        const dirStat = fs.statSync(startDirectory);
+        if (dirStat.isDirectory()) {
+          // Additional check - verify we can access the directory
+          fs.accessSync(startDirectory, fs.constants.R_OK);
+          validatedCwd = startDirectory;
+          directoryValidationResult = 'valid';
+          safeLog('Terminal', terminalId, 'validated directory:', startDirectory);
+        } else {
+          safeLog('Terminal', terminalId, 'directory validation failed - not a directory:', startDirectory);
+          directoryValidationResult = 'not_directory';
+        }
+      } catch (dirError) {
+        safeLog('Terminal', terminalId, 'directory validation failed:', dirError.message, 'using default:', validatedCwd);
+        directoryValidationResult = 'invalid';
+        
+        // Clear corrupted terminal state if directory validation fails
+        if (dirError.code === 'ENOENT' || dirError.code === 'EACCES') {
+          safeLog('Terminal', terminalId, 'clearing corrupted terminal state due to invalid directory');
+          clearCorruptedTerminalState(terminalId, startDirectory);
+        }
+      }
+    }
+    
+    // Platform-specific shell configuration
+    let shell, shellArgs = [];
+    if (os.platform() === 'win32') {
+      // Better Windows shell detection
+      if (process.env.PSModulePath && process.env.PSModulePath.length > 0) {
+        // PowerShell is available
+        shell = 'powershell.exe';
+        shellArgs = ['-NoLogo', '-NoExit'];
+      } else if (process.env.WT_SESSION) {
+        // Windows Terminal is running, prefer cmd
+        shell = process.env.COMSPEC || 'cmd.exe';
+        shellArgs = [];
+      } else {
+        // Default to cmd.exe which is most reliable
+        shell = process.env.COMSPEC || 'cmd.exe';
+        shellArgs = [];
+      }
+      
+      safeLog('Windows shell detection:', {
+        PSModulePath: !!process.env.PSModulePath,
+        WT_SESSION: !!process.env.WT_SESSION,
+        COMSPEC: process.env.COMSPEC,
+        selectedShell: shell
+      });
+    } else {
+      shell = process.env.SHELL || '/bin/zsh';
+    }
+    
+    safeLog('Starting terminal', terminalId, 'with shell:', shell, 'args:', shellArgs, 'validated cwd:', validatedCwd, 'directory validation:', directoryValidationResult);
     
     try {
-      const terminalProcess = pty.spawn(shell, [], {
+      const terminalProcess = pty.spawn(shell, shellArgs, {
         name: 'xterm-color',
         cols: 80,
         rows: 24,
-        cwd: cwd,
-        env: process.env
+        cwd: validatedCwd,
+        env: process.env,
+        useConpty: os.platform() === 'win32' // Use ConPTY on Windows for better compatibility
       });
       safeLog('Terminal', terminalId, 'process spawned successfully');
 
@@ -345,26 +525,63 @@ function setupIpcHandlers() {
         event.reply('terminal-data', { terminalId, content: data });
       });
 
-      terminalProcess.onExit(() => {
-        event.reply('terminal-exit', { terminalId });
+      terminalProcess.onExit((exitCode, signal) => {
+        safeLog('Terminal', terminalId, 'process exited with code:', exitCode, 'signal:', signal);
+        event.reply('terminal-exit', { terminalId, exitCode, signal });
         ptyProcesses.delete(terminalId);
         if (terminalId === 1) {
           ptyProcess = null;
         }
       });
+      
+      // Windows-specific: send initial ready signal after short delay
+      if (os.platform() === 'win32') {
+        setTimeout(() => {
+          event.reply('terminal-ready', { terminalId });
+        }, 500); // Give Windows terminal time to fully initialize
+      } else {
+        event.reply('terminal-ready', { terminalId });
+      }
     } catch (error) {
       safeLog('Failed to spawn terminal', terminalId, 'Error:', error.message);
       // Try fallback approaches
       try {
-        // Try with simpler environment
-        const terminalProcess = pty.spawn('/bin/bash', [], {
+        let fallbackShell, fallbackArgs = [];
+        let fallbackEnv;
+        
+        if (os.platform() === 'win32') {
+          // Windows fallbacks
+          fallbackShell = 'cmd.exe';
+          fallbackArgs = [];
+          fallbackEnv = {
+            PATH: process.env.PATH,
+            USERPROFILE: process.env.USERPROFILE,
+            USERNAME: process.env.USERNAME,
+            COMSPEC: process.env.COMSPEC,
+            SYSTEMROOT: process.env.SYSTEMROOT,
+            TEMP: process.env.TEMP,
+            TMP: process.env.TMP
+          };
+        } else {
+          // Unix fallbacks
+          fallbackShell = '/bin/bash';
+          fallbackArgs = [];
+          fallbackEnv = {
+            PATH: process.env.PATH,
+            HOME: process.env.HOME,
+            USER: process.env.USER
+          };
+        }
+        
+        const terminalProcess = pty.spawn(fallbackShell, fallbackArgs, {
           name: 'xterm-color',
           cols: 80,
           rows: 24,
-          cwd: cwd,
-          env: { PATH: process.env.PATH, HOME: process.env.HOME, USER: process.env.USER }
+          cwd: validatedCwd,
+          env: fallbackEnv,
+          useConpty: os.platform() === 'win32'
         });
-        safeLog('Terminal', terminalId, 'spawned successfully with fallback bash');
+        safeLog('Terminal', terminalId, 'spawned successfully with fallback shell:', fallbackShell);
         ptyProcesses.set(terminalId, terminalProcess);
         if (terminalId === 1) {
           ptyProcess = terminalProcess;
@@ -372,16 +589,37 @@ function setupIpcHandlers() {
         terminalProcess.onData((data) => {
           event.reply('terminal-data', { terminalId, content: data });
         });
-        terminalProcess.onExit(() => {
-          event.reply('terminal-exit', { terminalId });
+        terminalProcess.onExit((exitCode, signal) => {
+          safeLog('Terminal', terminalId, 'fallback process exited with code:', exitCode, 'signal:', signal);
+          event.reply('terminal-exit', { terminalId, exitCode, signal });
           ptyProcesses.delete(terminalId);
           if (terminalId === 1) {
             ptyProcess = null;
           }
         });
+        
+        // Send ready signal for fallback terminal too
+        if (os.platform() === 'win32') {
+          setTimeout(() => {
+            event.reply('terminal-ready', { terminalId });
+          }, 500);
+        } else {
+          event.reply('terminal-ready', { terminalId });
+        }
       } catch (fallbackError) {
         safeLog('Fallback terminal spawn also failed:', fallbackError.message);
-        event.reply('terminal-error', { terminalId, error: fallbackError.message });
+        safeLog('Terminal', terminalId, 'exhausted all spawn attempts, clearing corrupted state');
+        
+        // Clear corrupted terminal state when all spawn attempts fail
+        clearCorruptedTerminalState(terminalId, startDirectory);
+        
+        // Send enhanced error with recovery information
+        event.reply('terminal-error', { 
+          terminalId, 
+          error: fallbackError.message,
+          directoryValidation: directoryValidationResult,
+          recoveryAction: 'cleared_state'
+        });
       }
     }
   });
@@ -670,8 +908,7 @@ function setupIpcHandlers() {
   // Data file operations
   ipcMain.handle('db-get-setting', async (event, key) => {
     try {
-      const data = await readDataFile();
-      return data.settings[key] || null;
+      return await unifiedStore.getSetting(key);
     } catch (error) {
       try { console.error('Error getting setting:', error); } catch (e) { /* ignore */ }
       return null;
@@ -680,9 +917,8 @@ function setupIpcHandlers() {
 
   ipcMain.handle('db-set-setting', async (event, key, value) => {
     try {
-      const data = await readDataFile();
-      data.settings[key] = value;
-      return await writeDataFile(data);
+      await unifiedStore.setSetting(key, value);
+      return true;
     } catch (error) {
       try { console.error('Error setting setting:', error); } catch (e) { /* ignore */ }
       return false;
@@ -691,8 +927,7 @@ function setupIpcHandlers() {
 
   ipcMain.handle('db-get-all-settings', async () => {
     try {
-      const data = await readDataFile();
-      return data.settings;
+      return await unifiedStore.getAllSettings();
     } catch (error) {
       try { console.error('Error getting all settings:', error); } catch (e) { /* ignore */ }
       return {};
@@ -702,8 +937,7 @@ function setupIpcHandlers() {
   // Alias for db-get-all-settings
   ipcMain.handle('db-get-settings', async () => {
     try {
-      const data = await readDataFile();
-      return data.settings;
+      return await unifiedStore.getAllSettings();
     } catch (error) {
       try { console.error('Error getting all settings:', error); } catch (e) { /* ignore */ }
       return {};
@@ -713,19 +947,28 @@ function setupIpcHandlers() {
   // Alias for db-set-setting
   ipcMain.handle('db-save-setting', async (event, key, value) => {
     try {
-      const data = await readDataFile();
-      data.settings[key] = value;
-      return await writeDataFile(data);
+      await unifiedStore.setSetting(key, value);
+      return true;
     } catch (error) {
       try { console.error('Error setting setting:', error); } catch (e) { /* ignore */ }
+      return false;
+    }
+  });
+  
+  // Missing handler that renderer calls
+  ipcMain.handle('db-save-all-settings', async (event, settings) => {
+    try {
+      await unifiedStore.saveAllSettings(settings);
+      return true;
+    } catch (error) {
+      try { console.error('Error saving all settings:', error); } catch (e) { /* ignore */ }
       return false;
     }
   });
 
   ipcMain.handle('db-get-messages', async () => {
     try {
-      const data = await readDataFile();
-      return data.messages || [];
+      return await unifiedStore.getMessages();
     } catch (error) {
       try { console.error('Error getting messages:', error); } catch (e) { /* ignore */ }
       return [];
@@ -734,19 +977,15 @@ function setupIpcHandlers() {
 
   ipcMain.handle('db-save-message', async (event, message) => {
     try {
-      const data = await readDataFile();
-      // Remove existing message with same ID if it exists
-      data.messages = data.messages.filter(m => m.message_id !== message.id);
-      // Add the message
-      data.messages.push({
-        message_id: message.id,
+      await unifiedStore.addMessage({
+        id: message.id,
         content: message.content,
-        processed_content: message.processedContent,
-        execute_at: message.executeAt,
-        created_at: message.createdAt,
+        processedContent: message.processedContent,
+        executeAt: message.executeAt,
+        createdAt: message.createdAt,
         status: message.status || 'pending'
       });
-      return await writeDataFile(data);
+      return true;
     } catch (error) {
       try { console.error('Error saving message:', error); } catch (e) { /* ignore */ }
       return false;
@@ -755,9 +994,7 @@ function setupIpcHandlers() {
 
   ipcMain.handle('db-delete-message', async (event, messageId) => {
     try {
-      const data = await readDataFile();
-      data.messages = data.messages.filter(m => m.message_id !== messageId);
-      return await writeDataFile(data);
+      return await unifiedStore.removeMessage(messageId);
     } catch (error) {
       try { console.error('Error deleting message:', error); } catch (e) { /* ignore */ }
       return false;
@@ -766,11 +1003,31 @@ function setupIpcHandlers() {
 
   ipcMain.handle('db-clear-messages', async () => {
     try {
-      const data = await readDataFile();
-      data.messages = [];
-      return await writeDataFile(data);
+      await unifiedStore.saveMessages([]);
+      return true;
     } catch (error) {
       try { console.error('Error clearing messages:', error); } catch (e) { /* ignore */ }
+      return false;
+    }
+  });
+
+  // Directory validation for terminal state recovery
+  ipcMain.handle('validate-directory', async (event, directoryPath) => {
+    try {
+      if (!directoryPath || typeof directoryPath !== 'string') {
+        return false;
+      }
+      
+      const dirStat = fs.statSync(directoryPath);
+      if (!dirStat.isDirectory()) {
+        return false;
+      }
+      
+      // Check if we can access the directory
+      fs.accessSync(directoryPath, fs.constants.R_OK);
+      return true;
+    } catch (error) {
+      // Directory doesn't exist or can't be accessed
       return false;
     }
   });
@@ -778,17 +1035,16 @@ function setupIpcHandlers() {
   // Atomic message queue save - replaces entire message array
   ipcMain.handle('db-save-message-queue', async (event, messages) => {
     try {
-      const data = await readDataFile();
-      // Atomically replace entire message queue
-      data.messages = messages.map(message => ({
-        message_id: message.id,
+      const formattedMessages = messages.map(message => ({
+        id: message.id,
         content: message.content,
-        processed_content: message.processedContent,
-        execute_at: message.executeAt,
-        created_at: message.createdAt,
+        processedContent: message.processedContent,
+        executeAt: message.executeAt,
+        createdAt: message.createdAt,
         status: message.status || 'pending'
       }));
-      return await writeDataFile(data);
+      await unifiedStore.saveMessages(formattedMessages);
+      return true;
     } catch (error) {
       try { console.error('Error saving message queue:', error); } catch (e) { /* ignore */ }
       return false;
@@ -797,13 +1053,8 @@ function setupIpcHandlers() {
 
   ipcMain.handle('db-save-message-history', async (event, historyItem) => {
     try {
-      const data = await readDataFile();
-      data.messageHistory.unshift(historyItem);
-      // Keep only last 100 items
-      if (data.messageHistory.length > 100) {
-        data.messageHistory = data.messageHistory.slice(0, 100);
-      }
-      return await writeDataFile(data);
+      await unifiedStore.addToHistory(historyItem);
+      return true;
     } catch (error) {
       try { console.error('Error saving message history:', error); } catch (e) { /* ignore */ }
       return false;
@@ -812,8 +1063,7 @@ function setupIpcHandlers() {
 
   ipcMain.handle('db-get-message-history', async () => {
     try {
-      const data = await readDataFile();
-      return data.messageHistory || [];
+      return await unifiedStore.getMessageHistory();
     } catch (error) {
       try { console.error('Error getting message history:', error); } catch (e) { /* ignore */ }
       return [];
@@ -822,8 +1072,8 @@ function setupIpcHandlers() {
 
   ipcMain.handle('db-get-app-state', async (event, key) => {
     try {
-      const data = await readDataFile();
-      return data.appState[key] || null;
+      const appState = await unifiedStore.getAppState();
+      return appState[key] || null;
     } catch (error) {
       try { console.error('Error getting app state:', error); } catch (e) { /* ignore */ }
       return null;
@@ -832,12 +1082,98 @@ function setupIpcHandlers() {
 
   ipcMain.handle('db-set-app-state', async (event, key, value) => {
     try {
-      const data = await readDataFile();
-      data.appState[key] = value;
-      return await writeDataFile(data);
+      await unifiedStore.setAppState(key, value);
+      return true;
     } catch (error) {
       try { console.error('Error setting app state:', error); } catch (e) { /* ignore */ }
       return false;
+    }
+  });
+
+  // Additional missing handlers that renderer calls
+  ipcMain.handle('db-load-terminal-state', async () => {
+    try {
+      return await unifiedStore.getTerminalState();
+    } catch (error) {
+      try { console.error('Error loading terminal state:', error); } catch (e) { /* ignore */ }
+      return null;
+    }
+  });
+  
+  ipcMain.handle('db-save-terminal-state', async (event, terminalState) => {
+    try {
+      await unifiedStore.setTerminalState(terminalState);
+      return true;
+    } catch (error) {
+      try { console.error('Error saving terminal state:', error); } catch (e) { /* ignore */ }
+      return false;
+    }
+  });
+  
+  ipcMain.handle('db-check-migration-needed', async () => {
+    try {
+      // Always return false since we've already migrated
+      return false;
+    } catch (error) {
+      try { console.error('Error checking migration:', error); } catch (e) { /* ignore */ }
+      return false;
+    }
+  });
+  
+  ipcMain.handle('db-migrate-from-localStorage', async (event, data) => {
+    try {
+      // Already handled by unified storage initialization
+      return true;
+    } catch (error) {
+      try { console.error('Error migrating from localStorage:', error); } catch (e) { /* ignore */ }
+      return false;
+    }
+  });
+  
+  ipcMain.handle('db-load-message-queue', async () => {
+    try {
+      return await unifiedStore.getMessages();
+    } catch (error) {
+      try { console.error('Error loading message queue:', error); } catch (e) { /* ignore */ }
+      return [];
+    }
+  });
+  
+  ipcMain.handle('db-load-message-history', async () => {
+    try {
+      return await unifiedStore.getMessageHistory();
+    } catch (error) {
+      try { console.error('Error loading message history:', error); } catch (e) { /* ignore */ }
+      return [];
+    }
+  });
+  
+  ipcMain.handle('db-clear-message-history', async () => {
+    try {
+      await unifiedStore.clearHistory();
+      return true;
+    } catch (error) {
+      try { console.error('Error clearing message history:', error); } catch (e) { /* ignore */ }
+      return false;
+    }
+  });
+  
+  ipcMain.handle('db-save-preferences', async (event, preferences) => {
+    try {
+      await unifiedStore.saveAllSettings(preferences);
+      return true;
+    } catch (error) {
+      try { console.error('Error saving preferences:', error); } catch (e) { /* ignore */ }
+      return false;
+    }
+  });
+  
+  ipcMain.handle('db-load-preferences', async () => {
+    try {
+      return await unifiedStore.getAllSettings();
+    } catch (error) {
+      try { console.error('Error loading preferences:', error); } catch (e) { /* ignore */ }
+      return {};
     }
   });
 
@@ -962,91 +1298,206 @@ function setupIpcHandlers() {
     }
   });
 
-  // Voice transcription handler using Python Whisper
+  // Voice transcription handler using @xenova/transformers (deployment-ready)
   ipcMain.handle('transcribe-audio', async (event, audioBuffer) => {
     let tempAudioPath = null;
+    let tempWavPath = null;
     
     try {
-      const { spawn } = require('child_process');
+      // Import required modules
+      const { pipeline, env } = await import('@xenova/transformers');
+      const ffmpeg = require('fluent-ffmpeg');
+      const ffmpegPath = require('node-ffmpeg-installer').path;
+      ffmpeg.setFfmpegPath(ffmpegPath);
       
-      // Create temporary file for audio
+      // Configure transformers environment
+      env.cacheDir = path.join(require('electron').app.getPath('userData'), 'transformers-cache');
+      env.allowRemoteModels = true;
+      
+      // Create temporary files
       const tempDir = os.tmpdir();
-      tempAudioPath = path.join(tempDir, `audio_${Date.now()}.wav`);
+      tempAudioPath = path.join(tempDir, `audio_${Date.now()}.webm`);
+      tempWavPath = path.join(tempDir, `audio_${Date.now()}.wav`);
       
       // Write audio buffer to temporary file
       await fs.writeFile(tempAudioPath, audioBuffer);
       
-      // Create Python script for transcription
-      const pythonScript = `
-import whisper
-import sys
-import json
-
-try:
-    model = whisper.load_model("tiny.en")
-    result = model.transcribe("${tempAudioPath}")
-    print(json.dumps({"text": result["text"].strip()}))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-`;
+      console.log('🎤 Converting audio to WAV format...');
       
-      // Run Python whisper transcription
-      const transcript = await new Promise((resolve, reject) => {
-        const python = spawn('python3', ['-c', pythonScript]);
-        let output = '';
-        let error = '';
-        
-        python.stdout.on('data', (data) => {
-          output += data.toString();
-        });
-        
-        python.stderr.on('data', (data) => {
-          error += data.toString();
-        });
-        
-        python.on('close', (code) => {
-          if (code === 0) {
-            try {
-              const result = JSON.parse(output.trim());
-              if (result.error) {
-                reject(new Error(result.error));
-              } else {
-                resolve(result.text || '');
-              }
-            } catch (parseError) {
-              reject(new Error(`Failed to parse transcription result: ${parseError.message}`));
-            }
-          } else {
-            reject(new Error(`Python script failed with code ${code}: ${error}`));
-          }
-        });
+      // Convert WebM/any format to WAV using ffmpeg
+      await new Promise((resolve, reject) => {
+        ffmpeg(tempAudioPath)
+          .toFormat('wav')
+          .audioCodec('pcm_s16le')
+          .audioFrequency(16000) // 16kHz is standard for speech recognition
+          .audioChannels(1) // Mono
+          .on('end', () => {
+            console.log('✅ Audio conversion complete');
+            resolve();
+          })
+          .on('error', (err) => {
+            console.error('❌ Audio conversion failed:', err);
+            reject(err);
+          })
+          .save(tempWavPath);
       });
+      
+      // Read the converted WAV file
+      const WaveFile = require('wavefile').WaveFile;
+      const wavBuffer = await fs.readFile(tempWavPath);
+      const wav = new WaveFile(wavBuffer);
+      
+      // Get audio samples as Float32Array (required by transformers.js)
+      const audioData = wav.getSamples(false, Float32Array);
+      const sampleRate = wav.fmt.sampleRate;
+      
+      console.log(`📊 Audio info: ${sampleRate}Hz, ${audioData.length} samples`);
+      
+      // Initialize speech-to-text pipeline with quantized model for speed
+      const transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny.en', {
+        quantized: true,
+        revision: 'main'
+      });
+      
+      // Calculate audio duration in seconds
+      const audioDurationSeconds = audioData.length / sampleRate;
+      console.log(`🕐 Audio duration: ${audioDurationSeconds.toFixed(2)}s`);
+      
+      // Optimize chunk settings based on audio length
+      let chunkLength, strideLength;
+      if (audioDurationSeconds <= 10) {
+        // For short audio (≤10s), use smaller chunks for better accuracy
+        chunkLength = Math.max(5, audioDurationSeconds);
+        strideLength = Math.min(1, audioDurationSeconds / 4);
+      } else if (audioDurationSeconds <= 30) {
+        // For medium audio (≤30s), use moderate chunks
+        chunkLength = 15;
+        strideLength = 3;
+      } else {
+        // For long audio (>30s), use default larger chunks
+        chunkLength = 30;
+        strideLength = 5;
+      }
+      
+      console.log(`📐 Using chunk_length_s: ${chunkLength}, stride_length_s: ${strideLength}`);
+      
+      // Transcribe audio data (not file path) with optimized options
+      const result = await transcriber(audioData, {
+        sampling_rate: sampleRate,
+        return_timestamps: false,
+        chunk_length_s: chunkLength,
+        stride_length_s: strideLength,
+        language: 'english', // Specify language for better accuracy
+        task: 'transcribe' // Explicit transcription task
+      });
+      
+      const transcript = result.text?.trim() || '';
+      console.log('✅ Transcription completed:', transcript.substring(0, 50) + '...');
       
       return transcript;
       
     } catch (error) {
-      console.error('Transcription error:', error);
-      return `[Transcription failed: ${error.message}]`;
+      console.error('❌ Transcription error:', error);
+      
+      // Fallback: Try Python backend if available
+      try {
+        console.log('🔄 Attempting fallback to Python backend...');
+        const fallbackResult = await tryPythonFallback(tempAudioPath);
+        return fallbackResult;
+      } catch (fallbackError) {
+        console.error('❌ Fallback also failed:', fallbackError);
+        return `[Transcription failed: ${error.message}. Fallback: ${fallbackError.message}]`;
+      }
     } finally {
-      // Clean up temporary file
+      // Clean up temporary files
       if (tempAudioPath) {
         try {
           await fs.unlink(tempAudioPath);
         } catch (cleanupError) {
-          console.warn('Failed to cleanup temp audio file:', cleanupError.message);
+          console.warn('⚠️ Failed to cleanup temp audio file:', cleanupError.message);
+        }
+      }
+      if (tempWavPath) {
+        try {
+          await fs.unlink(tempWavPath);
+        } catch (cleanupError) {
+          console.warn('⚠️ Failed to cleanup temp WAV file:', cleanupError.message);
         }
       }
     }
   });
+  
+  // Fallback transcription using backend server (if available)
+  async function tryPythonFallback(audioPath) {
+    const { spawn } = require('child_process');
+    
+    // Try the backend service first (more reliable)
+    try {
+      const fetch = (await import('node-fetch')).default;
+      const FormData = (await import('form-data')).default;
+      
+      const form = new FormData();
+      form.append('audio', require('fs').createReadStream(audioPath));
+      
+      const response = await fetch('http://localhost:8000/voice/transcribe/', {
+        method: 'POST',
+        body: form,
+        timeout: 30000
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        return result.transcription || result.text || '';
+      }
+    } catch (backendError) {
+      console.warn('Backend transcription unavailable:', backendError.message);
+    }
+    
+    // Final fallback: Basic Python script (requires whisper to be installed)
+    return new Promise((resolve, reject) => {
+      const pythonScript = `
+import sys
+import json
+try:
+    import whisper
+    model = whisper.load_model("tiny.en")
+    result = model.transcribe("${audioPath}")
+    print(json.dumps({"text": result["text"].strip()}))
+except ImportError:
+    print(json.dumps({"error": "whisper module not installed"}))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+`;
+      
+      const python = spawn('python3', ['-c', pythonScript]);
+      let output = '';
+      let error = '';
+      
+      python.stdout.on('data', (data) => output += data.toString());
+      python.stderr.on('data', (data) => error += data.toString());
+      
+      python.on('close', (code) => {
+        if (code === 0) {
+          try {
+            const result = JSON.parse(output.trim());
+            if (result.error) {
+              reject(new Error(result.error));
+            } else {
+              resolve(result.text || '');
+            }
+          } catch (parseError) {
+            reject(new Error(`Parse error: ${parseError.message}`));
+          }
+        } else {
+          reject(new Error(`Python script failed with code ${code}: ${error}`));
+        }
+      });
+    });
+  }
 
 }
 
-// App event handlers
-app.whenReady().then(() => {
-  initDataStorage();
-  createWindow();
-  
-});
+// Duplicate app.whenReady() removed - handled above in main initialization
 
 app.on('window-all-closed', () => {
   // Don't quit when all windows are closed - keep running in tray

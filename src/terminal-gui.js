@@ -40,9 +40,6 @@ class TerminalGUI {
         this.recentDirectories = [];
         this.maxRecentDirectories = 5;
         this.lastTerminalOutput = '';
-        this.autoscrollEnabled = true;
-        this.autoscrollDelay = 3000;
-        this.autoscrollTimeout = null;
         this.userInteracting = false;
         this.actionLog = [];
         this.injectionBlocked = false;
@@ -57,8 +54,6 @@ class TerminalGUI {
         
         // Initialize preferences with defaults
         this.preferences = {
-            autoscrollEnabled: true,
-            autoscrollDelay: 3000,
             autoContinueEnabled: false,
             planModeEnabled: false,
             planModeCommand: 'npx claude-flow@alpha hive-mind spawn "{message}" --agents 5 --strategy development --claude',
@@ -315,6 +310,11 @@ class TerminalGUI {
             this.setupEventListeners();
             this.applyTheme(this.preferences.theme);
             
+            // Additional theme application for packaged versions
+            setTimeout(() => {
+                this.applyTheme(this.preferences.theme);
+            }, 500);
+            
             // Handle timer recovery
             if (this.timerExpired) {
                 this.injectionManager.onTimerExpired();
@@ -384,8 +384,23 @@ class TerminalGUI {
             document.documentElement.setAttribute('data-theme', theme);
         }
         
-        // Apply theme to terminals
-        this.terminalManager.applyTheme(theme);
+        // Force repaint to ensure CSS variables are applied
+        document.documentElement.style.display = 'none';
+        document.documentElement.offsetHeight; // Trigger reflow
+        document.documentElement.style.display = '';
+        
+        // Apply theme to terminals with delay to ensure DOM is ready
+        setTimeout(() => {
+            this.terminalManager.applyTheme(theme);
+            
+            // Force terminal background update for packaged versions
+            const terminals = document.querySelectorAll('.terminal-container .xterm');
+            terminals.forEach(terminal => {
+                const computedStyle = getComputedStyle(document.documentElement);
+                const terminalBg = computedStyle.getPropertyValue('--terminal-bg') || '#1e1e1e';
+                terminal.style.backgroundColor = terminalBg;
+            });
+        }, 100);
     }
 
     // ========================================

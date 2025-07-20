@@ -100,7 +100,7 @@ python test_backend.py
 
 ## Frontend Works Without Backend
 
-The Electron app is designed to work with or without the Django backend:
+The Auto-Injector app is designed to work with or without the Django backend:
 
 - **With Backend**: Full features including AI todo generation, persistent storage
 - **Without Backend**: Basic functionality, local storage only
@@ -108,7 +108,7 @@ The Electron app is designed to work with or without the Django backend:
 ## Log Files
 
 - **Backend logs**: `backend/backend.log` (when using start_simple.sh)
-- **Frontend logs**: Check the Electron app's developer console (Cmd+Option+I)
+- **Frontend logs**: Check the Auto-Injector app's developer console (Cmd+Option+I)
 
 ## Getting Help
 

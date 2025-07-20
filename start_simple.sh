@@ -22,9 +22,9 @@ else
 fi
 
 echo ""
-echo "🖥️  Starting Electron app..."
+echo "🖥️  Starting Auto-Injector app..."
 echo "   The app will work with or without the backend"
 echo ""
 
-# Start Electron app
+# Start Auto-Injector app
 npm start

@@ -126,19 +126,6 @@ class ModalManager {
                 </div>
             </div>
             
-            <div class="setting-group">
-                <h3>Auto-scroll</h3>
-                <div class="setting-item">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="autoscroll-enabled" ${this.gui.preferences.autoscrollEnabled ? 'checked' : ''}>
-                        Enable auto-scroll
-                    </label>
-                </div>
-                <div class="setting-item">
-                    <label for="autoscroll-delay">Auto-scroll delay (ms):</label>
-                    <input type="number" id="autoscroll-delay" value="${this.gui.preferences.autoscrollDelay}" min="1000" max="10000" step="500">
-                </div>
-            </div>
             
             <div class="setting-group">
                 <h3>Directory</h3>
@@ -476,8 +463,6 @@ class ModalManager {
         // Collect all settings from the modal
         const settings = {
             theme: modal.querySelector('#theme-select')?.value,
-            autoscrollEnabled: modal.querySelector('#autoscroll-enabled')?.checked,
-            autoscrollDelay: parseInt(modal.querySelector('#autoscroll-delay')?.value),
             currentDirectory: modal.querySelector('#current-directory')?.value,
             defaultDuration: parseInt(modal.querySelector('#default-duration')?.value),
             defaultUnit: modal.querySelector('#default-unit')?.value,

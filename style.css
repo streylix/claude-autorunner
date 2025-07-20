@@ -605,10 +605,47 @@ body {
 .terminal-container .xterm {
     height: 100% !important;
     width: 100% !important;
+    background-color: var(--terminal-bg, #1e1e1e) !important;
 }
 
 .terminal-container .xterm-viewport {
     width: 100% !important;
+    background-color: var(--terminal-bg, #1e1e1e) !important;
+}
+
+.terminal-container .xterm-screen {
+    background-color: var(--terminal-bg, #1e1e1e) !important;
+}
+
+.terminal-container .xterm-helpers {
+    background-color: var(--terminal-bg, #1e1e1e) !important;
+}
+
+/* Fallback styling for when CSS variables don't load */
+body:not([data-theme]) {
+    background-color: #2d2d2d;
+    color: #ffffff;
+}
+
+body:not([data-theme]) .terminal-container .xterm {
+    background-color: #1e1e1e !important;
+}
+
+body:not([data-theme]) .terminal-container .xterm-viewport {
+    background-color: #1e1e1e !important;
+}
+
+/* Force proper styling for packaged versions */
+.terminal-container .xterm-rows {
+    background-color: transparent !important;
+}
+
+.terminal-container .xterm-cursor-layer {
+    background-color: transparent !important;
+}
+
+.terminal-container .xterm-decoration-container {
+    background-color: transparent !important;
 }
 
 .sidebar {

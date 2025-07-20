@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Start both Django backend and Electron app
-# This script starts the Django backend first, then the Electron app
+# Start both Django backend and Auto-Injector app
+# This script starts the Django backend first, then the Auto-Injector app
 
 echo "🚀 Starting Terminal GUI with Django Backend..."
 
@@ -66,9 +66,9 @@ echo "📝 Note: If you see errors above, the backend may still work."
 echo "   The frontend will run with or without the backend."
 echo ""
 
-# Start Electron app
-echo "🖥️  Starting Electron app..."
+# Start Auto-Injector app
+echo "🖥️  Starting Auto-Injector app..."
 npm start
 
-# Cleanup when Electron app exits
+# Cleanup when Auto-Injector app exits
 cleanup

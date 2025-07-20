@@ -19,7 +19,7 @@ Now introducing *Advanced Plan Mode* which intuitively utilizes Claude Flow for 
 
 ### Installation
 
-#### Option 1: Electron Only (Basic)
+#### Option 1: Standalone Only (Basic)
 ```bash
 # Install dependencies
 npm install
@@ -32,7 +32,7 @@ npm start
 For enhanced functionality including persistent memory, voice processing, and advanced features:
 
 ```bash
-# Install Electron dependencies
+# Install dependencies
 npm install
 
 # Set up Django backend

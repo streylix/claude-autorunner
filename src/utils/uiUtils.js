@@ -57,19 +57,6 @@ class UIUtils {
         return div.innerHTML;
     }
 
-    /**
-     * Smooth scroll to bottom of terminal
-     * @param {string} terminalId - Terminal identifier
-     */
-    scrollToBottom(terminalId = 'current') {
-        const terminalElement = terminalId === 'current' 
-            ? document.querySelector('.terminal-container.active .xterm-viewport')
-            : document.querySelector(`#terminal-${terminalId} .xterm-viewport`);
-        
-        if (terminalElement) {
-            terminalElement.scrollTop = terminalElement.scrollHeight;
-        }
-    }
 
     /**
      * Generic modal display function

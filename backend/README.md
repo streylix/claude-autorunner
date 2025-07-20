@@ -1,6 +1,6 @@
 # Terminal Backend - Django API Server
 
-A Django-based backend server running on port 8001 that provides persistent storage and advanced functionality for the Terminal GUI Electron application.
+A Django-based backend server running on port 8001 that provides persistent storage and advanced functionality for the Auto-Injector application.
 
 ## Features
 
@@ -258,9 +258,9 @@ Updated database schema with user table
 - ✅ Test database user creation and login flow (Medium)
 - ✅ Review error handling in authentication flow (Medium)
 
-## Integration with Electron App
+## Integration with Auto-Injector App
 
-The backend is designed to work seamlessly with the Terminal GUI Electron application:
+The backend is designed to work seamlessly with the Auto-Injector application:
 
 1. **Session Persistence** - Terminal sessions survive app restarts
 2. **Queue Synchronization** - Message queue persists between sessions

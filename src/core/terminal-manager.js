@@ -121,16 +121,26 @@ class TerminalManager {
         const color = this.terminalColors[(id - 1) % this.terminalColors.length];
         
         // Create terminal instance
-        const terminal = new Terminal({
+        // Platform-specific terminal options
+        const isWindows = navigator.platform.toLowerCase().includes('win');
+        const terminalOptions = {
             theme: this.getTerminalTheme(),
-            fontFamily: 'Menlo',
-            fontSize: 13,
-            lineHeight: 1,
+            fontFamily: isWindows ? 'Consolas, "Courier New", monospace' : 'Monaco, Menlo, "Consolas", "Courier New", monospace',
+            fontSize: 12,
+            lineHeight: 1.2,
             cursorBlink: true,
             cursorStyle: 'block',
             scrollback: 1000,
-            tabStopWidth: 4
-        });
+            tabStopWidth: 4,
+            allowTransparency: false,
+            convertEol: isWindows, // Convert \n to \r\n on Windows
+            windowsMode: isWindows, // Enable Windows-specific behavior
+            fastScrollModifier: isWindows ? 'shift' : 'alt', // Use Shift for fast scroll on Windows
+            rightClickSelectsWord: true,
+            macOptionIsMeta: !isWindows // Only enable on non-Windows
+        };
+        
+        const terminal = new Terminal(terminalOptions);
 
         // Add addons
         const fitAddon = new FitAddon();
@@ -151,7 +161,6 @@ class TerminalManager {
             lastOutput: '',
             status: '',
             userInteracting: false,
-            autoscrollTimeout: null,
             searchVisible: false
         };
         

@@ -19,8 +19,6 @@ class SettingsManager {
      */
     getDefaultPreferences() {
         return {
-            autoscrollEnabled: true,
-            autoscrollDelay: 3000,
             autoContinueEnabled: false,
             theme: 'dark',
             keywordRules: [],
@@ -40,7 +38,13 @@ class SettingsManager {
             showSystemNotifications: true,
             minimizeToTray: true,
             startMinimized: false,
-            automaticTodoGeneration: false
+            automaticTodoGeneration: false,
+            voiceTranscription: {
+                minDuration: 0.5,
+                minRMS: 0.01,
+                minPeak: 0.1,
+                enabled: true
+            }
         };
     }
 
@@ -184,9 +188,6 @@ class SettingsManager {
         
         // Todo generation settings
         this.setupTodoGenerationEventListeners();
-        
-        // Autoscroll settings
-        this.setupAutoscrollEventListeners();
     }
 
     /**
@@ -311,24 +312,6 @@ class SettingsManager {
         }
     }
 
-    /**
-     * Setup autoscroll event listeners
-     */
-    setupAutoscrollEventListeners() {
-        const autoscrollEnabled = document.getElementById('autoscroll-enabled');
-        if (autoscrollEnabled) {
-            autoscrollEnabled.addEventListener('change', async (e) => {
-                await this.saveSetting('autoscrollEnabled', e.target.checked);
-            });
-        }
-
-        const autoscrollDelay = document.getElementById('autoscroll-delay');
-        if (autoscrollDelay) {
-            autoscrollDelay.addEventListener('input', async (e) => {
-                await this.saveSetting('autoscrollDelay', parseInt(e.target.value));
-            });
-        }
-    }
 
     /**
      * Apply loaded settings to UI and system
@@ -359,9 +342,7 @@ class SettingsManager {
             { id: 'show-system-notifications', key: 'showSystemNotifications' },
             { id: 'minimize-to-tray', key: 'minimizeToTray' },
             { id: 'start-minimized', key: 'startMinimized' },
-            { id: 'automatic-todo-generation', key: 'automaticTodoGeneration' },
-            { id: 'autoscroll-enabled', key: 'autoscrollEnabled' },
-            { id: 'autoscroll-delay', key: 'autoscrollDelay' }
+            { id: 'automatic-todo-generation', key: 'automaticTodoGeneration' }
         ];
 
         mappings.forEach(mapping => {
