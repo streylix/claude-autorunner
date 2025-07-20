@@ -11,6 +11,9 @@ const ValidationUtils = require('./src/utils/validation');
 const IPCHandler = require('./src/core/ipc-handler');
 class TerminalGUI {
     constructor() {
+        // Initialize loading manager first
+        this.loadingManager = new LoadingManager();
+        
         // Initialize utility classes
         this.platformUtils = new PlatformUtils();
         this.validationUtils = new ValidationUtils();
@@ -245,15 +248,19 @@ class TerminalGUI {
         try {
             // Load preferences FIRST so we have saved directory before starting terminal
             console.log('[TERMINAL_DEBUG] Loading preferences...');
+            this.loadingManager.updateProgress('preferences', 'Loading preferences...');
             await this.loadAllPreferences();
             // Load terminal session mapping
             console.log('[TERMINAL_DEBUG] Loading terminal session mapping...');
+            this.loadingManager.updateProgress('sessions', 'Loading session mapping...');
             await this.loadTerminalSessionMapping();
             // Load terminal state BEFORE initializing terminals
             console.log('[TERMINAL_DEBUG] Loading terminal state...');
+            this.loadingManager.updateProgress('terminal-state', 'Loading terminal state...');
             await this.loadTerminalState();
             // Initialize backend API client before terminal initialization
             console.log('[TERMINAL_DEBUG] Checking backend availability...');
+            this.loadingManager.updateProgress('backend', 'Connecting to backend...');
             if (typeof BackendAPIClient !== 'undefined') {
                 this.backendAPIClient = new BackendAPIClient();
                 // Test backend connectivity
@@ -272,10 +279,13 @@ class TerminalGUI {
                 }
             }
             console.log('[TERMINAL_DEBUG] Initializing terminals...');
+            this.loadingManager.updateProgress('terminals', 'Setting up terminals...');
             this.initializeTerminal();
             // Restore terminal data after terminals are created
             console.log('[TERMINAL_DEBUG] Restoring terminal data...');
+            this.loadingManager.updateProgress('data-restore', 'Restoring data...');
             this.restoreTerminalData();
+            this.loadingManager.updateProgress('ui-setup', 'Setting up interface...');
             this.setupEventListeners();
             this.setupResizeHandlers();
             // Initialize injection manager after terminal setup
@@ -300,6 +310,9 @@ class TerminalGUI {
             // Clean up any orphaned terminal selector items from previous sessions
             this.cleanupOrphanedTerminalSelectorItems();
             
+            // Finalize loading
+            this.loadingManager.updateProgress('finalization', 'Finalizing setup...');
+            
             console.log('[TERMINAL_DEBUG] TerminalGUI.initialize() completed successfully:', {
                 totalTerminals: this.terminals.size,
                 terminalIds: Array.from(this.terminals.keys()),
@@ -307,10 +320,24 @@ class TerminalGUI {
                 savedTerminalDataProcessed: !!this.savedTerminalData
             });
             
+            // Complete loading and hide modal
+            setTimeout(() => {
+                this.loadingManager.finish();
+            }, 500);
+            
             // Log using direct console method to bypass throttling
             this.directLog('App initialization completed successfully');
         } catch (error) {
             this.directLog('Error during app initialization: ' + error.message);
+            
+            // Show error in loading manager
+            if (this.loadingManager) {
+                this.loadingManager.setError('initialization', error.message);
+                // Hide loading modal after showing error briefly
+                setTimeout(() => {
+                    this.loadingManager.hide();
+                }, 3000);
+            }
         }
         this.startTerminalStatusScanning(); // Start the continuous terminal scanning
     }

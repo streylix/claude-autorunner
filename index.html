@@ -9,6 +9,20 @@
     <script src="node_modules/lucide/dist/umd/lucide.js"></script>
 </head>
 <body>
+    <!-- Loading Modal -->
+    <div id="loading-modal" class="modal loading-modal">
+        <div class="modal-content loading-modal-content">
+            <div class="loading-progress-bar"></div>
+            <div class="modal-body loading-modal-body">
+                <div class="loading-spinner"></div>
+                <div class="loading-progress-text" id="loading-progress-text">Initializing...</div>
+                <div class="loading-progress-bar-container">
+                    <div class="loading-progress-bar-fill" id="loading-progress-bar"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
     <div class="app-container">
         <div class="header">
             <div class="header-left"></div>
@@ -573,6 +587,7 @@
     <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
     <script src="node_modules/@xterm/addon-search/lib/addon-search.js"></script>
     <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+    <script src="src/ui/loading-manager.js"></script>
     <script src="api-client.js"></script>
     <script src="renderer.js"></script>
 </body>
