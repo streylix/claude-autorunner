@@ -1696,6 +1696,13 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     box-shadow: 0 0 10px rgba(0, 122, 204, 0.4);
 }
 
+/* Active/Enabled State - Red (ready to record) */
+#voice-btn.voice-button.enabled {
+    background-color: #ff0000 !important;
+    color: #ffffff !important;
+    border: 2px solid #ff0000 !important;
+}
+
 /* Recording State - Red with pulse */
 #voice-btn.voice-button.recording {
     background-color: #ff0000 !important;

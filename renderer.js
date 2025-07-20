@@ -143,6 +143,7 @@ class TerminalGUI {
         
         // Voice transcription state
         this.isRecording = false;
+        this.voiceEnabled = false; // Track if voice button is in enabled/ready state
         this.speechRecognition = null;
         this.speechResult = '';
         
@@ -2161,9 +2162,16 @@ class TerminalGUI {
     // LOCAL Voice transcription using Whisper backend
     async toggleVoiceRecording() {
         if (this.isRecording) {
+            // If currently recording, stop it
             this.stopRecording();
-        } else {
+        } else if (this.voiceEnabled) {
+            // If enabled (red), start recording
             await this.startRecording();
+        } else {
+            // If not enabled, enable it (turn red)
+            this.voiceEnabled = true;
+            this.updateVoiceButtonState('enabled');
+            this.logAction('Voice transcription ready - click again to start recording', 'info');
         }
     }
     
@@ -2357,11 +2365,16 @@ class TerminalGUI {
         if (!voiceBtn || !icon) return;
         
         // Remove all state classes
-        voiceBtn.classList.remove('recording', 'processing');
+        voiceBtn.classList.remove('recording', 'processing', 'enabled');
         
         console.log(`🎨 Voice button state: ${state}`);
         
         switch (state) {
+            case 'enabled':
+                voiceBtn.classList.add('enabled');
+                icon.setAttribute('data-lucide', 'mic');
+                console.log('🔴 Added enabled class');
+                break;
             case 'recording':
                 voiceBtn.classList.add('recording');
                 icon.setAttribute('data-lucide', 'mic');
@@ -2385,6 +2398,7 @@ class TerminalGUI {
     
     resetVoiceButton() {
         this.isRecording = false;
+        this.voiceEnabled = false;
         this.speechResult = '';
         this.speechRecognition = null;
         this.updateVoiceButtonState('idle');
