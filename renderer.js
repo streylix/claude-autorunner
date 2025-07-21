@@ -3374,6 +3374,14 @@ class TerminalGUI {
         this.preferences.timerMinutes = this.timerMinutes;
         this.preferences.timerSeconds = this.timerSeconds;
         this.preferences.timerTargetDateTime = targetDateTime.toISOString();
+        
+        // Store original timer values for reset functionality (only if timer is being set to non-zero)
+        if (this.timerHours > 0 || this.timerMinutes > 0 || this.timerSeconds > 0) {
+            this.preferences.timerOriginalHours = this.timerHours;
+            this.preferences.timerOriginalMinutes = this.timerMinutes;
+            this.preferences.timerOriginalSeconds = this.timerSeconds;
+        }
+        
         this.saveAllPreferences();
         this.updateTimerUI();
         // Only log when not in silent mode
@@ -7091,53 +7099,55 @@ class TerminalGUI {
         }
     }
     resetTimer() {
-        // Check if we have a saved target datetime
-        const savedTargetDateTime = this.preferences.timerTargetDateTime;
-        if (savedTargetDateTime) {
-            const targetDate = new Date(savedTargetDateTime);
-            const now = new Date();
-            // If target datetime has passed, don't restore the timer
-            if (now >= targetDate) {
-                this.logAction(`Timer target time (${targetDate.toLocaleString()}) has already passed - not restoring timer`, 'info');
-                // Clear the saved target datetime so it doesn't keep trying to restore
-                this.preferences.timerTargetDateTime = null;
-                this.preferences.timerHours = 0;
-                this.preferences.timerMinutes = 0;
-                this.preferences.timerSeconds = 0;
-                this.saveAllPreferences();
-                // Set timer to 00:00:00
-                this.timerActive = false;
-                this.timerExpired = true; // Mark as expired since target time passed
-                this.injectionInProgress = false;
-                this.timerHours = 0;
-                this.timerMinutes = 0;
-                this.timerSeconds = 0;
-                if (this.timerInterval) {
-                    clearInterval(this.timerInterval);
-                    this.timerInterval = null;
-                }
-                // Trigger injection manager since timer effectively expired
-                this.injectionManager.onTimerExpired();
-                this.updateTimerUI();
+        // Try to restore timer to original values (set when timer was first configured)
+        const originalHours = this.preferences.timerOriginalHours || 0;
+        const originalMinutes = this.preferences.timerOriginalMinutes || 0;
+        const originalSeconds = this.preferences.timerOriginalSeconds || 0;
+        
+        // If no original values are saved, check if we have current saved values
+        if (originalHours === 0 && originalMinutes === 0 && originalSeconds === 0) {
+            // Fall back to current preferences if no original values exist
+            const savedHours = this.preferences.timerHours || 0;
+            const savedMinutes = this.preferences.timerMinutes || 0;
+            const savedSeconds = this.preferences.timerSeconds || 0;
+            
+            // If all values are still zero, there's nothing to reset to
+            if (savedHours === 0 && savedMinutes === 0 && savedSeconds === 0) {
+                this.logAction('No saved timer values to reset to', 'warning');
                 return;
             }
+            
+            this.logAction('Using current saved values (no original values found)', 'info');
+            this.setTimer(savedHours, savedMinutes, savedSeconds);
+            return;
         }
-        // Restore timer to last saved values from preferences (only if target time hasn't passed)
-        const savedHours = this.preferences.timerHours || 0;
-        const savedMinutes = this.preferences.timerMinutes || 0;
-        const savedSeconds = this.preferences.timerSeconds || 0;
+        
+        // Reset to original values and clear expired state
         this.timerActive = false;
         this.timerExpired = false;
         this.injectionInProgress = false;
-        this.timerHours = savedHours;
-        this.timerMinutes = savedMinutes;
-        this.timerSeconds = savedSeconds;
+        this.timerHours = originalHours;
+        this.timerMinutes = originalMinutes;
+        this.timerSeconds = originalSeconds;
+        
         if (this.timerInterval) {
             clearInterval(this.timerInterval);
             this.timerInterval = null;
         }
+        
+        // Update current preferences to match the restored values
+        this.preferences.timerHours = originalHours;
+        this.preferences.timerMinutes = originalMinutes;
+        this.preferences.timerSeconds = originalSeconds;
+        
+        // Calculate new target datetime
+        const totalSeconds = (originalHours * 3600) + (originalMinutes * 60) + originalSeconds;
+        const targetDateTime = new Date(Date.now() + (totalSeconds * 1000));
+        this.preferences.timerTargetDateTime = targetDateTime.toISOString();
+        
+        this.saveAllPreferences();
         this.updateTimerUI();
-        this.logAction(`Timer reset to saved value: ${String(savedHours).padStart(2, '0')}:${String(savedMinutes).padStart(2, '0')}:${String(savedSeconds).padStart(2, '0')}`, 'info');
+        this.logAction(`Timer reset to original value: ${String(originalHours).padStart(2, '0')}:${String(originalMinutes).padStart(2, '0')}:${String(originalSeconds).padStart(2, '0')}`, 'info');
     }
     updateTerminalOutput(data) {
         // Add new data to terminal output
