@@ -94,3 +94,9 @@ When testing auto-inject timer fixes:
 - [ ] No duplicate usage limit processing
 
 **Always use the virtual environment for testing** to ensure consistent dependencies and avoid conflicts with system Python packages.
+
+FOR EACH PROPMT GIVEN, CHECKOUT TO A NEW BRANCH RELATED TO THAT ISSUE, THEN ONCE YOU'RE DONE WITH IMPLEMENTATION, CHECKOUT BACK TO THE COMMIT/BRANCH YOU WERE ON BEFORE YOU CHECKED OUT
+
+this is to allow for me to review each implementation separately incase one of the implementations causes corruption but the rest work fine
+
+DO NOT EVER RUN PKILL ON ELECTRON BECAUSE **YOU ARE RUNNING IN THE APP ITSELF**, DOING THIS WILL MESS UP NOT ONLY THE CURRENT PROPMT BUT THE OTHER PROJECTS BEING WORKED ON IN THE SAME SESSION
