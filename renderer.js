@@ -1063,6 +1063,14 @@ class TerminalGUI {
         
         // Voice transcription button
         this.safeAddEventListener('voice-btn', 'click', () => {
+            // Provide immediate visual feedback on click
+            const voiceBtn = document.getElementById('voice-btn');
+            if (voiceBtn && !voiceBtn.classList.contains('processing')) {
+                voiceBtn.style.transform = 'scale(0.95)';
+                setTimeout(() => {
+                    voiceBtn.style.transform = '';
+                }, 100);
+            }
             this.toggleVoiceRecording();
         });
         // Handle Enter key in message input
@@ -2356,7 +2364,7 @@ class TerminalGUI {
         
         if (!voiceBtn || !icon) return;
         
-        // Remove all state classes
+        // Remove all state classes with a smooth transition
         voiceBtn.classList.remove('recording', 'processing');
         
         console.log(`🎨 Voice button state: ${state}`);
@@ -2365,19 +2373,34 @@ class TerminalGUI {
             case 'recording':
                 voiceBtn.classList.add('recording');
                 icon.setAttribute('data-lucide', 'mic');
+                voiceBtn.title = 'Recording... (Click to stop)';
                 console.log('🔴 Added recording class');
                 break;
             case 'processing':
                 voiceBtn.classList.add('processing');
                 icon.setAttribute('data-lucide', 'loader');
+                voiceBtn.title = 'Processing transcription...';
                 console.log('🔵 Added processing class');
                 break;
             default:
                 icon.setAttribute('data-lucide', 'mic');
+                voiceBtn.title = 'Voice transcription (Cmd+Shift+V)';
                 console.log('⚫ Reset to idle state');
         }
         
+        // Force immediate icon refresh for better feedback
         lucide.createIcons();
+        
+        // Additional visual feedback: brief scale animation for state changes
+        if (state !== 'idle') {
+            voiceBtn.style.transition = 'all 0.2s ease';
+            requestAnimationFrame(() => {
+                voiceBtn.style.transform = 'scale(1.1)';
+                setTimeout(() => {
+                    voiceBtn.style.transform = '';
+                }, 200);
+            });
+        }
         
         // Debug: Log current classes
         console.log(`🎨 Current classes: ${voiceBtn.className}`);

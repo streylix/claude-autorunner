@@ -1689,7 +1689,7 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     flex-shrink: 0;
 }
 
-#voice-btn.voice-button:hover {
+#voice-btn.voice-button:hover:not(.recording):not(.processing) {
     background-color: var(--bg-quaternary);
     color: var(--text-primary);
     transform: scale(1.05);
@@ -1703,6 +1703,15 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     border: 2px solid #ff0000 !important;
     animation: recording-pulse 1s infinite !important;
     transform: scale(1) !important;
+    cursor: pointer !important;
+}
+
+/* Recording State Hover - Maintain recording appearance */
+#voice-btn.voice-button.recording:hover {
+    background-color: #ff0000 !important;
+    color: #ffffff !important;
+    border: 2px solid #ff0000 !important;
+    box-shadow: 0 0 15px rgba(255, 0, 0, 0.6) !important;
 }
 
 /* Processing State - Blue spinning */
@@ -1712,6 +1721,47 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     border: 2px solid #007acc !important;
     animation: processing-spin 1s linear infinite !important;
     transform: rotate(0deg) !important;
+    cursor: not-allowed !important;
+    box-shadow: 0 0 8px rgba(0, 122, 204, 0.4) !important;
+}
+
+/* Processing State Hover - Maintain processing appearance */
+#voice-btn.voice-button.processing:hover {
+    background-color: #007acc !important;
+    color: #ffffff !important;
+    border: 2px solid #007acc !important;
+    box-shadow: 0 0 15px rgba(0, 122, 204, 0.6) !important;
+}
+
+/* Enhanced visual feedback for all states */
+#voice-btn.voice-button {
+    position: relative;
+    overflow: visible;
+}
+
+/* Add a subtle pulsing border for recording state */
+#voice-btn.voice-button.recording::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: -4px;
+    right: -4px;
+    bottom: -4px;
+    border: 2px solid rgba(255, 0, 0, 0.3);
+    border-radius: 50%;
+    animation: recording-border-pulse 1s infinite;
+    pointer-events: none;
+}
+
+@keyframes recording-border-pulse {
+    0%, 100% { 
+        transform: scale(1);
+        opacity: 0.3;
+    }
+    50% { 
+        transform: scale(1.2);
+        opacity: 0.1;
+    }
 }
 
 /* Simple, working animations */
