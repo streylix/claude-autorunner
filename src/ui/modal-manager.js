@@ -46,6 +46,26 @@ class ModalManager {
             }
         });
 
+        // Terminal color dot click handlers
+        document.addEventListener('click', (e) => {
+            if (e.target.classList.contains('terminal-color-dot')) {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                // Find terminal ID from the wrapper
+                const terminalWrapper = e.target.closest('.terminal-wrapper');
+                if (terminalWrapper) {
+                    const terminalId = parseInt(terminalWrapper.dataset.terminalId);
+                    const currentColor = e.target.style.backgroundColor;
+                    
+                    // Convert RGB to hex if needed
+                    const hexColor = this.rgbToHex(currentColor) || currentColor;
+                    
+                    this.showColorPickerModal(terminalId, hexColor, e);
+                }
+            }
+        });
+
         // Click outside to close modals
         document.addEventListener('click', (e) => {
             if (e.target.classList.contains('modal')) {
@@ -732,6 +752,124 @@ class ModalManager {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    // Helper method to convert RGB to hex
+    rgbToHex(rgb) {
+        if (!rgb || rgb === 'transparent') return null;
+        
+        // Handle hex colors (already in correct format)
+        if (rgb.startsWith('#')) return rgb;
+        
+        // Handle rgb() format
+        const rgbMatch = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        if (rgbMatch) {
+            const r = parseInt(rgbMatch[1]);
+            const g = parseInt(rgbMatch[2]);
+            const b = parseInt(rgbMatch[3]);
+            return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+        }
+        
+        return null;
+    }
+
+    // Color picker modal for terminal color selection
+    showColorPickerModal(terminalId, currentColor, clickEvent) {
+        const colors = this.gui.terminalManager.terminalColors;
+        
+        // Create color grid HTML
+        const colorGrid = colors.map(color => `
+            <div class="color-option" 
+                 data-color="${color}" 
+                 style="background-color: ${color};" 
+                 title="Select ${color}"
+                 ${color === currentColor ? 'data-selected="true"' : ''}>
+                ${color === currentColor ? '<i data-lucide="check"></i>' : ''}
+            </div>
+        `).join('');
+
+        const modalContent = `
+            <div class="color-picker-container">
+                <div class="color-picker-grid">
+                    ${colorGrid}
+                </div>
+            </div>
+        `;
+
+        const modal = this.createModal('terminal-color-picker-modal', 'Select Terminal Color', modalContent, {
+            customClass: 'color-picker-modal',
+            positioning: 'dropdown'
+        });
+
+        // Position modal below the clicked color dot
+        if (clickEvent && clickEvent.target) {
+            const rect = clickEvent.target.getBoundingClientRect();
+            const modalContent = modal.querySelector('.modal-content');
+            
+            // Position dropdown-style below the color dot
+            modalContent.style.position = 'absolute';
+            modalContent.style.left = `${rect.left}px`;
+            modalContent.style.top = `${rect.bottom + 5}px`;
+            modalContent.style.width = '200px';
+            modalContent.style.maxWidth = 'none';
+        }
+
+        // Handle color selection
+        const colorOptions = modal.querySelectorAll('.color-option');
+        colorOptions.forEach(option => {
+            option.addEventListener('click', (e) => {
+                const selectedColor = e.currentTarget.dataset.color;
+                this.handleColorSelection(terminalId, selectedColor);
+                this.closeModal('terminal-color-picker-modal');
+            });
+        });
+
+        this.showModal(modal);
+        
+        // Initialize lucide icons for check marks
+        if (window.lucide) {
+            window.lucide.createIcons();
+        }
+    }
+
+    // Handle color selection and update terminal
+    handleColorSelection(terminalId, newColor) {
+        // Update terminal color in terminal manager
+        this.gui.terminalManager.updateTerminalColor(terminalId, newColor);
+        
+        // Update all visual representations of this terminal's color
+        this.updateTerminalColorElements(terminalId, newColor);
+    }
+
+    // Update all visual elements showing terminal color
+    updateTerminalColorElements(terminalId, newColor) {
+        // Update terminal header color dot
+        const terminalWrapper = document.querySelector(`.terminal-wrapper[data-terminal-id="${terminalId}"]`);
+        if (terminalWrapper) {
+            const colorDot = terminalWrapper.querySelector('.terminal-color-dot');
+            if (colorDot) {
+                colorDot.style.backgroundColor = newColor;
+            }
+        }
+
+        // Update status panel color dot if this is the active terminal
+        if (this.gui.terminalManager.activeTerminalId === terminalId) {
+            const statusDot = document.getElementById('status-terminal-dot');
+            if (statusDot) {
+                statusDot.style.backgroundColor = newColor;
+            }
+        }
+
+        // Update terminal selector dropdown
+        const selectorOptions = document.querySelectorAll('.terminal-selector-option');
+        selectorOptions.forEach(option => {
+            if (parseInt(option.dataset.terminalId) === terminalId) {
+                const colorDot = option.querySelector('.terminal-color-dot');
+                if (colorDot) {
+                    colorDot.style.backgroundColor = newColor;
+                }
+            }
+        });
     }
 }
 
