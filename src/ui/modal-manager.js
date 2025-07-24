@@ -94,13 +94,7 @@ class ModalManager {
                 this.gui.closeModal(e.target.id);
             }
             
-            // Close color picker if clicking outside
-            const colorPickerModal = document.getElementById('terminal-color-picker-modal');
-            if (colorPickerModal && colorPickerModal.style.display === 'block') {
-                if (!e.target.closest('#terminal-color-picker-modal') && !e.target.classList.contains('terminal-color-dot')) {
-                    colorPickerModal.style.display = 'none';
-                }
-            }
+            // Color picker closing is now handled by specific instance handlers
         });
     }
 
@@ -803,6 +797,37 @@ class ModalManager {
         return null;
     }
 
+    // Helper method to get color names
+    getColorName(hexColor) {
+        const colorNames = {
+            '#007acc': 'Blue',
+            '#28ca42': 'Green', 
+            '#ff5f57': 'Red',
+            '#ffbe2e': 'Yellow',
+            '#af52de': 'Purple',
+            '#5ac8fa': 'Cyan',
+            '#ff6b9d': 'Pink',
+            '#4ecdc4': 'Teal',
+            '#ffa726': 'Orange',
+            '#7986cb': 'Indigo',
+            '#26c6da': 'Light Blue',
+            '#66bb6a': 'Light Green',
+            '#ef5350': 'Light Red',
+            '#ab47bc': 'Light Purple',
+            '#ffc107': 'Amber',
+            '#42a5f5': 'Sky Blue',
+            '#26a69a': 'Turquoise',
+            '#ec407a': 'Rose',
+            '#9ccc65': 'Lime',
+            '#ff7043': 'Deep Orange',
+            '#5c6bc0': 'Deep Purple',
+            '#29b6f6': 'Azure',
+            '#78909c': 'Blue Grey',
+            '#8bc34a': 'Light Lime'
+        };
+        return colorNames[hexColor] || hexColor;
+    }
+
     // Color picker modal for terminal color selection
     showColorPickerModal(terminalId, currentColor, clickEvent) {
         console.log('showColorPickerModal called:', terminalId, currentColor);
@@ -813,10 +838,10 @@ class ModalManager {
         const colorList = colors.map(color => `
             <div class="color-picker-item" 
                  data-color="${color}" 
-                 title="Select ${color}"
+                 title="Select ${this.getColorName(color)}"
                  ${color === currentColor ? 'data-selected="true"' : ''}>
                 <span class="color-picker-dot" style="background-color: ${color};"></span>
-                <span class="color-picker-text">${color.toUpperCase()}</span>
+                <span class="color-picker-text">${this.getColorName(color)}</span>
                 ${color === currentColor ? '<i data-lucide="check" class="color-picker-check"></i>' : ''}
             </div>
         `).join('');
@@ -862,6 +887,33 @@ class ModalManager {
         modal.style.display = 'block';
         modal.classList.remove('show'); // Don't use modal's backdrop
         console.log('Modal display set to block, should be visible now');
+        
+        // Add specific click-outside handler for this color picker instance
+        const closeOnOutsideClick = (e) => {
+            console.log('Click detected, checking if should close color picker:', {
+                target: e.target,
+                targetId: e.target.id,
+                targetClass: e.target.className,
+                isModalBackdrop: e.target === modal,
+                isInModalContent: modal.querySelector('.modal-content').contains(e.target),
+                isColorDot: e.target.classList.contains('terminal-color-dot')
+            });
+            
+            // Close if clicking on modal backdrop OR outside modal entirely (but not on color dots)
+            const shouldClose = (e.target === modal || !modal.contains(e.target)) && !e.target.classList.contains('terminal-color-dot');
+            
+            if (shouldClose) {
+                modal.style.display = 'none';
+                document.removeEventListener('click', closeOnOutsideClick);
+                console.log('Color picker closed by outside click');
+            }
+        };
+        
+        // Add the event listener after a short delay to prevent immediate closing
+        setTimeout(() => {
+            document.addEventListener('click', closeOnOutsideClick, true); // Use capture phase
+            console.log('Added click-outside handler for color picker');
+        }, 100);
         
         // Initialize lucide icons for check marks
         if (window.lucide) {
@@ -911,7 +963,7 @@ class ModalManager {
             console.log('Not updating status dot - not active terminal');
         }
 
-        // Update terminal selector dropdown items
+        // Update terminal selector dropdown items (both main and manual selectors)
         const selectorItems = document.querySelectorAll('.terminal-selector-item, .manual-terminal-selector-item');
         selectorItems.forEach(item => {
             if (parseInt(item.dataset.terminalId) === terminalId) {
@@ -922,6 +974,21 @@ class ModalManager {
                 }
             }
         });
+        
+        // Also update the main terminal selector button if this is the active terminal
+        if (activeTerminalId === terminalId) {
+            const mainSelectorDot = document.querySelector('.terminal-selector-dot');
+            if (mainSelectorDot) {
+                mainSelectorDot.style.backgroundColor = newColor;
+                console.log('Updated main selector button color dot');
+            }
+            
+            const manualSelectorDot = document.querySelector('.manual-terminal-selector-dot');
+            if (manualSelectorDot) {
+                manualSelectorDot.style.backgroundColor = newColor;
+                console.log('Updated manual selector button color dot');
+            }
+        }
     }
 }
 
