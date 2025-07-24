@@ -5,6 +5,7 @@
 
 class ModalManager {
     constructor(terminalGUI) {
+        console.log('ModalManager constructor called');
         this.gui = terminalGUI;
         
         // Modal state tracking
@@ -12,6 +13,7 @@ class ModalManager {
         this.modalStack = [];
         
         this.setupEventListeners();
+        console.log('ModalManager initialized with event handlers');
     }
 
     setupEventListeners() {
@@ -46,8 +48,19 @@ class ModalManager {
             }
         });
 
-        // Terminal color dot click handlers
+        // Terminal color dot click handlers - use setTimeout to ensure DOM is ready
+        console.log('Adding terminal color dot click handler');
+        setTimeout(() => {
+            const existingDots = document.querySelectorAll('.terminal-color-dot');
+            console.log('Existing color dots found:', existingDots.length, existingDots);
+        }, 1000);
+        
         document.addEventListener('click', (e) => {
+            // Debug: log all clicks on elements that might be color dots
+            if (e.target.className && e.target.className.includes('terminal')) {
+                console.log('Terminal-related element clicked:', e.target.className, e.target);
+            }
+            
             if (e.target.classList.contains('terminal-color-dot')) {
                 console.log('Color dot clicked!', e.target);
                 e.preventDefault();
