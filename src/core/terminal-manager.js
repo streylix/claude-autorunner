@@ -491,6 +491,19 @@ class TerminalManager {
     }
 
     /**
+     * Update terminal color
+     * @param {number} terminalId - Terminal ID
+     * @param {string} color - New color hex value
+     */
+    updateTerminalColor(terminalId, color) {
+        const terminalData = this.terminals.get(terminalId);
+        if (terminalData) {
+            terminalData.color = color;
+            console.log(`Updated terminal ${terminalId} color to ${color}`);
+        }
+    }
+
+    /**
      * Write data to terminal
      * @param {number} terminalId - Terminal ID
      * @param {string} data - Data to write

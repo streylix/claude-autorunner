@@ -5,6 +5,7 @@
 
 class ModalManager {
     constructor(terminalGUI) {
+        console.log('ModalManager constructor called');
         this.gui = terminalGUI;
         
         // Modal state tracking
@@ -12,6 +13,7 @@ class ModalManager {
         this.modalStack = [];
         
         this.setupEventListeners();
+        console.log('ModalManager initialized with event handlers');
     }
 
     setupEventListeners() {
@@ -46,11 +48,53 @@ class ModalManager {
             }
         });
 
+        // Terminal color dot click handlers
+        console.log('Adding terminal color dot click handler');
+        
+        document.addEventListener('click', (e) => {
+            // Debug: log all clicks with more details
+            console.log('Document click:', {
+                target: e.target,
+                className: e.target.className,
+                classList: Array.from(e.target.classList || []),
+                tagName: e.target.tagName,
+                hasColorDotClass: e.target.classList.contains('terminal-color-dot')
+            });
+            
+            // Debug: log all clicks on elements that might be color dots
+            if (e.target.className && e.target.className.includes('terminal')) {
+                console.log('Terminal-related element clicked:', e.target.className, e.target);
+            }
+            
+            if (e.target.classList.contains('terminal-color-dot')) {
+                console.log('Color dot clicked!', e.target);
+                e.preventDefault();
+                e.stopPropagation();
+                
+                // Find terminal ID from the wrapper
+                const terminalWrapper = e.target.closest('.terminal-wrapper');
+                if (terminalWrapper) {
+                    const terminalId = parseInt(terminalWrapper.dataset.terminalId);
+                    const currentColor = e.target.style.backgroundColor;
+                    
+                    console.log('Terminal ID:', terminalId, 'Current color:', currentColor);
+                    
+                    // Convert RGB to hex if needed
+                    const hexColor = this.rgbToHex(currentColor) || currentColor;
+                    
+                    this.showColorPickerModal(terminalId, hexColor, e);
+                }
+            }
+        });
+
         // Click outside to close modals
         document.addEventListener('click', (e) => {
             if (e.target.classList.contains('modal')) {
-                this.closeModal(e.target.id);
+                // Use the GUI's closeModal method for consistency
+                this.gui.closeModal(e.target.id);
             }
+            
+            // Color picker closing is now handled by specific instance handlers
         });
     }
 
@@ -732,6 +776,219 @@ class ModalManager {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    // Helper method to convert RGB to hex
+    rgbToHex(rgb) {
+        if (!rgb || rgb === 'transparent') return null;
+        
+        // Handle hex colors (already in correct format)
+        if (rgb.startsWith('#')) return rgb;
+        
+        // Handle rgb() format
+        const rgbMatch = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        if (rgbMatch) {
+            const r = parseInt(rgbMatch[1]);
+            const g = parseInt(rgbMatch[2]);
+            const b = parseInt(rgbMatch[3]);
+            return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+        }
+        
+        return null;
+    }
+
+    // Helper method to get color names
+    getColorName(hexColor) {
+        const colorNames = {
+            '#007acc': 'Blue',
+            '#28ca42': 'Green', 
+            '#ff5f57': 'Red',
+            '#ffbe2e': 'Yellow',
+            '#af52de': 'Purple',
+            '#5ac8fa': 'Cyan',
+            '#ff6b9d': 'Pink',
+            '#4ecdc4': 'Teal',
+            '#ffa726': 'Orange',
+            '#7986cb': 'Indigo',
+            '#26c6da': 'Light Blue',
+            '#66bb6a': 'Light Green',
+            '#ef5350': 'Light Red',
+            '#ab47bc': 'Light Purple',
+            '#ffc107': 'Amber',
+            '#42a5f5': 'Sky Blue',
+            '#26a69a': 'Turquoise',
+            '#ec407a': 'Rose',
+            '#9ccc65': 'Lime',
+            '#ff7043': 'Deep Orange',
+            '#5c6bc0': 'Deep Purple',
+            '#29b6f6': 'Azure',
+            '#78909c': 'Blue Grey',
+            '#8bc34a': 'Light Lime'
+        };
+        return colorNames[hexColor] || hexColor;
+    }
+
+    // Color picker modal for terminal color selection
+    showColorPickerModal(terminalId, currentColor, clickEvent) {
+        console.log('showColorPickerModal called:', terminalId, currentColor);
+        const colors = this.gui.terminalManager ? this.gui.terminalManager.terminalColors : this.gui.terminalColors;
+        console.log('Available colors:', colors);
+        
+        // Create color list HTML (like terminal dropdown)
+        const colorList = colors.map(color => `
+            <div class="color-picker-item" 
+                 data-color="${color}" 
+                 title="Select ${this.getColorName(color)}"
+                 ${color === currentColor ? 'data-selected="true"' : ''}>
+                <span class="color-picker-dot" style="background-color: ${color};"></span>
+                <span class="color-picker-text">${this.getColorName(color)}</span>
+                ${color === currentColor ? '<i data-lucide="check" class="color-picker-check"></i>' : ''}
+            </div>
+        `).join('');
+
+        const modalContent = `
+            <div class="color-picker-list">
+                ${colorList}
+            </div>
+        `;
+
+        // Use existing modal system
+        const modalBody = document.getElementById('color-picker-modal-body');
+        if (modalBody) {
+            modalBody.innerHTML = modalContent;
+        }
+
+        // Position modal below the clicked color dot
+        const modal = document.getElementById('terminal-color-picker-modal');
+        if (clickEvent && clickEvent.target && modal) {
+            const rect = clickEvent.target.getBoundingClientRect();
+            const modalContent = modal.querySelector('.modal-content');
+            
+            // Position dropdown-style below the color dot
+            modalContent.style.position = 'absolute';
+            modalContent.style.left = `${rect.left}px`;
+            modalContent.style.top = `${rect.bottom + 5}px`;
+            modalContent.style.width = '180px';
+            modalContent.style.maxWidth = 'none';
+        }
+
+        // Handle color selection
+        const colorItems = modal.querySelectorAll('.color-picker-item');
+        colorItems.forEach(item => {
+            item.addEventListener('click', (e) => {
+                const selectedColor = e.currentTarget.dataset.color;
+                this.handleColorSelection(terminalId, selectedColor);
+                modal.style.display = 'none'; // Close dropdown
+            });
+        });
+
+        // Show as dropdown instead of full modal
+        console.log('Attempting to show modal:', modal);
+        modal.style.display = 'block';
+        modal.classList.remove('show'); // Don't use modal's backdrop
+        console.log('Modal display set to block, should be visible now');
+        
+        // Add specific click-outside handler for this color picker instance
+        const closeOnOutsideClick = (e) => {
+            console.log('Click detected, checking if should close color picker:', {
+                target: e.target,
+                targetId: e.target.id,
+                targetClass: e.target.className,
+                isModalBackdrop: e.target === modal,
+                isInModalContent: modal.querySelector('.modal-content').contains(e.target),
+                isColorDot: e.target.classList.contains('terminal-color-dot')
+            });
+            
+            // Close if clicking on modal backdrop OR outside modal entirely (but not on color dots)
+            const shouldClose = (e.target === modal || !modal.contains(e.target)) && !e.target.classList.contains('terminal-color-dot');
+            
+            if (shouldClose) {
+                modal.style.display = 'none';
+                document.removeEventListener('click', closeOnOutsideClick);
+                console.log('Color picker closed by outside click');
+            }
+        };
+        
+        // Add the event listener after a short delay to prevent immediate closing
+        setTimeout(() => {
+            document.addEventListener('click', closeOnOutsideClick, true); // Use capture phase
+            console.log('Added click-outside handler for color picker');
+        }, 100);
+        
+        // Initialize lucide icons for check marks
+        if (window.lucide) {
+            window.lucide.createIcons();
+        }
+    }
+
+    // Handle color selection and update terminal
+    handleColorSelection(terminalId, newColor) {
+        // Update terminal color in terminal manager
+        if (this.gui.terminalManager) {
+            this.gui.terminalManager.updateTerminalColor(terminalId, newColor);
+        } else {
+            this.gui.updateTerminalColor(terminalId, newColor);
+        }
+        
+        // Update all visual representations of this terminal's color
+        this.updateTerminalColorElements(terminalId, newColor);
+    }
+
+    // Update all visual elements showing terminal color
+    updateTerminalColorElements(terminalId, newColor) {
+        console.log('Updating color elements for terminal', terminalId, 'to', newColor);
+        
+        // Update terminal header color dot
+        const terminalWrapper = document.querySelector(`.terminal-wrapper[data-terminal-id="${terminalId}"]`);
+        if (terminalWrapper) {
+            const colorDot = terminalWrapper.querySelector('.terminal-color-dot');
+            if (colorDot) {
+                colorDot.style.backgroundColor = newColor;
+                console.log('Updated terminal header color dot');
+            }
+        }
+
+        // Update status panel color dot if this is the active terminal
+        const activeTerminalId = this.gui.terminalManager ? this.gui.terminalManager.activeTerminalId : this.gui.activeTerminalId;
+        console.log('Active terminal ID:', activeTerminalId, 'Selected terminal ID:', terminalId);
+        
+        if (activeTerminalId === terminalId) {
+            const statusDot = document.getElementById('status-terminal-dot');
+            console.log('Status dot element:', statusDot);
+            if (statusDot) {
+                statusDot.style.backgroundColor = newColor;
+                console.log('Updated status panel color dot to', newColor);
+            }
+        } else {
+            console.log('Not updating status dot - not active terminal');
+        }
+
+        // Update terminal selector dropdown items (both main and manual selectors)
+        const selectorItems = document.querySelectorAll('.terminal-selector-item, .manual-terminal-selector-item');
+        selectorItems.forEach(item => {
+            if (parseInt(item.dataset.terminalId) === terminalId) {
+                const colorDot = item.querySelector('.terminal-selector-dot, .manual-terminal-selector-dot');
+                if (colorDot) {
+                    colorDot.style.backgroundColor = newColor;
+                    console.log('Updated selector dropdown color dot');
+                }
+            }
+        });
+        
+        // Also update the main terminal selector button if this is the active terminal
+        if (activeTerminalId === terminalId) {
+            const mainSelectorDot = document.querySelector('.terminal-selector-dot');
+            if (mainSelectorDot) {
+                mainSelectorDot.style.backgroundColor = newColor;
+                console.log('Updated main selector button color dot');
+            }
+            
+            const manualSelectorDot = document.querySelector('.manual-terminal-selector-dot');
+            if (manualSelectorDot) {
+                manualSelectorDot.style.backgroundColor = newColor;
+                console.log('Updated manual selector button color dot');
+            }
+        }
     }
 }
 

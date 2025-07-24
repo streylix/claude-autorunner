@@ -9,6 +9,7 @@ const PlatformUtils = require('./src/utils/platform-utils');
 const DomUtils = require('./src/utils/dom-utils');
 const ValidationUtils = require('./src/utils/validation');
 const IPCHandler = require('./src/core/ipc-handler');
+const ModalManager = require('./src/ui/modal-manager');
 class TerminalGUI {
     constructor() {
         // Initialize loading manager first
@@ -18,6 +19,16 @@ class TerminalGUI {
         this.platformUtils = new PlatformUtils();
         this.validationUtils = new ValidationUtils();
         this.ipcHandler = new IPCHandler();
+        
+        // Initialize modal manager
+        console.log('About to initialize ModalManager...');
+        try {
+            this.modalManager = new ModalManager(this);
+            console.log('ModalManager initialized successfully:', this.modalManager);
+        } catch (error) {
+            console.error('ModalManager initialization failed:', error);
+        }
+        
         // Platform detection for keyboard shortcuts (keep for backward compatibility)
         this.isMac = this.platformUtils.isMac;
         this.keySymbols = this.platformUtils.keySymbols;
@@ -1085,6 +1096,14 @@ class TerminalGUI {
         
         // Voice transcription button
         this.safeAddEventListener('voice-btn', 'click', () => {
+            // Provide immediate visual feedback on click
+            const voiceBtn = document.getElementById('voice-btn');
+            if (voiceBtn && !voiceBtn.classList.contains('processing')) {
+                voiceBtn.style.transform = 'scale(0.95)';
+                setTimeout(() => {
+                    voiceBtn.style.transform = '';
+                }, 100);
+            }
             this.toggleVoiceRecording();
         });
         // Handle Enter key in message input
@@ -2547,7 +2566,7 @@ class TerminalGUI {
             
             this.mediaRecorder.onstart = () => {
                 console.log('🎙️ Voice recording started');
-                this.updateVoiceButtonState('recording');
+                this.updateVoiceButtonState('recording').catch(console.error);
                 this.logAction('Voice recording started (LOCAL Whisper)', 'info');
             };
             
@@ -2599,7 +2618,7 @@ class TerminalGUI {
             });
             
             // Show processing state
-            this.updateVoiceButtonState('processing');
+            this.updateVoiceButtonState('processing').catch(console.error);
             this.logAction('Processing audio with Whisper...', 'info');
             
             // Send to backend for transcription
@@ -2651,7 +2670,7 @@ class TerminalGUI {
             console.log('🛑 Stopping voice recording...');
             this.mediaRecorder.stop();
             this.isRecording = false;
-            this.updateVoiceButtonState('processing');
+            this.updateVoiceButtonState('processing').catch(console.error);
         }
     }
     
@@ -2683,44 +2702,148 @@ class TerminalGUI {
         }
     }
     
-    updateVoiceButtonState(state) {
-        const voiceBtn = document.getElementById('voice-btn');
-        const icon = voiceBtn.querySelector('i');
+    async updateVoiceButtonState(state) {
+        console.log(`🎨 Voice button state transition requested: ${state}`);
         
-        if (!voiceBtn || !icon) return;
-        
-        // Remove all state classes
-        voiceBtn.classList.remove('recording', 'processing');
-        
-        console.log(`🎨 Voice button state: ${state}`);
-        
-        switch (state) {
-            case 'recording':
-                voiceBtn.classList.add('recording');
+        try {
+            // Wait for the voice button to be available in DOM
+            const voiceBtn = await this.waitForVoiceButton();
+            if (!voiceBtn) {
+                console.error('🚨 Voice button not found after waiting');
+                return;
+            }
+            
+            // DEBUG: Let's see exactly what we're working with
+            console.log(`🔍 DOM DEBUG - Button element:`, voiceBtn);
+            console.log(`🔍 DOM DEBUG - Button HTML:`, voiceBtn.outerHTML);
+            console.log(`🔍 DOM DEBUG - Button computed styles:`, window.getComputedStyle(voiceBtn));
+            console.log(`🔍 DOM DEBUG - Button current classes:`, voiceBtn.className);
+            console.log(`🔍 DOM DEBUG - Button current style:`, voiceBtn.style.cssText);
+            
+            // Try multiple selectors for the icon
+            let icon = voiceBtn.querySelector('i');
+            if (!icon) {
+                icon = voiceBtn.querySelector('[data-lucide]');
+            }
+            if (!icon) {
+                icon = voiceBtn.querySelector('svg');
+            }
+            if (!icon) {
+                console.warn('🚨 Voice button icon not found, but continuing anyway...');
+                console.log('🔍 Button inner HTML:', voiceBtn.innerHTML);
+                // Create the icon if it doesn't exist
+                icon = document.createElement('i');
                 icon.setAttribute('data-lucide', 'mic');
-                console.log('🔴 Added recording class');
-                break;
-            case 'processing':
-                voiceBtn.classList.add('processing');
-                icon.setAttribute('data-lucide', 'loader');
-                console.log('🔵 Added processing class');
-                break;
-            default:
-                icon.setAttribute('data-lucide', 'mic');
-                console.log('⚫ Reset to idle state');
+                voiceBtn.appendChild(icon);
+                console.log('🔧 Created missing icon element');
+            }
+            
+            console.log(`🎨 FORCING voice button state: ${state}`);
+            
+            // NUCLEAR APPROACH - completely replace the element's appearance
+            this.removeVisualIndicator(); // Remove any existing indicator
+            
+            switch (state) {
+                case 'recording':
+                    // No floating indicator - just button styling
+                    
+                    // Also try to style the button
+                    voiceBtn.style.cssText = 'background: #ff0000 !important; color: white !important; border: 2px solid #ff0000 !important; box-shadow: 0 0 20px rgba(255, 0, 0, 0.8) !important;';
+                    voiceBtn.classList.add('recording');
+                    voiceBtn.setAttribute('data-voice-state', 'recording');
+                    if (icon) {
+                        icon.setAttribute('data-lucide', 'mic');
+                    }
+                    voiceBtn.title = 'Recording... (Click to stop)';
+                    console.log('🔴 RECORDING: Added floating indicator + button styling');
+                    break;
+                    
+                case 'processing':
+                    // No floating indicator - just button styling
+                    
+                    // Also try to style the button - spinning gradient processing
+                    voiceBtn.style.cssText = `
+                        background: conic-gradient(from 0deg, #999999 0deg, #cccccc 90deg, #ffffff 180deg, #cccccc 270deg, #999999 360deg) !important;
+                        color: #333333 !important; 
+                        border: 2px solid #888888 !important; 
+                        animation: processing-spin-circle 1.5s linear infinite !important;
+                        cursor: not-allowed !important;
+                        position: relative !important;
+                        z-index: 10 !important;
+                        box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.2) !important;
+                    `;
+                    voiceBtn.classList.add('processing');
+                    voiceBtn.setAttribute('data-voice-state', 'processing');
+                    if (icon) {
+                        icon.setAttribute('data-lucide', 'hourglass');
+                    }
+                    voiceBtn.title = 'Processing transcription...';
+                    console.log('🔵 PROCESSING: Added floating indicator + button styling');
+                    break;
+                    
+                default:
+                    // Reset everything
+                    voiceBtn.style.cssText = '';
+                    voiceBtn.classList.remove('recording', 'processing');
+                    voiceBtn.removeAttribute('data-voice-state');
+                    if (icon) {
+                        icon.setAttribute('data-lucide', 'mic');
+                    }
+                    voiceBtn.title = 'Voice transcription (Cmd+Shift+V)';
+                    console.log('⚫ IDLE: Reset button to default state');
+            }
+            
+            // Force immediate icon refresh
+            requestAnimationFrame(() => {
+                if (typeof lucide !== 'undefined') {
+                    lucide.createIcons();
+                }
+            });
+            
+            // Final debug output
+            console.log(`🎨 FINAL - Button HTML:`, voiceBtn.outerHTML);
+            console.log(`🎨 FINAL - Button style:`, voiceBtn.style.cssText);
+            
+        } catch (error) {
+            console.error('🚨 Error updating voice button state:', error);
         }
-        
-        lucide.createIcons();
-        
-        // Debug: Log current classes
-        console.log(`🎨 Current classes: ${voiceBtn.className}`);
+    }
+    
+    removeVisualIndicator() {
+        // Remove any existing visual indicators
+        const existing = document.querySelectorAll('#voice-recording-indicator, #voice-processing-indicator');
+        existing.forEach(el => el.remove());
+    }
+    
+    waitForVoiceButton(timeout = 3000) {
+        return new Promise((resolve) => {
+            const startTime = Date.now();
+            
+            const checkButton = () => {
+                const voiceBtn = document.getElementById('voice-btn');
+                if (voiceBtn) {
+                    resolve(voiceBtn);
+                    return;
+                }
+                
+                if (Date.now() - startTime >= timeout) {
+                    console.warn(`🚨 Voice button not found within ${timeout}ms`);
+                    resolve(null);
+                    return;
+                }
+                
+                setTimeout(checkButton, 50);
+            };
+            
+            checkButton();
+        });
     }
     
     resetVoiceButton() {
         this.isRecording = false;
         this.speechResult = '';
         this.speechRecognition = null;
-        this.updateVoiceButtonState('idle');
+        this.updateVoiceButtonState('idle').catch(console.error);
     }
     
     handleMessageUpdate() {
@@ -3739,6 +3862,14 @@ class TerminalGUI {
         this.preferences.timerMinutes = this.timerMinutes;
         this.preferences.timerSeconds = this.timerSeconds;
         this.preferences.timerTargetDateTime = targetDateTime.toISOString();
+        
+        // Store original timer values for reset functionality (only if timer is being set to non-zero)
+        if (this.timerHours > 0 || this.timerMinutes > 0 || this.timerSeconds > 0) {
+            this.preferences.timerOriginalHours = this.timerHours;
+            this.preferences.timerOriginalMinutes = this.timerMinutes;
+            this.preferences.timerOriginalSeconds = this.timerSeconds;
+        }
+        
         this.saveAllPreferences();
         this.updateTimerUI();
         // Only log when not in silent mode
@@ -7482,53 +7613,55 @@ class TerminalGUI {
         }
     }
     resetTimer() {
-        // Check if we have a saved target datetime
-        const savedTargetDateTime = this.preferences.timerTargetDateTime;
-        if (savedTargetDateTime) {
-            const targetDate = new Date(savedTargetDateTime);
-            const now = new Date();
-            // If target datetime has passed, don't restore the timer
-            if (now >= targetDate) {
-                this.logAction(`Timer target time (${targetDate.toLocaleString()}) has already passed - not restoring timer`, 'info');
-                // Clear the saved target datetime so it doesn't keep trying to restore
-                this.preferences.timerTargetDateTime = null;
-                this.preferences.timerHours = 0;
-                this.preferences.timerMinutes = 0;
-                this.preferences.timerSeconds = 0;
-                this.saveAllPreferences();
-                // Set timer to 00:00:00
-                this.timerActive = false;
-                this.timerExpired = true; // Mark as expired since target time passed
-                this.injectionInProgress = false;
-                this.timerHours = 0;
-                this.timerMinutes = 0;
-                this.timerSeconds = 0;
-                if (this.timerInterval) {
-                    clearInterval(this.timerInterval);
-                    this.timerInterval = null;
-                }
-                // Trigger injection manager since timer effectively expired
-                this.injectionManager.onTimerExpired();
-                this.updateTimerUI();
+        // Try to restore timer to original values (set when timer was first configured)
+        const originalHours = this.preferences.timerOriginalHours || 0;
+        const originalMinutes = this.preferences.timerOriginalMinutes || 0;
+        const originalSeconds = this.preferences.timerOriginalSeconds || 0;
+        
+        // If no original values are saved, check if we have current saved values
+        if (originalHours === 0 && originalMinutes === 0 && originalSeconds === 0) {
+            // Fall back to current preferences if no original values exist
+            const savedHours = this.preferences.timerHours || 0;
+            const savedMinutes = this.preferences.timerMinutes || 0;
+            const savedSeconds = this.preferences.timerSeconds || 0;
+            
+            // If all values are still zero, there's nothing to reset to
+            if (savedHours === 0 && savedMinutes === 0 && savedSeconds === 0) {
+                this.logAction('No saved timer values to reset to', 'warning');
                 return;
             }
+            
+            this.logAction('Using current saved values (no original values found)', 'info');
+            this.setTimer(savedHours, savedMinutes, savedSeconds);
+            return;
         }
-        // Restore timer to last saved values from preferences (only if target time hasn't passed)
-        const savedHours = this.preferences.timerHours || 0;
-        const savedMinutes = this.preferences.timerMinutes || 0;
-        const savedSeconds = this.preferences.timerSeconds || 0;
+        
+        // Reset to original values and clear expired state
         this.timerActive = false;
         this.timerExpired = false;
         this.injectionInProgress = false;
-        this.timerHours = savedHours;
-        this.timerMinutes = savedMinutes;
-        this.timerSeconds = savedSeconds;
+        this.timerHours = originalHours;
+        this.timerMinutes = originalMinutes;
+        this.timerSeconds = originalSeconds;
+        
         if (this.timerInterval) {
             clearInterval(this.timerInterval);
             this.timerInterval = null;
         }
+        
+        // Update current preferences to match the restored values
+        this.preferences.timerHours = originalHours;
+        this.preferences.timerMinutes = originalMinutes;
+        this.preferences.timerSeconds = originalSeconds;
+        
+        // Calculate new target datetime
+        const totalSeconds = (originalHours * 3600) + (originalMinutes * 60) + originalSeconds;
+        const targetDateTime = new Date(Date.now() + (totalSeconds * 1000));
+        this.preferences.timerTargetDateTime = targetDateTime.toISOString();
+        
+        this.saveAllPreferences();
         this.updateTimerUI();
-        this.logAction(`Timer reset to saved value: ${String(savedHours).padStart(2, '0')}:${String(savedMinutes).padStart(2, '0')}:${String(savedSeconds).padStart(2, '0')}`, 'info');
+        this.logAction(`Timer reset to original value: ${String(originalHours).padStart(2, '0')}:${String(originalMinutes).padStart(2, '0')}:${String(originalSeconds).padStart(2, '0')}`, 'info');
     }
     updateTerminalOutput(data) {
         // Add new data to terminal output
@@ -8921,6 +9054,19 @@ class TerminalGUI {
         
         const finalWidth = Math.min(maxWidth + 10, maxAllowedWidth); // 10px extra padding
         dropdown.style.width = finalWidth + 'px';
+    }
+    
+    /**
+     * Update terminal color
+     * @param {number} terminalId - Terminal ID
+     * @param {string} color - New color hex value
+     */
+    updateTerminalColor(terminalId, color) {
+        const terminalData = this.terminals.get(terminalId);
+        if (terminalData) {
+            terminalData.color = color;
+            console.log(`Updated terminal ${terminalId} color to ${color}`);
+        }
     }
     
     cleanupOrphanedTerminalSelectorItems() {

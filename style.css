@@ -562,10 +562,16 @@ body {
 }
 
 .terminal-color-dot {
-    width: 10px;
-    height: 10px;
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
     flex-shrink: 0;
+    cursor: pointer;
+    transition: transform 0.1s ease;
+}
+
+.terminal-color-dot:hover {
+    transform: scale(1.2);
 }
 
 .terminal-title.editable {
@@ -1474,7 +1480,7 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     align-items: center;
     gap: 3px; /* Reduced gap for more compact spacing */
     padding: 0 5px; /* Further reduced padding for more compact sizing */
-    height: 28px;
+    height: 30px;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-primary);
     border-radius: 16px;
@@ -1575,10 +1581,11 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
 
 .left-controls {
     display: flex;
-    gap: 8px;
+    gap: 4px;
     align-items: center;
     flex: 1;
     min-width: 0;
+    flex-shrink: 0;
 }
 
 .left-controls .terminal-selector {
@@ -1589,8 +1596,10 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
     border-radius: 50%;
-    width: 32px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -1598,6 +1607,7 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     transition: all 0.2s;
     color: var(--text-secondary);
     flex-shrink: 0;
+    margin: 0 1px;
 }
 
 .auto-continue-btn:hover {
@@ -1630,8 +1640,10 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
     border-radius: 50%;
-    width: 32px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -1639,6 +1651,7 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     transition: all 0.2s;
     color: var(--text-secondary);
     flex-shrink: 0;
+    margin: 0 1px;
 }
 
 .plan-mode-btn:hover {
@@ -1669,17 +1682,20 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
 
 .button-group {
     display: flex;
-    gap: 8px;
+    gap: 4px;
     align-items: center;
+    flex-shrink: 0;
 }
 
-/* Voice Button - High Specificity Implementation */
+/* Voice Button - High Specificity Implementation - CIRCULAR */
 #voice-btn.voice-button {
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
     border-radius: 50%;
-    width: 32px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -1687,48 +1703,187 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     transition: all 0.2s ease;
     color: var(--text-secondary);
     flex-shrink: 0;
+    margin: 0 1px;
 }
 
-#voice-btn.voice-button:hover {
+#voice-btn.voice-button:hover:not(.recording):not(.processing) {
     background-color: var(--bg-quaternary);
     color: var(--text-primary);
     transform: scale(1.05);
     box-shadow: 0 0 10px rgba(0, 122, 204, 0.4);
 }
 
-/* Recording State - Red with pulse */
+/* ULTRA HIGH PRIORITY - Voice button state overrides */
+[data-voice-state="recording"], 
+#voice-btn[data-voice-state="recording"],
+button#voice-btn[data-voice-state="recording"] {
+    background-color: #ff0000 !important;
+    color: #ffffff !important;
+    border: 2px solid #ff0000 !important;
+    animation: recording-pulse 1.2s infinite !important;
+    cursor: pointer !important;
+    box-shadow: 0 0 15px rgba(255, 0, 0, 0.8) !important;
+    z-index: 999 !important;
+    position: relative !important;
+    transform: none !important;
+}
+
+[data-voice-state="processing"],
+#voice-btn[data-voice-state="processing"],
+button#voice-btn[data-voice-state="processing"] {
+    background-color: #007acc !important;
+    color: #ffffff !important;
+    border: 2px solid #007acc !important;
+    animation: processing-spin 1s linear infinite !important;
+    cursor: not-allowed !important;
+    box-shadow: 0 0 15px rgba(0, 122, 204, 0.8) !important;
+    z-index: 999 !important;
+    position: relative !important;
+    transform: none !important;
+}
+
+/* Recording State - Red with pulse - Enhanced with higher specificity */
+button#voice-btn.voice-button.recording,
 #voice-btn.voice-button.recording {
     background-color: #ff0000 !important;
     color: #ffffff !important;
     border: 2px solid #ff0000 !important;
-    animation: recording-pulse 1s infinite !important;
-    transform: scale(1) !important;
+    animation: recording-pulse 1.2s infinite !important;
+    cursor: pointer !important;
+    box-shadow: 0 0 12px rgba(255, 0, 0, 0.5) !important;
+    z-index: 10 !important;
+    position: relative !important;
 }
 
-/* Processing State - Blue spinning */
+/* Recording State Hover - Maintain recording appearance */
+button#voice-btn.voice-button.recording:hover,
+#voice-btn.voice-button.recording:hover {
+    background-color: #ff0000 !important;
+    color: #ffffff !important;
+    border: 2px solid #ff0000 !important;
+    box-shadow: 0 0 18px rgba(255, 0, 0, 0.7) !important;
+    transform: scale(1.02) !important;
+}
+
+/* Processing State - Blue spinning - Enhanced with higher specificity */
+button#voice-btn.voice-button.processing,
 #voice-btn.voice-button.processing {
     background-color: #007acc !important;
     color: #ffffff !important;
     border: 2px solid #007acc !important;
     animation: processing-spin 1s linear infinite !important;
-    transform: rotate(0deg) !important;
+    cursor: not-allowed !important;
+    box-shadow: 0 0 12px rgba(0, 122, 204, 0.5) !important;
+    z-index: 10 !important;
+    position: relative !important;
 }
 
-/* Simple, working animations */
-@keyframes recording-pulse {
+/* Processing State Hover - Maintain processing appearance */
+button#voice-btn.voice-button.processing:hover,
+#voice-btn.voice-button.processing:hover {
+    background-color: #007acc !important;
+    color: #ffffff !important;
+    border: 2px solid #007acc !important;
+    box-shadow: 0 0 18px rgba(0, 122, 204, 0.7) !important;
+}
+
+/* Enhanced visual feedback for all states */
+#voice-btn.voice-button {
+    position: relative;
+    overflow: visible;
+}
+
+/* Add a subtle pulsing border for recording state */
+#voice-btn.voice-button.recording::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: -4px;
+    right: -4px;
+    bottom: -4px;
+    border: 2px solid rgba(255, 0, 0, 0.3);
+    border-radius: 50%;
+    animation: recording-border-pulse 1s infinite;
+    pointer-events: none;
+}
+
+@keyframes recording-border-pulse {
     0%, 100% { 
         transform: scale(1);
-        box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.4);
+        opacity: 0.3;
+    }
+    50% { 
+        transform: scale(1.2);
+        opacity: 0.1;
+    }
+}
+
+/* Enhanced recording pulse animation - CENTERED for circular buttons */
+@keyframes recording-pulse {
+    0% { 
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.6), 0 0 8px rgba(255, 0, 0, 0.4);
+        background-color: #ff0000;
+    }
+    25% {
+        transform: scale(1.05);
+        box-shadow: 0 0 0 3px rgba(255, 0, 0, 0.4), 0 0 12px rgba(255, 0, 0, 0.5);
+        background-color: #ff3333;
     }
     50% { 
         transform: scale(1.1);
-        box-shadow: 0 0 0 6px rgba(255, 0, 0, 0.1);
+        box-shadow: 0 0 0 6px rgba(255, 0, 0, 0.2), 0 0 16px rgba(255, 0, 0, 0.6);
+        background-color: #ff0000;
+    }
+    75% {
+        transform: scale(1.05);
+        box-shadow: 0 0 0 3px rgba(255, 0, 0, 0.4), 0 0 12px rgba(255, 0, 0, 0.5);
+        background-color: #ff3333;
+    }
+    100% { 
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.6), 0 0 8px rgba(255, 0, 0, 0.4);
+        background-color: #ff0000;
     }
 }
 
+/* Spinning circle processing animation - simpler rotating approach */
+@keyframes processing-spin-circle {
+    0% { 
+        transform: rotate(0deg);
+    }
+    100% { 
+        transform: rotate(360deg);
+    }
+}
+
+/* Enhanced processing spin animation */
 @keyframes processing-spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+    0% { 
+        transform: rotate(0deg) scale(1);
+        box-shadow: 0 0 8px rgba(0, 122, 204, 0.4);
+        background-color: #007acc;
+    }
+    25% { 
+        transform: rotate(90deg) scale(1.02);
+        box-shadow: 0 0 12px rgba(0, 122, 204, 0.5);
+        background-color: #0088dd;
+    }
+    50% { 
+        transform: rotate(180deg) scale(1);
+        box-shadow: 0 0 8px rgba(0, 122, 204, 0.4);
+        background-color: #007acc;
+    }
+    75% { 
+        transform: rotate(270deg) scale(1.02);
+        box-shadow: 0 0 12px rgba(0, 122, 204, 0.5);
+        background-color: #0088dd;
+    }
+    100% { 
+        transform: rotate(360deg) scale(1);
+        box-shadow: 0 0 8px rgba(0, 122, 204, 0.4);
+        background-color: #007acc;
+    }
 }
 
 
@@ -1748,8 +1903,10 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     background-color: var(--accent-primary);
     border: none;
     border-radius: 50%;
-    width: 32px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -1757,6 +1914,7 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     transition: all 0.2s;
     color: var(--text-primary);
     flex-shrink: 0;
+    margin: 0 1px;
 }
 
 .send-button:hover {
@@ -2432,6 +2590,74 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
 
 .modal-body {
     padding: 20px 24px;
+}
+
+/* Color picker modal styles */
+.color-picker-modal {
+    background: none !important; /* Remove backdrop */
+    backdrop-filter: none !important;
+}
+
+.color-picker-modal .modal-content {
+    width: auto;
+    min-width: 180px;
+    max-width: 180px;
+    position: absolute;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    border-radius: 8px;
+    z-index: 10000;
+}
+
+.color-picker-modal .modal-body {
+    padding: 0; /* Remove padding for compact look */
+}
+
+/* Color picker list styles (like terminal dropdown) */
+.color-picker-list {
+    max-height: 150px;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+
+.color-picker-item {
+    display: flex;
+    align-items: center;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    position: relative;
+    min-height: 32px;
+}
+
+.color-picker-item:hover {
+    background-color: var(--bg-quaternary);
+}
+
+.color-picker-item[data-selected="true"] {
+    background-color: var(--bg-tertiary);
+}
+
+.color-picker-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 8px;
+    flex-shrink: 0;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.color-picker-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+    flex: 1;
+    font-family: monospace;
+}
+
+.color-picker-check {
+    width: 14px;
+    height: 14px;
+    color: var(--accent-primary);
+    margin-left: auto;
 }
 
 .setting-group {
@@ -3922,7 +4148,7 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     align-items: center;
     gap: 6px;
     padding: 0 8px;
-    height: 28px;
+    height: 30px;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-primary);
     border-radius: 16px;
