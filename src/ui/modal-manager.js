@@ -49,6 +49,7 @@ class ModalManager {
         // Terminal color dot click handlers
         document.addEventListener('click', (e) => {
             if (e.target.classList.contains('terminal-color-dot')) {
+                console.log('Color dot clicked!', e.target);
                 e.preventDefault();
                 e.stopPropagation();
                 
@@ -57,6 +58,8 @@ class ModalManager {
                 if (terminalWrapper) {
                     const terminalId = parseInt(terminalWrapper.dataset.terminalId);
                     const currentColor = e.target.style.backgroundColor;
+                    
+                    console.log('Terminal ID:', terminalId, 'Current color:', currentColor);
                     
                     // Convert RGB to hex if needed
                     const hexColor = this.rgbToHex(currentColor) || currentColor;
@@ -69,7 +72,8 @@ class ModalManager {
         // Click outside to close modals
         document.addEventListener('click', (e) => {
             if (e.target.classList.contains('modal')) {
-                this.closeModal(e.target.id);
+                // Use the GUI's closeModal method for consistency
+                this.gui.closeModal(e.target.id);
             }
         });
     }
@@ -775,7 +779,9 @@ class ModalManager {
 
     // Color picker modal for terminal color selection
     showColorPickerModal(terminalId, currentColor, clickEvent) {
-        const colors = this.gui.terminalManager.terminalColors;
+        console.log('showColorPickerModal called:', terminalId, currentColor);
+        const colors = this.gui.terminalManager ? this.gui.terminalManager.terminalColors : this.gui.terminalColors;
+        console.log('Available colors:', colors);
         
         // Create color grid HTML
         const colorGrid = colors.map(color => `
@@ -796,13 +802,15 @@ class ModalManager {
             </div>
         `;
 
-        const modal = this.createModal('terminal-color-picker-modal', 'Select Terminal Color', modalContent, {
-            customClass: 'color-picker-modal',
-            positioning: 'dropdown'
-        });
+        // Use existing modal system
+        const modalBody = document.getElementById('color-picker-modal-body');
+        if (modalBody) {
+            modalBody.innerHTML = modalContent;
+        }
 
         // Position modal below the clicked color dot
-        if (clickEvent && clickEvent.target) {
+        const modal = document.getElementById('terminal-color-picker-modal');
+        if (clickEvent && clickEvent.target && modal) {
             const rect = clickEvent.target.getBoundingClientRect();
             const modalContent = modal.querySelector('.modal-content');
             
@@ -820,11 +828,12 @@ class ModalManager {
             option.addEventListener('click', (e) => {
                 const selectedColor = e.currentTarget.dataset.color;
                 this.handleColorSelection(terminalId, selectedColor);
-                this.closeModal('terminal-color-picker-modal');
+                this.gui.closeModal('terminal-color-picker-modal');
             });
         });
 
-        this.showModal(modal);
+        // Use the existing modal system
+        this.gui.showModal('terminal-color-picker-modal');
         
         // Initialize lucide icons for check marks
         if (window.lucide) {
@@ -835,7 +844,11 @@ class ModalManager {
     // Handle color selection and update terminal
     handleColorSelection(terminalId, newColor) {
         // Update terminal color in terminal manager
-        this.gui.terminalManager.updateTerminalColor(terminalId, newColor);
+        if (this.gui.terminalManager) {
+            this.gui.terminalManager.updateTerminalColor(terminalId, newColor);
+        } else {
+            this.gui.updateTerminalColor(terminalId, newColor);
+        }
         
         // Update all visual representations of this terminal's color
         this.updateTerminalColorElements(terminalId, newColor);
@@ -853,7 +866,8 @@ class ModalManager {
         }
 
         // Update status panel color dot if this is the active terminal
-        if (this.gui.terminalManager.activeTerminalId === terminalId) {
+        const activeTerminalId = this.gui.terminalManager ? this.gui.terminalManager.activeTerminalId : this.gui.activeTerminalId;
+        if (activeTerminalId === terminalId) {
             const statusDot = document.getElementById('status-terminal-dot');
             if (statusDot) {
                 statusDot.style.backgroundColor = newColor;

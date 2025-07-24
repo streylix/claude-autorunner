@@ -9,6 +9,7 @@ const PlatformUtils = require('./src/utils/platform-utils');
 const DomUtils = require('./src/utils/dom-utils');
 const ValidationUtils = require('./src/utils/validation');
 const IPCHandler = require('./src/core/ipc-handler');
+const ModalManager = require('./src/ui/modal-manager');
 class TerminalGUI {
     constructor() {
         // Initialize loading manager first
@@ -18,6 +19,10 @@ class TerminalGUI {
         this.platformUtils = new PlatformUtils();
         this.validationUtils = new ValidationUtils();
         this.ipcHandler = new IPCHandler();
+        
+        // Initialize modal manager
+        this.modalManager = new ModalManager(this);
+        
         // Platform detection for keyboard shortcuts (keep for backward compatibility)
         this.isMac = this.platformUtils.isMac;
         this.keySymbols = this.platformUtils.keySymbols;
@@ -8530,6 +8535,19 @@ class TerminalGUI {
         
         const finalWidth = Math.min(maxWidth + 10, maxAllowedWidth); // 10px extra padding
         dropdown.style.width = finalWidth + 'px';
+    }
+    
+    /**
+     * Update terminal color
+     * @param {number} terminalId - Terminal ID
+     * @param {string} color - New color hex value
+     */
+    updateTerminalColor(terminalId, color) {
+        const terminalData = this.terminals.get(terminalId);
+        if (terminalData) {
+            terminalData.color = color;
+            console.log(`Updated terminal ${terminalId} color to ${color}`);
+        }
     }
     
     cleanupOrphanedTerminalSelectorItems() {
