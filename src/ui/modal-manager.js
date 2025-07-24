@@ -115,6 +115,14 @@ class ModalManager {
                 // Use the GUI's closeModal method for consistency
                 this.gui.closeModal(e.target.id);
             }
+            
+            // Close color picker if clicking outside
+            const colorPickerModal = document.getElementById('terminal-color-picker-modal');
+            if (colorPickerModal && colorPickerModal.style.display === 'block') {
+                if (!e.target.closest('#terminal-color-picker-modal') && !e.target.classList.contains('terminal-color-dot')) {
+                    colorPickerModal.style.display = 'none';
+                }
+            }
         });
     }
 
@@ -868,12 +876,13 @@ class ModalManager {
             option.addEventListener('click', (e) => {
                 const selectedColor = e.currentTarget.dataset.color;
                 this.handleColorSelection(terminalId, selectedColor);
-                this.gui.closeModal('terminal-color-picker-modal');
+                modal.style.display = 'none'; // Close dropdown
             });
         });
 
-        // Use the existing modal system
-        this.gui.showModal('terminal-color-picker-modal');
+        // Show as dropdown instead of full modal
+        modal.style.display = 'block';
+        modal.classList.remove('show'); // Don't use modal's backdrop
         
         // Initialize lucide icons for check marks
         if (window.lucide) {
@@ -896,22 +905,31 @@ class ModalManager {
 
     // Update all visual elements showing terminal color
     updateTerminalColorElements(terminalId, newColor) {
+        console.log('Updating color elements for terminal', terminalId, 'to', newColor);
+        
         // Update terminal header color dot
         const terminalWrapper = document.querySelector(`.terminal-wrapper[data-terminal-id="${terminalId}"]`);
         if (terminalWrapper) {
             const colorDot = terminalWrapper.querySelector('.terminal-color-dot');
             if (colorDot) {
                 colorDot.style.backgroundColor = newColor;
+                console.log('Updated terminal header color dot');
             }
         }
 
         // Update status panel color dot if this is the active terminal
         const activeTerminalId = this.gui.terminalManager ? this.gui.terminalManager.activeTerminalId : this.gui.activeTerminalId;
+        console.log('Active terminal ID:', activeTerminalId, 'Selected terminal ID:', terminalId);
+        
         if (activeTerminalId === terminalId) {
             const statusDot = document.getElementById('status-terminal-dot');
+            console.log('Status dot element:', statusDot);
             if (statusDot) {
                 statusDot.style.backgroundColor = newColor;
+                console.log('Updated status panel color dot to', newColor);
             }
+        } else {
+            console.log('Not updating status dot - not active terminal');
         }
 
         // Update terminal selector dropdown
