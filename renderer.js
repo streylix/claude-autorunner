@@ -21,7 +21,13 @@ class TerminalGUI {
         this.ipcHandler = new IPCHandler();
         
         // Initialize modal manager
-        this.modalManager = new ModalManager(this);
+        console.log('About to initialize ModalManager...');
+        try {
+            this.modalManager = new ModalManager(this);
+            console.log('ModalManager initialized successfully:', this.modalManager);
+        } catch (error) {
+            console.error('ModalManager initialization failed:', error);
+        }
         
         // Platform detection for keyboard shortcuts (keep for backward compatibility)
         this.isMac = this.platformUtils.isMac;
