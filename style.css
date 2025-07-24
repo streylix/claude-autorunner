@@ -562,12 +562,13 @@ body {
 }
 
 .terminal-color-dot {
-    width: 10px;
-    height: 10px;
+    width: 16px;
+    height: 16px;
     border-radius: 50%;
     flex-shrink: 0;
     cursor: pointer;
     transition: transform 0.1s ease;
+    border: 2px solid rgba(255, 255, 255, 0.3);
 }
 
 .terminal-color-dot:hover {

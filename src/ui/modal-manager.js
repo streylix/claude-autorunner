@@ -53,9 +53,24 @@ class ModalManager {
         setTimeout(() => {
             const existingDots = document.querySelectorAll('.terminal-color-dot');
             console.log('Existing color dots found:', existingDots.length, existingDots);
-        }, 1000);
+            
+            // Test clicking programmatically
+            if (existingDots.length > 0) {
+                console.log('Testing programmatic click on first dot');
+                existingDots[0].click();
+            }
+        }, 2000);
         
         document.addEventListener('click', (e) => {
+            // Debug: log all clicks with more details
+            console.log('Document click:', {
+                target: e.target,
+                className: e.target.className,
+                classList: Array.from(e.target.classList || []),
+                tagName: e.target.tagName,
+                hasColorDotClass: e.target.classList.contains('terminal-color-dot')
+            });
+            
             // Debug: log all clicks on elements that might be color dots
             if (e.target.className && e.target.className.includes('terminal')) {
                 console.log('Terminal-related element clicked:', e.target.className, e.target);
