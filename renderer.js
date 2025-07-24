@@ -1493,26 +1493,19 @@ class TerminalGUI {
             }
         });
         // Terminal selector dropdown
-        // Single click shows dropdown, double click navigates to current terminal
-        let clickTimeout = null;
+        // Single click shows dropdown immediately (no delay)
         document.getElementById('terminal-selector-btn').addEventListener('click', (e) => {
             e.stopPropagation();
-            
-            if (clickTimeout) {
-                // This is a double click
-                clearTimeout(clickTimeout);
-                clickTimeout = null;
-                // Navigate to current terminal (horizontal scroll)
-                this.scrollToActiveTerminal();
-                this.logAction('Double-clicked terminal selector - navigating to current terminal', 'info');
-            } else {
-                // This is a single click - wait to see if there's a second click
-                clickTimeout = setTimeout(() => {
-                    // Single click confirmed - show dropdown
-                    this.toggleTerminalSelectorDropdown();
-                    clickTimeout = null;
-                }, 300); // 300ms delay to detect double click
-            }
+            // Show dropdown immediately for instant response
+            this.toggleTerminalSelectorDropdown();
+        });
+        
+        // Double click navigates to current terminal (separate event)
+        document.getElementById('terminal-selector-btn').addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            // Navigate to current terminal (horizontal scroll)
+            this.scrollToActiveTerminal();
+            this.logAction('Double-clicked terminal selector - navigating to current terminal', 'info');
         });
         document.getElementById('inject-now-btn').addEventListener('click', (e) => {
             console.log('=== INJECT BUTTON CLICKED ===');
