@@ -96,14 +96,15 @@ class TerminalGUI {
             // Add directory persistence
             currentDirectory: null,
             recentDirectories: [],
-            // Add sound effects preferences
-            completionSoundEnabled: false,
-            completionSoundFile: 'beep.wav',
+            // Add sound effects preferences - MICROWAVE MODE ENABLED BY DEFAULT
+            completionSoundEnabled: true,
+            microwaveModeEnabled: true, // Microwave mode: default ON
+            completionSoundFile: 'click.wav', // Default completion sound: click
+            injectionSoundFile: 'click.wav',  // Default injection sound: click
+            promptedSoundFile: 'none',        // Default prompted sound: none
             // Add sidebar width persistence
             leftSidebarWidth: 300,
             rightSidebarWidth: 400,
-            injectionSoundFile: 'click.wav',
-            promptedSoundFile: 'gmod.wav',
             promptedSoundKeywordsOnly: false,
             // Add message history
             messageHistory: [],
@@ -130,6 +131,13 @@ class TerminalGUI {
         this.timerSeconds = 0;
         this.timerInterval = null;
         this.timerExpired = false;
+        
+        // MICROWAVE MODE: 5-minute repeat notification system
+        this.microwaveRepeatTimer = null;
+        this.microwaveRepeatCount = 0;
+        this.microwaveMaxRepeats = 5; // Beep for 5 minutes (every minute)
+        this.terminalFocused = false;
+        this.lastUserActivity = Date.now();
         this.injectionInProgress = false;
         this.injectionPaused = false;
         this.injectionPausedByTimer = false; // Track if injection was paused by timer
@@ -169,6 +177,9 @@ class TerminalGUI {
         this.todoGenerationCooldown = 3 * 60 * 1000; // 3 minutes in milliseconds
         // Terminal idle tracking for completion sound
         this.terminalIdleTimer = null;
+        
+        // MICROWAVE MODE: Initialize microwave mode system
+        this.microwaveMode = null; // Will be initialized after DOM is ready
         this.terminalIdleStartTime = null;
         // Message history tracking
         this.messageHistory = [];
@@ -294,6 +305,10 @@ class TerminalGUI {
             this.updateStatusDisplay();
             this.setTerminalStatusDisplay(''); // Initialize with default status
             this.updateTimerUI(); // Initialize timer UI after loading preferences
+            
+            // MICROWAVE MODE: Initialize microwave mode system
+            this.initializeMicrowaveMode();
+            
             // If timer was expired on startup, trigger injection manager
             if (this.timerExpired) {
                 this.injectionManager.onTimerExpired();
@@ -574,6 +589,10 @@ class TerminalGUI {
         }
         // Update button visibility
         this.updateTerminalButtonVisibility();
+        // Setup drag-drop support for restored terminal
+        setTimeout(() => {
+            this.setupTerminalDragDrop(id);
+        }, 200);
         // Resize all terminals to fit new layout
         setTimeout(() => {
             this.resizeAllTerminals();
@@ -721,6 +740,9 @@ class TerminalGUI {
         
         // Setup terminal event handlers
         this.setupTerminalEventHandlers(id, terminal, terminalData);
+        
+        // Setup drag-drop support for this terminal
+        this.setupTerminalDragDrop(id);
         
         // Setup terminal process
         this.setupTerminalProcess(id, terminal, terminalData);
@@ -1326,6 +1348,10 @@ class TerminalGUI {
                 // Close any open modals/dropdowns
                 e.preventDefault();
                 this.closeAllModals();
+            } else if (e.altKey && e.key === 'Backspace') {
+                // Option+Delete word boundary detection for text inputs
+                e.preventDefault();
+                this.handleWordBoundaryDelete(e.target);
             }
         });
         // Add auto-resize functionality to message input
@@ -1657,6 +1683,18 @@ class TerminalGUI {
             this.saveAllPreferences();
             this.logAction(`Prompted sound keywords-only ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
         });
+        
+        // MICROWAVE MODE: Add event listener for microwave mode toggle
+        this.safeAddEventListener('microwave-mode-enabled', 'change', (e) => {
+            this.preferences.microwaveModeEnabled = e.target.checked;
+            this.saveAllPreferences();
+            this.logAction(`Microwave mode ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+            
+            // Stop any active microwave beeping if disabled
+            if (!e.target.checked && this.microwaveMode) {
+                this.microwaveMode.stopMicrowaveBeeping('user_disabled');
+            }
+        });
         // Background service settings listeners
         document.getElementById('keep-screen-awake').addEventListener('change', (e) => {
             this.preferences.keepScreenAwake = e.target.checked;
@@ -1711,6 +1749,13 @@ class TerminalGUI {
         dropZone.addEventListener('dragenter', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            
+            // Don't show global overlay if over a terminal
+            const terminalWrapper = e.target.closest('.terminal-wrapper');
+            if (terminalWrapper) {
+                return;
+            }
+            
             dragCounter++;
             if (dragCounter === 1) {
                 this.highlight(dropOverlay);
@@ -1719,6 +1764,13 @@ class TerminalGUI {
         dropZone.addEventListener('dragleave', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            
+            // Don't handle if over terminal
+            const terminalWrapper = e.target.closest('.terminal-wrapper');
+            if (terminalWrapper) {
+                return;
+            }
+            
             dragCounter--;
             if (dragCounter === 0) {
                 this.unhighlight(dropOverlay);
@@ -1728,14 +1780,29 @@ class TerminalGUI {
         dropZone.addEventListener('dragover', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            
+            // Don't handle if over terminal
+            const terminalWrapper = e.target.closest('.terminal-wrapper');
+            if (terminalWrapper) {
+                return;
+            }
+            
             e.dataTransfer.dropEffect = 'copy';
         }, false);
-        // Handle dropped files
+        // Handle dropped files - check if over terminal first
         dropZone.addEventListener('drop', (e) => {
             e.preventDefault();
             e.stopPropagation();
             dragCounter = 0;
             this.unhighlight(dropOverlay);
+            
+            // Check if we're dropping over a terminal - if so, let terminal handle it
+            const terminalWrapper = e.target.closest('.terminal-wrapper');
+            if (terminalWrapper) {
+                // Don't handle here, let terminal's drop handler take it
+                return;
+            }
+            
             this.handleFileDrop(e);
         }, false);
         // Handle manual file selection through hidden input
@@ -2022,6 +2089,272 @@ class TerminalGUI {
         if (previewContainer) {
             previewContainer.style.display = 'none';
         }
+    }
+    
+    handleWordBoundaryDelete(element) {
+        // Handle Option+Delete word boundary deletion for text inputs and textareas
+        if (!element || (element.tagName !== 'INPUT' && element.tagName !== 'TEXTAREA')) {
+            return;
+        }
+
+        const value = element.value;
+        const cursorPos = element.selectionStart;
+        
+        if (cursorPos === 0) {
+            return; // Nothing to delete
+        }
+
+        // Find word boundary - delete from cursor position backwards to start of word
+        let deleteStart = cursorPos;
+        
+        // Skip any whitespace characters backwards
+        while (deleteStart > 0 && /\s/.test(value[deleteStart - 1])) {
+            deleteStart--;
+        }
+        
+        // If we're now at a word character, delete backwards to word boundary
+        if (deleteStart > 0 && /\w/.test(value[deleteStart - 1])) {
+            while (deleteStart > 0 && /\w/.test(value[deleteStart - 1])) {
+                deleteStart--;
+            }
+        } else if (deleteStart > 0) {
+            // If we're at a non-word character, delete backwards until we hit a word or whitespace
+            const charType = /\w/.test(value[deleteStart - 1]) ? 'word' : 'symbol';
+            while (deleteStart > 0) {
+                const prevChar = value[deleteStart - 1];
+                if (charType === 'symbol' && (/\w/.test(prevChar) || /\s/.test(prevChar))) {
+                    break;
+                }
+                if (charType === 'word' && !/\w/.test(prevChar)) {
+                    break;
+                }
+                deleteStart--;
+            }
+        }
+        
+        // Perform the deletion
+        const newValue = value.substring(0, deleteStart) + value.substring(cursorPos);
+        element.value = newValue;
+        element.selectionStart = element.selectionEnd = deleteStart;
+        
+        // Trigger input event for any listeners
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        
+        this.logAction(`Word boundary delete: removed "${value.substring(deleteStart, cursorPos)}"`, 'info');
+    }
+    
+    async saveImageForTerminal(imageFile, terminalId) {
+        // Save image file and return path for terminal pasting
+        try {
+            const timestamp = Date.now();
+            const fileName = `terminal_${terminalId}_${timestamp}_${imageFile.name}`;
+            
+            // Convert to base64 for the save-screenshot handler
+            const reader = new FileReader();
+            const base64Data = await new Promise((resolve, reject) => {
+                reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(imageFile);
+            });
+            
+            // Use existing save mechanism
+            const result = await ipcRenderer.invoke('save-screenshot', base64Data);
+            
+            if (result && result.success && result.relativePath) {
+                return result.relativePath;
+            }
+            return null;
+        } catch (error) {
+            console.error('Error saving image for terminal:', error);
+            this.logAction(`Error saving image for Terminal ${terminalId}: ${error.message}`, 'error');
+            return null;
+        }
+    }
+    
+    setupTerminalDragDrop(terminalId) {
+        // Add drag-drop support to individual terminal containers
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData || !terminalData.element) {
+            return;
+        }
+
+        const terminalContainer = terminalData.element;
+        const terminalWrapper = terminalContainer.closest('.terminal-wrapper');
+        if (!terminalWrapper) {
+            return;
+        }
+
+        // Create or update drop overlay for this specific terminal
+        let dropOverlay = terminalWrapper.querySelector('.terminal-drop-overlay');
+        if (!dropOverlay) {
+            dropOverlay = document.createElement('div');
+            dropOverlay.className = 'terminal-drop-overlay';
+            dropOverlay.style.cssText = `
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: rgba(0, 122, 204, 0.1);
+                border: 2px dashed var(--accent-primary);
+                border-radius: 8px;
+                display: none;
+                z-index: 1000;
+                pointer-events: none;
+                align-items: center;
+                justify-content: center;
+                font-size: 18px;
+                color: var(--accent-primary);
+                font-weight: 600;
+            `;
+            dropOverlay.innerHTML = `
+                <div style="text-align: center;">
+                    <i data-lucide="upload" style="width: 48px; height: 48px; margin-bottom: 12px;"></i><br>
+                    Drop images for Terminal ${terminalId}
+                </div>
+            `;
+            terminalWrapper.appendChild(dropOverlay);
+            
+            // Initialize Lucide icons for the new overlay
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons({
+                    nameAttr: 'data-lucide'
+                });
+            }
+        }
+
+        let dragCounter = 0;
+
+        // Terminal-specific drag event handlers
+        const handleDragEnter = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter++;
+            if (dragCounter === 1) {
+                dropOverlay.style.display = 'flex';
+                terminalWrapper.classList.add('terminal-drag-active');
+            }
+        };
+
+        const handleDragLeave = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter--;
+            if (dragCounter === 0) {
+                dropOverlay.style.display = 'none';
+                terminalWrapper.classList.remove('terminal-drag-active');
+            }
+        };
+
+        const handleDragOver = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = 'copy';
+        };
+
+        const handleDrop = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter = 0;
+            dropOverlay.style.display = 'none';
+            terminalWrapper.classList.remove('terminal-drag-active');
+
+            // Process dropped files for this specific terminal
+            const files = Array.from(e.dataTransfer.files);
+            if (files.length > 0) {
+                // Handle image files directly in terminal
+                const imageFiles = files.filter(file => file.type.startsWith('image/'));
+                const otherFiles = files.filter(file => !file.type.startsWith('image/'));
+                
+                // Paste image files directly into terminal
+                if (imageFiles.length > 0) {
+                    for (const imageFile of imageFiles) {
+                        const imagePath = await this.saveImageForTerminal(imageFile, terminalId);
+                        if (imagePath) {
+                            // Type the image path directly into the terminal
+                            ipcRenderer.send('terminal-input', { terminalId: terminalId, data: imagePath });
+                            this.logAction(`Pasted image path into Terminal ${terminalId}: ${imagePath}`, 'info');
+                        }
+                    }
+                }
+                
+                // Handle non-image files through normal process
+                if (otherFiles.length > 0) {
+                    // Clear existing previews first
+                    this.clearImagePreviews();
+                    
+                    // Process files and set target terminal
+                    const processedFiles = await this.processFiles(otherFiles);
+                    if (processedFiles && processedFiles.length > 0) {
+                        // Set the target terminal for these files
+                        this.setTerminalForNextMessage(terminalId);
+                        this.logAction(`Added ${processedFiles.length} file(s) to Terminal ${terminalId}`, 'info');
+                    }
+                }
+            }
+        };
+
+        // Remove existing listeners to prevent duplicates
+        terminalWrapper.removeEventListener('dragenter', handleDragEnter);
+        terminalWrapper.removeEventListener('dragleave', handleDragLeave);
+        terminalWrapper.removeEventListener('dragover', handleDragOver);
+        terminalWrapper.removeEventListener('drop', handleDrop);
+
+        // Add new listeners
+        terminalWrapper.addEventListener('dragenter', handleDragEnter);
+        terminalWrapper.addEventListener('dragleave', handleDragLeave);
+        terminalWrapper.addEventListener('dragover', handleDragOver);
+        terminalWrapper.addEventListener('drop', handleDrop);
+
+        this.logAction(`Drag-drop support enabled for Terminal ${terminalId}`, 'info');
+    }
+    
+    setTerminalForNextMessage(terminalId) {
+        // Switch to the specified terminal and update UI to show it's selected
+        this.switchToTerminal(terminalId);
+        this.updateTerminalSelectorText();
+        this.logAction(`Terminal ${terminalId} selected for next message`, 'info');
+    }
+    
+    queueContinueMessage() {
+        // Auto-queue a "continue" message to resume conversation flow when usage limit resets
+        const continueMessage = {
+            id: this.generateMessageId(),
+            content: 'continue',
+            terminalId: this.activeTerminalId,
+            timestamp: Date.now(),
+            wrapWithPlan: this.planModeEnabled,
+            isAutoContinue: true // Flag to identify this as auto-generated
+        };
+        
+        // Add to the front of the queue so it executes first when timer expires
+        this.messageQueue.unshift(continueMessage);
+        this.updateMessageList();
+        this.updateStatusDisplay();
+        
+        this.logAction('Auto-queued "continue" message to resume conversation flow when usage limit resets', 'info');
+    }
+    
+    clearTimerStorage() {
+        // Clear all timer-related storage to prevent unwanted persistence
+        this.preferences.timerHours = 0;
+        this.preferences.timerMinutes = 0;
+        this.preferences.timerSeconds = 0;
+        this.preferences.timerTargetDateTime = null;
+        this.preferences.usageLimitWaiting = false;
+        
+        // Clear timer state variables
+        this.timerHours = 0;
+        this.timerMinutes = 0;
+        this.timerSeconds = 0;
+        this.timerTargetDateTime = null;
+        this.usageLimitWaiting = false;
+        this.usageLimitTimerOriginalValues = null;
+        
+        // Save cleared preferences
+        this.saveAllPreferences();
+        
+        this.logAction('Timer storage cleared completely', 'info');
     }
     generateMessageId() {
         return this.validationUtils.generateId();
@@ -2929,6 +3262,8 @@ class TerminalGUI {
         }
         // Clear usage limit tracking when timer is stopped
         this.clearUsageLimitTracking();
+        // Clear timer storage completely to prevent persistence of stopped timer
+        this.clearTimerStorage();
         // Notify injection manager
         this.injectionManager.onTimerStopped();
         // Stop power save blocker when timer is stopped
@@ -2986,6 +3321,11 @@ class TerminalGUI {
             
             // Notify injection manager
             this.injectionManager.onTimerExpired();
+            
+            // MICROWAVE MODE: Start 5-minute repeat notification cycle
+            if (this.microwaveMode) {
+                this.microwaveMode.onTaskCompleted();
+            }
             // If we were waiting for usage limit reset (shouldn't happen with the new logic above)
             if (this.usageLimitWaiting) {
                 this.logAction(`Timer expiration: clearing usageLimitWaiting. Current state - injectionInProgress: ${this.injectionInProgress}, queueLength: ${this.messageQueue.length}`, 'info');
@@ -3362,13 +3702,38 @@ class TerminalGUI {
     setTimer(hours, minutes, seconds, silent = false) {
         // Disable auto-sync when user manually sets timer
         this.disableAutoSync(silent);
-        this.timerHours = Math.max(0, Math.min(23, hours));
-        this.timerMinutes = Math.max(0, Math.min(59, minutes));
-        this.timerSeconds = Math.max(0, Math.min(59, seconds));
+        
+        // Validate and constrain timer values to prevent excessive durations
+        const constrainedHours = Math.max(0, Math.min(23, hours));
+        const constrainedMinutes = Math.max(0, Math.min(59, minutes));
+        const constrainedSeconds = Math.max(0, Math.min(59, seconds));
+        
+        // Calculate total duration in seconds for validation
+        const totalSeconds = (constrainedHours * 3600) + (constrainedMinutes * 60) + constrainedSeconds;
+        const maxDurationSeconds = 24 * 3600; // 24 hours maximum
+        
+        // Prevent setting timers that exceed reasonable duration
+        if (totalSeconds > maxDurationSeconds) {
+            if (!silent) {
+                this.logAction(`Timer duration exceeds maximum (24h) - limited to 23:59:59`, 'warning');
+            }
+            this.timerHours = 23;
+            this.timerMinutes = 59;
+            this.timerSeconds = 59;
+        } else if (totalSeconds === 0) {
+            // Clear timer if duration is zero
+            this.timerHours = 0;
+            this.timerMinutes = 0;
+            this.timerSeconds = 0;
+        } else {
+            this.timerHours = constrainedHours;
+            this.timerMinutes = constrainedMinutes;
+            this.timerSeconds = constrainedSeconds;
+        }
         this.timerExpired = false;
         // Calculate target datetime when timer should expire
-        const totalSeconds = (this.timerHours * 3600) + (this.timerMinutes * 60) + this.timerSeconds;
-        const targetDateTime = new Date(Date.now() + (totalSeconds * 1000));
+        const finalTotalSeconds = (this.timerHours * 3600) + (this.timerMinutes * 60) + this.timerSeconds;
+        const targetDateTime = new Date(Date.now() + (finalTotalSeconds * 1000));
         // Save timer values and target datetime to preferences for persistence
         this.preferences.timerHours = this.timerHours;
         this.preferences.timerMinutes = this.timerMinutes;
@@ -4989,6 +5354,18 @@ class TerminalGUI {
                 resetTime.setDate(resetTime.getDate() + 1);
             }
             const resetTimestamp = resetTime.getTime();
+            
+            // Calculate time until reset to check for 5-hour limit
+            const timeDiff = resetTimestamp - now.getTime();
+            const hoursUntilReset = Math.floor(timeDiff / (1000 * 60 * 60));
+            
+            // Don't show modal for usage limits over 5 hours (likely previous limit still active)
+            if (hoursUntilReset >= 5) {
+                this.logAction(`Usage limit reset is ${hoursUntilReset}h away - ignoring as it likely refers to previous usage limit that has been lifted`, 'info');
+                this.processedUsageLimitMessages.add(resetTimeString);
+                return;
+            }
+            
             // Only show modal if this is a genuinely new reset time (different from last shown)
             // Remove the flawed logic about "previous time has passed"
             const isNewMessage = lastShownResetTime !== resetTimeString;
@@ -5164,6 +5541,10 @@ class TerminalGUI {
                 }
                 this.pendingUsageLimitReset = null; // Clear pending info
             }
+            
+            // Auto-queue "continue" message to resume conversation flow when limit resets
+            this.queueContinueMessage();
+            
             // Auto-fill the Execute in form with calculated time until reset
             this.autoFillExecuteInForm();
         } else {
@@ -5272,6 +5653,11 @@ class TerminalGUI {
                 const isStillIdle = terminalData && (terminalData.status === '...' || terminalData.status === '');
                 if (isStillIdle) {
                     this.playCompletionSound();
+                    
+                    // MICROWAVE MODE: Task completed, start beeping cycle
+                    if (this.microwaveMode) {
+                        this.microwaveMode.onTaskCompleted();
+                    }
                     this.logAction(`Terminal ${terminalId} completed - playing sound`, 'info');
                 } else {
                     this.logAction(`Terminal ${terminalId} completion sound cancelled - status changed`, 'info');
@@ -5283,6 +5669,11 @@ class TerminalGUI {
         // Only play injection sound when status changes TO 'injecting'
         if (previousStatus !== 'injecting' && currentStatus === 'injecting') {
             this.playInjectionSound();
+            
+            // MICROWAVE MODE: Stop beeping when new injection starts
+            if (this.microwaveMode) {
+                this.microwaveMode.onNewTaskStarted();
+            }
             this.logAction(`Terminal ${terminalId} injection started - playing injection sound`, 'info');
         }
         // Only play prompted sound when status changes TO 'prompted'
@@ -9995,7 +10386,7 @@ class TerminalGUI {
             return;
         }
         
-        // Handle terminal input
+        // Handle terminal input with Option+Backspace support
         terminal.onData((data) => {
             // Check if terminal is ready before sending input (helps with Windows)
             const terminalData = this.terminals.get(id);
@@ -10009,6 +10400,25 @@ class TerminalGUI {
                 }
                 terminalData.queuedInput.push(data);
             }
+        });
+        
+        // Add custom key handler for Option+Backspace word deletion
+        terminal.attachCustomKeyEventHandler((e) => {
+            // Handle Option+Backspace (Alt+Backspace) for word deletion
+            if (e.type === 'keydown' && e.altKey && e.key === 'Backspace') {
+                e.preventDefault();
+                // Send Ctrl+W (word delete backward) to terminal
+                const terminalData = this.terminals.get(id);
+                if (terminalData && terminalData.isReady !== false) {
+                    ipcRenderer.send('terminal-input', { terminalId: id, data: '\x17' });
+                } else {
+                    if (!terminalData.queuedInput) terminalData.queuedInput = [];
+                    terminalData.queuedInput.push('\x17');
+                }
+                this.logAction(`Option+Backspace word delete in Terminal ${id}`, 'info');
+                return false; // Prevent default handling
+            }
+            return true; // Allow normal key processing
         });
         
         

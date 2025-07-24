@@ -464,24 +464,75 @@
                     </div>
                     <p class="setting-description">Select a Claude Flow command to execute when plan mode is enabled.</p>
                     
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <span class="setting-text">Claude Flow Command</span>
-                        </label>
-                        <select id="plan-mode-command" class="setting-select">
-                            <!-- Hive-Mind Intelligence -->
-                            <option value='npx claude-flow@alpha hive-mind spawn "{message}" --agents 5 --strategy development --claude'>Hive-Mind Dev - Queen-led coordination (5 agents)</option>
-                            <option value='npx claude-flow@alpha hive-mind spawn "{message}" --agents 8 --strategy parallel --memory-namespace default --claude'>Hive-Mind Advanced - Full coordination (8 agents)</option>
-                            
-                            <!-- Swarm Orchestration -->
-                            <option value='npx claude-flow@alpha swarm "{message}" --strategy development --claude'>Swarm Development - Basic swarm coordination</option>
-                            <option value='npx claude-flow@alpha swarm "{message}" --strategy research --neural-patterns enabled --claude'>Swarm Research - Enhanced research capabilities</option>
-                            
-                            <!-- GitHub Integration -->
-                            <option value='npx claude-flow@alpha github gh-coordinator analyze --analysis-type code_quality && npx claude-flow@alpha task orchestrate --task "{message}" --claude'>GitHub Coordinator - Repository analysis and coordination</option>
-                        </select>
-                        <p class="setting-help">Selected command will wrap your messages with the appropriate Claude Flow orchestration.</p>
+                    <!-- Quick Presets -->
+                    <div class="plan-mode-presets">
+                        <button type="button" class="preset-btn active" data-preset="light" title="Light: 3 agents, development strategy - Quick tasks, cost-conscious">Light</button>
+                        <button type="button" class="preset-btn" data-preset="standard" title="Standard: 5 agents, balanced strategy - Most development workflows">Standard</button>
+                        <button type="button" class="preset-btn" data-preset="heavy" title="Heavy: 8 agents, parallel strategy - Complex analysis, maximum performance">Heavy</button>
+                        <button type="button" class="preset-btn" data-preset="research" title="Research: 6 agents, research strategy - Investigation and analysis with neural patterns">Research</button>
+                        <button type="button" class="preset-btn" data-preset="custom" title="Custom: Full configuration control - Set your own parameters">Custom</button>
                     </div>
+                    
+                    <!-- Dynamic Configuration -->
+                    <div class="plan-mode-config" id="plan-mode-config">
+                        <div class="setting-row">
+                            <label class="setting-label">Mode:</label>
+                            <select id="plan-mode-type" class="setting-select">
+                                <option value="hive-mind spawn">Hive-Mind (Queen-led coordination)</option>
+                                <option value="swarm">Swarm (Distributed coordination)</option>
+                                <option value="github gh-coordinator analyze --analysis-type code_quality && npx claude-flow@alpha task orchestrate --task">GitHub Coordinator</option>
+                            </select>
+                            <span class="setting-caption">Choose coordination structure</span>
+                        </div>
+                        
+                        <div class="setting-row">
+                            <label class="setting-label">Workers:</label>
+                            <div class="worker-count-control">
+                                <input type="range" id="worker-count" min="1" max="20" value="3" class="worker-slider">
+                                <input type="number" id="worker-count-input" min="1" max="20" value="3" class="worker-input">
+                                <span class="worker-cost" id="worker-cost">Light usage</span>
+                            </div>
+                            <span class="setting-caption">Number of coordinated agents (uses your Claude Pro subscription)</span>
+                        </div>
+                        
+                        <div class="setting-row">
+                            <label class="setting-label">Strategy:</label>
+                            <select id="plan-strategy" class="setting-select">
+                                <option value="development">Development - Code-focused coordination</option>
+                                <option value="research">Research - Analysis and investigation</option>
+                                <option value="parallel">Parallel - Maximum concurrency</option>
+                                <option value="balanced">Balanced - Resource optimization</option>
+                                <option value="adaptive">Adaptive - Dynamic strategy adjustment</option>
+                            </select>
+                            <span class="setting-caption">Task execution approach</span>
+                        </div>
+                        
+                        <div class="setting-row">
+                            <label class="setting-label">Topology:</label>
+                            <select id="plan-topology" class="setting-select">
+                                <option value="">Auto (recommended)</option>
+                                <option value="hierarchical">Hierarchical - Tree structure</option>
+                                <option value="mesh">Mesh - Fully connected</option>
+                                <option value="ring">Ring - Circular coordination</option>
+                                <option value="star">Star - Central hub</option>
+                            </select>
+                            <span class="setting-caption">Agent communication structure</span>
+                        </div>
+                        
+                        
+                        <!-- Command Preview -->
+                        <div class="command-preview">
+                            <label class="setting-label">Generated Command:</label>
+                            <code id="command-preview">npx claude-flow@alpha hive-mind spawn "{message}" --agents 3 --strategy development --claude</code>
+                        </div>
+                        
+                        <!-- Legacy Dropdown (Hidden) -->
+                        <select id="plan-mode-command" style="display: none;">
+                            <option value='npx claude-flow@alpha hive-mind spawn "{message}" --agents 3 --strategy development --claude' selected>Dynamic</option>
+                        </select>
+                    </div>
+                    
+                    <p class="setting-help">Configure Claude Flow orchestration parameters. Changes update the command in real-time.</p>
                 </div>
                 
                 
@@ -588,7 +639,10 @@
     <script src="node_modules/@xterm/addon-search/lib/addon-search.js"></script>
     <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
     <script src="src/ui/loading-manager.js"></script>
+    <script src="src/audio/microwave-mode.js"></script>
+    <script src="src/utils/microwave-init.js"></script>
     <script src="api-client.js"></script>
     <script src="renderer.js"></script>
+    <script src="plan-mode-config.js"></script>
 </body>
 </html> 

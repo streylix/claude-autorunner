@@ -245,3 +245,89 @@ tests/
 scripts/
 playwright-report
 hive-mind-*
+
+# Claude Flow generated files
+.claude/settings.local.json
+.mcp.json
+claude-flow.config.json
+.swarm/
+.hive-mind/
+memory/claude-flow-data.json
+memory/sessions/*
+!memory/sessions/README.md
+memory/agents/*
+!memory/agents/README.md
+coordination/memory_bank/*
+coordination/subtasks/*
+coordination/orchestration/*
+*.db
+*.db-journal
+*.db-wal
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+claude-flow
+claude-flow.bat
+claude-flow.ps1
+hive-mind-prompt-*.txt
+
+# App-specific files and directories
+src/
+screenshots/
+test_*.js
+test_*.py
+debug_*.js
+debug_*.py
+app.sqlite
+app.sqlite-journal
+app.sqlite-wal
+preferences.json
+terminal_data.json
+message_history.json
+*.backup
+
+# Development and testing artifacts
+.test-env/
+test-env/
+test_env/
+electron-debug/
+crash-reports/
+audit/
+profiling/
+benchmark-results/
+
+# User data and preferences (sensitive)
+user-data/
+profiles/
+session-data/
+auth-tokens/
+*.pem
+*.key
+*.crt
+
+# Auto-generated documentation
+docs/generated/
+api-docs/
+jsdoc/
+
+# Roo system files
+.roo/
+.roomodes
+
+# Development documentation and analysis files
+AUTO_CONTINUE_TEST_ANALYSIS.md
+CLAUDE-FLOW-INIT-GUIDE.md
+DEBUG-PLAN-MODE.md
+MICROWAVE-MODE-README.md
+PLAN-MODE-CUSTOMIZATION-GUIDE.md
+QA_TEST_PLAN.md
+claude-flow-verification-report.json
+
+# Imported files and screenshots
+imported-files/
+
+# Memory and session data
+memory/
+
+# Plan mode configuration
+plan-mode-config.js
