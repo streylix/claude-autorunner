@@ -831,22 +831,21 @@ class ModalManager {
         const colors = this.gui.terminalManager ? this.gui.terminalManager.terminalColors : this.gui.terminalColors;
         console.log('Available colors:', colors);
         
-        // Create color grid HTML
-        const colorGrid = colors.map(color => `
-            <div class="color-option" 
+        // Create color list HTML (like terminal dropdown)
+        const colorList = colors.map(color => `
+            <div class="color-picker-item" 
                  data-color="${color}" 
-                 style="background-color: ${color};" 
                  title="Select ${color}"
                  ${color === currentColor ? 'data-selected="true"' : ''}>
-                ${color === currentColor ? '<i data-lucide="check"></i>' : ''}
+                <span class="color-picker-dot" style="background-color: ${color};"></span>
+                <span class="color-picker-text">${color.toUpperCase()}</span>
+                ${color === currentColor ? '<i data-lucide="check" class="color-picker-check"></i>' : ''}
             </div>
         `).join('');
 
         const modalContent = `
-            <div class="color-picker-container">
-                <div class="color-picker-grid">
-                    ${colorGrid}
-                </div>
+            <div class="color-picker-list">
+                ${colorList}
             </div>
         `;
 
@@ -866,14 +865,14 @@ class ModalManager {
             modalContent.style.position = 'absolute';
             modalContent.style.left = `${rect.left}px`;
             modalContent.style.top = `${rect.bottom + 5}px`;
-            modalContent.style.width = '200px';
+            modalContent.style.width = '180px';
             modalContent.style.maxWidth = 'none';
         }
 
         // Handle color selection
-        const colorOptions = modal.querySelectorAll('.color-option');
-        colorOptions.forEach(option => {
-            option.addEventListener('click', (e) => {
+        const colorItems = modal.querySelectorAll('.color-picker-item');
+        colorItems.forEach(item => {
+            item.addEventListener('click', (e) => {
                 const selectedColor = e.currentTarget.dataset.color;
                 this.handleColorSelection(terminalId, selectedColor);
                 modal.style.display = 'none'; // Close dropdown
@@ -932,13 +931,14 @@ class ModalManager {
             console.log('Not updating status dot - not active terminal');
         }
 
-        // Update terminal selector dropdown
-        const selectorOptions = document.querySelectorAll('.terminal-selector-option');
-        selectorOptions.forEach(option => {
-            if (parseInt(option.dataset.terminalId) === terminalId) {
-                const colorDot = option.querySelector('.terminal-color-dot');
+        // Update terminal selector dropdown items
+        const selectorItems = document.querySelectorAll('.terminal-selector-item, .manual-terminal-selector-item');
+        selectorItems.forEach(item => {
+            if (parseInt(item.dataset.terminalId) === terminalId) {
+                const colorDot = item.querySelector('.terminal-selector-dot, .manual-terminal-selector-dot');
                 if (colorDot) {
                     colorDot.style.backgroundColor = newColor;
+                    console.log('Updated selector dropdown color dot');
                 }
             }
         });
