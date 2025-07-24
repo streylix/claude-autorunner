@@ -48,30 +48,8 @@ class ModalManager {
             }
         });
 
-        // Terminal color dot click handlers - use setTimeout to ensure DOM is ready
+        // Terminal color dot click handlers
         console.log('Adding terminal color dot click handler');
-        setTimeout(() => {
-            const existingDots = document.querySelectorAll('.terminal-color-dot');
-            console.log('Existing color dots found:', existingDots.length, existingDots);
-            
-            // Test clicking programmatically
-            if (existingDots.length > 0) {
-                console.log('Testing programmatic click on first dot');
-                existingDots[0].click();
-            }
-            
-            // Create a test color dot to verify our event system works
-            const testDot = document.createElement('span');
-            testDot.className = 'terminal-color-dot';
-            testDot.style.backgroundColor = '#ff0000';
-            testDot.style.position = 'fixed';
-            testDot.style.top = '10px';
-            testDot.style.right = '10px';
-            testDot.style.zIndex = '9999';
-            testDot.title = 'TEST COLOR DOT - Click me!';
-            document.body.appendChild(testDot);
-            console.log('Added test color dot in top-right corner');
-        }, 2000);
         
         document.addEventListener('click', (e) => {
             // Debug: log all clicks with more details
