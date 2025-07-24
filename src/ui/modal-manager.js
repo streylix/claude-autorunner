@@ -880,8 +880,10 @@ class ModalManager {
         });
 
         // Show as dropdown instead of full modal
+        console.log('Attempting to show modal:', modal);
         modal.style.display = 'block';
         modal.classList.remove('show'); // Don't use modal's backdrop
+        console.log('Modal display set to block, should be visible now');
         
         // Initialize lucide icons for check marks
         if (window.lucide) {
