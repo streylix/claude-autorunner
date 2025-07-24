@@ -2222,7 +2222,7 @@ class TerminalGUI {
             
             this.mediaRecorder.onstart = () => {
                 console.log('🎙️ Voice recording started');
-                this.updateVoiceButtonState('recording');
+                this.updateVoiceButtonState('recording').catch(console.error);
                 this.logAction('Voice recording started (LOCAL Whisper)', 'info');
             };
             
@@ -2274,7 +2274,7 @@ class TerminalGUI {
             });
             
             // Show processing state
-            this.updateVoiceButtonState('processing');
+            this.updateVoiceButtonState('processing').catch(console.error);
             this.logAction('Processing audio with Whisper...', 'info');
             
             // Send to backend for transcription
@@ -2326,7 +2326,7 @@ class TerminalGUI {
             console.log('🛑 Stopping voice recording...');
             this.mediaRecorder.stop();
             this.isRecording = false;
-            this.updateVoiceButtonState('processing');
+            this.updateVoiceButtonState('processing').catch(console.error);
         }
     }
     
@@ -2358,59 +2358,148 @@ class TerminalGUI {
         }
     }
     
-    updateVoiceButtonState(state) {
-        const voiceBtn = document.getElementById('voice-btn');
-        const icon = voiceBtn.querySelector('i');
+    async updateVoiceButtonState(state) {
+        console.log(`🎨 Voice button state transition requested: ${state}`);
         
-        if (!voiceBtn || !icon) return;
-        
-        // Remove all state classes with a smooth transition
-        voiceBtn.classList.remove('recording', 'processing');
-        
-        console.log(`🎨 Voice button state: ${state}`);
-        
-        switch (state) {
-            case 'recording':
-                voiceBtn.classList.add('recording');
+        try {
+            // Wait for the voice button to be available in DOM
+            const voiceBtn = await this.waitForVoiceButton();
+            if (!voiceBtn) {
+                console.error('🚨 Voice button not found after waiting');
+                return;
+            }
+            
+            // DEBUG: Let's see exactly what we're working with
+            console.log(`🔍 DOM DEBUG - Button element:`, voiceBtn);
+            console.log(`🔍 DOM DEBUG - Button HTML:`, voiceBtn.outerHTML);
+            console.log(`🔍 DOM DEBUG - Button computed styles:`, window.getComputedStyle(voiceBtn));
+            console.log(`🔍 DOM DEBUG - Button current classes:`, voiceBtn.className);
+            console.log(`🔍 DOM DEBUG - Button current style:`, voiceBtn.style.cssText);
+            
+            // Try multiple selectors for the icon
+            let icon = voiceBtn.querySelector('i');
+            if (!icon) {
+                icon = voiceBtn.querySelector('[data-lucide]');
+            }
+            if (!icon) {
+                icon = voiceBtn.querySelector('svg');
+            }
+            if (!icon) {
+                console.warn('🚨 Voice button icon not found, but continuing anyway...');
+                console.log('🔍 Button inner HTML:', voiceBtn.innerHTML);
+                // Create the icon if it doesn't exist
+                icon = document.createElement('i');
                 icon.setAttribute('data-lucide', 'mic');
-                voiceBtn.title = 'Recording... (Click to stop)';
-                console.log('🔴 Added recording class');
-                break;
-            case 'processing':
-                voiceBtn.classList.add('processing');
-                icon.setAttribute('data-lucide', 'loader');
-                voiceBtn.title = 'Processing transcription...';
-                console.log('🔵 Added processing class');
-                break;
-            default:
-                icon.setAttribute('data-lucide', 'mic');
-                voiceBtn.title = 'Voice transcription (Cmd+Shift+V)';
-                console.log('⚫ Reset to idle state');
-        }
-        
-        // Force immediate icon refresh for better feedback
-        lucide.createIcons();
-        
-        // Additional visual feedback: brief scale animation for state changes
-        if (state !== 'idle') {
-            voiceBtn.style.transition = 'all 0.2s ease';
+                voiceBtn.appendChild(icon);
+                console.log('🔧 Created missing icon element');
+            }
+            
+            console.log(`🎨 FORCING voice button state: ${state}`);
+            
+            // NUCLEAR APPROACH - completely replace the element's appearance
+            this.removeVisualIndicator(); // Remove any existing indicator
+            
+            switch (state) {
+                case 'recording':
+                    // No floating indicator - just button styling
+                    
+                    // Also try to style the button
+                    voiceBtn.style.cssText = 'background: #ff0000 !important; color: white !important; border: 2px solid #ff0000 !important; box-shadow: 0 0 20px rgba(255, 0, 0, 0.8) !important;';
+                    voiceBtn.classList.add('recording');
+                    voiceBtn.setAttribute('data-voice-state', 'recording');
+                    if (icon) {
+                        icon.setAttribute('data-lucide', 'mic');
+                    }
+                    voiceBtn.title = 'Recording... (Click to stop)';
+                    console.log('🔴 RECORDING: Added floating indicator + button styling');
+                    break;
+                    
+                case 'processing':
+                    // No floating indicator - just button styling
+                    
+                    // Also try to style the button - spinning gradient processing
+                    voiceBtn.style.cssText = `
+                        background: conic-gradient(from 0deg, #999999 0deg, #cccccc 90deg, #ffffff 180deg, #cccccc 270deg, #999999 360deg) !important;
+                        color: #333333 !important; 
+                        border: 2px solid #888888 !important; 
+                        animation: processing-spin-circle 1.5s linear infinite !important;
+                        cursor: not-allowed !important;
+                        position: relative !important;
+                        z-index: 10 !important;
+                        box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.2) !important;
+                    `;
+                    voiceBtn.classList.add('processing');
+                    voiceBtn.setAttribute('data-voice-state', 'processing');
+                    if (icon) {
+                        icon.setAttribute('data-lucide', 'hourglass');
+                    }
+                    voiceBtn.title = 'Processing transcription...';
+                    console.log('🔵 PROCESSING: Added floating indicator + button styling');
+                    break;
+                    
+                default:
+                    // Reset everything
+                    voiceBtn.style.cssText = '';
+                    voiceBtn.classList.remove('recording', 'processing');
+                    voiceBtn.removeAttribute('data-voice-state');
+                    if (icon) {
+                        icon.setAttribute('data-lucide', 'mic');
+                    }
+                    voiceBtn.title = 'Voice transcription (Cmd+Shift+V)';
+                    console.log('⚫ IDLE: Reset button to default state');
+            }
+            
+            // Force immediate icon refresh
             requestAnimationFrame(() => {
-                voiceBtn.style.transform = 'scale(1.1)';
-                setTimeout(() => {
-                    voiceBtn.style.transform = '';
-                }, 200);
+                if (typeof lucide !== 'undefined') {
+                    lucide.createIcons();
+                }
             });
+            
+            // Final debug output
+            console.log(`🎨 FINAL - Button HTML:`, voiceBtn.outerHTML);
+            console.log(`🎨 FINAL - Button style:`, voiceBtn.style.cssText);
+            
+        } catch (error) {
+            console.error('🚨 Error updating voice button state:', error);
         }
-        
-        // Debug: Log current classes
-        console.log(`🎨 Current classes: ${voiceBtn.className}`);
+    }
+    
+    removeVisualIndicator() {
+        // Remove any existing visual indicators
+        const existing = document.querySelectorAll('#voice-recording-indicator, #voice-processing-indicator');
+        existing.forEach(el => el.remove());
+    }
+    
+    waitForVoiceButton(timeout = 3000) {
+        return new Promise((resolve) => {
+            const startTime = Date.now();
+            
+            const checkButton = () => {
+                const voiceBtn = document.getElementById('voice-btn');
+                if (voiceBtn) {
+                    resolve(voiceBtn);
+                    return;
+                }
+                
+                if (Date.now() - startTime >= timeout) {
+                    console.warn(`🚨 Voice button not found within ${timeout}ms`);
+                    resolve(null);
+                    return;
+                }
+                
+                setTimeout(checkButton, 50);
+            };
+            
+            checkButton();
+        });
     }
     
     resetVoiceButton() {
         this.isRecording = false;
         this.speechResult = '';
         this.speechRecognition = null;
-        this.updateVoiceButtonState('idle');
+        this.updateVoiceButtonState('idle').catch(console.error);
     }
     
     handleMessageUpdate() {
