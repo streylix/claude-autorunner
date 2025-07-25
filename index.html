@@ -38,7 +38,7 @@
                         <button class="icon-btn sidebar-nav-btn active" id="action-log-nav-btn" title="Action Log" data-test-id="action-log-nav-btn">
                             <i data-lucide="scroll-text"></i>
                         </button>
-                        <button class="icon-btn sidebar-nav-btn" id="todo-nav-btn" title="To-Do" data-test-id="todo-nav-btn">
+                        <button class="icon-btn sidebar-nav-btn" id="todo-nav-btn" title="Completions" data-test-id="todo-nav-btn">
                             <i data-lucide="check-square"></i>
                         </button>
                     </div>
@@ -66,7 +66,7 @@
                     </div>
                 </div>
 
-                <!-- To-Do View -->
+                <!-- Completions View -->
                 <div class="sidebar-view" id="todo-view" style="display: none;">
                     <div class="todo-search">
                         <input type="text" id="todo-search" placeholder="Search todos..." class="log-search-input">
@@ -75,47 +75,62 @@
                         </button>
                     </div>
                     <div class="todo-content" id="todo-list">
-                        <div class="todo-item">
-                            <div class="todo-checkbox-wrapper">
-                                <input type="checkbox" class="todo-checkbox" data-terminal="1">
-                            </div>
-                            <div class="todo-text">
-                                <span class="todo-time">[auto-generated]</span>
-                                <span class="todo-message">Example todo item from terminal output</span>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="manual-generation-section">
-                        <div class="manual-generation-controls">
-                            <div class="manual-dropdowns-group">
-                                <div class="manual-generation-selector">
-                                    <button class="manual-terminal-selector-btn" id="manual-terminal-selector-btn" data-test-id="manual-terminal-selector-btn">
-                                        <span class="manual-terminal-selector-dot" style="background-color: #007acc;"></span>
-                                        <span class="manual-terminal-selector-text">Terminal 1</span>
-                                        <i data-lucide="chevron-down"></i>
-                                    </button>
-                                    <div class="manual-terminal-selector-dropdown" id="manual-terminal-selector-dropdown" style="display: none;">
-                                        <!-- Dropdown items will be dynamically generated -->
-                                    </div>
-                                </div>
-                                <div class="manual-generation-mode">
-                                    <button class="manual-mode-selector-btn" id="manual-mode-selector-btn" data-test-id="manual-mode-selector-btn">
-                                        <span class="manual-mode-selector-text">Verify</span>
-                                        <i data-lucide="chevron-down"></i>
-                                    </button>
-                                    <div class="manual-mode-selector-dropdown" id="manual-mode-selector-dropdown" style="display: none;">
-                                        <div class="manual-mode-option" data-mode="verify" data-test-id="mode-option-verify">Verify</div>
-                                        <div class="manual-mode-option" data-mode="explain" data-test-id="mode-option-explain">Explain</div>
-                                        <div class="manual-mode-option" data-mode="custom" data-test-id="mode-option-custom">Custom</div>
-                                    </div>
+                        <!-- Completed Container -->
+                        <div class="completion-item completed" data-terminal="1">
+                            <div class="completion-header">
+                                <div class="completion-terminal">claudecodebot • #6</div>
+                                <div class="completion-status">
+                                    <svg class="status-icon completed-icon" width="18" height="18" viewBox="0 0 18 18">
+                                        <path d="M15.464 4.101a.562.562 0 0 1 0 .796l-7.875 7.875a.562.562 0 0 1-.796 0l-3.937-3.937a.562.562 0 1 1 .796-.796L7.313 11.579l7.355-7.478a.562.562 0 0 1 .796 0z"/>
+                                    </svg>
                                 </div>
                             </div>
-                            <button class="manual-generate-btn" id="manual-generate-btn" title="Generate todos from terminal output" data-test-id="manual-generate-btn">
-                                <i data-lucide="sparkles"></i>
-                            </button>
+                            <div class="completion-content">
+                                <div class="completion-prompt">
+                                    Create a new React component for user authentication with login and signup forms
+                                </div>
+                                <div class="completion-subtitle">+2 more</div>
+                            </div>
+                            <div class="completion-timer completed">1:24</div>
                         </div>
-                        <div class="custom-prompt-section" id="custom-prompt-section" style="display: none;">
-                            <textarea class="custom-prompt-input" id="custom-prompt-input" placeholder="Enter custom prompt for todo generation..." rows="3"></textarea>
+
+                        <!-- In Progress Container -->
+                        <div class="completion-item in-progress" data-terminal="2">
+                            <div class="completion-header">
+                                <div class="completion-terminal">claudecodebot • #7</div>
+                                <div class="completion-status">
+                                    <svg class="status-icon progress-icon" width="18" height="18" viewBox="0 0 18 18">
+                                        <circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-dasharray="18.85 6.28">
+                                        </circle>
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="completion-content">
+                                <div class="completion-prompt">
+                                    Implement API endpoints for user data management including CRUD operations and validation middleware
+                                </div>
+                                <div class="completion-subtitle">+4 more</div>
+                            </div>
+                            <div class="completion-timer">0:47</div>
+                        </div>
+
+                        <!-- Failed Container -->
+                        <div class="completion-item failed" data-terminal="3">
+                            <div class="completion-header">
+                                <div class="completion-terminal">claudecodebot • #8</div>
+                                <div class="completion-status">
+                                    <svg class="status-icon failed-icon" width="18" height="18" viewBox="0 0 18 18">
+                                        <path d="M5.227 5.227a.562.562 0 0 1 .796 0L9 8.204l2.977-2.977a.562.562 0 0 1 .796.796L9.796 9l2.977 2.977a.562.562 0 0 1-.796.796L9 9.796l-2.977 2.977a.562.562 0 0 1-.796-.796L8.204 9 5.227 6.023a.562.562 0 0 1 0-.796z"/>
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="completion-content">
+                                <div class="completion-prompt">
+                                    Deploy the application to production server with SSL certificates and configure nginx reverse proxy
+                                </div>
+                                <div class="completion-subtitle">+3 more</div>
+                            </div>
+                            <div class="completion-timer failed">2:15</div>
                         </div>
                     </div>
                     <div class="sidebar-footer">
@@ -586,6 +601,28 @@
         </div>
     </div>
 
+    <!-- Completion Details Modal -->
+    <div id="completion-details-modal" class="modal completion-modal">
+        <div class="modal-content completion-modal-content">
+            <div class="modal-header completion-modal-header">
+                <div class="completion-modal-title" id="completion-modal-title">
+                    # claudecodebot • #6
+                </div>
+                <div class="completion-modal-status">
+                    <svg class="status-icon completed-icon" width="18" height="18" viewBox="0 0 18 18" id="completion-modal-status-icon">
+                        <path d="M15.464 4.101a.562.562 0 0 1 0 .796l-7.875 7.875a.562.562 0 0 1-.796 0l-3.937-3.937a.562.562 0 1 1 .796-.796L7.313 11.579l7.355-7.478a.562.562 0 0 1 .796 0z"/>
+                    </svg>
+                </div>
+                <button class="modal-close completion-modal-close" id="completion-modal-close" title="Close completion details">&times;</button>
+            </div>
+            <div class="modal-body completion-modal-body">
+                <div class="completion-modal-prompt" id="completion-modal-prompt">
+                    > Create a new React component for user authentication with login and signup forms
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Hotkey Dropdown -->
     <div id="hotkey-dropdown" class="hotkey-dropdown">
         <div class="hotkey-dropdown-content">
@@ -648,9 +685,11 @@
     <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
     <script src="src/ui/loading-manager.js"></script>
     <script src="src/audio/microwave-mode.js"></script>
-    <script src="src/utils/microwave-init.js"></script>
     <script src="api-client.js"></script>
+    <script src="completion-timer.js"></script>
+    <script src="completion-modal.js"></script>
     <script src="renderer.js"></script>
+    <script src="src/utils/microwave-init.js"></script>
     <script src="plan-mode-config.js"></script>
 </body>
 </html> 

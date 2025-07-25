@@ -17,21 +17,21 @@ class ModalManager {
     }
 
     setupEventListeners() {
-        // Settings modal
-        const settingsBtn = document.getElementById('settings-btn');
-        if (settingsBtn) {
-            settingsBtn.addEventListener('click', () => {
-                this.showSettingsModal();
-            });
-        }
+        // Settings modal - disabled to prevent conflicts with existing system
+        // const settingsBtn = document.getElementById('settings-btn');
+        // if (settingsBtn) {
+        //     settingsBtn.addEventListener('click', () => {
+        //         this.showSettingsModal();
+        //     });
+        // }
 
-        // Message history modal
-        const messageHistoryBtn = document.getElementById('message-history-btn');
-        if (messageHistoryBtn) {
-            messageHistoryBtn.addEventListener('click', () => {
-                this.showMessageHistoryModal();
-            });
-        }
+        // Message history modal - disabled to prevent conflicts with existing system
+        // const messageHistoryBtn = document.getElementById('message-history-btn');
+        // if (messageHistoryBtn) {
+        //     messageHistoryBtn.addEventListener('click', () => {
+        //         this.showMessageHistoryModal();
+        //     });
+        // }
 
         // Plans modal (if exists)
         const plansBtn = document.getElementById('plans-btn');
@@ -62,7 +62,7 @@ class ModalManager {
             });
             
             // Debug: log all clicks on elements that might be color dots
-            if (e.target.className && e.target.className.includes('terminal')) {
+            if (e.target.className && typeof e.target.className === 'string' && e.target.className.includes('terminal')) {
                 console.log('Terminal-related element clicked:', e.target.className, e.target);
             }
             
@@ -87,15 +87,15 @@ class ModalManager {
             }
         });
 
-        // Click outside to close modals
-        document.addEventListener('click', (e) => {
-            if (e.target.classList.contains('modal')) {
-                // Use the GUI's closeModal method for consistency
-                this.gui.closeModal(e.target.id);
-            }
-            
-            // Color picker closing is now handled by specific instance handlers
-        });
+        // Click outside to close modals - disabled to prevent conflicts with existing system
+        // document.addEventListener('click', (e) => {
+        //     if (e.target.classList.contains('modal')) {
+        //         // Use the GUI's closeModal method for consistency
+        //         this.gui.closeModal(e.target.id);
+        //     }
+        //     
+        //     // Color picker closing is now handled by specific instance handlers
+        // });
     }
 
     showSettingsModal() {

@@ -2660,6 +2660,86 @@ button#voice-btn.voice-button.processing:hover,
     margin-left: auto;
 }
 
+/* Completion Details Modal */
+.completion-modal .modal-content {
+    max-width: 600px;
+    width: 90%;
+}
+
+.completion-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.completion-modal-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.4;
+    margin: 0;
+}
+
+.completion-modal-title .terminal-color-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.completion-modal-title .terminal-name {
+    font-weight: 600;
+}
+
+.completion-modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    color: var(--text-quaternary);
+    cursor: pointer;
+    padding: 4px 8px;
+    line-height: 1;
+    border-radius: 4px;
+    transition: all 0.2s;
+    margin-left: 16px;
+    flex-shrink: 0;
+}
+
+.completion-modal-close:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+}
+
+.completion-modal-body {
+    padding: 16px 20px;
+}
+
+.completion-modal-prompt {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+
+/* Make completion containers clickable */
+.completion-item {
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.completion-item:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
 .setting-group {
     margin-bottom: 24px;
 }
@@ -3422,6 +3502,316 @@ button#voice-btn.voice-button.processing:hover,
     font-style: italic;
 }
 
+/* Completion Container Styles */
+.completion-item {
+    background-color: var(--bg-tertiary);
+    padding: 12px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    border-left: 3px solid var(--border-secondary);
+    transition: all 0.2s ease;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+
+.completion-item:hover {
+    border-color: var(--border-secondary);
+    background-color: var(--bg-secondary);
+}
+
+.completion-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.completion-terminal {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.completion-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.status-icon {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+}
+
+
+.completion-prompt {
+    color: var(--text-secondary); /* More dim for better hierarchy */
+    font-size: 12px;
+    line-height: 1.4;
+    word-wrap: break-word;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 4px;
+}
+
+/* Status Icon Colors */
+.completed-icon {
+    color: #888888; /* Grey for dark mode visibility */
+    fill: #888888; /* SVG fill color */
+}
+
+.progress-icon {
+    color: #888888; /* Grey for dark mode visibility */
+    fill: none; /* No fill to show only stroke */
+    stroke: #888888; /* SVG stroke color */
+    animation: spin 2s linear infinite; /* Proper rotation animation */
+    stroke-dasharray: 18.85; /* Circumference for dashed effect */
+    stroke-dashoffset: 4.71; /* Quarter circle offset */
+}
+
+.failed-icon {
+    color: var(--accent-error); /* Red for failed status */
+    fill: var(--accent-error); /* SVG fill color */
+}
+
+/* Light theme adjustments */
+[data-theme="light"] .completed-icon,
+[data-theme="light"] .progress-icon {
+    color: #666666; /* Darker grey for light mode */
+    fill: #666666; /* SVG fill color */
+}
+
+[data-theme="light"] .progress-icon {
+    stroke: #666666; /* SVG stroke color for light mode */
+    fill: none; /* Ensure no fill in light mode */
+}
+
+/* Spinning animation for progress icon */
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Shimmer animation for in-progress captions */
+@keyframes shimmer {
+    0% {
+        background-position: -200% 0;
+    }
+    100% {
+        background-position: 200% 0;
+    }
+}
+
+/* Completion content layout */
+.completion-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+}
+
+.completion-subtitle {
+    color: var(--text-tertiary);
+    font-size: 11px;
+    margin-bottom: 4px;
+    opacity: 0.7;
+}
+
+.completion-timer {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    opacity: 0.6;
+    font-family: monospace;
+}
+
+.completion-timer.completed {
+    color: var(--text-secondary);
+    opacity: 1;
+}
+
+.completion-timer.failed {
+    color: var(--accent-error);
+    opacity: 1;
+}
+
+/* Completion Modal Status */
+.completion-modal-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.completion-modal-status {
+    display: flex;
+    align-items: center;
+    margin-left: auto;
+    margin-right: 8px;
+}
+
+.completion-modal-status .status-icon {
+    width: 18px;
+    height: 18px;
+}
+
+/* Shimmer effect for modal status when in progress */
+.completion-modal-status.in-progress .status-icon {
+    animation: shimmer-icon 2s linear infinite;
+}
+
+.completion-modal-status.in-progress .progress-icon {
+    animation: spin 2s linear infinite, shimmer-icon 2s linear infinite;
+}
+
+/* Shimmer animation for modal status icon */
+@keyframes shimmer-icon {
+    0% {
+        opacity: 0.4;
+    }
+    50% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 0.4;
+    }
+}
+
+/* Shimmer effect for in-progress completion prompts */
+.completion-item.in-progress .completion-prompt {
+    background: linear-gradient(
+        90deg,
+        rgba(255, 255, 255, 0.3),
+        rgba(255, 255, 255, 0.3),
+        rgba(255, 255, 255, 0.3),
+        rgba(255, 255, 255, 0.6),
+        rgba(255, 255, 255, 1),
+        rgba(255, 255, 255, 0.6),
+        rgba(255, 255, 255, 0.3),
+        rgba(255, 255, 255, 0.3),
+        rgba(255, 255, 255, 0.3)
+    );
+    background-size: 200% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmer 2s linear infinite;
+}
+
+/* Terminal-specific border colors for completion items */
+.completion-item[data-terminal="1"] {
+    border-left-color: var(--terminal-1);
+}
+
+.completion-item[data-terminal="2"] {
+    border-left-color: var(--terminal-2);
+}
+
+.completion-item[data-terminal="3"] {
+    border-left-color: var(--terminal-3);
+}
+
+.completion-item[data-terminal="4"] {
+    border-left-color: var(--terminal-4);
+}
+
+.completion-item[data-terminal="5"] {
+    border-left-color: var(--terminal-5);
+}
+
+.completion-item[data-terminal="6"] {
+    border-left-color: var(--terminal-6);
+}
+
+.completion-item[data-terminal="7"] {
+    border-left-color: var(--terminal-7);
+}
+
+.completion-item[data-terminal="8"] {
+    border-left-color: var(--terminal-8);
+}
+
+.completion-item[data-terminal="9"] {
+    border-left-color: var(--terminal-9);
+}
+
+.completion-item[data-terminal="10"] {
+    border-left-color: var(--terminal-10);
+}
+
+.completion-item[data-terminal="11"] {
+    border-left-color: var(--terminal-11);
+}
+
+.completion-item[data-terminal="12"] {
+    border-left-color: var(--terminal-12);
+}
+
+.completion-item[data-terminal="13"] {
+    border-left-color: var(--terminal-13);
+}
+
+.completion-item[data-terminal="14"] {
+    border-left-color: var(--terminal-14);
+}
+
+.completion-item[data-terminal="15"] {
+    border-left-color: var(--terminal-15);
+}
+
+.completion-item[data-terminal="16"] {
+    border-left-color: var(--terminal-16);
+}
+
+.completion-item[data-terminal="17"] {
+    border-left-color: var(--terminal-17);
+}
+
+.completion-item[data-terminal="18"] {
+    border-left-color: var(--terminal-18);
+}
+
+.completion-item[data-terminal="19"] {
+    border-left-color: var(--terminal-19);
+}
+
+.completion-item[data-terminal="20"] {
+    border-left-color: var(--terminal-20);
+}
+
+.completion-item[data-terminal="21"] {
+    border-left-color: var(--terminal-21);
+}
+
+.completion-item[data-terminal="22"] {
+    border-left-color: var(--terminal-22);
+}
+
+.completion-item[data-terminal="23"] {
+    border-left-color: var(--terminal-23);
+}
+
+.completion-item[data-terminal="24"] {
+    border-left-color: var(--terminal-24);
+}
+
+/* Completion item status-specific styles */
+.completion-item.completed {
+    opacity: 0.8;
+}
+
+.completion-item.failed {
+    opacity: 0.9;
+}
+
 /* Hotkey Dropdown */
 .hotkey-dropdown {
     position: fixed;
@@ -4105,292 +4495,6 @@ button#voice-btn.voice-button.processing:hover,
 .terminal-selector-item.highlighted {
     background-color: var(--accent-primary);
     color: var(--text-primary);
-}
-
-/* Manual generation controls */
-.manual-generation-section {
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border-primary);
-}
-
-.manual-generation-controls {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    margin-bottom: 8px;
-    padding: 0 8px 0 8px;
-    background-color: transparent;
-    border-radius: 0;
-    border: none;
-    flex-wrap: nowrap;
-    overflow: visible;
-}
-
-.manual-dropdowns-group {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-    flex: 1 1 auto;
-}
-
-.manual-generation-selector {
-    position: relative;
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.manual-terminal-selector-btn {
-    width: auto;
-    min-width: 80px;
-    max-width: calc(100vw - 400px); /* Allow more space for terminal selector */
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 8px;
-    height: 30px;
-    background-color: var(--bg-tertiary);
-    border: 1px solid var(--border-primary);
-    border-radius: 16px;
-    color: var(--text-primary);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-    flex: 1 1 auto;
-}
-
-.manual-terminal-selector-btn:hover {
-    border-color: var(--border-secondary);
-    background-color: var(--bg-quaternary);
-}
-
-.manual-terminal-selector-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-}
-
-.manual-terminal-selector-text {
-    flex: 1;
-    text-align: left;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.manual-terminal-selector-btn i {
-    width: 18px;
-    height: 18px;
-    color: var(--text-tertiary);
-}
-
-.manual-terminal-selector-dropdown {
-    position: absolute;
-    bottom: 100%;
-    left: 0;
-    margin-bottom: 4px;
-    background-color: var(--bg-tertiary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 8px;
-    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.2);
-    z-index: 1000;
-    overflow: hidden;
-    min-width: 120px;
-    max-width: calc(100vw - 300px); /* Allow more space for terminal dropdown */
-    width: auto;
-}
-
-.manual-terminal-selector-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 30px 6px 10px;
-    cursor: pointer;
-    transition: background-color 0.2s;
-    position: relative;
-    font-size: 12px;
-    white-space: nowrap;
-    overflow: hidden;
-    max-width: calc(100vw - 300px); /* Allow more space for terminal dropdown */
-}
-
-.manual-terminal-selector-item span:not(.manual-terminal-selector-dot) {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1;
-    min-width: 0;
-}
-
-.manual-terminal-selector-item:hover {
-    background-color: var(--bg-quaternary);
-}
-
-.manual-terminal-selector-item.selected::after {
-    content: '';
-    position: absolute;
-    right: 10px;
-    width: 14px;
-    height: 14px;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23007acc' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'%3E%3C/polyline%3E%3C/svg%3E");
-    background-size: contain;
-    background-repeat: no-repeat;
-}
-
-.manual-generation-mode {
-    position: relative;
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.manual-mode-selector-btn {
-    width: auto;
-    min-width: 60px;
-    max-width: 100px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 8px;
-    height: 28px;
-    background-color: var(--bg-tertiary);
-    border: 1px solid var(--border-primary);
-    border-radius: 16px;
-    color: var(--text-primary);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-    flex: 1 1 auto;
-}
-
-.manual-mode-selector-btn:hover {
-    border-color: var(--border-secondary);
-    background-color: var(--bg-quaternary);
-}
-
-.manual-mode-selector-text {
-    flex: 1;
-    text-align: left;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.manual-mode-selector-btn i {
-    width: 18px;
-    height: 18px;
-    color: var(--text-tertiary);
-}
-
-.manual-mode-selector-dropdown {
-    position: absolute;
-    bottom: 100%;
-    left: 0;
-    margin-bottom: 4px;
-    background-color: var(--bg-tertiary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 8px;
-    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.2);
-    z-index: 1000;
-    overflow: hidden;
-    min-width: 120px;
-    width: auto;
-}
-
-.manual-mode-option {
-    padding: 6px 30px 6px 10px;
-    cursor: pointer;
-    transition: background-color 0.2s;
-    position: relative;
-    font-size: 12px;
-    white-space: nowrap;
-}
-
-.manual-mode-option:hover {
-    background-color: var(--bg-quaternary);
-}
-
-.manual-mode-option.selected::after {
-    content: '';
-    position: absolute;
-    right: 10px;
-    width: 14px;
-    height: 14px;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23007acc' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'%3E%3C/polyline%3E%3C/svg%3E");
-    background-size: contain;
-    background-repeat: no-repeat;
-}
-
-.manual-generate-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    padding: 0 8px;
-    height: 28px;
-    background-color: var(--accent-primary);
-    border: 1px solid var(--accent-primary);
-    border-radius: 16px;
-    color: white;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-    flex-shrink: 0;
-    min-width: 44px;
-}
-
-.manual-generate-btn:hover {
-    background-color: var(--accent-secondary);
-    border-color: var(--accent-secondary);
-}
-
-.manual-generate-btn.loading {
-    pointer-events: none;
-    opacity: 0.8;
-    cursor: not-allowed;
-}
-
-.manual-generate-btn.loading i {
-    animation: spin 1s linear infinite;
-}
-
-.manual-generate-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
-@keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-}
-
-.custom-prompt-section {
-    margin-top: 8px;
-}
-
-.custom-prompt-input {
-    width: 100%;
-    padding: 8px;
-    background-color: var(--bg-secondary);
-    border: 1px solid var(--border-primary);
-    border-radius: 6px;
-    color: var(--text-primary);
-    font-size: 12px;
-    font-family: inherit;
-    resize: vertical;
-    min-height: 60px;
-}
-
-.custom-prompt-input:focus {
-    outline: none;
-    border-color: var(--accent-primary);
-}
-
-.custom-prompt-input::placeholder {
-    color: var(--text-tertiary);
 }
 
 /* Hotkey hint tooltip */
