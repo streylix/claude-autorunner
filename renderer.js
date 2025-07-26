@@ -2292,12 +2292,12 @@ class TerminalGUI {
                 // Paste image files directly into terminal
                 if (imageFiles.length > 0) {
                     for (const imageFile of imageFiles) {
-                        const imagePath = await this.saveImageForTerminal(imageFile, terminalId);
-                        if (imagePath) {
-                            // Type the image path directly into the terminal
-                            ipcRenderer.send('terminal-input', { terminalId: terminalId, data: imagePath });
-                            this.logAction(`Pasted image path into Terminal ${terminalId}: ${imagePath}`, 'info');
-                        }
+                        // Use the original file path like chat system does
+                        const originalPath = imageFile.path || imageFile.name;
+                        const formattedPath = `'${originalPath}'`;
+                        // Type the original image path directly into the terminal
+                        ipcRenderer.send('terminal-input', { terminalId: terminalId, data: formattedPath });
+                        this.logAction(`Pasted image path into Terminal ${terminalId}: ${formattedPath}`, 'info');
                     }
                 }
                 
@@ -9453,28 +9453,23 @@ class TerminalGUI {
             dropdown.appendChild(item);
         });
         // Add Plan Mode option styled like terminals
-        const messagePlanState = message ? message.wrapWithPlan : undefined;
+        const messagePlanState = message ? message.wrapWithPlan : false;
         const planModeItem = document.createElement('div');
         planModeItem.className = 'terminal-selector-item plan-mode';
         
-        // Handle the three states: undefined (auto), true (on), false (off)
+        // Simple on/off toggle - show checkmark if plan mode is enabled for this message
         if (messagePlanState === true) {
             planModeItem.classList.add('selected');
-        } else if (messagePlanState === undefined) {
-            // Auto mode - show if global plan mode is enabled
-            if (this.planModeEnabled) {
-                planModeItem.classList.add('selected');
-            }
-            planModeItem.classList.add('auto-mode');
         }
-        // messagePlanState === false means explicitly disabled, so no selected class
         planModeItem.innerHTML = `
             <span class="plan-mode-icon">
                 <i data-lucide="clipboard"></i>
             </span>
             <span>Plan mode</span>
         `;
-        planModeItem.addEventListener('click', () => {
+        planModeItem.addEventListener('click', (e) => {
+            console.log('Plan mode item clicked, messageId:', messageId);
+            e.stopPropagation();
             this.toggleMessagePlanMode(messageId);
             // Small delay to ensure state is saved before removing dropdown
             setTimeout(() => {
@@ -9532,19 +9527,25 @@ class TerminalGUI {
         }
     }
     toggleMessagePlanMode(messageId) {
+        console.log('toggleMessagePlanMode called with messageId:', messageId);
         const message = this.messageQueue.find(m => m.id === messageId);
-        if (!message) return;
-        // Cycle through: undefined (auto) -> true (on) -> false (off) -> undefined (auto)
-        if (message.wrapWithPlan === undefined) {
-            message.wrapWithPlan = true;
-            this.logAction('Message plan mode enabled', 'info');
-        } else if (message.wrapWithPlan === true) {
+        console.log('Found message:', message);
+        if (!message) {
+            console.error('Message not found for id:', messageId);
+            return;
+        }
+        
+        // Simple toggle: if enabled, disable it; if disabled or undefined, enable it
+        const previousState = message.wrapWithPlan;
+        if (message.wrapWithPlan === true) {
             message.wrapWithPlan = false;
             this.logAction('Message plan mode disabled', 'info');
         } else {
-            message.wrapWithPlan = undefined;
-            this.logAction('Message plan mode set to auto (follow global setting)', 'info');
+            message.wrapWithPlan = true;
+            this.logAction('Message plan mode enabled', 'info');
         }
+        console.log('Plan mode changed from', previousState, 'to', message.wrapWithPlan);
+        
         // Save the updated message queue and update the UI
         this.saveMessageQueue();
         this.updateMessageList();
