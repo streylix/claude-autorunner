@@ -9454,12 +9454,20 @@ class TerminalGUI {
         });
         // Add Plan Mode option styled like terminals
         const messagePlanState = message ? message.wrapWithPlan : undefined;
-        const currentPlanState = messagePlanState !== undefined ? messagePlanState : this.planModeEnabled;
         const planModeItem = document.createElement('div');
         planModeItem.className = 'terminal-selector-item plan-mode';
-        if (currentPlanState) {
+        
+        // Handle the three states: undefined (auto), true (on), false (off)
+        if (messagePlanState === true) {
             planModeItem.classList.add('selected');
+        } else if (messagePlanState === undefined) {
+            // Auto mode - show if global plan mode is enabled
+            if (this.planModeEnabled) {
+                planModeItem.classList.add('selected');
+            }
+            planModeItem.classList.add('auto-mode');
         }
+        // messagePlanState === false means explicitly disabled, so no selected class
         planModeItem.innerHTML = `
             <span class="plan-mode-icon">
                 <i data-lucide="clipboard"></i>
