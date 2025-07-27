@@ -331,3 +331,8 @@ memory/
 
 # Plan mode configuration
 plan-mode-config.js
+
+# Additional development files
+*.gif
+completion-*.js
+injectortest.*
