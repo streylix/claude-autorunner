@@ -4,11 +4,14 @@ const { FitAddon } = require('@xterm/addon-fit');
 const { SearchAddon } = require('@xterm/addon-search');
 const { WebLinksAddon } = require('@xterm/addon-web-links');
 const InjectionManager = require('./src/messaging/injection-manager');
+const getAllTextIn = require('./getAllTextIn');
 // Import new modular components
 const PlatformUtils = require('./src/utils/platform-utils');
 const DomUtils = require('./src/utils/dom-utils');
 const ValidationUtils = require('./src/utils/validation');
 const IPCHandler = require('./src/core/ipc-handler');
+const ModalManager = require('./src/ui/modal-manager');
+const PricingManager = require('./src/managers/pricingManager');
 class TerminalGUI {
     constructor() {
         // Initialize loading manager first
@@ -18,6 +21,16 @@ class TerminalGUI {
         this.platformUtils = new PlatformUtils();
         this.validationUtils = new ValidationUtils();
         this.ipcHandler = new IPCHandler();
+        
+        // Initialize modal manager
+        console.log('About to initialize ModalManager...');
+        try {
+            this.modalManager = new ModalManager(this);
+            console.log('ModalManager initialized successfully:', this.modalManager);
+        } catch (error) {
+            console.error('ModalManager initialization failed:', error);
+        }
+        
         // Platform detection for keyboard shortcuts (keep for backward compatibility)
         this.isMac = this.platformUtils.isMac;
         this.keySymbols = this.platformUtils.keySymbols;
@@ -33,6 +46,9 @@ class TerminalGUI {
         ];
         this.pendingTerminalData = new Map(); // Queue data for terminals not yet initialized
         this.terminalSessionMap = new Map(); // Map of terminal ID to backend session UUID
+        this.previousCompletionStrings = new Map(); // Track previous completion strings per terminal
+        this.completionStabilityTimers = new Map(); // Track completion stability timers per terminal
+        this.previousTerminalStatuses = new Map(); // Track previous terminal statuses for completion detection
         // Application session ID for statistics
         this.sessionId = this.validationUtils.generateSessionId('app');
         // Legacy single terminal references (will be updated to use active terminal)
@@ -96,14 +112,15 @@ class TerminalGUI {
             // Add directory persistence
             currentDirectory: null,
             recentDirectories: [],
-            // Add sound effects preferences
-            completionSoundEnabled: false,
-            completionSoundFile: 'beep.wav',
+            // Add sound effects preferences - MICROWAVE MODE ENABLED BY DEFAULT
+            completionSoundEnabled: true,
+            microwaveModeEnabled: true, // Microwave mode: default ON
+            completionSoundFile: 'click.wav', // Default completion sound: click
+            injectionSoundFile: 'click.wav',  // Default injection sound: click
+            promptedSoundFile: 'none',        // Default prompted sound: none
             // Add sidebar width persistence
             leftSidebarWidth: 300,
             rightSidebarWidth: 400,
-            injectionSoundFile: 'click.wav',
-            promptedSoundFile: 'gmod.wav',
             promptedSoundKeywordsOnly: false,
             // Add message history
             messageHistory: [],
@@ -130,6 +147,13 @@ class TerminalGUI {
         this.timerSeconds = 0;
         this.timerInterval = null;
         this.timerExpired = false;
+        
+        // MICROWAVE MODE: 5-minute repeat notification system
+        this.microwaveRepeatTimer = null;
+        this.microwaveRepeatCount = 0;
+        this.microwaveMaxRepeats = 5; // Beep for 5 minutes (every minute)
+        this.terminalFocused = false;
+        this.lastUserActivity = Date.now();
         this.injectionInProgress = false;
         this.injectionPaused = false;
         this.injectionPausedByTimer = false; // Track if injection was paused by timer
@@ -170,6 +194,9 @@ class TerminalGUI {
         this.todoGenerationCooldown = 3 * 60 * 1000; // 3 minutes in milliseconds
         // Terminal idle tracking for completion sound
         this.terminalIdleTimer = null;
+        
+        // MICROWAVE MODE: Initialize microwave mode system
+        this.microwaveMode = null; // Will be initialized after DOM is ready
         this.terminalIdleStartTime = null;
         // Message history tracking
         this.messageHistory = [];
@@ -178,6 +205,10 @@ class TerminalGUI {
         this.backgroundServiceActive = false;
         // Initialize injection manager
         this.injectionManager = new InjectionManager(this);
+        
+        // Initialize pricing manager (will get API client during initialization)
+        this.pricingManager = new PricingManager(null, (message, level) => this.logAction(message, level));
+        
         // Add global console error protection to prevent EIO crashes
         this.setupConsoleErrorProtection();
         // Initialize the application asynchronously
@@ -295,6 +326,10 @@ class TerminalGUI {
             this.updateStatusDisplay();
             this.setTerminalStatusDisplay(''); // Initialize with default status
             this.updateTimerUI(); // Initialize timer UI after loading preferences
+            
+            // MICROWAVE MODE: Initialize microwave mode system
+            this.initializeMicrowaveModeInline();
+            
             // If timer was expired on startup, trigger injection manager
             if (this.timerExpired) {
                 this.injectionManager.onTimerExpired();
@@ -308,6 +343,10 @@ class TerminalGUI {
             this.updateTrayBadge();
             // Initialize todo system
             await this.initializeTodoSystem();
+            
+            // Initialize pricing manager
+            await this.initializePricingSystem();
+            
             // Clean up any orphaned terminal selector items from previous sessions
             this.cleanupOrphanedTerminalSelectorItems();
             
@@ -430,7 +469,7 @@ class TerminalGUI {
         this.updateTerminalButtonVisibility();
         // Initialize terminal dropdown
         this.updateTerminalDropdowns();
-        this.updateManualTerminalDropdown();
+        // updateManualTerminalDropdown removed
         // Handle window resize for all terminals
         window.addEventListener('resize', () => {
             this.resizeAllTerminals();
@@ -438,7 +477,7 @@ class TerminalGUI {
             this.updateTerminalSelectorText();
             // Update dropdown widths when window is resized
             this.updateTerminalDropdowns();
-            this.updateManualTerminalDropdown();
+            // updateManualTerminalDropdown removed
         });
         
         // Add resize observer for sidebar to handle sidebar resizing
@@ -452,7 +491,7 @@ class TerminalGUI {
                     // Update terminal selector and dropdown widths when sidebar is resized
                     this.updateTerminalSelectorText();
                     this.updateTerminalDropdowns();
-                    this.updateManualTerminalDropdown();
+                    // updateManualTerminalDropdown removed
                 }, 50); // 50ms throttle
             });
             resizeObserver.observe(sidebar);
@@ -568,13 +607,17 @@ class TerminalGUI {
         ipcRenderer.send('terminal-start', { terminalId: id, directory: termData.directory || this.currentDirectory });
         // Update dropdowns
         this.updateTerminalDropdowns();
-        this.updateManualTerminalDropdown();
+        // updateManualTerminalDropdown removed
         // Re-initialize Lucide icons for new elements
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
         }
         // Update button visibility
         this.updateTerminalButtonVisibility();
+        // Setup drag-drop support for restored terminal
+        setTimeout(() => {
+            this.setupTerminalDragDrop(id);
+        }, 200);
         // Resize all terminals to fit new layout
         setTimeout(() => {
             this.resizeAllTerminals();
@@ -722,6 +765,9 @@ class TerminalGUI {
         
         // Setup terminal event handlers
         this.setupTerminalEventHandlers(id, terminal, terminalData);
+        
+        // Setup drag-drop support for this terminal
+        this.setupTerminalDragDrop(id);
         
         // Setup terminal process
         this.setupTerminalProcess(id, terminal, terminalData);
@@ -953,6 +999,7 @@ class TerminalGUI {
                 terminalData.lastOutput = data.content;
                 // Run detection functions for ALL terminals, not just active one
                 this.detectAutoContinuePrompt(data.content, terminalId);
+                this.extractAndTrackCompletionText(data.content, terminalId);
                 await this.detectUsageLimit(data.content, terminalId);
                 this.detectCwdChange(data.content, terminalId);
                 // Event-driven status update triggered by terminal output
@@ -1064,6 +1111,14 @@ class TerminalGUI {
         
         // Voice transcription button
         this.safeAddEventListener('voice-btn', 'click', () => {
+            // Provide immediate visual feedback on click
+            const voiceBtn = document.getElementById('voice-btn');
+            if (voiceBtn && !voiceBtn.classList.contains('processing')) {
+                voiceBtn.style.transform = 'scale(0.95)';
+                setTimeout(() => {
+                    voiceBtn.style.transform = '';
+                }, 100);
+            }
             this.toggleVoiceRecording();
         });
         // Handle Enter key in message input
@@ -1327,6 +1382,10 @@ class TerminalGUI {
                 // Close any open modals/dropdowns
                 e.preventDefault();
                 this.closeAllModals();
+            } else if (e.altKey && e.key === 'Backspace') {
+                // Option+Delete word boundary detection for text inputs
+                e.preventDefault();
+                this.handleWordBoundaryDelete(e.target);
             }
         });
         // Add auto-resize functionality to message input
@@ -1449,26 +1508,19 @@ class TerminalGUI {
             }
         });
         // Terminal selector dropdown
-        // Single click shows dropdown, double click navigates to current terminal
-        let clickTimeout = null;
+        // Single click shows dropdown immediately (no delay)
         document.getElementById('terminal-selector-btn').addEventListener('click', (e) => {
             e.stopPropagation();
-            
-            if (clickTimeout) {
-                // This is a double click
-                clearTimeout(clickTimeout);
-                clickTimeout = null;
-                // Navigate to current terminal (horizontal scroll)
-                this.scrollToActiveTerminal();
-                this.logAction('Double-clicked terminal selector - navigating to current terminal', 'info');
-            } else {
-                // This is a single click - wait to see if there's a second click
-                clickTimeout = setTimeout(() => {
-                    // Single click confirmed - show dropdown
-                    this.toggleTerminalSelectorDropdown();
-                    clickTimeout = null;
-                }, 300); // 300ms delay to detect double click
-            }
+            // Show dropdown immediately for instant response
+            this.toggleTerminalSelectorDropdown();
+        });
+        
+        // Double click navigates to current terminal (separate event)
+        document.getElementById('terminal-selector-btn').addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            // Navigate to current terminal (horizontal scroll)
+            this.scrollToActiveTerminal();
+            this.logAction('Double-clicked terminal selector - navigating to current terminal', 'info');
         });
         document.getElementById('inject-now-btn').addEventListener('click', (e) => {
             console.log('=== INJECT BUTTON CLICKED ===');
@@ -1586,10 +1638,16 @@ class TerminalGUI {
             }
         });
         // Message history modal listeners
-        document.getElementById('message-history-btn').addEventListener('click', () => {
+        document.getElementById('message-history-btn').addEventListener('click', (e) => {
+            console.log('[DEBUG] History button clicked');
+            e.preventDefault();
+            e.stopPropagation();
             this.openMessageHistoryModal();
         });
-        document.getElementById('message-history-close').addEventListener('click', () => {
+        document.getElementById('message-history-close').addEventListener('click', (e) => {
+            console.log('[DEBUG] Close button clicked');
+            e.preventDefault();
+            e.stopPropagation();
             this.closeMessageHistoryModal();
         });
         document.getElementById('message-history-modal').addEventListener('click', (e) => {
@@ -1658,6 +1716,18 @@ class TerminalGUI {
             this.saveAllPreferences();
             this.logAction(`Prompted sound keywords-only ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
         });
+        
+        // MICROWAVE MODE: Add event listener for microwave mode toggle
+        this.safeAddEventListener('microwave-mode-enabled', 'change', (e) => {
+            this.preferences.microwaveModeEnabled = e.target.checked;
+            this.saveAllPreferences();
+            this.logAction(`Microwave mode ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+            
+            // Stop any active microwave beeping if disabled
+            if (!e.target.checked && this.microwaveMode) {
+                this.microwaveMode.stopMicrowaveBeeping('user_disabled');
+            }
+        });
         // Background service settings listeners
         document.getElementById('keep-screen-awake').addEventListener('change', (e) => {
             this.preferences.keepScreenAwake = e.target.checked;
@@ -1712,6 +1782,13 @@ class TerminalGUI {
         dropZone.addEventListener('dragenter', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            
+            // Don't show global overlay if over a terminal
+            const terminalWrapper = e.target.closest('.terminal-wrapper');
+            if (terminalWrapper) {
+                return;
+            }
+            
             dragCounter++;
             if (dragCounter === 1) {
                 this.highlight(dropOverlay);
@@ -1720,6 +1797,13 @@ class TerminalGUI {
         dropZone.addEventListener('dragleave', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            
+            // Don't handle if over terminal
+            const terminalWrapper = e.target.closest('.terminal-wrapper');
+            if (terminalWrapper) {
+                return;
+            }
+            
             dragCounter--;
             if (dragCounter === 0) {
                 this.unhighlight(dropOverlay);
@@ -1729,14 +1813,29 @@ class TerminalGUI {
         dropZone.addEventListener('dragover', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            
+            // Don't handle if over terminal
+            const terminalWrapper = e.target.closest('.terminal-wrapper');
+            if (terminalWrapper) {
+                return;
+            }
+            
             e.dataTransfer.dropEffect = 'copy';
         }, false);
-        // Handle dropped files
+        // Handle dropped files - check if over terminal first
         dropZone.addEventListener('drop', (e) => {
             e.preventDefault();
             e.stopPropagation();
             dragCounter = 0;
             this.unhighlight(dropOverlay);
+            
+            // Check if we're dropping over a terminal - if so, let terminal handle it
+            const terminalWrapper = e.target.closest('.terminal-wrapper');
+            if (terminalWrapper) {
+                // Don't handle here, let terminal's drop handler take it
+                return;
+            }
+            
             this.handleFileDrop(e);
         }, false);
         // Handle manual file selection through hidden input
@@ -2024,6 +2123,272 @@ class TerminalGUI {
             previewContainer.style.display = 'none';
         }
     }
+    
+    handleWordBoundaryDelete(element) {
+        // Handle Option+Delete word boundary deletion for text inputs and textareas
+        if (!element || (element.tagName !== 'INPUT' && element.tagName !== 'TEXTAREA')) {
+            return;
+        }
+
+        const value = element.value;
+        const cursorPos = element.selectionStart;
+        
+        if (cursorPos === 0) {
+            return; // Nothing to delete
+        }
+
+        // Find word boundary - delete from cursor position backwards to start of word
+        let deleteStart = cursorPos;
+        
+        // Skip any whitespace characters backwards
+        while (deleteStart > 0 && /\s/.test(value[deleteStart - 1])) {
+            deleteStart--;
+        }
+        
+        // If we're now at a word character, delete backwards to word boundary
+        if (deleteStart > 0 && /\w/.test(value[deleteStart - 1])) {
+            while (deleteStart > 0 && /\w/.test(value[deleteStart - 1])) {
+                deleteStart--;
+            }
+        } else if (deleteStart > 0) {
+            // If we're at a non-word character, delete backwards until we hit a word or whitespace
+            const charType = /\w/.test(value[deleteStart - 1]) ? 'word' : 'symbol';
+            while (deleteStart > 0) {
+                const prevChar = value[deleteStart - 1];
+                if (charType === 'symbol' && (/\w/.test(prevChar) || /\s/.test(prevChar))) {
+                    break;
+                }
+                if (charType === 'word' && !/\w/.test(prevChar)) {
+                    break;
+                }
+                deleteStart--;
+            }
+        }
+        
+        // Perform the deletion
+        const newValue = value.substring(0, deleteStart) + value.substring(cursorPos);
+        element.value = newValue;
+        element.selectionStart = element.selectionEnd = deleteStart;
+        
+        // Trigger input event for any listeners
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        
+        this.logAction(`Word boundary delete: removed "${value.substring(deleteStart, cursorPos)}"`, 'info');
+    }
+    
+    async saveImageForTerminal(imageFile, terminalId) {
+        // Save image file and return path for terminal pasting
+        try {
+            const timestamp = Date.now();
+            const fileName = `terminal_${terminalId}_${timestamp}_${imageFile.name}`;
+            
+            // Convert to base64 for the save-screenshot handler
+            const reader = new FileReader();
+            const base64Data = await new Promise((resolve, reject) => {
+                reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(imageFile);
+            });
+            
+            // Use existing save mechanism
+            const result = await ipcRenderer.invoke('save-screenshot', base64Data);
+            
+            if (result && result.success && result.relativePath) {
+                return result.relativePath;
+            }
+            return null;
+        } catch (error) {
+            console.error('Error saving image for terminal:', error);
+            this.logAction(`Error saving image for Terminal ${terminalId}: ${error.message}`, 'error');
+            return null;
+        }
+    }
+    
+    setupTerminalDragDrop(terminalId) {
+        // Add drag-drop support to individual terminal containers
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData || !terminalData.element) {
+            return;
+        }
+
+        const terminalContainer = terminalData.element;
+        const terminalWrapper = terminalContainer.closest('.terminal-wrapper');
+        if (!terminalWrapper) {
+            return;
+        }
+
+        // Create or update drop overlay for this specific terminal
+        let dropOverlay = terminalWrapper.querySelector('.terminal-drop-overlay');
+        if (!dropOverlay) {
+            dropOverlay = document.createElement('div');
+            dropOverlay.className = 'terminal-drop-overlay';
+            dropOverlay.style.cssText = `
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: rgba(0, 122, 204, 0.1);
+                border: 2px dashed var(--accent-primary);
+                border-radius: 8px;
+                display: none;
+                z-index: 1000;
+                pointer-events: none;
+                align-items: center;
+                justify-content: center;
+                font-size: 18px;
+                color: var(--accent-primary);
+                font-weight: 600;
+            `;
+            dropOverlay.innerHTML = `
+                <div style="text-align: center;">
+                    <i data-lucide="upload" style="width: 48px; height: 48px; margin-bottom: 12px;"></i><br>
+                    Drop images for Terminal ${terminalId}
+                </div>
+            `;
+            terminalWrapper.appendChild(dropOverlay);
+            
+            // Initialize Lucide icons for the new overlay
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons({
+                    nameAttr: 'data-lucide'
+                });
+            }
+        }
+
+        let dragCounter = 0;
+
+        // Terminal-specific drag event handlers
+        const handleDragEnter = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter++;
+            if (dragCounter === 1) {
+                dropOverlay.style.display = 'flex';
+                terminalWrapper.classList.add('terminal-drag-active');
+            }
+        };
+
+        const handleDragLeave = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter--;
+            if (dragCounter === 0) {
+                dropOverlay.style.display = 'none';
+                terminalWrapper.classList.remove('terminal-drag-active');
+            }
+        };
+
+        const handleDragOver = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = 'copy';
+        };
+
+        const handleDrop = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter = 0;
+            dropOverlay.style.display = 'none';
+            terminalWrapper.classList.remove('terminal-drag-active');
+
+            // Process dropped files for this specific terminal
+            const files = Array.from(e.dataTransfer.files);
+            if (files.length > 0) {
+                // Handle image files directly in terminal
+                const imageFiles = files.filter(file => file.type.startsWith('image/'));
+                const otherFiles = files.filter(file => !file.type.startsWith('image/'));
+                
+                // Paste image files directly into terminal
+                if (imageFiles.length > 0) {
+                    for (const imageFile of imageFiles) {
+                        // Use the original file path like chat system does
+                        const originalPath = imageFile.path || imageFile.name;
+                        const formattedPath = `'${originalPath}'`;
+                        // Type the original image path directly into the terminal
+                        ipcRenderer.send('terminal-input', { terminalId: terminalId, data: formattedPath });
+                        this.logAction(`Pasted image path into Terminal ${terminalId}: ${formattedPath}`, 'info');
+                    }
+                }
+                
+                // Handle non-image files through normal process
+                if (otherFiles.length > 0) {
+                    // Clear existing previews first
+                    this.clearImagePreviews();
+                    
+                    // Process files and set target terminal
+                    const processedFiles = await this.processFiles(otherFiles);
+                    if (processedFiles && processedFiles.length > 0) {
+                        // Set the target terminal for these files
+                        this.setTerminalForNextMessage(terminalId);
+                        this.logAction(`Added ${processedFiles.length} file(s) to Terminal ${terminalId}`, 'info');
+                    }
+                }
+            }
+        };
+
+        // Remove existing listeners to prevent duplicates
+        terminalWrapper.removeEventListener('dragenter', handleDragEnter);
+        terminalWrapper.removeEventListener('dragleave', handleDragLeave);
+        terminalWrapper.removeEventListener('dragover', handleDragOver);
+        terminalWrapper.removeEventListener('drop', handleDrop);
+
+        // Add new listeners
+        terminalWrapper.addEventListener('dragenter', handleDragEnter);
+        terminalWrapper.addEventListener('dragleave', handleDragLeave);
+        terminalWrapper.addEventListener('dragover', handleDragOver);
+        terminalWrapper.addEventListener('drop', handleDrop);
+
+        this.logAction(`Drag-drop support enabled for Terminal ${terminalId}`, 'info');
+    }
+    
+    setTerminalForNextMessage(terminalId) {
+        // Switch to the specified terminal and update UI to show it's selected
+        this.switchToTerminal(terminalId);
+        this.updateTerminalSelectorText();
+        this.logAction(`Terminal ${terminalId} selected for next message`, 'info');
+    }
+    
+    queueContinueMessage() {
+        // Auto-queue a "continue" message to resume conversation flow when usage limit resets
+        const continueMessage = {
+            id: this.generateMessageId(),
+            content: 'continue',
+            terminalId: this.activeTerminalId,
+            timestamp: Date.now(),
+            wrapWithPlan: this.planModeEnabled,
+            isAutoContinue: true // Flag to identify this as auto-generated
+        };
+        
+        // Add to the front of the queue so it executes first when timer expires
+        this.messageQueue.unshift(continueMessage);
+        this.updateMessageList();
+        this.updateStatusDisplay();
+        
+        this.logAction('Auto-queued "continue" message to resume conversation flow when usage limit resets', 'info');
+    }
+    
+    clearTimerStorage() {
+        // Clear all timer-related storage to prevent unwanted persistence
+        this.preferences.timerHours = 0;
+        this.preferences.timerMinutes = 0;
+        this.preferences.timerSeconds = 0;
+        this.preferences.timerTargetDateTime = null;
+        this.preferences.usageLimitWaiting = false;
+        
+        // Clear timer state variables
+        this.timerHours = 0;
+        this.timerMinutes = 0;
+        this.timerSeconds = 0;
+        this.timerTargetDateTime = null;
+        this.usageLimitWaiting = false;
+        this.usageLimitTimerOriginalValues = null;
+        
+        // Save cleared preferences
+        this.saveAllPreferences();
+        
+        this.logAction('Timer storage cleared completely', 'info');
+    }
     generateMessageId() {
         return this.validationUtils.generateId();
     }
@@ -2109,6 +2474,15 @@ class TerminalGUI {
             this.updateMessageList();
             this.updateStatusDisplay();
             input.value = '';
+            
+            // Auto-disable plan mode after message is sent to prevent accidental plan mode messages
+            if (this.planModeEnabled) {
+                this.planModeEnabled = false;
+                this.updatePref('planModeEnabled', this.planModeEnabled);
+                this.updatePlanModeButtonState();
+                this.logAction('Plan mode automatically disabled after message sent', 'info');
+            }
+            
             // Clear image previews and attached files after adding to queue
             this.clearImagePreviews();
             this.attachedFiles = [];
@@ -2222,7 +2596,7 @@ class TerminalGUI {
             
             this.mediaRecorder.onstart = () => {
                 console.log('🎙️ Voice recording started');
-                this.updateVoiceButtonState('recording');
+                this.updateVoiceButtonState('recording').catch(console.error);
                 this.logAction('Voice recording started (LOCAL Whisper)', 'info');
             };
             
@@ -2274,7 +2648,7 @@ class TerminalGUI {
             });
             
             // Show processing state
-            this.updateVoiceButtonState('processing');
+            this.updateVoiceButtonState('processing').catch(console.error);
             this.logAction('Processing audio with Whisper...', 'info');
             
             // Send to backend for transcription
@@ -2326,7 +2700,7 @@ class TerminalGUI {
             console.log('🛑 Stopping voice recording...');
             this.mediaRecorder.stop();
             this.isRecording = false;
-            this.updateVoiceButtonState('processing');
+            this.updateVoiceButtonState('processing').catch(console.error);
         }
     }
     
@@ -2358,42 +2732,141 @@ class TerminalGUI {
         }
     }
     
-    updateVoiceButtonState(state) {
-        const voiceBtn = document.getElementById('voice-btn');
-        const icon = voiceBtn.querySelector('i');
+    async updateVoiceButtonState(state) {
+        console.log(`🎨 Voice button state transition requested: ${state}`);
         
-        if (!voiceBtn || !icon) return;
-        
-        // Remove all state classes
-        voiceBtn.classList.remove('recording', 'processing', 'enabled');
-        
-        console.log(`🎨 Voice button state: ${state}`);
-        
-        switch (state) {
-            case 'enabled':
-                voiceBtn.classList.add('enabled');
+        try {
+            // Wait for the voice button to be available in DOM
+            const voiceBtn = await this.waitForVoiceButton();
+            if (!voiceBtn) {
+                console.error('🚨 Voice button not found after waiting');
+                return;
+            }
+            
+            // DEBUG: Let's see exactly what we're working with
+            console.log(`🔍 DOM DEBUG - Button element:`, voiceBtn);
+            console.log(`🔍 DOM DEBUG - Button HTML:`, voiceBtn.outerHTML);
+            console.log(`🔍 DOM DEBUG - Button computed styles:`, window.getComputedStyle(voiceBtn));
+            console.log(`🔍 DOM DEBUG - Button current classes:`, voiceBtn.className);
+            console.log(`🔍 DOM DEBUG - Button current style:`, voiceBtn.style.cssText);
+            
+            // Try multiple selectors for the icon
+            let icon = voiceBtn.querySelector('i');
+            if (!icon) {
+                icon = voiceBtn.querySelector('[data-lucide]');
+            }
+            if (!icon) {
+                icon = voiceBtn.querySelector('svg');
+            }
+            if (!icon) {
+                console.warn('🚨 Voice button icon not found, but continuing anyway...');
+                console.log('🔍 Button inner HTML:', voiceBtn.innerHTML);
+                // Create the icon if it doesn't exist
+                icon = document.createElement('i');
                 icon.setAttribute('data-lucide', 'mic');
-                console.log('🔴 Added enabled class');
-                break;
-            case 'recording':
-                voiceBtn.classList.add('recording');
-                icon.setAttribute('data-lucide', 'mic');
-                console.log('🔴 Added recording class');
-                break;
-            case 'processing':
-                voiceBtn.classList.add('processing');
-                icon.setAttribute('data-lucide', 'loader');
-                console.log('🔵 Added processing class');
-                break;
-            default:
-                icon.setAttribute('data-lucide', 'mic');
-                console.log('⚫ Reset to idle state');
+                voiceBtn.appendChild(icon);
+                console.log('🔧 Created missing icon element');
+            }
+            
+            console.log(`🎨 FORCING voice button state: ${state}`);
+            
+            // NUCLEAR APPROACH - completely replace the element's appearance
+            this.removeVisualIndicator(); // Remove any existing indicator
+            
+            switch (state) {
+                case 'recording':
+                    // No floating indicator - just button styling
+                    
+                    // Also try to style the button
+                    voiceBtn.style.cssText = 'background: #ff0000 !important; color: white !important; border: 2px solid #ff0000 !important; box-shadow: 0 0 20px rgba(255, 0, 0, 0.8) !important;';
+                    voiceBtn.classList.add('recording');
+                    voiceBtn.setAttribute('data-voice-state', 'recording');
+                    if (icon) {
+                        icon.setAttribute('data-lucide', 'mic');
+                    }
+                    voiceBtn.title = 'Recording... (Click to stop)';
+                    console.log('🔴 RECORDING: Added floating indicator + button styling');
+                    break;
+                    
+                case 'processing':
+                    // No floating indicator - just button styling
+                    
+                    // Also try to style the button - spinning gradient processing
+                    voiceBtn.style.cssText = `
+                        background: conic-gradient(from 0deg, #999999 0deg, #cccccc 90deg, #ffffff 180deg, #cccccc 270deg, #999999 360deg) !important;
+                        color: #333333 !important; 
+                        border: 2px solid #888888 !important; 
+                        animation: processing-spin-circle 1.5s linear infinite !important;
+                        cursor: not-allowed !important;
+                        position: relative !important;
+                        z-index: 10 !important;
+                        box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.2) !important;
+                    `;
+                    voiceBtn.classList.add('processing');
+                    voiceBtn.setAttribute('data-voice-state', 'processing');
+                    if (icon) {
+                        icon.setAttribute('data-lucide', 'hourglass');
+                    }
+                    voiceBtn.title = 'Processing transcription...';
+                    console.log('🔵 PROCESSING: Added floating indicator + button styling');
+                    break;
+                    
+                default:
+                    // Reset everything
+                    voiceBtn.style.cssText = '';
+                    voiceBtn.classList.remove('recording', 'processing');
+                    voiceBtn.removeAttribute('data-voice-state');
+                    if (icon) {
+                        icon.setAttribute('data-lucide', 'mic');
+                    }
+                    voiceBtn.title = 'Voice transcription (Cmd+Shift+V)';
+                    console.log('⚫ IDLE: Reset button to default state');
+            }
+            
+            // Force immediate icon refresh
+            requestAnimationFrame(() => {
+                if (typeof lucide !== 'undefined') {
+                    lucide.createIcons();
+                }
+            });
+            
+            // Final debug output
+            console.log(`🎨 FINAL - Button HTML:`, voiceBtn.outerHTML);
+            console.log(`🎨 FINAL - Button style:`, voiceBtn.style.cssText);
+            
+        } catch (error) {
+            console.error('🚨 Error updating voice button state:', error);
         }
-        
-        lucide.createIcons();
-        
-        // Debug: Log current classes
-        console.log(`🎨 Current classes: ${voiceBtn.className}`);
+    }
+    
+    removeVisualIndicator() {
+        // Remove any existing visual indicators
+        const existing = document.querySelectorAll('#voice-recording-indicator, #voice-processing-indicator');
+        existing.forEach(el => el.remove());
+    }
+    
+    waitForVoiceButton(timeout = 3000) {
+        return new Promise((resolve) => {
+            const startTime = Date.now();
+            
+            const checkButton = () => {
+                const voiceBtn = document.getElementById('voice-btn');
+                if (voiceBtn) {
+                    resolve(voiceBtn);
+                    return;
+                }
+                
+                if (Date.now() - startTime >= timeout) {
+                    console.warn(`🚨 Voice button not found within ${timeout}ms`);
+                    resolve(null);
+                    return;
+                }
+                
+                setTimeout(checkButton, 50);
+            };
+            
+            checkButton();
+        });
     }
     
     resetVoiceButton() {
@@ -2401,7 +2874,7 @@ class TerminalGUI {
         this.voiceEnabled = false;
         this.speechResult = '';
         this.speechRecognition = null;
-        this.updateVoiceButtonState('idle');
+        this.updateVoiceButtonState('idle').catch(console.error);
     }
     
     handleMessageUpdate() {
@@ -2790,7 +3263,7 @@ class TerminalGUI {
     }
     updateMessageHistoryDisplay() {
         // Update the history modal if it's open
-        if (document.getElementById('message-history-modal').style.display === 'block') {
+        if (document.getElementById('message-history-modal').classList.contains('show')) {
             this.updateHistoryModal();
         }
     }
@@ -2943,6 +3416,8 @@ class TerminalGUI {
         }
         // Clear usage limit tracking when timer is stopped
         this.clearUsageLimitTracking();
+        // Clear timer storage completely to prevent persistence of stopped timer
+        this.clearTimerStorage();
         // Notify injection manager
         this.injectionManager.onTimerStopped();
         // Stop power save blocker when timer is stopped
@@ -3000,6 +3475,11 @@ class TerminalGUI {
             
             // Notify injection manager
             this.injectionManager.onTimerExpired();
+            
+            // MICROWAVE MODE: Start 5-minute repeat notification cycle
+            if (this.microwaveMode) {
+                this.microwaveMode.onTaskCompleted();
+            }
             // If we were waiting for usage limit reset (shouldn't happen with the new logic above)
             if (this.usageLimitWaiting) {
                 this.logAction(`Timer expiration: clearing usageLimitWaiting. Current state - injectionInProgress: ${this.injectionInProgress}, queueLength: ${this.messageQueue.length}`, 'info');
@@ -3376,18 +3856,51 @@ class TerminalGUI {
     setTimer(hours, minutes, seconds, silent = false) {
         // Disable auto-sync when user manually sets timer
         this.disableAutoSync(silent);
-        this.timerHours = Math.max(0, Math.min(23, hours));
-        this.timerMinutes = Math.max(0, Math.min(59, minutes));
-        this.timerSeconds = Math.max(0, Math.min(59, seconds));
+        
+        // Validate and constrain timer values to prevent excessive durations
+        const constrainedHours = Math.max(0, Math.min(23, hours));
+        const constrainedMinutes = Math.max(0, Math.min(59, minutes));
+        const constrainedSeconds = Math.max(0, Math.min(59, seconds));
+        
+        // Calculate total duration in seconds for validation
+        const totalSeconds = (constrainedHours * 3600) + (constrainedMinutes * 60) + constrainedSeconds;
+        const maxDurationSeconds = 24 * 3600; // 24 hours maximum
+        
+        // Prevent setting timers that exceed reasonable duration
+        if (totalSeconds > maxDurationSeconds) {
+            if (!silent) {
+                this.logAction(`Timer duration exceeds maximum (24h) - limited to 23:59:59`, 'warning');
+            }
+            this.timerHours = 23;
+            this.timerMinutes = 59;
+            this.timerSeconds = 59;
+        } else if (totalSeconds === 0) {
+            // Clear timer if duration is zero
+            this.timerHours = 0;
+            this.timerMinutes = 0;
+            this.timerSeconds = 0;
+        } else {
+            this.timerHours = constrainedHours;
+            this.timerMinutes = constrainedMinutes;
+            this.timerSeconds = constrainedSeconds;
+        }
         this.timerExpired = false;
         // Calculate target datetime when timer should expire
-        const totalSeconds = (this.timerHours * 3600) + (this.timerMinutes * 60) + this.timerSeconds;
-        const targetDateTime = new Date(Date.now() + (totalSeconds * 1000));
+        const finalTotalSeconds = (this.timerHours * 3600) + (this.timerMinutes * 60) + this.timerSeconds;
+        const targetDateTime = new Date(Date.now() + (finalTotalSeconds * 1000));
         // Save timer values and target datetime to preferences for persistence
         this.preferences.timerHours = this.timerHours;
         this.preferences.timerMinutes = this.timerMinutes;
         this.preferences.timerSeconds = this.timerSeconds;
         this.preferences.timerTargetDateTime = targetDateTime.toISOString();
+        
+        // Store original timer values for reset functionality (only if timer is being set to non-zero)
+        if (this.timerHours > 0 || this.timerMinutes > 0 || this.timerSeconds > 0) {
+            this.preferences.timerOriginalHours = this.timerHours;
+            this.preferences.timerOriginalMinutes = this.timerMinutes;
+            this.preferences.timerOriginalSeconds = this.timerSeconds;
+        }
+        
         this.saveAllPreferences();
         this.updateTimerUI();
         // Only log when not in silent mode
@@ -3594,7 +4107,7 @@ class TerminalGUI {
                                     const escapedContent = message.content.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ').replace(/\r/g, '');
                                     const wrappedMessage = this.planModeCommand.replace('{message}', escapedContent);
                                     this.typeMessage(wrappedMessage, callback);
-                                }, this.getRandomDelay(100, 500));
+                                }, this.getRandomDelay(1000, 2000));
                             });
                         });
                     }, this.getRandomDelay(100, 200));
@@ -3944,6 +4457,10 @@ class TerminalGUI {
             isPrompting: isPrompting,
             lastUpdate: Date.now()
         });
+        
+        // Check for completion status change after updating terminal status
+        this.checkTerminalCompletionStatus(terminalId);
+        
         // Update terminal status display
         this.updateTerminalStatusIndicator();
     }
@@ -4643,6 +5160,180 @@ class TerminalGUI {
             }
         }
     }
+    
+    // Extract and track completion text between ⏺ and ╭ characters
+    extractAndTrackCompletionText(data, terminalId = this.activeTerminalId) {
+        try {
+            // Use our getAllTextIn function to extract text between ⏺ and ╭
+            const completionText = getAllTextIn(data, '⏺', '╭');
+            
+            if (completionText) {
+                // Get the previous string for this terminal
+                const previousString = this.previousCompletionStrings.get(terminalId) || '';
+                
+                // Check if the string is different from the previous one
+                if (completionText !== previousString) {
+                    // Update the stored previous string
+                    this.previousCompletionStrings.set(terminalId, completionText);
+                    
+                    // Find and append to the active completion item for this terminal
+                    this.appendToActiveCompletionItem(terminalId, completionText);
+                    
+                    console.log(`[Terminal ${terminalId}] New completion text extracted:`, completionText);
+                }
+            }
+        } catch (error) {
+            console.error('Error extracting completion text:', error);
+        }
+    }
+    
+    // Find the active completion item for a terminal and append text
+    appendToActiveCompletionItem(terminalId, text) {
+        try {
+            // Find completion item for this terminal that is currently "in-progress"
+            const completionItems = document.querySelectorAll('.completion-item');
+            let activeCompletionItem = null;
+            
+            // Look for in-progress item with matching terminal
+            for (const item of completionItems) {
+                const itemTerminalId = item.dataset.terminal;
+                const isInProgress = item.classList.contains('in-progress');
+                
+                if (itemTerminalId == terminalId && isInProgress) {
+                    activeCompletionItem = item;
+                    break;
+                }
+            }
+            
+            // If no in-progress item found, look for the most recent item for this terminal
+            if (!activeCompletionItem) {
+                for (const item of completionItems) {
+                    const itemTerminalId = item.dataset.terminal;
+                    if (itemTerminalId == terminalId) {
+                        activeCompletionItem = item;
+                        break;
+                    }
+                }
+            }
+            
+            if (activeCompletionItem) {
+                // Find the completion prompt element where we'll append the text
+                const promptElement = activeCompletionItem.querySelector('.completion-prompt');
+                if (promptElement) {
+                    // Append the text with a separator if there's already content
+                    const currentText = promptElement.textContent;
+                    const separator = currentText ? '\n' : '';
+                    promptElement.textContent = currentText + separator + text;
+                    
+                    console.log(`[Terminal ${terminalId}] Appended to completion item:`, text);
+                } else {
+                    console.warn(`[Terminal ${terminalId}] No completion-prompt element found in completion item`);
+                }
+            } else {
+                console.warn(`[Terminal ${terminalId}] No active completion item found for terminal`);
+            }
+        } catch (error) {
+            console.error('Error appending to completion item:', error);
+        }
+    }
+    
+    // Check for terminal status change from 'running' to '...' and handle completion
+    checkTerminalCompletionStatus(terminalId) {
+        try {
+            const currentStatus = this.terminalStatuses.get(terminalId);
+            const previousStatus = this.previousTerminalStatuses.get(terminalId);
+            
+            if (currentStatus && previousStatus) {
+                const wasRunning = previousStatus.isRunning;
+                const isNowIdle = !currentStatus.isRunning && !currentStatus.isPrompting;
+                
+                // Detect transition from running to idle (...)
+                if (wasRunning && isNowIdle) {
+                    console.log(`[Terminal ${terminalId}] Status changed from running to idle - starting completion timer`);
+                    this.startCompletionStabilityTimer(terminalId);
+                }
+                // If terminal becomes running again, cancel the completion timer
+                else if (currentStatus.isRunning && this.completionStabilityTimers.has(terminalId)) {
+                    console.log(`[Terminal ${terminalId}] Status changed back to running - canceling completion timer`);
+                    this.cancelCompletionStabilityTimer(terminalId);
+                }
+            }
+            
+            // Update previous status for next comparison
+            if (currentStatus) {
+                this.previousTerminalStatuses.set(terminalId, {
+                    isRunning: currentStatus.isRunning,
+                    isPrompting: currentStatus.isPrompting
+                });
+            }
+        } catch (error) {
+            console.error('Error checking terminal completion status:', error);
+        }
+    }
+    
+    // Start 5-second stability timer for completion
+    startCompletionStabilityTimer(terminalId) {
+        // Cancel any existing timer for this terminal
+        this.cancelCompletionStabilityTimer(terminalId);
+        
+        const timer = setTimeout(() => {
+            console.log(`[Terminal ${terminalId}] Completion stability timer elapsed - completing completion item`);
+            this.completeCompletionItem(terminalId);
+            this.completionStabilityTimers.delete(terminalId);
+        }, 5000); // 5 seconds
+        
+        this.completionStabilityTimers.set(terminalId, timer);
+        console.log(`[Terminal ${terminalId}] Started 5-second completion stability timer`);
+    }
+    
+    // Cancel completion stability timer
+    cancelCompletionStabilityTimer(terminalId) {
+        const timer = this.completionStabilityTimers.get(terminalId);
+        if (timer) {
+            clearTimeout(timer);
+            this.completionStabilityTimers.delete(terminalId);
+            console.log(`[Terminal ${terminalId}] Canceled completion stability timer`);
+        }
+    }
+    
+    // Complete the active completion item for a terminal
+    completeCompletionItem(terminalId) {
+        try {
+            // Find the active completion item for this terminal
+            const completionItems = document.querySelectorAll('.completion-item');
+            let activeCompletionItem = null;
+            
+            // Look for in-progress item with matching terminal
+            for (const item of completionItems) {
+                const itemTerminalId = item.dataset.terminal;
+                const isInProgress = item.classList.contains('in-progress');
+                
+                if (itemTerminalId == terminalId && isInProgress) {
+                    activeCompletionItem = item;
+                    break;
+                }
+            }
+            
+            if (activeCompletionItem) {
+                // Use the completion timer manager to update state to completed
+                if (typeof completionTimerManager !== 'undefined' && completionTimerManager) {
+                    completionTimerManager.updateCompletionState(activeCompletionItem, 'completed');
+                } else {
+                    // Fallback if timer manager not available
+                    activeCompletionItem.classList.remove('in-progress');
+                    activeCompletionItem.classList.add('completed');
+                }
+                
+                console.log(`[Terminal ${terminalId}] Completion item marked as completed`);
+                this.logAction(`Terminal ${terminalId} completion item automatically completed after 5-second stability period`, 'success');
+            } else {
+                console.warn(`[Terminal ${terminalId}] No active completion item found to complete`);
+            }
+        } catch (error) {
+            console.error('Error completing completion item:', error);
+        }
+    }
+    
     performAutoContinue(promptType, terminalId = this.activeTerminalId) {
         if (!this.autoContinueActive || !this.autoContinueEnabled) return;
         this.autoContinueRetryCount++;
@@ -5003,6 +5694,18 @@ class TerminalGUI {
                 resetTime.setDate(resetTime.getDate() + 1);
             }
             const resetTimestamp = resetTime.getTime();
+            
+            // Calculate time until reset to check for 5-hour limit
+            const timeDiff = resetTimestamp - now.getTime();
+            const hoursUntilReset = Math.floor(timeDiff / (1000 * 60 * 60));
+            
+            // Don't show modal for usage limits over 5 hours (likely previous limit still active)
+            if (hoursUntilReset >= 5) {
+                this.logAction(`Usage limit reset is ${hoursUntilReset}h away - ignoring as it likely refers to previous usage limit that has been lifted`, 'info');
+                this.processedUsageLimitMessages.add(resetTimeString);
+                return;
+            }
+            
             // Only show modal if this is a genuinely new reset time (different from last shown)
             // Remove the flawed logic about "previous time has passed"
             const isNewMessage = lastShownResetTime !== resetTimeString;
@@ -5178,6 +5881,10 @@ class TerminalGUI {
                 }
                 this.pendingUsageLimitReset = null; // Clear pending info
             }
+            
+            // Auto-queue "continue" message to resume conversation flow when limit resets
+            this.queueContinueMessage();
+            
             // Auto-fill the Execute in form with calculated time until reset
             this.autoFillExecuteInForm();
         } else {
@@ -5275,6 +5982,26 @@ class TerminalGUI {
             this.setTerminalStatusDisplay(status, this.activeTerminalId);
         }
     }
+
+    getTerminalDisplayStatus(terminalId) {
+        // Get the current terminal display status for pricing manager integration
+        const statusElement = document.querySelector(`[data-terminal-status="${terminalId}"]`);
+        if (statusElement) {
+            const statusText = statusElement.textContent.trim();
+            // Map status display to standard format
+            if (statusText.includes('Running') || statusElement.className.includes('running')) {
+                return 'running';
+            } else if (statusText === '...' || statusText === '') {
+                return '...';  // Ready/idle state
+            } else if (statusText.includes('injecting')) {
+                return 'injecting';
+            } else {
+                return statusText;
+            }
+        }
+        return 'unknown';
+    }
+
     checkCompletionSoundTrigger(previousStatus, currentStatus, terminalId) {
         // Trigger completion sound when transitioning from 'running' to idle ('...')
         if (previousStatus === 'running' && (currentStatus === '...' || currentStatus === '')) {
@@ -5286,6 +6013,11 @@ class TerminalGUI {
                 const isStillIdle = terminalData && (terminalData.status === '...' || terminalData.status === '');
                 if (isStillIdle) {
                     this.playCompletionSound();
+                    
+                    // MICROWAVE MODE: Task completed, start beeping cycle
+                    if (this.microwaveMode) {
+                        this.microwaveMode.onTaskCompleted();
+                    }
                     this.logAction(`Terminal ${terminalId} completed - playing sound`, 'info');
                 } else {
                     this.logAction(`Terminal ${terminalId} completion sound cancelled - status changed`, 'info');
@@ -5297,6 +6029,11 @@ class TerminalGUI {
         // Only play injection sound when status changes TO 'injecting'
         if (previousStatus !== 'injecting' && currentStatus === 'injecting') {
             this.playInjectionSound();
+            
+            // MICROWAVE MODE: Stop beeping when new injection starts
+            if (this.microwaveMode) {
+                this.microwaveMode.onNewTaskStarted();
+            }
             this.logAction(`Terminal ${terminalId} injection started - playing injection sound`, 'info');
         }
         // Only play prompted sound when status changes TO 'prompted'
@@ -5522,6 +6259,11 @@ class TerminalGUI {
         if (this.lastStatusUpdateTime) {
             this.lastStatusUpdateTime.delete(terminalId);
         }
+        
+        // Clean up completion-related tracking for this terminal
+        this.cancelCompletionStabilityTimer(terminalId);
+        this.previousCompletionStrings.delete(terminalId);
+        this.previousTerminalStatuses.delete(terminalId);
         if (this.lastProcessedOutput) {
             this.lastProcessedOutput.delete(terminalId);
         }
@@ -5543,13 +6285,20 @@ class TerminalGUI {
         modal.classList.remove('show');
     }
     openMessageHistoryModal() {
+        // First close any other modals that might be open
+        this.closeAllModals();
+        
         const modal = document.getElementById('message-history-modal');
+        console.log('[DEBUG] Opening message history modal', modal);
         modal.classList.add('show');
         this.updateHistoryModal();
     }
     closeMessageHistoryModal() {
         const modal = document.getElementById('message-history-modal');
+        console.log('[DEBUG] Closing message history modal', modal, modal.classList.contains('show'));
         modal.classList.remove('show');
+        // Force remove any inline styles that might override CSS
+        modal.style.display = '';
     }
     // Terminal search functionality
     toggleTerminalSearch(terminalId) {
@@ -6368,7 +7117,7 @@ class TerminalGUI {
             }
             // Update UI to reflect loaded state
             this.updateTerminalDropdowns();
-            this.updateManualTerminalDropdown();
+            // updateManualTerminalDropdown removed
             this.switchToTerminal(this.activeTerminalId);
             // Ensure terminal selector has proper dynamic width after restoration
             this.updateTerminalSelectorTextWhenReady();
@@ -7105,53 +7854,55 @@ class TerminalGUI {
         }
     }
     resetTimer() {
-        // Check if we have a saved target datetime
-        const savedTargetDateTime = this.preferences.timerTargetDateTime;
-        if (savedTargetDateTime) {
-            const targetDate = new Date(savedTargetDateTime);
-            const now = new Date();
-            // If target datetime has passed, don't restore the timer
-            if (now >= targetDate) {
-                this.logAction(`Timer target time (${targetDate.toLocaleString()}) has already passed - not restoring timer`, 'info');
-                // Clear the saved target datetime so it doesn't keep trying to restore
-                this.preferences.timerTargetDateTime = null;
-                this.preferences.timerHours = 0;
-                this.preferences.timerMinutes = 0;
-                this.preferences.timerSeconds = 0;
-                this.saveAllPreferences();
-                // Set timer to 00:00:00
-                this.timerActive = false;
-                this.timerExpired = true; // Mark as expired since target time passed
-                this.injectionInProgress = false;
-                this.timerHours = 0;
-                this.timerMinutes = 0;
-                this.timerSeconds = 0;
-                if (this.timerInterval) {
-                    clearInterval(this.timerInterval);
-                    this.timerInterval = null;
-                }
-                // Trigger injection manager since timer effectively expired
-                this.injectionManager.onTimerExpired();
-                this.updateTimerUI();
+        // Try to restore timer to original values (set when timer was first configured)
+        const originalHours = this.preferences.timerOriginalHours || 0;
+        const originalMinutes = this.preferences.timerOriginalMinutes || 0;
+        const originalSeconds = this.preferences.timerOriginalSeconds || 0;
+        
+        // If no original values are saved, check if we have current saved values
+        if (originalHours === 0 && originalMinutes === 0 && originalSeconds === 0) {
+            // Fall back to current preferences if no original values exist
+            const savedHours = this.preferences.timerHours || 0;
+            const savedMinutes = this.preferences.timerMinutes || 0;
+            const savedSeconds = this.preferences.timerSeconds || 0;
+            
+            // If all values are still zero, there's nothing to reset to
+            if (savedHours === 0 && savedMinutes === 0 && savedSeconds === 0) {
+                this.logAction('No saved timer values to reset to', 'warning');
                 return;
             }
+            
+            this.logAction('Using current saved values (no original values found)', 'info');
+            this.setTimer(savedHours, savedMinutes, savedSeconds);
+            return;
         }
-        // Restore timer to last saved values from preferences (only if target time hasn't passed)
-        const savedHours = this.preferences.timerHours || 0;
-        const savedMinutes = this.preferences.timerMinutes || 0;
-        const savedSeconds = this.preferences.timerSeconds || 0;
+        
+        // Reset to original values and clear expired state
         this.timerActive = false;
         this.timerExpired = false;
         this.injectionInProgress = false;
-        this.timerHours = savedHours;
-        this.timerMinutes = savedMinutes;
-        this.timerSeconds = savedSeconds;
+        this.timerHours = originalHours;
+        this.timerMinutes = originalMinutes;
+        this.timerSeconds = originalSeconds;
+        
         if (this.timerInterval) {
             clearInterval(this.timerInterval);
             this.timerInterval = null;
         }
+        
+        // Update current preferences to match the restored values
+        this.preferences.timerHours = originalHours;
+        this.preferences.timerMinutes = originalMinutes;
+        this.preferences.timerSeconds = originalSeconds;
+        
+        // Calculate new target datetime
+        const totalSeconds = (originalHours * 3600) + (originalMinutes * 60) + originalSeconds;
+        const targetDateTime = new Date(Date.now() + (totalSeconds * 1000));
+        this.preferences.timerTargetDateTime = targetDateTime.toISOString();
+        
+        this.saveAllPreferences();
         this.updateTimerUI();
-        this.logAction(`Timer reset to saved value: ${String(savedHours).padStart(2, '0')}:${String(savedMinutes).padStart(2, '0')}:${String(savedSeconds).padStart(2, '0')}`, 'info');
+        this.logAction(`Timer reset to original value: ${String(originalHours).padStart(2, '0')}:${String(originalMinutes).padStart(2, '0')}:${String(originalSeconds).padStart(2, '0')}`, 'info');
     }
     updateTerminalOutput(data) {
         // Add new data to terminal output
@@ -7824,7 +8575,7 @@ class TerminalGUI {
         }
         // Update dropdowns
         this.updateTerminalDropdowns();
-        this.updateManualTerminalDropdown();
+        // updateManualTerminalDropdown removed
         // Re-initialize Lucide icons for new elements
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
@@ -7916,6 +8667,11 @@ class TerminalGUI {
         // Cleanup event-driven status update system
         this.cleanupTerminalStatusTracking(terminalId);
         
+        // Cleanup pricing manager terminal monitoring
+        if (this.pricingManager && typeof this.pricingManager.cleanupTerminal === 'function') {
+            this.pricingManager.cleanupTerminal(terminalId);
+        }
+        
         // Remove DOM element FIRST to ensure clean state
         const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
         if (terminalWrapper) {
@@ -7936,10 +8692,7 @@ class TerminalGUI {
         // Force grid layout reflow by temporarily clearing and rebuilding the container
         this.refreshTerminalLayout();
         // If the closed terminal was selected in manual generation, reset to 'all'
-        if (this.todoSystem && this.todoSystem.manualGeneration && 
-            this.todoSystem.manualGeneration.selectedTerminalId === terminalId) {
-            this.todoSystem.manualGeneration.selectedTerminalId = 'all';
-        }
+        // Manual generation system removed
         // Clear terminal state data from sidebar controller
         if (this.sidebarController) {
             this.sidebarController.clearTerminalStateData(terminalId);
@@ -7948,14 +8701,11 @@ class TerminalGUI {
         this.updateTerminalButtonVisibility();
         // Update dropdown contents to remove references to closed terminal
         this.updateTerminalDropdowns();
-        this.updateManualTerminalDropdown();
+        // updateManualTerminalDropdown removed
         
         // Clean up any orphaned terminal selector items that might be stuck in the DOM
         this.cleanupOrphanedTerminalSelectorItems();
-        // Update the manual generation UI to reflect any changes
-        if (this.todoSystem && this.todoSystem.manualGeneration) {
-            this.updateManualGenerationUI();
-        }
+        // Manual generation UI removed
         // Resize remaining terminals to fit new layout
         setTimeout(() => {
             this.resizeAllTerminals();
@@ -8372,7 +9122,7 @@ class TerminalGUI {
         }
         // Update dropdown to show new selection
         this.updateTerminalDropdowns();
-        this.updateManualTerminalDropdown();
+        // updateManualTerminalDropdown removed
         this.updateStatusDisplay();
         this.saveTerminalState();
         // Scroll to the selected terminal horizontally
@@ -8546,6 +9296,19 @@ class TerminalGUI {
         dropdown.style.width = finalWidth + 'px';
     }
     
+    /**
+     * Update terminal color
+     * @param {number} terminalId - Terminal ID
+     * @param {string} color - New color hex value
+     */
+    updateTerminalColor(terminalId, color) {
+        const terminalData = this.terminals.get(terminalId);
+        if (terminalData) {
+            terminalData.color = color;
+            console.log(`Updated terminal ${terminalId} color to ${color}`);
+        }
+    }
+    
     cleanupOrphanedTerminalSelectorItems() {
         // Remove any terminal selector items that exist outside of the main dropdowns
         // This cleans up any stuck or improperly positioned terminal selector items
@@ -8553,7 +9316,7 @@ class TerminalGUI {
         console.log('Cleanup: Valid terminal IDs:', validTerminalIds);
         
         // Look for all terminal selector items (including manual ones)
-        const allSelectorItems = document.querySelectorAll('.terminal-selector-item, .manual-terminal-selector-item');
+        const allSelectorItems = document.querySelectorAll('.terminal-selector-item');
         console.log('Cleanup: Found', allSelectorItems.length, 'terminal selector items');
         
         allSelectorItems.forEach(item => {
@@ -8581,17 +9344,7 @@ class TerminalGUI {
             }
         });
         
-        // Clean up any orphaned manual terminal selector items that might be visible
-        const manualSelectorItems = document.querySelectorAll('.manual-terminal-selector-item');
-        manualSelectorItems.forEach(item => {
-            if (item.dataset.terminalId !== 'all') {
-                const itemTerminalId = parseInt(item.dataset.terminalId);
-                if (!validTerminalIds.includes(itemTerminalId)) {
-                    console.log('Removing orphaned manual terminal selector item for terminal:', itemTerminalId);
-                    item.remove();
-                }
-            }
-        });
+        // Manual terminal selector cleanup removed
         
         // Clean up any orphaned terminal wrappers that might still exist in DOM
         const terminalsContainer = document.getElementById('terminals-container');
@@ -8624,7 +9377,7 @@ class TerminalGUI {
         
         // Force update both dropdowns after cleanup
         this.updateTerminalDropdowns();
-        this.updateManualTerminalDropdown();
+        // updateManualTerminalDropdown removed
     }
     
     getNextTerminalForMessage() {
@@ -8665,7 +9418,7 @@ class TerminalGUI {
                 if (terminalData) {
                     terminalData.name = newText;
                     this.updateTerminalDropdowns();
-                    this.updateManualTerminalDropdown();
+                    // updateManualTerminalDropdown removed
                     // Update selector if this is the active terminal
                     if (terminalId === this.activeTerminalId) {
                         const selectorText = document.querySelector('.terminal-selector-text');
@@ -8743,11 +9496,12 @@ class TerminalGUI {
             dropdown.appendChild(item);
         });
         // Add Plan Mode option styled like terminals
-        const messagePlanState = message ? message.wrapWithPlan : undefined;
-        const currentPlanState = messagePlanState !== undefined ? messagePlanState : this.planModeEnabled;
+        const messagePlanState = message ? message.wrapWithPlan : false;
         const planModeItem = document.createElement('div');
         planModeItem.className = 'terminal-selector-item plan-mode';
-        if (currentPlanState) {
+        
+        // Simple on/off toggle - show checkmark if plan mode is enabled for this message
+        if (messagePlanState === true) {
             planModeItem.classList.add('selected');
         }
         planModeItem.innerHTML = `
@@ -8756,7 +9510,9 @@ class TerminalGUI {
             </span>
             <span>Plan mode</span>
         `;
-        planModeItem.addEventListener('click', () => {
+        planModeItem.addEventListener('click', (e) => {
+            console.log('Plan mode item clicked, messageId:', messageId);
+            e.stopPropagation();
             this.toggleMessagePlanMode(messageId);
             // Small delay to ensure state is saved before removing dropdown
             setTimeout(() => {
@@ -8814,19 +9570,25 @@ class TerminalGUI {
         }
     }
     toggleMessagePlanMode(messageId) {
+        console.log('toggleMessagePlanMode called with messageId:', messageId);
         const message = this.messageQueue.find(m => m.id === messageId);
-        if (!message) return;
-        // Cycle through: undefined (auto) -> true (on) -> false (off) -> undefined (auto)
-        if (message.wrapWithPlan === undefined) {
-            message.wrapWithPlan = true;
-            this.logAction('Message plan mode enabled', 'info');
-        } else if (message.wrapWithPlan === true) {
+        console.log('Found message:', message);
+        if (!message) {
+            console.error('Message not found for id:', messageId);
+            return;
+        }
+        
+        // Simple toggle: if enabled, disable it; if disabled or undefined, enable it
+        const previousState = message.wrapWithPlan;
+        if (message.wrapWithPlan === true) {
             message.wrapWithPlan = false;
             this.logAction('Message plan mode disabled', 'info');
         } else {
-            message.wrapWithPlan = undefined;
-            this.logAction('Message plan mode set to auto (follow global setting)', 'info');
+            message.wrapWithPlan = true;
+            this.logAction('Message plan mode enabled', 'info');
         }
+        console.log('Plan mode changed from', previousState, 'to', message.wrapWithPlan);
+        
         // Save the updated message queue and update the UI
         this.saveMessageQueue();
         this.updateMessageList();
@@ -8841,6 +9603,7 @@ class TerminalGUI {
         const historyModal = document.getElementById('message-history-modal');
         if (historyModal && historyModal.classList.contains('show')) {
             historyModal.classList.remove('show');
+            historyModal.style.display = '';
         }
         // Close usage limit modal
         const usageModal = document.getElementById('usage-limit-modal');
@@ -9027,12 +9790,6 @@ class TerminalGUI {
             terminalStateMonitors: new Map(),
             dotWaitStartTime: null,
             isWaitingForCompletion: false,
-            manualGeneration: {
-                selectedTerminalId: this.activeTerminalId,
-                selectedMode: 'verify',
-                customPrompt: '',
-                isGenerating: false
-            }
         };
         this.setupTodoEventListeners();
         // Note: Automatic todo generation now uses the existing scanSingleTerminalStatus logic
@@ -9047,6 +9804,41 @@ class TerminalGUI {
             }
         }, 100);
     }
+
+    async initializePricingSystem() {
+        console.log('[PRICING_DEBUG] Initializing pricing system...');
+        
+        try {
+            // Set the API client for the pricing manager
+            if (this.backendAPIClient) {
+                this.pricingManager.apiClient = this.backendAPIClient;
+                console.log('[PRICING_DEBUG] API client set for pricing manager');
+            } else {
+                console.warn('[PRICING_DEBUG] Backend API client not available, pricing manager will use fallback');
+            }
+            
+            // Initialize the pricing manager with proper dependencies
+            await this.pricingManager.initialize();
+            
+            // Set up terminal status monitoring dependencies for pricing manager
+            this.pricingManager.setTerminalStatusFunction((terminalId) => {
+                return this.getTerminalDisplayStatus(terminalId);
+            });
+            
+            this.pricingManager.getTerminalNumber = (terminalId) => {
+                const terminalData = this.terminals.get(terminalId);
+                return terminalData ? terminalData.name.replace('Terminal ', '') : terminalId;
+            };
+            
+            // Add pricing navigation to the existing sidebar navigation
+            this.setupPricingEventListeners();
+            
+            console.log('[PRICING_DEBUG] Pricing system initialized successfully');
+        } catch (error) {
+            console.error('[PRICING_DEBUG] Failed to initialize pricing system:', error);
+        }
+    }
+
     setupTodoEventListeners() {
         // Navigation buttons
         const actionLogNavBtn = document.getElementById('action-log-nav-btn');
@@ -9055,7 +9847,16 @@ class TerminalGUI {
             actionLogNavBtn.addEventListener('click', async () => await this.switchSidebarView('action-log'));
         }
         if (todoNavBtn) {
-            todoNavBtn.addEventListener('click', async () => await this.switchSidebarView('todo'));
+            // Add click event with proper handling for SVG elements
+            todoNavBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('[DEBUG] Completions button clicked!', e.target, e.currentTarget);
+                await this.switchSidebarView('todo');
+            });
+            console.log('[DEBUG] Completions button event listener attached successfully');
+        } else {
+            console.error('[DEBUG] todo-nav-btn element not found!');
         }
         // Footer buttons
         const clearTodosBtn = document.getElementById('clear-todos-btn');
@@ -9071,8 +9872,7 @@ class TerminalGUI {
         if (todoSearch) {
             todoSearch.addEventListener('input', (e) => this.filterTodos(e.target.value));
         }
-        // Manual generation controls
-        this.setupManualGenerationControls();
+        // Manual generation controls removed
         const todoSearchClearBtn = document.getElementById('todo-search-clear-btn');
         if (todoSearchClearBtn) {
             todoSearchClearBtn.addEventListener('click', () => {
@@ -9080,85 +9880,170 @@ class TerminalGUI {
                 this.filterTodos('');
             });
         }
+        
+        // Setup completion container click handlers
+        this.setupCompletionContainerHandlers();
+        
+        // Setup completion modal handlers
+        this.setupCompletionModalHandlers();
     }
-    setupManualGenerationControls() {
-        // Manual terminal selector
-        const manualTerminalSelectorBtn = document.getElementById('manual-terminal-selector-btn');
-        const manualTerminalSelectorDropdown = document.getElementById('manual-terminal-selector-dropdown');
-        if (manualTerminalSelectorBtn) {
-            manualTerminalSelectorBtn.addEventListener('click', (e) => {
+
+    setupPricingEventListeners() {
+        // Navigation button for pricing
+        const pricingNavBtn = document.getElementById('pricing-nav-btn');
+        if (pricingNavBtn) {
+            pricingNavBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
                 e.stopPropagation();
-                this.toggleManualTerminalSelector();
+                console.log('[PRICING_DEBUG] Pricing button clicked!', e.target, e.currentTarget);
+                await this.switchSidebarView('pricing');
             });
+            console.log('[PRICING_DEBUG] Pricing button event listener attached successfully');
+        } else {
+            console.warn('[PRICING_DEBUG] pricing-nav-btn element not found!');
         }
-        // Manual mode selector
-        const manualModeSelectorBtn = document.getElementById('manual-mode-selector-btn');
-        const manualModeSelectorDropdown = document.getElementById('manual-mode-selector-dropdown');
-        if (manualModeSelectorBtn) {
-            manualModeSelectorBtn.addEventListener('click', (e) => {
+    }
+    
+    setupCompletionContainerHandlers() {
+        // Add click event listeners to all completion containers
+        const completionItems = document.querySelectorAll('.completion-item');
+        completionItems.forEach((item, index) => {
+            item.addEventListener('click', (e) => {
                 e.stopPropagation();
-                this.toggleManualModeSelector();
+                this.openCompletionModal(item, index);
             });
+        });
+    }
+    
+    setupCompletionModalHandlers() {
+        const modal = document.getElementById('completion-details-modal');
+        const closeBtn = document.getElementById('completion-modal-close');
+        const modalContent = modal?.querySelector('.modal-content');
+        
+        // Close button handler
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => this.closeCompletionModal());
         }
-        // Manual generate button
-        const manualGenerateBtn = document.getElementById('manual-generate-btn');
-        if (manualGenerateBtn) {
-            manualGenerateBtn.addEventListener('click', () => this.handleManualGeneration());
-        }
-        // Custom prompt input
-        const customPromptInput = document.getElementById('custom-prompt-input');
-        if (customPromptInput) {
-            customPromptInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    this.todoSystem.manualGeneration.customPrompt = customPromptInput.value;
-                    this.saveCustomPrompt();
-                    document.getElementById('custom-prompt-section').style.display = 'none';
-                }
-            });
-            customPromptInput.addEventListener('input', (e) => {
-                this.todoSystem.manualGeneration.customPrompt = e.target.value;
-            });
-        }
-        // Setup dropdown click handlers
-        if (manualTerminalSelectorDropdown) {
-            manualTerminalSelectorDropdown.addEventListener('click', (e) => {
-                if (e.target.classList.contains('manual-terminal-selector-item')) {
-                    this.selectManualTerminal(e.target);
+        
+        // Click outside modal to close
+        if (modal) {
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    this.closeCompletionModal();
                 }
             });
         }
-        if (manualModeSelectorDropdown) {
-            manualModeSelectorDropdown.addEventListener('click', (e) => {
-                if (e.target.classList.contains('manual-mode-option')) {
-                    this.selectManualMode(e.target);
-                }
+        
+        // Prevent modal close when clicking inside modal content
+        if (modalContent) {
+            modalContent.addEventListener('click', (e) => {
+                e.stopPropagation();
             });
         }
-        // Close dropdowns when clicking outside
-        document.addEventListener('click', (e) => {
-            if (!e.target.closest('.manual-generation-selector') && manualTerminalSelectorDropdown) {
-                manualTerminalSelectorDropdown.style.display = 'none';
-            }
-            if (!e.target.closest('.manual-generation-mode') && manualModeSelectorDropdown) {
-                manualModeSelectorDropdown.style.display = 'none';
+        
+        // Close modal with Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && modal.classList.contains('show')) {
+                this.closeCompletionModal();
             }
         });
-        // Initialize the UI
-        this.updateManualGenerationUI();
-        this.loadCustomPrompt();
     }
+    
+    openCompletionModal(completionItem, index) {
+        const modal = document.getElementById('completion-details-modal');
+        const modalTitle = document.getElementById('completion-modal-title');
+        const modalPrompt = document.getElementById('completion-modal-prompt');
+        
+        if (!modal || !modalTitle || !modalPrompt) return;
+        
+        // Get terminal information from the completion item
+        const terminalElement = completionItem.querySelector('.completion-terminal');
+        const terminalName = terminalElement?.textContent || 'claudecodebot';
+        const promptText = completionItem.querySelector('.completion-prompt')?.textContent || '';
+        const promptNumber = index + 6; // Start from #6 as in your example
+        
+        // Get terminal color from the completion item's data attribute or find from terminal wrapper
+        const terminalId = completionItem.dataset.terminal;
+        let terminalColor = '#007acc'; // default color
+        
+        if (terminalId) {
+            const terminalWrapper = document.querySelector(`.terminal-wrapper[data-terminal-id="${terminalId}"]`);
+            const colorDot = terminalWrapper?.querySelector('.terminal-color-dot');
+            if (colorDot) {
+                terminalColor = colorDot.style.backgroundColor || terminalColor;
+            }
+        }
+        
+        // Set modal title with color dot and terminal name only
+        modalTitle.innerHTML = `
+            <span class="terminal-color-dot" style="background-color: ${terminalColor};"></span>
+            <span class="terminal-name">${terminalName}</span>
+        `;
+        
+        // Set prompt content with "Prompt #X - text" format in single line
+        modalPrompt.innerHTML = `Prompt #${promptNumber} - ${promptText}`;
+        
+        // Show modal
+        modal.classList.add('show');
+        
+        // Prevent body scroll when modal is open
+        document.body.style.overflow = 'hidden';
+        
+        console.log(`[DEBUG] Opened completion modal for ${terminalName}, prompt #${promptNumber}`);
+    }
+    
+    closeCompletionModal() {
+        const modal = document.getElementById('completion-details-modal');
+        if (!modal) return;
+        
+        modal.classList.remove('show');
+        
+        // Restore body scroll
+        document.body.style.overflow = '';
+        
+        console.log('[DEBUG] Closed completion modal');
+    }
+    
+    renderMarkdown(text) {
+        if (!text) return '';
+        
+        // Simple markdown parser for basic formatting
+        let html = text
+            // Headers
+            .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+            .replace(/^## (.*$)/gim, '<h2>$1</h2>')
+            .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+            // Bold and italic
+            .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.*?)\*/g, '<em>$1</em>')
+            // Code blocks (triple backticks)
+            .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
+            // Inline code
+            .replace(/`([^`]+)`/g, '<code>$1</code>')
+            // Line breaks
+            .replace(/\n/g, '<br>');
+        
+        return html;
+    }
+    
     async switchSidebarView(view) {
+        console.log(`[DEBUG] switchSidebarView called with view: ${view}`);
         const actionLogView = document.getElementById('action-log-view');
         const todoView = document.getElementById('todo-view');
+        const pricingView = document.getElementById('pricing-view');
         const actionLogNavBtn = document.getElementById('action-log-nav-btn');
         const todoNavBtn = document.getElementById('todo-nav-btn');
+        const pricingNavBtn = document.getElementById('pricing-nav-btn');
         const sidebarTitle = document.getElementById('sidebar-title');
+        console.log(`[DEBUG] Elements found: actionLogView=${!!actionLogView}, todoView=${!!todoView}, pricingView=${!!pricingView}, actionLogNavBtn=${!!actionLogNavBtn}, todoNavBtn=${!!todoNavBtn}, pricingNavBtn=${!!pricingNavBtn}, sidebarTitle=${!!sidebarTitle}`);
         if (view === 'action-log') {
             actionLogView.style.display = 'flex';
             todoView.style.display = 'none';
+            if (pricingView) pricingView.style.display = 'none';
             actionLogNavBtn.classList.add('active');
             todoNavBtn.classList.remove('active');
+            if (pricingNavBtn) pricingNavBtn.classList.remove('active');
             sidebarTitle.textContent = 'Action Log';
             this.todoSystem.currentView = 'action-log';
             // Save the current view state to backend
@@ -9170,9 +10055,11 @@ class TerminalGUI {
         } else if (view === 'todo') {
             actionLogView.style.display = 'none';
             todoView.style.display = 'flex';
+            if (pricingView) pricingView.style.display = 'none';
             actionLogNavBtn.classList.remove('active');
             todoNavBtn.classList.add('active');
-            sidebarTitle.textContent = 'To-Do';
+            if (pricingNavBtn) pricingNavBtn.classList.remove('active');
+            sidebarTitle.textContent = 'Completions';
             this.todoSystem.currentView = 'todo';
             // Save the current view state to backend
             try {
@@ -9181,6 +10068,25 @@ class TerminalGUI {
                 console.warn('Failed to save sidebar view to backend:', error);
             }
             this.loadTodos();
+        } else if (view === 'pricing') {
+            actionLogView.style.display = 'none';
+            todoView.style.display = 'none';
+            if (pricingView) pricingView.style.display = 'flex';
+            actionLogNavBtn.classList.remove('active');
+            todoNavBtn.classList.remove('active');
+            if (pricingNavBtn) pricingNavBtn.classList.add('active');
+            sidebarTitle.textContent = 'Usage';
+            this.todoSystem.currentView = 'pricing';
+            // Save the current view state to backend
+            try {
+                await ipcRenderer.invoke('db-save-setting', 'sidebarView', 'pricing');
+            } catch (error) {
+                console.warn('Failed to save sidebar view to backend:', error);
+            }
+            // Load pricing data when switching to pricing view
+            if (this.pricingManager && typeof this.pricingManager.loadPricingData === 'function') {
+                await this.pricingManager.loadPricingData();
+            }
         }
     }
     startTerminalStateMonitoring() {
@@ -9424,262 +10330,6 @@ class TerminalGUI {
             this.logAction(`Error in manual todo generation: ${error.message}`, 'error');
         }
     }
-    toggleManualTerminalSelector() {
-        const dropdown = document.getElementById('manual-terminal-selector-dropdown');
-        const modeDropdown = document.getElementById('manual-mode-selector-dropdown');
-        const isVisible = dropdown.style.display === 'block';
-        if (isVisible) {
-            dropdown.style.display = 'none';
-        } else {
-            // Close mode dropdown if open
-            if (modeDropdown) {
-                modeDropdown.style.display = 'none';
-            }
-            this.updateManualTerminalDropdown();
-            dropdown.style.display = 'block';
-        }
-    }
-    toggleManualModeSelector() {
-        const dropdown = document.getElementById('manual-mode-selector-dropdown');
-        const terminalDropdown = document.getElementById('manual-terminal-selector-dropdown');
-        const isVisible = dropdown.style.display === 'block';
-        if (isVisible) {
-            dropdown.style.display = 'none';
-        } else {
-            // Close terminal dropdown if open
-            if (terminalDropdown) {
-                terminalDropdown.style.display = 'none';
-            }
-            this.updateManualModeDropdown();
-            dropdown.style.display = 'block';
-        }
-    }
-    updateManualTerminalDropdown() {
-        const dropdown = document.getElementById('manual-terminal-selector-dropdown');
-        if (!dropdown) return;
-        // Guard against accessing todoSystem before it's initialized
-        if (!this.todoSystem || !this.todoSystem.manualGeneration) return;
-        // Clear existing items
-        dropdown.innerHTML = '';
-        
-        let maxWidth = 0;
-        
-        // Add "All terminals" option first
-        const allTerminalsItem = document.createElement('div');
-        allTerminalsItem.className = 'manual-terminal-selector-item';
-        allTerminalsItem.dataset.terminalId = 'all';
-        if (this.todoSystem.manualGeneration.selectedTerminalId === 'all') {
-            allTerminalsItem.classList.add('selected');
-        }
-        allTerminalsItem.innerHTML = `
-            <span class="manual-terminal-selector-dot" style="background-color: #888888;"></span>
-            <span class="manual-terminal-selector-text">All terminals</span>
-        `;
-        dropdown.appendChild(allTerminalsItem);
-        
-        // Calculate width for All Terminals item
-        const tempItem = allTerminalsItem.cloneNode(true);
-        tempItem.style.visibility = 'hidden';
-        tempItem.style.position = 'absolute';
-        tempItem.style.width = 'auto';
-        tempItem.style.whiteSpace = 'nowrap';
-        document.body.appendChild(tempItem);
-        maxWidth = Math.max(maxWidth, tempItem.offsetWidth);
-        document.body.removeChild(tempItem);
-        
-        // Add items for each terminal (using the same logic as updateTerminalDropdowns)
-        this.terminals.forEach((terminalData, terminalId) => {
-            const item = document.createElement('div');
-            item.className = 'manual-terminal-selector-item';
-            item.dataset.terminalId = terminalId;
-            if (this.todoSystem.manualGeneration.selectedTerminalId === terminalId) {
-                item.classList.add('selected');
-            }
-            item.innerHTML = `
-                <span class="manual-terminal-selector-dot" style="background-color: ${terminalData.color};"></span>
-                <span class="manual-terminal-selector-text">${terminalData.name}</span>
-            `;
-            dropdown.appendChild(item);
-            
-            // Calculate width needed for this item
-            const tempItem = item.cloneNode(true);
-            tempItem.style.visibility = 'hidden';
-            tempItem.style.position = 'absolute';
-            tempItem.style.width = 'auto';
-            tempItem.style.whiteSpace = 'nowrap';
-            document.body.appendChild(tempItem);
-            const itemWidth = tempItem.offsetWidth;
-            document.body.removeChild(tempItem);
-            
-            maxWidth = Math.max(maxWidth, itemWidth);
-        });
-        
-        // Set the dropdown width to fit the longest item
-        const sidebar = document.getElementById('right-sidebar');
-        const sidebarWidth = sidebar ? sidebar.offsetWidth : 400;
-        const terminalSection = document.querySelector('.terminal-section');
-        const terminalSectionWidth = terminalSection ? terminalSection.offsetWidth : 0;
-        const viewportWidth = window.innerWidth;
-        
-        // Calculate maximum allowed width considering both viewport and terminal section constraints
-        const maxAllowedWidth = Math.min(
-            viewportWidth - sidebarWidth - 50, // 50px safety margin from viewport
-            terminalSectionWidth - 100 // 100px safety margin from terminal section
-        );
-        
-        const finalWidth = Math.min(maxWidth + 10, maxAllowedWidth); // 10px extra padding
-        dropdown.style.width = finalWidth + 'px';
-    }
-    updateManualModeDropdown() {
-        const dropdown = document.getElementById('manual-mode-selector-dropdown');
-        if (!dropdown) return;
-        // Clear existing selected classes
-        dropdown.querySelectorAll('.manual-mode-option').forEach(option => {
-            option.classList.remove('selected');
-        });
-        // Add selected class to current mode
-        const currentModeOption = dropdown.querySelector(`[data-mode="${this.todoSystem.manualGeneration.selectedMode}"]`);
-        if (currentModeOption) {
-            currentModeOption.classList.add('selected');
-        }
-    }
-    selectManualTerminal(item) {
-        const terminalId = item.dataset.terminalId;
-        this.todoSystem.manualGeneration.selectedTerminalId = terminalId === 'all' ? 'all' : parseInt(terminalId);
-        // Update UI
-        this.updateManualGenerationUI();
-        // Hide dropdown
-        document.getElementById('manual-terminal-selector-dropdown').style.display = 'none';
-    }
-    selectManualMode(item) {
-        const mode = item.dataset.mode;
-        this.todoSystem.manualGeneration.selectedMode = mode;
-        // Show/hide custom prompt section
-        const customPromptSection = document.getElementById('custom-prompt-section');
-        if (mode === 'custom') {
-            customPromptSection.style.display = 'block';
-            // Focus on the input if it exists
-            const customPromptInput = document.getElementById('custom-prompt-input');
-            if (customPromptInput) {
-                customPromptInput.value = this.todoSystem.manualGeneration.customPrompt;
-                customPromptInput.focus();
-            }
-        } else {
-            customPromptSection.style.display = 'none';
-        }
-        // Update UI
-        this.updateManualGenerationUI();
-        // Hide dropdown
-        document.getElementById('manual-mode-selector-dropdown').style.display = 'none';
-    }
-    updateManualGenerationUI() {
-        // Update terminal selector button
-        const terminalSelectorBtn = document.getElementById('manual-terminal-selector-btn');
-        const terminalSelectorDot = terminalSelectorBtn?.querySelector('.manual-terminal-selector-dot');
-        const terminalSelectorText = terminalSelectorBtn?.querySelector('.manual-terminal-selector-text');
-        if (terminalSelectorBtn && terminalSelectorDot && terminalSelectorText) {
-            if (this.todoSystem.manualGeneration.selectedTerminalId === 'all') {
-                terminalSelectorDot.style.backgroundColor = '#888888';
-                terminalSelectorText.textContent = 'All terminals';
-            } else {
-                const terminalData = this.terminals.get(this.todoSystem.manualGeneration.selectedTerminalId);
-                if (terminalData) {
-                    terminalSelectorDot.style.backgroundColor = terminalData.color;
-                    terminalSelectorText.textContent = terminalData.name;
-                }
-            }
-        }
-        // Update mode selector button
-        const modeSelectorBtn = document.getElementById('manual-mode-selector-btn');
-        const modeSelectorText = modeSelectorBtn?.querySelector('.manual-mode-selector-text');
-        if (modeSelectorText) {
-            const mode = this.todoSystem.manualGeneration.selectedMode;
-            modeSelectorText.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
-        }
-    }
-    async handleManualGeneration() {
-        if (this.todoSystem.manualGeneration.isGenerating) {
-            return;
-        }
-        this.todoSystem.manualGeneration.isGenerating = true;
-        this.setManualGenerationLoading(true);
-        try {
-            const selectedTerminalId = this.todoSystem.manualGeneration.selectedTerminalId;
-            const mode = this.todoSystem.manualGeneration.selectedMode;
-            if (selectedTerminalId === 'all') {
-                await this.generateTodosForAllTerminals(mode);
-            } else {
-                await this.generateTodosForTerminal(selectedTerminalId, mode);
-            }
-        } catch (error) {
-            this.logAction(`Error in manual generation: ${error.message}`, 'error');
-        } finally {
-            this.todoSystem.manualGeneration.isGenerating = false;
-            this.setManualGenerationLoading(false);
-        }
-    }
-    async generateTodosForAllTerminals(mode) {
-        let totalGenerated = 0;
-        for (const [terminalId, terminalData] of this.terminals) {
-            if (terminalData.element && terminalData.terminal) {
-                try {
-                    const result = await this.generateTodosForTerminal(terminalId, mode);
-                    if (result.success) {
-                        totalGenerated += result.todos_created;
-                    }
-                } catch (error) {
-                    this.logAction(`Error generating todos for Terminal ${terminalId}: ${error.message}`, 'error');
-                }
-            }
-        }
-        this.logAction(`Generated ${totalGenerated} todo items from all terminals`, 'success');
-        this.refreshTodos();
-    }
-    async generateTodosForTerminal(terminalId, mode) {
-        const terminal = this.terminals.get(terminalId);
-        if (!terminal || !terminal.element) {
-            this.logAction(`Terminal ${terminalId} not found or inactive`, 'error');
-            return { success: false, error: 'Terminal not found' };
-        }
-        // Get clean text content from the terminal buffer
-        const terminalOutput = this.getCleanTerminalOutput(terminal.terminal);
-        this.logAction(`Generating todos from Terminal ${terminalId} (${mode} mode)`, 'info');
-        const result = await this.generateTodosViaBackendWithMode(terminalId, terminalOutput, mode);
-        if (result.success) {
-            this.logAction(`Generated ${result.todos_created} todo items from Terminal ${terminalId}`, 'success');
-        } else {
-            this.logAction(`Todo generation failed for Terminal ${terminalId}: ${result.error}`, 'error');
-        }
-        return result;
-    }
-    setManualGenerationLoading(isLoading) {
-        const generateBtn = document.getElementById('manual-generate-btn');
-        if (!generateBtn) return;
-        const icon = generateBtn.querySelector('i');
-        if (isLoading) {
-            generateBtn.classList.add('loading');
-            generateBtn.disabled = true;
-            if (icon) {
-                icon.setAttribute('data-lucide', 'loader');
-                // Force immediate icon update
-                if (typeof lucide !== 'undefined') {
-                    lucide.createIcons();
-                }
-            }
-            this.logAction('Manual todo generation started...', 'info');
-        } else {
-            generateBtn.classList.remove('loading');
-            generateBtn.disabled = false;
-            if (icon) {
-                icon.setAttribute('data-lucide', 'sparkles');
-                // Force immediate icon update
-                if (typeof lucide !== 'undefined') {
-                    lucide.createIcons();
-                }
-            }
-            this.logAction('Manual todo generation completed', 'success');
-        }
-    }
     async generateTodosViaBackendWithMode(terminalId, terminalOutput, mode) {
         try {
             // Get the session ID for this specific terminal
@@ -9694,10 +10344,7 @@ class TerminalGUI {
                 terminal_output: terminalOutput,
                 mode: mode
             };
-            // Add custom prompt if mode is custom
-            if (mode === 'custom') {
-                requestBody.custom_prompt = this.todoSystem.manualGeneration.customPrompt;
-            }
+            // Custom prompt functionality removed
             const response = await fetch('http://127.0.0.1:8001/api/todos/items/generate_from_output/', {
                 method: 'POST',
                 headers: {
@@ -9710,37 +10357,6 @@ class TerminalGUI {
             return result;
         } catch (error) {
             throw new Error(`Failed to generate todos via backend: ${error.message}`);
-        }
-    }
-    async saveCustomPrompt() {
-        try {
-            const response = await fetch('http://127.0.0.1:8001/api/settings/custom_prompt/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    prompt: this.todoSystem.manualGeneration.customPrompt
-                })
-            });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        } catch (error) {
-            console.warn('Failed to save custom prompt:', error);
-        }
-    }
-    async loadCustomPrompt() {
-        try {
-            const response = await fetch('http://127.0.0.1:8001/api/settings/custom_prompt/');
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const data = await response.json();
-            this.todoSystem.manualGeneration.customPrompt = data.prompt || '';
-            // Update the input if it exists
-            const customPromptInput = document.getElementById('custom-prompt-input');
-            if (customPromptInput) {
-                customPromptInput.value = this.todoSystem.manualGeneration.customPrompt;
-            }
-        } catch (error) {
-            console.warn('Failed to load custom prompt:', error);
         }
     }
     async loadTodos() {
@@ -9759,14 +10375,7 @@ class TerminalGUI {
         const clearTodosBtn = document.getElementById('clear-todos-btn');
         if (!todoList) return;
         if (this.todoSystem.todos.length === 0) {
-            todoList.innerHTML = `
-                <div class="todo-item">
-                    <div class="todo-text">
-                        <span class="todo-time">[empty]</span>
-                        <span class="todo-message">No todos yet. Generate some from terminal output!</span>
-                    </div>
-                </div>
-            `;
+            todoList.innerHTML = '';
             // Hide Clear Completed button when no todos
             if (clearTodosBtn) clearTodosBtn.style.display = 'none';
             return;
@@ -9972,6 +10581,7 @@ class TerminalGUI {
                     terminalData.terminal.write(data.content);
                     terminalData.lastOutput = data.content;
                     this.detectAutoContinuePrompt(data.content, terminalId);
+                    this.extractAndTrackCompletionText(data.content, terminalId);
                     this.detectUsageLimit(data.content, terminalId);
                     this.detectCwdChange(data.content, terminalId);
                 } catch (error) {
@@ -10009,7 +10619,7 @@ class TerminalGUI {
             return;
         }
         
-        // Handle terminal input
+        // Handle terminal input with Option+Backspace support
         terminal.onData((data) => {
             // Check if terminal is ready before sending input (helps with Windows)
             const terminalData = this.terminals.get(id);
@@ -10023,6 +10633,25 @@ class TerminalGUI {
                 }
                 terminalData.queuedInput.push(data);
             }
+        });
+        
+        // Add custom key handler for Option+Backspace word deletion
+        terminal.attachCustomKeyEventHandler((e) => {
+            // Handle Option+Backspace (Alt+Backspace) for word deletion
+            if (e.type === 'keydown' && e.altKey && e.key === 'Backspace') {
+                e.preventDefault();
+                // Send Ctrl+W (word delete backward) to terminal
+                const terminalData = this.terminals.get(id);
+                if (terminalData && terminalData.isReady !== false) {
+                    ipcRenderer.send('terminal-input', { terminalId: id, data: '\x17' });
+                } else {
+                    if (!terminalData.queuedInput) terminalData.queuedInput = [];
+                    terminalData.queuedInput.push('\x17');
+                }
+                this.logAction(`Option+Backspace word delete in Terminal ${id}`, 'info');
+                return false; // Prevent default handling
+            }
+            return true; // Allow normal key processing
         });
         
         
@@ -10091,6 +10720,124 @@ class TerminalGUI {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+    
+    initializeMicrowaveModeInline() {
+        try {
+            // Check if MicrowaveMode class is available
+            if (typeof MicrowaveMode !== 'undefined') {
+                this.microwaveMode = new MicrowaveMode(this);
+                console.log('🍽️ Microwave mode initialized successfully');
+                this.logAction('Microwave mode initialized', 'info');
+            } else {
+                console.warn('⚠️ MicrowaveMode class not found - using fallback mode');
+                this.initializeFallbackMicrowaveModeInline();
+            }
+            
+            // Apply microwave mode settings to UI
+            this.applyMicrowaveModeToUIInline();
+            
+        } catch (error) {
+            console.error('❌ Error initializing microwave mode, using fallback:', error);
+            this.logAction(`Microwave mode initialization error: ${error.message}`, 'error');
+            this.initializeFallbackMicrowaveModeInline();
+        }
+    }
+    
+    initializeFallbackMicrowaveModeInline() {
+        // Simple fallback microwave mode implementation
+        this.microwaveMode = {
+            isActive: false,
+            repeatCount: 0,
+            repeatTimer: null,
+            
+            onTaskCompleted: () => {
+                if (this.preferences.microwaveModeEnabled) {
+                    console.log('🍽️ Fallback microwave mode: Task completed');
+                    this.startSimpleMicrowaveBeeping();
+                }
+            },
+            
+            stopMicrowaveBeeping: (reason = 'manual') => {
+                if (this.microwaveMode.repeatTimer) {
+                    clearInterval(this.microwaveMode.repeatTimer);
+                    this.microwaveMode.repeatTimer = null;
+                    this.microwaveMode.isActive = false;
+                    console.log(`🍽️ Fallback microwave beeping stopped: ${reason}`);
+                }
+            },
+            
+            onNewTaskStarted: () => {
+                this.microwaveMode.stopMicrowaveBeeping('new_task_started');
+            }
+        };
+        
+        // Simple beeping implementation
+        this.startSimpleMicrowaveBeeping = () => {
+            if (this.microwaveMode.isActive) {
+                return; // Already active
+            }
+            
+            this.microwaveMode.isActive = true;
+            this.microwaveMode.repeatCount = 0;
+            
+            // Initial beep after 2 seconds
+            setTimeout(() => {
+                if (this.microwaveMode.isActive) {
+                    this.playCompletionSound();
+                    this.microwaveMode.repeatCount++;
+                }
+            }, 2000);
+            
+            // Repeat every minute for 5 minutes
+            this.microwaveMode.repeatTimer = setInterval(() => {
+                if (this.microwaveMode.repeatCount >= 5) {
+                    this.microwaveMode.stopMicrowaveBeeping('max_repeats_reached');
+                    return;
+                }
+                
+                this.playCompletionSound();
+                this.microwaveMode.repeatCount++;
+                console.log(`🍽️ Fallback microwave beep ${this.microwaveMode.repeatCount}/5`);
+            }, 60000); // 60 seconds
+        };
+        
+        console.log('🍽️ Fallback microwave mode initialized');
+    }
+    
+    applyMicrowaveModeToUIInline() {
+        // Apply microwave mode preference to checkbox
+        const microwaveModeCheckbox = document.getElementById('microwave-mode-enabled');
+        if (microwaveModeCheckbox) {
+            microwaveModeCheckbox.checked = this.preferences.microwaveModeEnabled;
+        }
+        
+        // Set default sound values if not already set
+        const completionSoundSelect = document.getElementById('completion-sound-select');
+        const injectionSoundSelect = document.getElementById('injection-sound-select');
+        const promptedSoundSelect = document.getElementById('prompted-sound-select');
+        
+        if (completionSoundSelect && !this.preferences.completionSoundFile) {
+            this.preferences.completionSoundFile = 'click.wav';
+            completionSoundSelect.value = 'click.wav';
+        }
+        
+        if (injectionSoundSelect && !this.preferences.injectionSoundFile) {
+            this.preferences.injectionSoundFile = 'click.wav';
+            injectionSoundSelect.value = 'click.wav';
+        }
+        
+        if (promptedSoundSelect && !this.preferences.promptedSoundFile) {
+            this.preferences.promptedSoundFile = 'none';
+            promptedSoundSelect.value = 'none';
+        }
+        
+        // Ensure sound effects are enabled by default for microwave mode
+        const soundEffectsCheckbox = document.getElementById('sound-effects-enabled');
+        if (soundEffectsCheckbox && this.preferences.microwaveModeEnabled) {
+            soundEffectsCheckbox.checked = true;
+            this.preferences.completionSoundEnabled = true;
+        }
     }
 }
 // Initialize the application when DOM is loaded

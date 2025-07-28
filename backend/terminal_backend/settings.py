@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     "settings",
     "todos",
     "user_settings",
+    "pricing",
 ]
 
 MIDDLEWARE = [
