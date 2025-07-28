@@ -11,6 +11,7 @@ const DomUtils = require('./src/utils/dom-utils');
 const ValidationUtils = require('./src/utils/validation');
 const IPCHandler = require('./src/core/ipc-handler');
 const ModalManager = require('./src/ui/modal-manager');
+const PricingManager = require('./src/managers/pricingManager');
 class TerminalGUI {
     constructor() {
         // Initialize loading manager first
@@ -203,6 +204,10 @@ class TerminalGUI {
         this.backgroundServiceActive = false;
         // Initialize injection manager
         this.injectionManager = new InjectionManager(this);
+        
+        // Initialize pricing manager (will get API client during initialization)
+        this.pricingManager = new PricingManager(null, (message, level) => this.logAction(message, level));
+        
         // Add global console error protection to prevent EIO crashes
         this.setupConsoleErrorProtection();
         // Initialize the application asynchronously
@@ -337,6 +342,10 @@ class TerminalGUI {
             this.updateTrayBadge();
             // Initialize todo system
             await this.initializeTodoSystem();
+            
+            // Initialize pricing manager
+            await this.initializePricingSystem();
+            
             // Clean up any orphaned terminal selector items from previous sessions
             this.cleanupOrphanedTerminalSelectorItems();
             
@@ -5964,6 +5973,26 @@ class TerminalGUI {
             this.setTerminalStatusDisplay(status, this.activeTerminalId);
         }
     }
+
+    getTerminalDisplayStatus(terminalId) {
+        // Get the current terminal display status for pricing manager integration
+        const statusElement = document.querySelector(`[data-terminal-status="${terminalId}"]`);
+        if (statusElement) {
+            const statusText = statusElement.textContent.trim();
+            // Map status display to standard format
+            if (statusText.includes('Running') || statusElement.className.includes('running')) {
+                return 'running';
+            } else if (statusText === '...' || statusText === '') {
+                return '...';  // Ready/idle state
+            } else if (statusText.includes('injecting')) {
+                return 'injecting';
+            } else {
+                return statusText;
+            }
+        }
+        return 'unknown';
+    }
+
     checkCompletionSoundTrigger(previousStatus, currentStatus, terminalId) {
         // Trigger completion sound when transitioning from 'running' to idle ('...')
         if (previousStatus === 'running' && (currentStatus === '...' || currentStatus === '')) {
@@ -8629,6 +8658,11 @@ class TerminalGUI {
         // Cleanup event-driven status update system
         this.cleanupTerminalStatusTracking(terminalId);
         
+        // Cleanup pricing manager terminal monitoring
+        if (this.pricingManager && typeof this.pricingManager.cleanupTerminal === 'function') {
+            this.pricingManager.cleanupTerminal(terminalId);
+        }
+        
         // Remove DOM element FIRST to ensure clean state
         const terminalWrapper = document.querySelector(`[data-terminal-id="${terminalId}"]`);
         if (terminalWrapper) {
@@ -9761,6 +9795,41 @@ class TerminalGUI {
             }
         }, 100);
     }
+
+    async initializePricingSystem() {
+        console.log('[PRICING_DEBUG] Initializing pricing system...');
+        
+        try {
+            // Set the API client for the pricing manager
+            if (this.backendAPIClient) {
+                this.pricingManager.apiClient = this.backendAPIClient;
+                console.log('[PRICING_DEBUG] API client set for pricing manager');
+            } else {
+                console.warn('[PRICING_DEBUG] Backend API client not available, pricing manager will use fallback');
+            }
+            
+            // Initialize the pricing manager with proper dependencies
+            await this.pricingManager.initialize();
+            
+            // Set up terminal status monitoring dependencies for pricing manager
+            this.pricingManager.setTerminalStatusFunction((terminalId) => {
+                return this.getTerminalDisplayStatus(terminalId);
+            });
+            
+            this.pricingManager.getTerminalNumber = (terminalId) => {
+                const terminalData = this.terminals.get(terminalId);
+                return terminalData ? terminalData.name.replace('Terminal ', '') : terminalId;
+            };
+            
+            // Add pricing navigation to the existing sidebar navigation
+            this.setupPricingEventListeners();
+            
+            console.log('[PRICING_DEBUG] Pricing system initialized successfully');
+        } catch (error) {
+            console.error('[PRICING_DEBUG] Failed to initialize pricing system:', error);
+        }
+    }
+
     setupTodoEventListeners() {
         // Navigation buttons
         const actionLogNavBtn = document.getElementById('action-log-nav-btn');
@@ -9808,6 +9877,22 @@ class TerminalGUI {
         
         // Setup completion modal handlers
         this.setupCompletionModalHandlers();
+    }
+
+    setupPricingEventListeners() {
+        // Navigation button for pricing
+        const pricingNavBtn = document.getElementById('pricing-nav-btn');
+        if (pricingNavBtn) {
+            pricingNavBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('[PRICING_DEBUG] Pricing button clicked!', e.target, e.currentTarget);
+                await this.switchSidebarView('pricing');
+            });
+            console.log('[PRICING_DEBUG] Pricing button event listener attached successfully');
+        } else {
+            console.warn('[PRICING_DEBUG] pricing-nav-btn element not found!');
+        }
     }
     
     setupCompletionContainerHandlers() {
@@ -9937,15 +10022,19 @@ class TerminalGUI {
         console.log(`[DEBUG] switchSidebarView called with view: ${view}`);
         const actionLogView = document.getElementById('action-log-view');
         const todoView = document.getElementById('todo-view');
+        const pricingView = document.getElementById('pricing-view');
         const actionLogNavBtn = document.getElementById('action-log-nav-btn');
         const todoNavBtn = document.getElementById('todo-nav-btn');
+        const pricingNavBtn = document.getElementById('pricing-nav-btn');
         const sidebarTitle = document.getElementById('sidebar-title');
-        console.log(`[DEBUG] Elements found: actionLogView=${!!actionLogView}, todoView=${!!todoView}, actionLogNavBtn=${!!actionLogNavBtn}, todoNavBtn=${!!todoNavBtn}, sidebarTitle=${!!sidebarTitle}`);
+        console.log(`[DEBUG] Elements found: actionLogView=${!!actionLogView}, todoView=${!!todoView}, pricingView=${!!pricingView}, actionLogNavBtn=${!!actionLogNavBtn}, todoNavBtn=${!!todoNavBtn}, pricingNavBtn=${!!pricingNavBtn}, sidebarTitle=${!!sidebarTitle}`);
         if (view === 'action-log') {
             actionLogView.style.display = 'flex';
             todoView.style.display = 'none';
+            if (pricingView) pricingView.style.display = 'none';
             actionLogNavBtn.classList.add('active');
             todoNavBtn.classList.remove('active');
+            if (pricingNavBtn) pricingNavBtn.classList.remove('active');
             sidebarTitle.textContent = 'Action Log';
             this.todoSystem.currentView = 'action-log';
             // Save the current view state to backend
@@ -9957,8 +10046,10 @@ class TerminalGUI {
         } else if (view === 'todo') {
             actionLogView.style.display = 'none';
             todoView.style.display = 'flex';
+            if (pricingView) pricingView.style.display = 'none';
             actionLogNavBtn.classList.remove('active');
             todoNavBtn.classList.add('active');
+            if (pricingNavBtn) pricingNavBtn.classList.remove('active');
             sidebarTitle.textContent = 'Completions';
             this.todoSystem.currentView = 'todo';
             // Save the current view state to backend
@@ -9968,6 +10059,25 @@ class TerminalGUI {
                 console.warn('Failed to save sidebar view to backend:', error);
             }
             this.loadTodos();
+        } else if (view === 'pricing') {
+            actionLogView.style.display = 'none';
+            todoView.style.display = 'none';
+            if (pricingView) pricingView.style.display = 'flex';
+            actionLogNavBtn.classList.remove('active');
+            todoNavBtn.classList.remove('active');
+            if (pricingNavBtn) pricingNavBtn.classList.add('active');
+            sidebarTitle.textContent = 'Usage';
+            this.todoSystem.currentView = 'pricing';
+            // Save the current view state to backend
+            try {
+                await ipcRenderer.invoke('db-save-setting', 'sidebarView', 'pricing');
+            } catch (error) {
+                console.warn('Failed to save sidebar view to backend:', error);
+            }
+            // Load pricing data when switching to pricing view
+            if (this.pricingManager && typeof this.pricingManager.loadPricingData === 'function') {
+                await this.pricingManager.loadPricingData();
+            }
         }
     }
     startTerminalStateMonitoring() {

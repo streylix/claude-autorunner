@@ -6,9 +6,10 @@
  */
 
 class SidebarController {
-    constructor(actionLogManager, todoManager, logAction) {
+    constructor(actionLogManager, todoManager, pricingManager, logAction) {
         this.actionLogManager = actionLogManager;
         this.todoManager = todoManager;
+        this.pricingManager = pricingManager;
         this.logAction = logAction || console.log;
         
         this.terminalStateMonitoring = {
@@ -37,8 +38,9 @@ class SidebarController {
      * Setup sidebar navigation between action log and todos
      */
     setupSidebarNavigation() {
-        const actionLogBtn = document.getElementById('action-log-btn');
-        const todosBtn = document.getElementById('todos-btn');
+        const actionLogBtn = document.getElementById('action-log-nav-btn');
+        const todosBtn = document.getElementById('todo-nav-btn');
+        const pricingBtn = document.getElementById('pricing-nav-btn');
 
         if (actionLogBtn) {
             actionLogBtn.addEventListener('click', () => {
@@ -52,6 +54,12 @@ class SidebarController {
             });
         }
 
+        if (pricingBtn) {
+            pricingBtn.addEventListener('click', () => {
+                this.switchToPricing();
+            });
+        }
+
         // Set initial active state
         this.updateNavigationState();
     }
@@ -60,7 +68,7 @@ class SidebarController {
      * Switch to action log view
      */
     async switchToActionLog() {
-        await this.todoManager.switchSidebarView('action-log');
+        await this.switchSidebarView('action-log');
         this.updateNavigationState();
         this.actionLogManager.updateActionLogDisplay();
     }
@@ -69,23 +77,89 @@ class SidebarController {
      * Switch to todos view
      */
     async switchToTodos() {
-        await this.todoManager.switchSidebarView('todos');
+        await this.switchSidebarView('todos');
         this.updateNavigationState();
-        await this.todoManager.refreshTodos();
+        if (this.todoManager && typeof this.todoManager.refreshTodos === 'function') {
+            await this.todoManager.refreshTodos();
+        }
+    }
+
+    /**
+     * Switch to pricing view
+     */
+    async switchToPricing() {
+        await this.switchSidebarView('pricing');
+        this.updateNavigationState();
+        
+        // Initialize pricing manager if not already done
+        if (this.pricingManager && typeof this.pricingManager.loadPricingData === 'function') {
+            await this.pricingManager.loadPricingData();
+        }
+    }
+
+    /**
+     * Switch sidebar view between action log, todos, and pricing
+     * @param {string} view - View to switch to ('action-log', 'todos', or 'pricing')
+     */
+    async switchSidebarView(view) {
+        const actionLogView = document.getElementById('action-log-view');
+        const todosView = document.getElementById('todo-view');
+        const pricingView = document.getElementById('pricing-view');
+        
+        // Hide all views
+        if (actionLogView) actionLogView.style.display = 'none';
+        if (todosView) todosView.style.display = 'none';
+        if (pricingView) pricingView.style.display = 'none';
+        
+        // Show selected view
+        switch (view) {
+            case 'action-log':
+                if (actionLogView) actionLogView.style.display = 'block';
+                this.todoManager.currentView = 'action-log';
+                break;
+            case 'todos':
+                if (todosView) todosView.style.display = 'block';
+                this.todoManager.currentView = 'todos';
+                break;
+            case 'pricing':
+                if (pricingView) pricingView.style.display = 'block';
+                this.todoManager.currentView = 'pricing';
+                break;
+        }
+        
+        // Update sidebar title
+        const sidebarTitle = document.getElementById('sidebar-title');
+        if (sidebarTitle) {
+            switch (view) {
+                case 'action-log':
+                    sidebarTitle.textContent = 'Action Log';
+                    break;
+                case 'todos':
+                    sidebarTitle.textContent = 'Completions';
+                    break;
+                case 'pricing':
+                    sidebarTitle.textContent = 'Token Usage & Costs';
+                    break;
+            }
+        }
+        
+        this.logAction(`Switched to ${view} view`, 'info');
     }
 
     /**
      * Update navigation button states
      */
     updateNavigationState() {
-        const actionLogBtn = document.getElementById('action-log-btn');
-        const todosBtn = document.getElementById('todos-btn');
+        const actionLogBtn = document.getElementById('action-log-nav-btn');
+        const todosBtn = document.getElementById('todo-nav-btn');
+        const pricingBtn = document.getElementById('pricing-nav-btn');
         
-        if (actionLogBtn && todosBtn) {
+        if (actionLogBtn && todosBtn && pricingBtn) {
             const currentView = this.todoManager.currentView;
             
             actionLogBtn.classList.toggle('active', currentView === 'action-log');
             todosBtn.classList.toggle('active', currentView === 'todos');
+            pricingBtn.classList.toggle('active', currentView === 'pricing');
         }
     }
 

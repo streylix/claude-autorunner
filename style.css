@@ -4910,3 +4910,344 @@ button#voice-btn.voice-button.processing:hover,
     border-top: none;
 }
 
+/* ==========================================
+   PRICING VIEW STYLES
+   ========================================== */
+
+/* Pricing Header */
+.pricing-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-primary);
+    background: var(--bg-tertiary);
+}
+
+.pricing-title-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.pricing-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.pricing-loading-indicator {
+    display: flex;
+    align-items: center;
+}
+
+.loading-spinner-small {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border-secondary);
+    border-top: 2px solid var(--accent-primary);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+#pricing-refresh-btn {
+    padding: 4px;
+    border-radius: 4px;
+    transition: background 0.2s ease;
+}
+
+#pricing-refresh-btn:hover {
+    background: var(--bg-quaternary);
+}
+
+/* Pricing refresh button loading state - high specificity */
+.pricing-header .icon-btn#pricing-refresh-btn.loading {
+    opacity: 0.7 !important;
+    cursor: not-allowed !important;
+    pointer-events: none !important;
+    background: var(--bg-tertiary) !important;
+}
+
+.pricing-header .icon-btn#pricing-refresh-btn.loading:hover {
+    background: var(--bg-tertiary) !important;
+    color: var(--text-tertiary) !important;
+}
+
+.pricing-header .icon-btn#pricing-refresh-btn.loading i {
+    animation: spin 1s linear infinite !important;
+}
+
+/* Spin animation for refresh button loading state */
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Pricing Content */
+.pricing-content {
+    padding: 12px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 120px); /* Stretch to bottom minus header/footer */
+    overflow: hidden; /* Prevent outer scroll, let inner containers handle it */
+}
+
+/* Pricing Data Container */
+.pricing-data {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0; /* Allow flexbox shrinking */
+    height: 100%; /* Ensure full height */
+}
+
+/* Loading State */
+.pricing-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    color: var(--text-secondary);
+}
+
+.pricing-loading .loading-spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid var(--border-secondary);
+    border-top: 2px solid var(--accent-primary);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 12px;
+}
+
+.pricing-loading .loading-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+/* Error State */
+.pricing-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    text-align: center;
+}
+
+.pricing-error .error-icon {
+    font-size: 32px;
+    margin-bottom: 12px;
+    opacity: 0.7;
+}
+
+.pricing-error .error-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+}
+
+.pricing-error .error-retry-btn {
+    padding: 8px 16px;
+    background: var(--accent-primary);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.pricing-error .error-retry-btn:hover {
+    background: var(--accent-secondary);
+}
+
+/* Cost Summary Cards */
+.cost-summary {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.cost-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    padding: 12px 8px;
+    text-align: center;
+    transition: background 0.2s ease;
+}
+
+.cost-card:hover {
+    background: var(--bg-quaternary);
+}
+
+.cost-card.total {
+    border-color: var(--accent-primary);
+    background: rgba(0, 122, 204, 0.1);
+}
+
+.cost-card .cost-label {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    font-weight: 500;
+}
+
+.cost-card .cost-value {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+}
+
+.cost-card.total .cost-value {
+    color: var(--accent-primary);
+}
+
+/* Receipt Style */
+.pricing-receipt {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    overflow: hidden;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0; /* Allow flexbox shrinking */
+    height: 100%; /* Take full available height */
+}
+
+/* Removed receipt header styles - header was removed from HTML */
+
+.receipt-body {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0; /* Allow flexbox shrinking */
+    max-height: 100%; /* Ensure it doesn't grow beyond container */
+    /* Add visible scrollbar styling */
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-secondary) var(--bg-tertiary);
+}
+
+/* Webkit scrollbar styling */
+.receipt-body::-webkit-scrollbar {
+    width: 6px;
+}
+
+.receipt-body::-webkit-scrollbar-track {
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+}
+
+.receipt-body::-webkit-scrollbar-thumb {
+    background: var(--border-secondary);
+    border-radius: 3px;
+}
+
+.receipt-body::-webkit-scrollbar-thumb:hover {
+    background: var(--text-quaternary);
+}
+
+.receipt-entry {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-primary);
+    font-size: 11px;
+    transition: background 0.2s ease;
+}
+
+.receipt-entry:hover {
+    background: var(--bg-tertiary);
+}
+
+.receipt-entry:last-child {
+    border-bottom: none;
+}
+
+.receipt-entry-date {
+    color: var(--text-secondary);
+    min-width: 80px;
+}
+
+.receipt-entry-model {
+    color: var(--text-tertiary);
+    flex: 1;
+    margin: 0 8px;
+    font-size: 10px;
+}
+
+.receipt-entry-cost {
+    color: var(--text-primary);
+    font-weight: 500;
+    min-width: 60px;
+    text-align: right;
+}
+
+.receipt-footer {
+    background: var(--bg-tertiary);
+    padding: 12px;
+    border-top: 2px solid var(--accent-primary);
+}
+
+.receipt-total {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.receipt-total span:last-child {
+    color: var(--accent-primary);
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+}
+
+/* Pricing Status */
+.pricing-status {
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border-top: 1px solid var(--border-primary);
+}
+
+.pricing-status .status-text {
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+/* Responsive adjustments */
+@media (max-width: 300px) {
+    .cost-summary {
+        grid-template-columns: 1fr;
+    }
+    
+    .cost-card .cost-value {
+        font-size: 14px;
+    }
+    
+    .receipt-entry {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+    }
+    
+    .receipt-entry-cost {
+        text-align: left;
+        min-width: auto;
+    }
+}
+
+/* Animation for loading spinner */
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+

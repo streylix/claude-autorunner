@@ -28,6 +28,7 @@ urlpatterns = [
     path("api/settings/", include("settings.urls")),
     path("api/settings/", include("user_settings.urls")),
     path("api/todos/", include("todos.urls")),
+    path("", include("pricing.urls")),
 ]
 
 # Serve media files in development

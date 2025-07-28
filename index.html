@@ -41,6 +41,9 @@
                         <button class="icon-btn sidebar-nav-btn" id="todo-nav-btn" title="Completions" data-test-id="todo-nav-btn">
                             <i data-lucide="check-square"></i>
                         </button>
+                        <button class="icon-btn sidebar-nav-btn" id="pricing-nav-btn" title="Pricing" data-test-id="pricing-nav-btn">
+                            <i data-lucide="dollar-sign"></i>
+                        </button>
                     </div>
                 </div>
                 
@@ -142,6 +145,67 @@
                             <i data-lucide="trash-2"></i>
                             Clear all
                         </button>
+                    </div>
+                </div>
+
+                <!-- Pricing View -->
+                <div class="sidebar-view" id="pricing-view" style="display: none;">
+                    <div class="pricing-header">
+                        <div class="pricing-title-container">
+                            <div class="pricing-title">Token Usage & Costs</div>
+                            <div class="pricing-loading-indicator" id="pricing-loading-indicator" style="display: none;">
+                                <div class="loading-spinner-small"></div>
+                            </div>
+                        </div>
+                        <button class="icon-btn" id="pricing-refresh-btn" title="Refresh pricing data" data-test-id="pricing-refresh-btn">
+                            <i data-lucide="refresh-cw"></i>
+                        </button>
+                    </div>
+                    <div class="pricing-content" id="pricing-content">
+                        <div class="pricing-loading" id="pricing-loading" style="display: none;">
+                            <div class="loading-spinner"></div>
+                            <div class="loading-text">Loading pricing data...</div>
+                        </div>
+                        <div class="pricing-error" id="pricing-error" style="display: none;">
+                            <div class="error-icon">⚠️</div>
+                            <div class="error-text">Failed to load pricing data</div>
+                            <button class="error-retry-btn" id="pricing-retry-btn">Retry</button>
+                        </div>
+                        <div class="pricing-data" id="pricing-data" style="display: none;">
+                            <!-- Cost Summary Cards -->
+                            <div class="cost-summary">
+                                <div class="cost-card">
+                                    <div class="cost-label">Daily</div>
+                                    <div class="cost-value" id="daily-cost">$0.00</div>
+                                </div>
+                                <div class="cost-card">
+                                    <div class="cost-label">Weekly</div>
+                                    <div class="cost-value" id="weekly-cost">$0.00</div>
+                                </div>
+                                <div class="cost-card total">
+                                    <div class="cost-label">Total</div>
+                                    <div class="cost-value" id="total-cost">$0.00</div>
+                                </div>
+                            </div>
+                            
+                            <!-- Receipt-style detailed breakdown -->
+                            <div class="pricing-receipt">
+                                <div class="receipt-body" id="receipt-body">
+                                    <!-- Daily entries will be populated here -->
+                                </div>
+                                <div class="receipt-footer">
+                                    <div class="receipt-total">
+                                        <span>Total Cost:</span>
+                                        <span id="receipt-total-cost">$0.00</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="sidebar-footer">
+                        <div class="pricing-status" id="pricing-status">
+                            <span class="status-text">Last updated: Never</span>
+                        </div>
                     </div>
                 </div>
             </div>

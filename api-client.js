@@ -369,6 +369,35 @@ class BackendAPIClient {
         return await this._fetch(url);
     }
 
+    // Pricing Management
+    async executeCCUsage(sessionId = 'default') {
+        return await this._fetch('/pricing/execute_ccusage/', {
+            method: 'POST',
+            body: JSON.stringify({
+                session_id: sessionId
+            })
+        });
+    }
+
+    async getCachedPricingData() {
+        return await this._fetch('/pricing/get_cached_data/', {
+            method: 'GET'
+        });
+    }
+
+    async clearPricingCache() {
+        return await this._fetch('/pricing/clear_cache/', {
+            method: 'POST'
+        });
+    }
+
+    // Alternative simple ccusage endpoint
+    async executeCCUsageSimple() {
+        return await this._fetch('/ccusage/', {
+            method: 'POST'
+        });
+    }
+
     // Health Check
     async isBackendAvailable() {
         try {
