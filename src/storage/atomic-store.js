@@ -67,6 +67,14 @@ class AtomicStore {
     this.cache = null;
     this.dirty = false;
     
+    // Write queue to prevent lock contention
+    this.writeQueue = [];
+    this.isProcessingQueue = false;
+    
+    // Backup throttling - only backup once per 5 minutes
+    this.lastBackupTime = 0;
+    this.backupThrottle = 300000; // 5 minutes
+    
     console.log(`🏪 AtomicStore initialized: ${this.storePath}`);
   }
   
@@ -117,7 +125,7 @@ class AtomicStore {
     }
   }
   
-  async acquireLock(lockId, timeout = 5000) {
+  async acquireLock(lockId, timeout = 15000) {
     const startTime = Date.now();
     
     while (Date.now() - startTime < timeout) {
@@ -253,17 +261,46 @@ class AtomicStore {
   async write(data) {
     const validatedData = this.validateAndFix(data);
     
-    // Create backup before writing
-    await this.createBackup();
-    
-    // Perform atomic write
-    const success = await this.atomicWrite(validatedData);
-    
-    if (!success) {
-      throw new Error('Atomic write failed');
+    // Add to queue and process
+    return new Promise((resolve, reject) => {
+      this.writeQueue.push({
+        data: validatedData,
+        resolve,
+        reject
+      });
+      
+      this.processQueue();
+    });
+  }
+  
+  async processQueue() {
+    if (this.isProcessingQueue || this.writeQueue.length === 0) {
+      return;
     }
     
-    return true;
+    this.isProcessingQueue = true;
+    
+    while (this.writeQueue.length > 0) {
+      const { data, resolve, reject } = this.writeQueue.shift();
+      
+      try {
+        // Create backup before writing
+        await this.createBackup();
+        
+        // Perform atomic write
+        const success = await this.atomicWrite(data);
+        
+        if (!success) {
+          throw new Error('Atomic write failed');
+        }
+        
+        resolve(true);
+      } catch (error) {
+        reject(error);
+      }
+    }
+    
+    this.isProcessingQueue = false;
   }
   
   async createBackup() {
@@ -271,6 +308,13 @@ class AtomicStore {
       if (!fsSync.existsSync(this.storePath)) {
         return; // No file to backup
       }
+      
+      // Throttle backups to prevent excessive I/O
+      const now = Date.now();
+      if (now - this.lastBackupTime < this.backupThrottle) {
+        return; // Skip backup, too soon
+      }
+      this.lastBackupTime = now;
       
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const backupFile = path.join(this.backupPath, `${this.name}-${timestamp}.json`);

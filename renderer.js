@@ -115,9 +115,9 @@ class TerminalGUI {
             // Add sound effects preferences - MICROWAVE MODE ENABLED BY DEFAULT
             completionSoundEnabled: true,
             microwaveModeEnabled: true, // Microwave mode: default ON
-            completionSoundFile: 'click.wav', // Default completion sound: click
+            completionSoundFile: 'beep.wav', // Default completion sound: beep
             injectionSoundFile: 'click.wav',  // Default injection sound: click
-            promptedSoundFile: 'none',        // Default prompted sound: none
+            promptedSoundFile: 'gmod.wav',        // Default prompted sound: gmod
             // Add sidebar width persistence
             leftSidebarWidth: 300,
             rightSidebarWidth: 400,
@@ -929,6 +929,11 @@ class TerminalGUI {
             
             // Resize all terminals after sidebar resize
             this.resizeAllTerminals();
+            
+            // Update pricing responsive classes during resize
+            if (this.pricingManager && typeof this.pricingManager.applyResponsiveClasses === 'function') {
+                this.pricingManager.applyResponsiveClasses();
+            }
         };
         
         // Mouse up handler
@@ -947,7 +952,14 @@ class TerminalGUI {
             this.saveAllPreferences();
             
             // Final resize to ensure terminals fit properly
-            setTimeout(() => this.resizeAllTerminals(), 100);
+            setTimeout(() => {
+                this.resizeAllTerminals();
+                
+                // Update pricing responsive classes after sidebar resize
+                if (this.pricingManager && typeof this.pricingManager.applyResponsiveClasses === 'function') {
+                    this.pricingManager.applyResponsiveClasses();
+                }
+            }, 100);
         };
         
         // Add event listeners
@@ -9820,6 +9832,13 @@ class TerminalGUI {
             // Initialize the pricing manager with proper dependencies
             await this.pricingManager.initialize();
             
+            // Apply initial responsive classes for pricing
+            setTimeout(() => {
+                if (this.pricingManager && typeof this.pricingManager.applyResponsiveClasses === 'function') {
+                    this.pricingManager.applyResponsiveClasses();
+                }
+            }, 500); // Wait for DOM to be fully rendered
+            
             // Set up terminal status monitoring dependencies for pricing manager
             this.pricingManager.setTerminalStatusFunction((terminalId) => {
                 return this.getTerminalDisplayStatus(terminalId);
@@ -10818,8 +10837,8 @@ class TerminalGUI {
         const promptedSoundSelect = document.getElementById('prompted-sound-select');
         
         if (completionSoundSelect && !this.preferences.completionSoundFile) {
-            this.preferences.completionSoundFile = 'click.wav';
-            completionSoundSelect.value = 'click.wav';
+            this.preferences.completionSoundFile = 'beep.wav';
+            completionSoundSelect.value = 'beep.wav';
         }
         
         if (injectionSoundSelect && !this.preferences.injectionSoundFile) {
@@ -10828,8 +10847,8 @@ class TerminalGUI {
         }
         
         if (promptedSoundSelect && !this.preferences.promptedSoundFile) {
-            this.preferences.promptedSoundFile = 'none';
-            promptedSoundSelect.value = 'none';
+            this.preferences.promptedSoundFile = 'gmod.wav';
+            promptedSoundSelect.value = 'gmod.wav';
         }
         
         // Ensure sound effects are enabled by default for microwave mode

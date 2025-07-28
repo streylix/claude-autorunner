@@ -5245,6 +5245,76 @@ button#voice-btn.voice-button.processing:hover,
     }
 }
 
+/* Responsive classes for sidebar width changes */
+.pricing-content.narrow {
+    /* When sidebar is narrow, hide daily/weekly and show only total */
+}
+
+.pricing-content.narrow .cost-summary .cost-card:not(.total) {
+    display: none;
+}
+
+.pricing-content.narrow .cost-summary {
+    grid-template-columns: 1fr;
+    justify-content: center;
+}
+
+/* Hide model info and dates when narrow */
+.pricing-content.narrow .receipt-entry-model {
+    display: none;
+}
+
+.pricing-content.narrow .receipt-entry-date {
+    display: none;
+}
+
+/* Adjust receipt entry layout for narrow mode */
+.pricing-content.narrow .receipt-entry {
+    justify-content: center;
+    padding: 8px 12px;
+}
+
+.pricing-content.narrow .receipt-entry-cost {
+    text-align: center;
+    min-width: auto;
+    font-size: 11px;
+    flex: 1;
+}
+
+/* Very narrow adjustments */
+.pricing-content.very-narrow .pricing-title {
+    font-size: 12px;
+}
+
+.pricing-content.very-narrow .receipt-entry {
+    padding: 6px 8px;
+}
+
+.pricing-content.very-narrow .receipt-entry-cost {
+    font-size: 10px;
+    min-width: 50px;
+}
+
+@media (max-width: 220px) {
+    /* Ultra narrow - show minimal info */
+    .cost-summary .cost-card .cost-label {
+        display: none;
+    }
+    
+    .receipt-entry-date {
+        display: none;
+    }
+    
+    .receipt-entry {
+        padding: 6px 8px;
+        justify-content: center;
+    }
+    
+    .pricing-title {
+        font-size: 11px;
+    }
+}
+
 /* Animation for loading spinner */
 @keyframes spin {
     0% { transform: rotate(0deg); }

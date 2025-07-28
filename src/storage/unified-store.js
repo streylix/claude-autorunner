@@ -151,6 +151,12 @@ const store = new AtomicStore({
  * Replaces all the scattered storage methods with atomic operations
  */
 class UnifiedStore {
+  constructor() {
+    // Debounce settings writes to prevent lock contention
+    this.settingsBuffer = new Map();
+    this.settingsWriteTimer = null;
+    this.writeDelay = 100; // 100ms debounce
+  }
   
   // Settings Management
   async getSetting(key) {
@@ -158,7 +164,28 @@ class UnifiedStore {
   }
   
   async setSetting(key, value) {
-    await store.set(`settings.${key}`, value);
+    // Buffer the write and debounce
+    this.settingsBuffer.set(key, value);
+    
+    if (this.settingsWriteTimer) {
+      clearTimeout(this.settingsWriteTimer);
+    }
+    
+    this.settingsWriteTimer = setTimeout(async () => {
+      try {
+        // Write all buffered settings at once
+        const settings = await this.getAllSettings();
+        for (const [bufferedKey, bufferedValue] of this.settingsBuffer) {
+          settings[bufferedKey] = bufferedValue;
+        }
+        
+        await store.set('settings', settings);
+        this.settingsBuffer.clear();
+      } catch (error) {
+        console.error('Error setting setting:', error);
+        throw error;
+      }
+    }, this.writeDelay);
   }
   
   async getAllSettings() {
@@ -175,7 +202,8 @@ class UnifiedStore {
   }
   
   async setTerminalState(terminalState) {
-    await store.set('settings.terminalState', terminalState);
+    // Use the same debounced mechanism for terminal state
+    await this.setSetting('terminalState', terminalState);
   }
   
   // Terminal State Validation and Recovery
