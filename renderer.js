@@ -12,6 +12,19 @@ const ValidationUtils = require('./src/utils/validation');
 const IPCHandler = require('./src/core/ipc-handler');
 const ModalManager = require('./src/ui/modal-manager');
 const PricingManager = require('./src/managers/pricingManager');
+// Import performance optimization modules
+const ObserverManager = require('./src/managers/ObserverManager');
+const MemoryMonitor = require('./src/managers/MemoryMonitor');
+const domCache = require('./src/utils/dom-cache');
+
+// Import memory leak prevention utilities
+const timerRegistry = require('./src/utils/timer-registry');
+const { BoundedSet, BoundedMap, BoundedArray } = require('./src/utils/bounded-collections');
+
+// Memory leak prevention constants
+const MAX_PROCESSED_MESSAGES = 1000;
+const MAX_ACTION_LOG_SIZE = 5000;
+const MAX_MESSAGE_HISTORY = 100;
 class TerminalGUI {
     constructor() {
         // Initialize loading manager first
@@ -21,6 +34,10 @@ class TerminalGUI {
         this.platformUtils = new PlatformUtils();
         this.validationUtils = new ValidationUtils();
         this.ipcHandler = new IPCHandler();
+        
+        // Initialize performance optimization managers
+        this.observerManager = new ObserverManager();
+        this.memoryMonitor = new MemoryMonitor();
         
         // Initialize modal manager
         console.log('About to initialize ModalManager...');
@@ -68,8 +85,9 @@ class TerminalGUI {
         this.usageLimitTerminals = new Set(); // Track terminals that received usage limit messages
         this.continueTargetTerminals = new Set(); // Track terminals that should receive continue messages
         this.keywordResponseTerminals = new Map(); // Track terminals that need keyword responses
-        this.processedUsageLimitMessages = new Set(); // Track processed usage limit messages to prevent duplicates
-        this.processedPrompts = new Set(); // Track processed prompts to prevent duplicates
+        // Use bounded collections to prevent memory leaks
+        this.processedUsageLimitMessages = new BoundedSet(MAX_PROCESSED_MESSAGES); // Track processed usage limit messages
+        this.processedPrompts = new BoundedSet(MAX_PROCESSED_MESSAGES); // Track processed prompts
         this.currentDirectory = null; // Will be set when terminal starts or directory is detected
         this.recentDirectories = []; // Track recent directories for dropdown
         this.maxRecentDirectories = 5; // Maximum number of recent directories to keep
@@ -81,7 +99,7 @@ class TerminalGUI {
         this.planModeCommand = 'npx claude-flow@alpha hive-mind spawn "{message}" --agents 5 --strategy development --claude';
         this.lastTerminalOutput = '';
         this.userInteracting = false;
-        this.actionLog = [];
+        this.actionLog = new BoundedArray(MAX_ACTION_LOG_SIZE);
         this.injectionBlocked = false;
         this.autoContinueActive = false;
         this.autoContinueRetryCount = 0;
@@ -198,8 +216,8 @@ class TerminalGUI {
         // MICROWAVE MODE: Initialize microwave mode system
         this.microwaveMode = null; // Will be initialized after DOM is ready
         this.terminalIdleStartTime = null;
-        // Message history tracking
-        this.messageHistory = [];
+        // Message history tracking with bounds
+        this.messageHistory = new BoundedArray(MAX_MESSAGE_HISTORY);
         // Background service state
         this.powerSaveBlockerActive = false;
         this.backgroundServiceActive = false;
@@ -282,14 +300,10 @@ class TerminalGUI {
             console.log('[TERMINAL_DEBUG] Loading preferences...');
             this.loadingManager.updateProgress('preferences', 'Loading preferences...');
             await this.loadAllPreferences();
-            // Load terminal session mapping
-            console.log('[TERMINAL_DEBUG] Loading terminal session mapping...');
-            this.loadingManager.updateProgress('sessions', 'Loading session mapping...');
-            await this.loadTerminalSessionMapping();
-            // Load terminal state BEFORE initializing terminals
-            console.log('[TERMINAL_DEBUG] Loading terminal state...');
-            this.loadingManager.updateProgress('terminal-state', 'Loading terminal state...');
-            await this.loadTerminalState();
+            // Terminal session mapping loading removed
+            console.log('[TERMINAL_DEBUG] Terminal session mapping loading disabled...');
+            // Terminal state loading removed
+            console.log('[TERMINAL_DEBUG] Terminal state loading disabled...');
             // Initialize backend API client before terminal initialization
             console.log('[TERMINAL_DEBUG] Checking backend availability...');
             this.loadingManager.updateProgress('backend', 'Connecting to backend...');
@@ -316,12 +330,15 @@ class TerminalGUI {
             // Restore terminal data after terminals are created
             console.log('[TERMINAL_DEBUG] Restoring terminal data...');
             this.loadingManager.updateProgress('data-restore', 'Restoring data...');
-            this.restoreTerminalData();
+            // Terminal state restoration removed - terminals are created fresh each time
             this.loadingManager.updateProgress('ui-setup', 'Setting up interface...');
             this.setupEventListeners();
             this.setupResizeHandlers();
             // Initialize injection manager after terminal setup
             this.injectionManager.initialize();
+            
+            // Start memory monitoring and register cleanup callbacks
+            this.startMemoryMonitoring();
             this.initializeLucideIcons();
             this.updateStatusDisplay();
             this.setTerminalStatusDisplay(''); // Initialize with default status
@@ -356,8 +373,7 @@ class TerminalGUI {
             console.log('[TERMINAL_DEBUG] TerminalGUI.initialize() completed successfully:', {
                 totalTerminals: this.terminals.size,
                 terminalIds: Array.from(this.terminals.keys()),
-                activeTerminalId: this.activeTerminalId,
-                savedTerminalDataProcessed: !!this.savedTerminalData
+                activeTerminalId: this.activeTerminalId
             });
             
             // Complete loading and hide modal
@@ -410,35 +426,13 @@ class TerminalGUI {
     initializeTerminal() {
         console.log('[TERMINAL_DEBUG] Starting initializeTerminal()');
         console.log('[TERMINAL_DEBUG] Initial state:', {
-            hasSavedTerminalData: !!this.savedTerminalData,
-            savedTerminalDataLength: this.savedTerminalData?.length || 0,
-            savedTerminalData: this.savedTerminalData,
             activeTerminalId: this.activeTerminalId,
             currentTerminalsSize: this.terminals.size
         });
         
-        // Check if we have saved terminal data to restore multiple terminals
-        if (this.savedTerminalData && this.savedTerminalData.length > 0) {
-            console.log('[TERMINAL_DEBUG] Taking SAVED DATA path - restoring terminals');
-            // Create terminals for all saved data
-            for (const termData of this.savedTerminalData) {
-                console.log('[TERMINAL_DEBUG] Processing saved terminal:', termData);
-                if (termData.id === 1) {
-                    console.log('[TERMINAL_DEBUG] Creating terminal for ID 1 (existing container)');
-                    // First terminal already has HTML container, just create the terminal instance
-                    this.createTerminal(termData.id);
-                } else {
-                    console.log('[TERMINAL_DEBUG] Creating additional terminal for ID:', termData.id);
-                    // For additional terminals, create both HTML container and terminal instance
-                    this.createAdditionalTerminalFromData(termData);
-                }
-            }
-        } else {
-            console.log('[TERMINAL_DEBUG] Taking DEFAULT path - no saved data, creating default terminal');
-            console.log('[TERMINAL_DEBUG] Creating default terminal with activeTerminalId:', this.activeTerminalId);
-            // No saved data, initialize with default first terminal
-            this.createTerminal(this.activeTerminalId);
-        }
+        // No longer loading saved terminal data - always create fresh default terminal
+        console.log('[TERMINAL_DEBUG] Creating default terminal with activeTerminalId:', this.activeTerminalId);
+        this.createTerminal(this.activeTerminalId);
         // Set container terminal count based on restored/current state
         const terminalsContainer = document.getElementById('terminals-container');
         console.log('[TERMINAL_DEBUG] Setting up terminals container:', {
@@ -480,65 +474,50 @@ class TerminalGUI {
             // updateManualTerminalDropdown removed
         });
         
-        // Add resize observer for sidebar to handle sidebar resizing
-        const sidebar = document.getElementById('right-sidebar');
+        // Add resize observer for sidebar to handle sidebar resizing using ObserverManager
+        const sidebar = domCache.getElementById('right-sidebar');
         if (sidebar && window.ResizeObserver) {
-            let resizeTimeout;
-            const resizeObserver = new ResizeObserver(() => {
-                // Throttle updates to prevent excessive calculations during resize
-                clearTimeout(resizeTimeout);
-                resizeTimeout = setTimeout(() => {
+            const sidebarObserver = this.observerManager.createResizeObserver(
+                'sidebar-resize',
+                () => {
                     // Update terminal selector and dropdown widths when sidebar is resized
                     this.updateTerminalSelectorText();
                     this.updateTerminalDropdowns();
                     // updateManualTerminalDropdown removed
-                }, 50); // 50ms throttle
-            });
-            resizeObserver.observe(sidebar);
+                },
+                { debounce: 50 }
+            );
+            sidebarObserver.observe(sidebar);
         }
         
-        // Add resize observer for input actions area to handle layout changes
-        const inputActions = document.querySelector('.input-actions');
+        // Add resize observer for input actions area to handle layout changes using ObserverManager
+        const inputActions = domCache.querySelector('.input-actions');
         if (inputActions && window.ResizeObserver) {
-            let inputResizeTimeout;
-            const inputResizeObserver = new ResizeObserver(() => {
-                // Throttle updates to prevent excessive calculations during resize
-                clearTimeout(inputResizeTimeout);
-                inputResizeTimeout = setTimeout(() => {
+            const inputObserver = this.observerManager.createResizeObserver(
+                'input-actions-resize',
+                () => {
                     // Update terminal selector width when input actions area changes
                     this.updateTerminalSelectorText();
-                }, 50); // 50ms throttle
-            });
-            inputResizeObserver.observe(inputActions);
+                },
+                { debounce: 50 }
+            );
+            inputObserver.observe(inputActions);
         }
         
-        // Add resize observer for terminal section to handle layout changes
-        const terminalSection = document.querySelector('.terminal-section');
+        // Add resize observer for terminal section to handle layout changes using ObserverManager
+        const terminalSection = domCache.querySelector('.terminal-section');
         if (terminalSection && window.ResizeObserver) {
-            let terminalResizeTimeout;
-            const terminalResizeObserver = new ResizeObserver(() => {
-                // Throttle updates to prevent excessive calculations during resize
-                clearTimeout(terminalResizeTimeout);
-                terminalResizeTimeout = setTimeout(() => {
+            const terminalObserver = this.observerManager.createResizeObserver(
+                'terminal-section-resize',
+                () => {
                     // Update terminal selector width when terminal section changes
                     this.updateTerminalSelectorText();
-                }, 50); // 50ms throttle
-            });
-            terminalResizeObserver.observe(terminalSection);
+                },
+                { debounce: 50 }
+            );
+            terminalObserver.observe(terminalSection);
         }
-        // Very frequent state saving to ensure terminal names persist during quick refreshes
-        setInterval(() => {
-            this.saveTerminalState();
-        }, 2000); // Save every 2 seconds for quick refresh handling
-        // Save state on focus/blur events to catch quick interactions
-        window.addEventListener('blur', () => {
-            this.saveTerminalState();
-        });
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                this.saveTerminalState();
-            }
-        });
+        // Terminal state saving removed - no longer persisting terminal state during quick refreshes
     }
     createAdditionalTerminalFromData(termData) {
         const id = termData.id;
@@ -595,7 +574,7 @@ class TerminalGUI {
                 .then(async session => {
                     // Store the mapping of frontend terminal ID to backend session UUID
                     this.terminalSessionMap.set(id, session.id);
-                    await this.saveTerminalSessionMapping();
+                    // Terminal session mapping save removed
                     this.logAction(`Created backend session for Terminal ${id}`, 'info');
                 })
                 .catch(error => {
@@ -648,7 +627,7 @@ class TerminalGUI {
             lineHeight: 1,
             cursorBlink: true,
             cursorStyle: 'block',
-            scrollback: 1000,
+            scrollback: 500,
             tabStopWidth: 4
         });
         // Add addons
@@ -794,6 +773,63 @@ class TerminalGUI {
             terminalData.fitAddon.fit();
         });
     }
+
+    // Terminal scroll management methods for maintaining bottom orientation
+    isTerminalAtBottom(terminal) {
+        if (!terminal || !terminal.buffer) return true; // Default to bottom for safety
+        
+        try {
+            const buffer = terminal.buffer.active;
+            const viewport = terminal.getSelection();
+            
+            // Get the current scroll position
+            const scrollY = terminal.buffer.active.viewportY;
+            const bufferHeight = buffer.length;
+            const terminalRows = terminal.rows;
+            
+            // Check if we're within 2 lines of the bottom (allows for minor variations)
+            const distanceFromBottom = (bufferHeight - scrollY - terminalRows);
+            return distanceFromBottom <= 2;
+        } catch (error) {
+            console.warn('Error checking terminal scroll position:', error);
+            return true; // Default to bottom if we can't determine position
+        }
+    }
+
+    getTerminalScrollBehavior() {
+        // Get user preference from localStorage, default to 'smart'
+        return localStorage.getItem('terminal-scroll-behavior') || 'smart';
+    }
+
+    shouldScrollToBottom(terminal, wasAtBottom) {
+        const behavior = this.getTerminalScrollBehavior();
+        
+        switch (behavior) {
+            case 'always':
+                return true; // Always scroll to bottom
+            case 'preserve':
+                return false; // Never auto-scroll
+            case 'smart':
+            default:
+                return wasAtBottom; // Only scroll if user was already at bottom
+        }
+    }
+
+    handleTerminalScroll(terminal, wasAtBottom) {
+        if (!terminal) return;
+        
+        if (this.shouldScrollToBottom(terminal, wasAtBottom)) {
+            // Use requestAnimationFrame for smooth scrolling without flicker
+            requestAnimationFrame(() => {
+                try {
+                    terminal.scrollToBottom();
+                } catch (error) {
+                    console.warn('Error scrolling terminal to bottom:', error);
+                }
+            });
+        }
+    }
+
     getTerminalTheme() {
         const currentTheme = this.preferences.theme;
         // Check for system theme if 'system' is selected
@@ -993,8 +1029,14 @@ class TerminalGUI {
             const terminalId = data.terminalId;
             const terminalData = this.terminals.get(terminalId);
             if (terminalData && terminalData.terminal) {
+                // Check if terminal was at bottom before writing new data
+                const wasAtBottom = this.isTerminalAtBottom(terminalData.terminal);
+                
                 try {
                     terminalData.terminal.write(data.content);
+                    
+                    // Apply smart scroll behavior based on user preference and previous position
+                    this.handleTerminalScroll(terminalData.terminal, wasAtBottom);
                 } catch (error) {
                     console.error('Error writing to terminal:', error);
                     // Try to reinitialize terminal if write fails
@@ -1034,10 +1076,17 @@ class TerminalGUI {
             
             const terminalData = this.terminals.get(terminalId);
             if (terminalData && !terminalData.isClosing) {
+                // Check if terminal was at bottom before writing exit message
+                const wasAtBottom = this.isTerminalAtBottom(terminalData.terminal);
+                
                 const exitMessage = signal ? 
                     `\r\n\x1b[31mTerminal process exited with signal: ${signal}\x1b[0m\r\n` :
                     `\r\n\x1b[31mTerminal process exited with code: ${exitCode}\x1b[0m\r\n`;
+                
                 terminalData.terminal.write(exitMessage);
+                
+                // Apply smart scroll behavior for exit messages too
+                this.handleTerminalScroll(terminalData.terminal, wasAtBottom);
             }
         });
         
@@ -1084,10 +1133,10 @@ class TerminalGUI {
             // If recovery action was taken, log it and potentially reload terminal state
             if (data.recoveryAction === 'cleared_state') {
                 this.logAction(`Corrupted terminal state cleared for Terminal ${terminalId}`, 'warning');
-                // Reload terminal state to get the cleaned version
+                // Terminal state reloading removed
                 setTimeout(async () => {
-                    await this.loadTerminalState();
-                    this.logAction('Terminal state reloaded after corruption cleanup', 'info');
+                    // Terminal state loading removed
+                    this.logAction('Terminal state reload skipped (functionality removed)', 'info');
                 }, 1000);
             }
         });
@@ -1096,10 +1145,10 @@ class TerminalGUI {
             console.log('[TERMINAL_DEBUG] Terminal state cleaned:', data);
             this.logAction(`Terminal state cleaned: removed corrupted data for Terminal ${data.clearedTerminalId}`, 'info');
             
-            // Reload terminal state to reflect the cleaned state
+            // Terminal state reloading removed
             setTimeout(async () => {
-                await this.loadTerminalState();
-                this.logAction('Terminal state reloaded after cleanup', 'info');
+                // Terminal state loading removed
+                this.logAction('Terminal state reload skipped (functionality removed)', 'info');
             }, 500);
         });
         ipcRenderer.on('cwd-response', (event, data) => {
@@ -1677,6 +1726,14 @@ class TerminalGUI {
         document.getElementById('theme-select').addEventListener('change', (e) => {
             this.applyTheme(e.target.value);
         });
+        
+        // Terminal scroll behavior control
+        document.getElementById('terminal-scroll-behavior').addEventListener('change', (e) => {
+            const behavior = e.target.value;
+            localStorage.setItem('terminal-scroll-behavior', behavior);
+            this.logAction(`Terminal scroll behavior set to: ${behavior}`, 'info');
+        });
+        
         // Keyword blocking controls
         document.getElementById('add-keyword-btn').addEventListener('click', () => {
             this.addKeywordRule();
@@ -3352,10 +3409,7 @@ class TerminalGUI {
             return;
         }
         // Clear any existing timer interval before starting a new one
-        if (this.timerInterval) {
-            clearInterval(this.timerInterval);
-            this.timerInterval = null;
-        }
+        timerRegistry.clearInterval('mainTimer');
         this.timerActive = true;
         this.timerExpired = false;
         this.updateTimerUI();
@@ -3367,7 +3421,7 @@ class TerminalGUI {
         } else {
             this.logAction('Timer started', 'info');
         }
-        this.timerInterval = setInterval(async () => {
+        this.timerInterval = timerRegistry.createInterval('mainTimer', async () => {
             try {
                 await this.decrementTimer();
             } catch (error) {
@@ -3386,10 +3440,8 @@ class TerminalGUI {
     }
     pauseTimer() {
         this.timerActive = false;
-        if (this.timerInterval) {
-            clearInterval(this.timerInterval);
-            this.timerInterval = null;
-        }
+        timerRegistry.clearInterval('mainTimer');
+        this.timerInterval = null;
         // Also pause any active injections when timer is paused
         const hasActiveInjections = this.injectionInProgress || 
                                    this.currentlyInjectingMessages.size > 0 ||
@@ -3414,10 +3466,8 @@ class TerminalGUI {
         this.timerHours = 0;
         this.timerMinutes = 0;
         this.timerSeconds = 0;
-        if (this.timerInterval) {
-            clearInterval(this.timerInterval);
-            this.timerInterval = null;
-        }
+        timerRegistry.clearInterval('mainTimer');
+        this.timerInterval = null;
         // Cancel all active injections
         this.currentlyInjectingMessages.clear();
         this.currentlyInjectingTerminals.clear();
@@ -4172,10 +4222,8 @@ class TerminalGUI {
             this.injectionTimer = null;
         }
         // Clear any pending safety check timeouts
-        if (this.safetyCheckInterval) {
-            clearInterval(this.safetyCheckInterval);
-            this.safetyCheckInterval = null;
-        }
+        timerRegistry.clearInterval('safetyCheck');
+        this.safetyCheckInterval = null;
         // Clear any in-progress typing
         if (this.currentTypeInterval) {
             clearInterval(this.currentTypeInterval);
@@ -4237,10 +4285,8 @@ class TerminalGUI {
             clearInterval(this.currentTypeInterval);
             this.currentTypeInterval = null;
         }
-        if (this.timerInterval) {
-            clearInterval(this.timerInterval);
-            this.timerInterval = null;
-        }
+        timerRegistry.clearInterval('mainTimer');
+        this.timerInterval = null;
         // Update all UI elements
         this.updateTimerUI();
         this.updateTerminalStatusIndicator();
@@ -4381,16 +4427,14 @@ class TerminalGUI {
         
         // Optional fallback polling at much lower frequency (500ms) for edge cases
         if (this.enableFallbackPolling) {
-            this.terminalScanInterval = setInterval(() => {
+            this.terminalScanInterval = timerRegistry.createInterval('terminalScan', () => {
                 this.scanAndUpdateTerminalStatus();
             }, 500);
         }
     }
     stopTerminalStatusScanning() {
-        if (this.terminalScanInterval) {
-            clearInterval(this.terminalScanInterval);
-            this.terminalScanInterval = null;
-        }
+        timerRegistry.clearInterval('terminalScan');
+        this.terminalScanInterval = null;
     }
     scanAndUpdateTerminalStatus() {
         // Scan all terminals, not just the active one
@@ -5560,8 +5604,7 @@ class TerminalGUI {
                                     // Update status display to show new directory
                                     this.updateStatusDisplay();
                                 }
-                                // Save terminal state to persist the directory change
-                                this.saveTerminalState();
+                                // Terminal state save removed
                                 // Update backend session directory if available
                                 if (this.backendAPIClient) {
                                     const backendSessionId = this.terminalSessionMap.get(terminalId);
@@ -6798,6 +6841,11 @@ class TerminalGUI {
             this.updatePlanModeButtonState();
             const themeSelectEl = document.getElementById('theme-select');
             if (themeSelectEl) themeSelectEl.value = this.preferences.theme || 'dark';
+            
+            // Update terminal scroll behavior UI
+            const scrollBehaviorEl = document.getElementById('terminal-scroll-behavior');
+            if (scrollBehaviorEl) scrollBehaviorEl.value = this.getTerminalScrollBehavior();
+            
             // Update sound settings UI
             const soundEffectsEl = document.getElementById('sound-effects-enabled');
             if (soundEffectsEl) soundEffectsEl.checked = this.preferences.completionSoundEnabled || false;
@@ -6849,294 +6897,17 @@ class TerminalGUI {
                 if (key === 'messageQueue' || key === 'messageHistory') continue; // Handle separately
                 await ipcRenderer.invoke('db-set-setting', key, JSON.stringify(value));
             }
-            // Save terminal state
-            await this.saveTerminalState();
+            // Terminal state save removed
         } catch (error) {
             console.error('Failed to save preferences:', error);
         }
     }
-    async saveTerminalSessionMapping() {
-        try {
-            // Convert Map to object for storage
-            const mappingObj = {};
-            this.terminalSessionMap.forEach((sessionId, terminalId) => {
-                mappingObj[terminalId] = sessionId;
-            });
-            await ipcRenderer.invoke('db-save-setting', 'terminalSessionMapping', mappingObj);
-        } catch (error) {
-            console.error('Failed to save terminal session mapping:', error);
-        }
-    }
-    async loadTerminalSessionMapping() {
-        try {
-            const settings = await ipcRenderer.invoke('db-get-settings');
-            let mappingObj = settings.terminalSessionMapping;
-            if (mappingObj) {
-                // If it's a string, parse it as JSON
-                if (typeof mappingObj === 'string') {
-                    mappingObj = JSON.parse(mappingObj);
-                }
-                this.terminalSessionMap.clear();
-                Object.entries(mappingObj).forEach(([terminalId, sessionId]) => {
-                    this.terminalSessionMap.set(parseInt(terminalId), sessionId);
-                });
-            }
-        } catch (error) {
-            console.error('Failed to load terminal session mapping:', error);
-        }
-    }
-    async saveTerminalState() {
-        try {
-            const terminalState = {
-                activeTerminalId: this.activeTerminalId,
-                terminalIdCounter: this.terminalIdCounter,
-                terminals: Array.from(this.terminals.entries()).map(([id, data]) => ({
-                    id,
-                    name: data.name,
-                    color: data.color,
-                    directory: data.directory
-                }))
-            };
-            // Save to local database
-            await ipcRenderer.invoke('db-set-setting', 'terminalState', JSON.stringify(terminalState));
-            // Also save to backend if available
-            if (this.backendAPIClient) {
-                try {
-                    // Update each terminal session in the backend
-                    for (const [terminalId, terminalData] of this.terminals.entries()) {
-                        const backendSessionId = this.terminalSessionMap.get(terminalId);
-                        if (backendSessionId) {
-                            await this.backendAPIClient.updateTerminalSessionComplete(
-                                backendSessionId,
-                                terminalData.name,
-                                terminalData.color,
-                                terminalId,
-                                terminalId - 1, // position index
-                                terminalData.directory || this.currentDirectory
-                            );
-                        }
-                    }
-                } catch (backendError) {
-                    console.warn('Failed to save terminal state to backend:', backendError);
-                }
-            }
-        } catch (error) {
-            console.error('Failed to save terminal state:', error);
-        }
-    }
-    
-    async validateTerminalDirectories(terminals) {
-        console.log('[TERMINAL_DEBUG] Validating terminal directories for', terminals.length, 'terminals');
-        const validatedTerminals = [];
-        let hasInvalidDirectories = false;
-        
-        for (const terminal of terminals) {
-            let validatedTerminal = { ...terminal };
-            
-            // Validate directory if it exists
-            if (terminal.directory) {
-                try {
-                    // Use IPC to validate directory on main process since renderer can't access fs directly
-                    const isValid = await ipcRenderer.invoke('validate-directory', terminal.directory);
-                    
-                    if (!isValid) {
-                        console.warn('[TERMINAL_DEBUG] Invalid directory for terminal', terminal.id, ':', terminal.directory);
-                        validatedTerminal.directory = this.currentDirectory || null;
-                        hasInvalidDirectories = true;
-                        this.logAction(`Fixed invalid directory for Terminal ${terminal.id}`, 'warning');
-                    } else {
-                        console.log('[TERMINAL_DEBUG] Directory validated for terminal', terminal.id, ':', terminal.directory);
-                    }
-                } catch (error) {
-                    console.warn('[TERMINAL_DEBUG] Directory validation failed for terminal', terminal.id, ':', error.message);
-                    validatedTerminal.directory = this.currentDirectory || null;
-                    hasInvalidDirectories = true;
-                    this.logAction(`Directory validation failed for Terminal ${terminal.id}: ${error.message}`, 'warning');
-                }
-            }
-            
-            validatedTerminals.push(validatedTerminal);
-        }
-        
-        // If we fixed any directories, save the corrected state
-        if (hasInvalidDirectories && validatedTerminals.length > 0) {
-            console.log('[TERMINAL_DEBUG] Saving corrected terminal state after directory validation');
-            try {
-                const correctedState = {
-                    activeTerminalId: this.activeTerminalId,
-                    terminalIdCounter: this.terminalIdCounter,
-                    terminals: validatedTerminals
-                };
-                await ipcRenderer.invoke('db-save-terminal-state', correctedState);
-                this.logAction('Corrected invalid terminal directories and saved state', 'info');
-            } catch (saveError) {
-                console.error('[TERMINAL_DEBUG] Failed to save corrected terminal state:', saveError);
-            }
-        }
-        
-        // Ensure we have at least one terminal
-        if (validatedTerminals.length === 0) {
-            console.log('[TERMINAL_DEBUG] No valid terminals found, creating default terminal');
-            const defaultTerminal = {
-                id: 1,
-                name: 'Terminal 1',
-                color: '#007acc',
-                directory: this.currentDirectory || null
-            };
-            validatedTerminals.push(defaultTerminal);
-            
-            // Save the default state
-            try {
-                const defaultState = {
-                    activeTerminalId: 1,
-                    terminalIdCounter: 2,
-                    terminals: [defaultTerminal]
-                };
-                await ipcRenderer.invoke('db-save-terminal-state', defaultState);
-                this.logAction('Created default terminal state', 'info');
-            } catch (saveError) {
-                console.error('[TERMINAL_DEBUG] Failed to save default terminal state:', saveError);
-            }
-        }
-        
-        console.log('[TERMINAL_DEBUG] Terminal directory validation completed. Valid terminals:', validatedTerminals.length);
-        return validatedTerminals;
-    }
-    
-    async loadTerminalState() {
-        console.log('[TERMINAL_DEBUG] Starting loadTerminalState()');
-        try {
-            // Load from local database first
-            const settings = await ipcRenderer.invoke('db-get-all-settings');
-            console.log('[TERMINAL_DEBUG] Raw settings received:', {
-                hasSettings: !!settings,
-                settingsKeys: settings ? Object.keys(settings) : [],
-                terminalStateType: typeof settings?.terminalState,
-                terminalStateValue: settings?.terminalState
-            });
-            
-            let terminalState = settings.terminalState;
-            if (terminalState) {
-                console.log('[TERMINAL_DEBUG] Found terminal state, type:', typeof terminalState);
-                if (typeof terminalState === 'string') {
-                    console.log('[TERMINAL_DEBUG] Parsing terminal state from string');
-                    terminalState = JSON.parse(terminalState);
-                }
-                console.log('[TERMINAL_DEBUG] Parsed terminal state:', {
-                    terminalIdCounter: terminalState.terminalIdCounter,
-                    activeTerminalId: terminalState.activeTerminalId,
-                    terminalsCount: terminalState.terminals?.length || 0,
-                    terminals: terminalState.terminals
-                });
-                
-                // Validate terminal state before restoration
-                const validatedTerminals = await this.validateTerminalDirectories(terminalState.terminals || []);
-                
-                // Restore terminal counter and active terminal
-                this.terminalIdCounter = terminalState.terminalIdCounter || 1;
-                this.activeTerminalId = terminalState.activeTerminalId || 1;
-                // Store validated terminal data for restoration after terminals are created
-                this.savedTerminalData = validatedTerminals;
-                
-                console.log('[TERMINAL_DEBUG] Set savedTerminalData:', {
-                    count: this.savedTerminalData.length,
-                    data: this.savedTerminalData,
-                    terminalIdCounter: this.terminalIdCounter,
-                    activeTerminalId: this.activeTerminalId
-                });
-            } else {
-                console.log('[TERMINAL_DEBUG] No terminal state found in settings');
-            }
-            // Also try to load from backend if available
-            if (this.backendAPIClient) {
-                try {
-                    const backendSessions = await this.backendAPIClient.getTerminalSessions();
-                    if (backendSessions && backendSessions.length > 0) {
-                        // Convert backend sessions to local format
-                        const backendTerminals = backendSessions.map(session => ({
-                            id: session.frontend_terminal_id || session.id,
-                            name: session.name,
-                            color: session.color,
-                            directory: session.current_directory
-                        })).filter(t => t.id); // Only include sessions with frontend terminal IDs
-                        // Merge backend data with local data, preferring backend data for names
-                        if (backendTerminals.length > 0) {
-                            // Create a map for easier merging
-                            const localTerminals = new Map((this.savedTerminalData || []).map(t => [t.id, t]));
-                            const backendMap = new Map(backendTerminals.map(t => [t.id, t]));
-                            // Merge data, preferring backend names but keeping local data if backend doesn't have it
-                            const mergedTerminals = [];
-                            const allIds = new Set([...localTerminals.keys(), ...backendMap.keys()]);
-                            for (const id of allIds) {
-                                const localTerm = localTerminals.get(id);
-                                const backendTerm = backendMap.get(id);
-                                if (backendTerm) {
-                                    // Backend has this terminal, use it but supplement with local data if needed
-                                    mergedTerminals.push({
-                                        id: backendTerm.id,
-                                        name: backendTerm.name || (localTerm && localTerm.name) || `Terminal ${id}`,
-                                        color: backendTerm.color || (localTerm && localTerm.color) || this.terminalColors[(id - 1) % this.terminalColors.length],
-                                        directory: backendTerm.directory || (localTerm && localTerm.directory) || this.currentDirectory
-                                    });
-                                } else if (localTerm) {
-                                    // Only in local data, keep it
-                                    mergedTerminals.push(localTerm);
-                                }
-                            }
-                            this.savedTerminalData = mergedTerminals;
-                            console.log('[TERMINAL_DEBUG] Backend merge completed:', {
-                                mergedCount: mergedTerminals.length,
-                                mergedTerminals: mergedTerminals
-                            });
-                            // Update counters based on merged data
-                            const maxId = Math.max(...mergedTerminals.map(t => t.id));
-                            this.terminalIdCounter = Math.max(this.terminalIdCounter, maxId + 1);
-                            console.log('[TERMINAL_DEBUG] Updated counters after backend merge:', {
-                                terminalIdCounter: this.terminalIdCounter,
-                                maxId: maxId
-                            });
-                        }
-                    }
-                } catch (backendError) {
-                    console.warn('Failed to load terminal state from backend:', backendError);
-                }
-            }
-        } catch (error) {
-            console.error('[TERMINAL_DEBUG] Failed to load terminal state:', error);
-        }
-        
-        console.log('[TERMINAL_DEBUG] loadTerminalState() completed:', {
-            finalSavedTerminalData: this.savedTerminalData,
-            finalTerminalIdCounter: this.terminalIdCounter,
-            finalActiveTerminalId: this.activeTerminalId
-        });
-    }
-    restoreTerminalData() {
-        // Apply saved terminal data to existing terminals (data should already be applied during creation)
-        if (this.savedTerminalData && this.savedTerminalData.length > 0) {
-            for (const termData of this.savedTerminalData) {
-                if (this.terminals.has(termData.id)) {
-                    const existingTerminal = this.terminals.get(termData.id);
-                    // Update terminal data that might not have been set during creation
-                    existingTerminal.name = termData.name || existingTerminal.name;
-                    existingTerminal.directory = termData.directory || existingTerminal.directory;
-                    // Update the title in the DOM to match the saved name
-                    const titleElement = document.querySelector(`[data-terminal-id="${termData.id}"] .terminal-title`);
-                    if (titleElement && termData.name) {
-                        titleElement.textContent = termData.name;
-                    }
-                }
-            }
-            // Update UI to reflect loaded state
-            this.updateTerminalDropdowns();
-            // updateManualTerminalDropdown removed
-            this.switchToTerminal(this.activeTerminalId);
-            // Ensure terminal selector has proper dynamic width after restoration
-            this.updateTerminalSelectorTextWhenReady();
-            // Clear saved data after applying
-            this.savedTerminalData = null;
-        }
-    }
+    // saveTerminalSessionMapping function removed
+    // loadTerminalSessionMapping function removed
+    // saveTerminalState function removed - terminal state is no longer persisted
+    // validateTerminalDirectories function removed - terminal directories are validated during creation
+    // loadTerminalState function removed - terminal state is no longer loaded from storage
+    // restoreTerminalData function removed - terminals are created fresh on each load
     async syncMessagesFromBackend(verbose = false, specificTerminalId = null) {
         // Sync messages from backend for all terminal sessions or specific terminal
         if (verbose) {
@@ -7408,7 +7179,7 @@ class TerminalGUI {
                 }
             }
             
-            await this.saveTerminalSessionMapping();
+            // Terminal session mapping save removed
             this.logAction(`Synced ${sessionsByTerminal.size} terminal sessions from backend`, 'info');
         } catch (error) {
             console.error('Failed to sync terminal sessions:', error);
@@ -7445,7 +7216,7 @@ class TerminalGUI {
                 this.logAction(`Force mapped Terminal ${terminalId} to backend session ${session.id}`, 'info');
             }
             
-            await this.saveTerminalSessionMapping();
+            // Terminal session mapping save removed
             this.logAction(`Force synced ${sessionsByTerminal.size} terminal sessions from backend`, 'success');
             
             // Immediately sync messages after remapping
@@ -7897,10 +7668,8 @@ class TerminalGUI {
         this.timerMinutes = originalMinutes;
         this.timerSeconds = originalSeconds;
         
-        if (this.timerInterval) {
-            clearInterval(this.timerInterval);
-            this.timerInterval = null;
-        }
+        timerRegistry.clearInterval('mainTimer');
+        this.timerInterval = null;
         
         // Update current preferences to match the restored values
         this.preferences.timerHours = originalHours;
@@ -8570,7 +8339,7 @@ class TerminalGUI {
                 .then(async session => {
                     // Store the mapping of frontend terminal ID to backend session UUID
                     this.terminalSessionMap.set(newId, session.id);
-                    await this.saveTerminalSessionMapping();
+                    // Terminal session mapping save removed
                     this.logAction(`Created backend session for Terminal ${newId}`, 'info');
                 })
                 .catch(error => {
@@ -8599,8 +8368,7 @@ class TerminalGUI {
             this.resizeAllTerminals();
         }, 100);
         this.logAction(`Added Terminal ${newId}`, 'info');
-        // Save terminal state
-        await this.saveTerminalState();
+        // Terminal state save removed
     }
     updateRecentDirectories(directory) {
         if (!directory || directory === '~' || directory === 'Loading...') return;
@@ -8674,7 +8442,7 @@ class TerminalGUI {
         this.terminals.delete(terminalId);
         // Remove from terminal session mapping
         this.terminalSessionMap.delete(terminalId);
-        await this.saveTerminalSessionMapping();
+        // Terminal session mapping save removed
         
         // Cleanup event-driven status update system
         this.cleanupTerminalStatusTracking(terminalId);
@@ -8723,8 +8491,7 @@ class TerminalGUI {
             this.resizeAllTerminals();
         }, 100);
         this.logAction(`Closed ${terminalData.name}`, 'info');
-        // Save terminal state
-        await this.saveTerminalState();
+        // Terminal state save removed
     }
     
     refreshTerminalLayout() {
@@ -9136,7 +8903,7 @@ class TerminalGUI {
         this.updateTerminalDropdowns();
         // updateManualTerminalDropdown removed
         this.updateStatusDisplay();
-        this.saveTerminalState();
+        // Terminal state save removed
         // Scroll to the selected terminal horizontally
         this.scrollToActiveTerminal();
         this.logAction(`Selected ${terminalData.name}`, 'info');
@@ -9452,8 +9219,7 @@ class TerminalGUI {
                                 });
                         }
                     }
-                    // Save terminal state to persist the name change
-                    this.saveTerminalState();
+                    // Terminal state save removed
                     this.logAction(`Renamed terminal to: ${newText}`, 'info');
                 }
             } else if (!newText) {
@@ -10322,7 +10088,7 @@ class TerminalGUI {
             const session = await response.json();
             // Store the mapping
             this.terminalSessionMap.set(terminalId, session.id);
-            await this.saveTerminalSessionMapping();
+            // Terminal session mapping save removed
             return session.id;
         } catch (error) {
             throw new Error(`Failed to create backend session: ${error.message}`);
@@ -10596,8 +10362,16 @@ class TerminalGUI {
         if (terminalData && terminalData.terminal) {
             while (queue.length > 0) {
                 const data = queue.shift();
+                
+                // Check if terminal was at bottom before writing queued data
+                const wasAtBottom = this.isTerminalAtBottom(terminalData.terminal);
+                
                 try {
                     terminalData.terminal.write(data.content);
+                    
+                    // Apply smart scroll behavior for queued data too
+                    this.handleTerminalScroll(terminalData.terminal, wasAtBottom);
+                    
                     terminalData.lastOutput = data.content;
                     this.detectAutoContinuePrompt(data.content, terminalId);
                     this.extractAndTrackCompletionText(data.content, terminalId);
@@ -10858,11 +10632,192 @@ class TerminalGUI {
             this.preferences.completionSoundEnabled = true;
         }
     }
+    
+    /**
+     * Initialize memory monitoring system
+     */
+    startMemoryMonitoring() {
+        console.log('[MemoryMonitor] Starting memory monitoring...');
+        
+        // Register cleanup callbacks for various components
+        this.memoryMonitor.registerCleanupCallback((severity) => {
+            this.performMemoryCleanup(severity);
+        });
+        
+        // Set memory threshold to 500MB
+        this.memoryMonitor.setThreshold(500);
+        
+        // Start monitoring
+        this.memoryMonitor.startMonitoring();
+        
+        // Add periodic cleanup for DOM cache
+        setInterval(() => {
+            domCache.cleanup();
+            this.observerManager.cleanup();
+        }, 5 * 60 * 1000); // Every 5 minutes
+        
+        console.log('[MemoryMonitor] Memory monitoring initialized');
+    }
+    
+    /**
+     * Perform memory cleanup based on severity
+     * @param {string} severity - 'warning', 'critical', or 'periodic'
+     */
+    performMemoryCleanup(severity) {
+        console.log(`[MemoryCleanup] Performing ${severity} cleanup...`);
+        const startTime = Date.now();
+        
+        // Clear DOM cache if critical
+        if (severity === 'critical') {
+            domCache.clear();
+        }
+        
+        // Cleanup action log if it's getting too large
+        if (this.actionLog.length > MAX_ACTION_LOG_SIZE) {
+            const keepCount = Math.floor(MAX_ACTION_LOG_SIZE * 0.7); // Keep 70%
+            this.actionLog = this.actionLog.slice(-keepCount);
+            console.log(`[MemoryCleanup] Trimmed action log to ${keepCount} entries`);
+        }
+        
+        // Cleanup processed messages if they're getting too large
+        if (this.processedUsageLimitMessages && this.processedUsageLimitMessages.size > MAX_PROCESSED_MESSAGES) {
+            this.processedUsageLimitMessages.clear();
+            console.log('[MemoryCleanup] Cleared processed usage limit messages');
+        }
+        
+        if (this.processedPrompts && this.processedPrompts.size > MAX_PROCESSED_MESSAGES) {
+            this.processedPrompts.clear();
+            console.log('[MemoryCleanup] Cleared processed prompts');
+        }
+        
+        // Cleanup terminal memory history if it's getting too large
+        for (const [terminalId, terminalData] of this.terminals) {
+            if (terminalData.lastOutput && terminalData.lastOutput.length > 50000) {
+                terminalData.lastOutput = terminalData.lastOutput.slice(-25000);
+                console.log(`[MemoryCleanup] Trimmed terminal ${terminalId} output buffer`);
+            }
+        }
+        
+        // Cleanup memory history in memory monitor
+        if (this.memoryMonitor.memoryHistory && this.memoryMonitor.memoryHistory.length > 200) {
+            this.memoryMonitor.memoryHistory = this.memoryMonitor.memoryHistory.slice(-100);
+        }
+        
+        // Invalidate DOM cache for frequently changing elements
+        domCache.invalidate('.terminal-');
+        domCache.invalidate('#terminal-');
+        
+        const duration = Date.now() - startTime;
+        console.log(`[MemoryCleanup] ${severity} cleanup completed in ${duration}ms`);
+        
+        // Log memory statistics after cleanup
+        setTimeout(() => {
+            const stats = this.memoryMonitor.getStatistics();
+            if (stats) {
+                console.log('[MemoryCleanup] Memory after cleanup:', stats.current.used);
+            }
+        }, 1000);
+    }
+    
+    /**
+     * Get performance statistics
+     */
+    getPerformanceStats() {
+        return {
+            memory: this.memoryMonitor.getStatistics(),
+            domCache: domCache.getStats(),
+            observers: this.observerManager.getStats(),
+            terminals: {
+                active: this.terminals.size,
+                totalMessages: this.messageQueue.length,
+                actionLogSize: this.actionLog.length
+            }
+        };
+    }
+    
+    /**
+     * Cleanup all resources to prevent memory leaks
+     * Called when the application is shutting down
+     */
+    cleanup() {
+        console.log('[TerminalGUI] Starting cleanup process...');
+        
+        // Clear all timers using timer registry
+        timerRegistry.clearAll();
+        
+        // Clear any remaining interval references
+        this.timerInterval = null;
+        this.terminalScanInterval = null;
+        this.safetyCheckInterval = null;
+        this.microwaveRepeatTimer = null;
+        this.usageLimitSyncInterval = null;
+        
+        // Clear all timeouts from statusUpdateTimeouts Map
+        for (const [terminalId, timeoutId] of this.statusUpdateTimeouts) {
+            clearTimeout(timeoutId);
+        }
+        this.statusUpdateTimeouts.clear();
+        
+        // Clear completion stability timers
+        for (const [terminalId, timeoutId] of this.completionStabilityTimers) {
+            clearTimeout(timeoutId);
+        }
+        this.completionStabilityTimers.clear();
+        
+        // Clear terminal stability timers
+        for (const [terminalId, timeoutId] of this.terminalStabilityTimers) {
+            clearTimeout(timeoutId);
+        }
+        this.terminalStabilityTimers.clear();
+        
+        // Clear bounded collections stats for monitoring
+        if (this.processedUsageLimitMessages.getStats) {
+            console.log('[TerminalGUI] Processed usage limit messages stats:', this.processedUsageLimitMessages.getStats());
+        }
+        if (this.processedPrompts.getStats) {
+            console.log('[TerminalGUI] Processed prompts stats:', this.processedPrompts.getStats());
+        }
+        if (this.actionLog.getStats) {
+            console.log('[TerminalGUI] Action log stats:', this.actionLog.getStats());
+        }
+        
+        // Cleanup performance optimization managers
+        if (this.memoryMonitor) {
+            this.memoryMonitor.stopMonitoring();
+            console.log('[TerminalGUI] Memory monitor stopped');
+        }
+        
+        if (this.observerManager) {
+            this.observerManager.disposeAll();
+            console.log('[TerminalGUI] All observers disposed');
+        }
+        
+        // Clear DOM cache
+        if (domCache) {
+            domCache.clear();
+            console.log('[TerminalGUI] DOM cache cleared');
+        }
+        
+        console.log('[TerminalGUI] Cleanup completed');
+    }
 }
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     try {
         window.terminalGUI = new TerminalGUI();
+        
+        // Add cleanup event listeners to prevent memory leaks
+        window.addEventListener('beforeunload', () => {
+            if (window.terminalGUI && typeof window.terminalGUI.cleanup === 'function') {
+                window.terminalGUI.cleanup();
+            }
+        });
+        
+        window.addEventListener('unload', () => {
+            if (window.terminalGUI && typeof window.terminalGUI.cleanup === 'function') {
+                window.terminalGUI.cleanup();
+            }
+        });
         // Add initial log message after app is fully initialized
         setTimeout(() => {
             window.terminalGUI.logAction('Application ready - all systems operational', 'success');

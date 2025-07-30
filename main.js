@@ -17,6 +17,100 @@ let tray = null;
 let powerSaveBlockerId = null;
 let isQuitting = false;
 
+/**
+ * Properly cleanup PTY processes to prevent memory leaks
+ * Uses SIGTERM first, then SIGKILL if process doesn't respond
+ */
+async function cleanupPtyProcesses() {
+  console.log('[Main] Starting PTY process cleanup...');
+  
+  const cleanupPromises = [];
+  
+  // Cleanup all processes in the map
+  for (const [terminalId, ptyProcess] of ptyProcesses) {
+    if (ptyProcess && !ptyProcess.killed) {
+      const cleanupPromise = cleanupSinglePtyProcess(ptyProcess, terminalId);
+      cleanupPromises.push(cleanupPromise);
+    }
+  }
+  
+  // Cleanup legacy single process
+  if (ptyProcess && !ptyProcess.killed) {
+    const cleanupPromise = cleanupSinglePtyProcess(ptyProcess, 'legacy');
+    cleanupPromises.push(cleanupPromise);
+  }
+  
+  // Wait for all cleanup operations to complete
+  await Promise.allSettled(cleanupPromises);
+  
+  // Clear the map
+  ptyProcesses.clear();
+  ptyProcess = null;
+  
+  console.log('[Main] PTY process cleanup completed');
+}
+
+/**
+ * Cleanup a single PTY process with proper SIGTERM/SIGKILL handling
+ */
+async function cleanupSinglePtyProcess(process, identifier) {
+  return new Promise((resolve) => {
+    if (!process || process.killed) {
+      resolve();
+      return;
+    }
+    
+    console.log(`[Main] Cleaning up PTY process ${identifier} (PID: ${process.pid})`);
+    
+    let cleaned = false;
+    
+    // Try graceful shutdown first with SIGTERM
+    try {
+      process.kill('SIGTERM');
+      console.log(`[Main] Sent SIGTERM to PTY process ${identifier}`);
+    } catch (error) {
+      console.warn(`[Main] Failed to send SIGTERM to PTY process ${identifier}:`, error.message);
+      // Force kill immediately if SIGTERM fails
+      try {
+        process.kill('SIGKILL');
+        console.log(`[Main] Sent SIGKILL to PTY process ${identifier}`);
+      } catch (killError) {
+        console.error(`[Main] Failed to kill PTY process ${identifier}:`, killError.message);
+      }
+      cleaned = true;
+      resolve();
+      return;
+    }
+    
+    // Set up timeout to force kill if SIGTERM doesn't work within 3 seconds
+    const forceKillTimeout = setTimeout(() => {
+      if (!cleaned) {
+        try {
+          console.log(`[Main] PTY process ${identifier} didn't respond to SIGTERM, sending SIGKILL`);
+          process.kill('SIGKILL');
+        } catch (killError) {
+          console.error(`[Main] Failed to force kill PTY process ${identifier}:`, killError.message);
+        }
+        cleaned = true;
+        resolve();
+      }
+    }, 3000);
+    
+    // Listen for process exit
+    const onExit = () => {
+      if (!cleaned) {
+        console.log(`[Main] PTY process ${identifier} exited gracefully`);
+        clearTimeout(forceKillTimeout);
+        cleaned = true;
+        resolve();
+      }
+    };
+    
+    process.once('exit', onExit);
+    process.once('close', onExit);
+  });
+}
+
 // Safe logging function that handles EPIPE errors
 function safeLog(...args) {
   try {
@@ -267,17 +361,9 @@ function createWindow() {
     }
   });
 
-  mainWindow.on('closed', () => {
-    // Kill all terminal processes
-    ptyProcesses.forEach((process) => {
-      process.kill();
-    });
-    ptyProcesses.clear();
-    
-    // Kill legacy process if exists
-    if (ptyProcess) {
-      ptyProcess.kill();
-    }
+  mainWindow.on('closed', async () => {
+    // Proper cleanup of all terminal processes
+    await cleanupPtyProcesses();
     mainWindow = null;
   });
 }
@@ -352,88 +438,7 @@ app.on('activate', () => {
   }
 });
 
-async function clearCorruptedTerminalState(terminalId, invalidDirectory) {
-  try {
-    safeLog('Clearing corrupted terminal state for terminal', terminalId, 'with invalid directory:', invalidDirectory);
-    
-    // Get current terminal state
-    const currentState = await unifiedStore.getTerminalState();
-    
-    if (currentState && currentState.terminals) {
-      // Filter out terminals with the invalid directory or the specific terminal ID
-      const cleanedTerminals = currentState.terminals.filter(terminal => {
-        const shouldRemove = terminal.id === terminalId || 
-                           (invalidDirectory && terminal.directory === invalidDirectory);
-        
-        if (shouldRemove) {
-          safeLog('Removing corrupted terminal from state:', { 
-            id: terminal.id, 
-            directory: terminal.directory,
-            reason: terminal.id === terminalId ? 'failed_terminal' : 'invalid_directory'
-          });
-        }
-        
-        return !shouldRemove;
-      });
-      
-      // If we removed terminals, update the state
-      if (cleanedTerminals.length !== currentState.terminals.length) {
-        const cleanedState = {
-          ...currentState,
-          terminals: cleanedTerminals,
-          // Reset to first terminal if active terminal was removed
-          activeTerminalId: cleanedTerminals.length > 0 ? cleanedTerminals[0].id : 1,
-          // Update counter to prevent ID conflicts
-          terminalIdCounter: cleanedTerminals.length > 0 ? 
-            Math.max(...cleanedTerminals.map(t => t.id)) + 1 : 1
-        };
-        
-        // If no terminals remain, create a default one
-        if (cleanedTerminals.length === 0) {
-          cleanedState.terminals = [{
-            id: 1,
-            name: 'Terminal 1',
-            color: '#007acc',
-            directory: process.cwd()
-          }];
-          cleanedState.activeTerminalId = 1;
-          cleanedState.terminalIdCounter = 2;
-        }
-        
-        await unifiedStore.setTerminalState(cleanedState);
-        safeLog('Successfully cleared corrupted terminal state. Remaining terminals:', cleanedState.terminals.length);
-        
-        // Notify renderer about the state change
-        if (mainWindow) {
-          mainWindow.webContents.send('terminal-state-cleaned', {
-            clearedTerminalId: terminalId,
-            invalidDirectory: invalidDirectory,
-            remainingTerminals: cleanedState.terminals.length
-          });
-        }
-      }
-    }
-  } catch (error) {
-    safeLog('Failed to clear corrupted terminal state:', error.message);
-    // If we can't clear the state, try to reset it completely
-    try {
-      const defaultState = {
-        activeTerminalId: 1,
-        terminalIdCounter: 2,
-        terminals: [{
-          id: 1,
-          name: 'Terminal 1',
-          color: '#007acc',
-          directory: process.cwd()
-        }]
-      };
-      await unifiedStore.setTerminalState(defaultState);
-      safeLog('Reset terminal state to defaults after clear failure');
-    } catch (resetError) {
-      safeLog('Failed to reset terminal state to defaults:', resetError.message);
-    }
-  }
-}
+// Terminal state functionality removed - terminals now created fresh on each startup
 
 function setupIpcHandlers() {
   // Terminal handling
@@ -464,11 +469,7 @@ function setupIpcHandlers() {
         safeLog('Terminal', terminalId, 'directory validation failed:', dirError.message, 'using default:', validatedCwd);
         directoryValidationResult = 'invalid';
         
-        // Clear corrupted terminal state if directory validation fails
-        if (dirError.code === 'ENOENT' || dirError.code === 'EACCES') {
-          safeLog('Terminal', terminalId, 'clearing corrupted terminal state due to invalid directory');
-          clearCorruptedTerminalState(terminalId, startDirectory);
-        }
+        // Directory validation failed - using default directory
       }
     }
     
@@ -608,10 +609,7 @@ function setupIpcHandlers() {
         }
       } catch (fallbackError) {
         safeLog('Fallback terminal spawn also failed:', fallbackError.message);
-        safeLog('Terminal', terminalId, 'exhausted all spawn attempts, clearing corrupted state');
-        
-        // Clear corrupted terminal state when all spawn attempts fail
-        clearCorruptedTerminalState(terminalId, startDirectory);
+        safeLog('Terminal', terminalId, 'exhausted all spawn attempts');
         
         // Send enhanced error with recovery information
         event.reply('terminal-error', { 
@@ -1011,26 +1009,7 @@ function setupIpcHandlers() {
     }
   });
 
-  // Directory validation for terminal state recovery
-  ipcMain.handle('validate-directory', async (event, directoryPath) => {
-    try {
-      if (!directoryPath || typeof directoryPath !== 'string') {
-        return false;
-      }
-      
-      const dirStat = fs.statSync(directoryPath);
-      if (!dirStat.isDirectory()) {
-        return false;
-      }
-      
-      // Check if we can access the directory
-      fs.accessSync(directoryPath, fs.constants.R_OK);
-      return true;
-    } catch (error) {
-      // Directory doesn't exist or can't be accessed
-      return false;
-    }
-  });
+  // Terminal state functionality removed
 
   // Atomic message queue save - replaces entire message array
   ipcMain.handle('db-save-message-queue', async (event, messages) => {
@@ -1090,25 +1069,7 @@ function setupIpcHandlers() {
     }
   });
 
-  // Additional missing handlers that renderer calls
-  ipcMain.handle('db-load-terminal-state', async () => {
-    try {
-      return await unifiedStore.getTerminalState();
-    } catch (error) {
-      try { console.error('Error loading terminal state:', error); } catch (e) { /* ignore */ }
-      return null;
-    }
-  });
-  
-  ipcMain.handle('db-save-terminal-state', async (event, terminalState) => {
-    try {
-      await unifiedStore.setTerminalState(terminalState);
-      return true;
-    } catch (error) {
-      try { console.error('Error saving terminal state:', error); } catch (e) { /* ignore */ }
-      return false;
-    }
-  });
+  // Terminal state handlers removed - functionality discontinued
   
   ipcMain.handle('db-check-migration-needed', async () => {
     try {
@@ -1309,37 +1270,31 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', async (event) => {
   isQuitting = true;
   
-  // Clean up all terminal processes
-  for (const [terminalId, ptyProcess] of ptyProcesses) {
-    try {
-      if (ptyProcess && !ptyProcess.killed) {
-        ptyProcess.kill();
+  // Prevent immediate quit to allow proper cleanup
+  event.preventDefault();
+  
+  try {
+    // Proper cleanup of all terminal processes
+    await cleanupPtyProcesses();
+    
+    // Clean up power save blocker
+    if (powerSaveBlockerId !== null) {
+      try {
+        powerSaveBlocker.stop(powerSaveBlockerId);
+        powerSaveBlockerId = null;
+      } catch (error) {
+        console.error('[Main] Error stopping power save blocker:', error);
       }
-    } catch (error) {
-      // Ignore errors during cleanup
     }
-  }
-  ptyProcesses.clear();
-  
-  // Clean up legacy single process
-  if (ptyProcess && !ptyProcess.killed) {
-    try {
-      ptyProcess.kill();
-    } catch (error) {
-      // Ignore errors during cleanup
-    }
-  }
-  
-  // Clean up power save blocker
-  if (powerSaveBlockerId !== null) {
-    try {
-      powerSaveBlocker.stop(powerSaveBlockerId);
-      powerSaveBlockerId = null;
-    } catch (error) {
-      // Ignore errors during cleanup
-    }
+    
+    console.log('[Main] All cleanup completed, quitting app');
+  } catch (error) {
+    console.error('[Main] Error during cleanup:', error);
+  } finally {
+    // Quit the app after cleanup is complete
+    app.quit();
   }
 });

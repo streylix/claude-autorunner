@@ -410,6 +410,18 @@
                     </select>
                     <p class="setting-description">Choose your preferred theme. System mode automatically switches between light and dark based on your system preferences.</p>
                 </div>
+
+                <div class="setting-group">
+                    <label class="setting-label">
+                        <span class="setting-title">Terminal Scroll Behavior</span>
+                    </label>
+                    <select id="terminal-scroll-behavior" class="setting-select">
+                        <option value="smart">Smart (Recommended)</option>
+                        <option value="always">Always scroll to bottom</option>
+                        <option value="preserve">Preserve scroll position</option>
+                    </select>
+                    <p class="setting-description">Smart: Only scrolls to bottom if you were already there. Always: Always scrolls to bottom on new output. Preserve: Never auto-scrolls.</p>
+                </div>
                 
                 <div class="setting-group">
                     <label class="setting-label">
