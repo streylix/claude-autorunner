@@ -1077,6 +1077,16 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     pointer-events: auto;
 }
 
+/* Fix: Prevent actions from blocking drag events while still allowing button clicks */
+.message-item[draggable="true"] .message-actions {
+    pointer-events: none; /* Don't block drag initiation */
+}
+
+.message-item[draggable="true"] .message-actions:hover,
+.message-item[draggable="true"] .message-actions > button:hover {
+    pointer-events: auto; /* Re-enable when directly hovering actions/buttons */
+}
+
 .message-edit-btn {
     background: none;
     border: none;
