@@ -23,7 +23,11 @@ class TimerController {
         // UI state
         this.originalTimerValues = { hours: 0, minutes: 0, seconds: 0 };
         
+        // Glowing effect instance
+        this.glowingEffect = null;
+        
         this.setupEventListeners();
+        this.initializeGlowingEffect();
     }
 
     setupEventListeners() {
@@ -50,6 +54,61 @@ class TimerController {
         document.getElementById('timer-display')?.addEventListener('click', (e) => {
             this.openTimerEditDropdown(e);
         });
+    }
+
+    initializeGlowingEffect() {
+        // Wait for DOM to be ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                this.setupGlowingEffect();
+            });
+        } else {
+            this.setupGlowingEffect();
+        }
+    }
+
+    setupGlowingEffect() {
+        const timingWrapper = document.querySelector('.timing-wrapper');
+        if (timingWrapper && !this.glowingEffect && window.GlowingEffect) {
+            this.glowingEffect = new window.GlowingEffect(timingWrapper, {
+                spread: 40,
+                glow: true,
+                disabled: false,
+                autoRotate: false, // We'll control this manually
+                borderWidth: 2,
+                variant: 'default'
+            });
+        }
+    }
+
+    updateGlowingEffect() {
+        if (!this.glowingEffect) return;
+
+        // Activate glowing effect when timer is active and at 00:00:00
+        const shouldGlow = this.timerActive && 
+                          this.timerHours === 0 && 
+                          this.timerMinutes === 0 && 
+                          this.timerSeconds === 0;
+
+        this.glowingEffect.setActive(shouldGlow);
+        
+        // Add/remove visual class to timing wrapper
+        const timingWrapper = document.querySelector('.timing-wrapper');
+        if (timingWrapper) {
+            if (shouldGlow) {
+                timingWrapper.classList.add('timer-active-glow');
+            } else {
+                timingWrapper.classList.remove('timer-active-glow');
+            }
+        }
+        
+        if (shouldGlow) {
+            // Start auto-rotation for continuous circling effect
+            this.glowingEffect.updateOptions({ autoRotate: true });
+        } else {
+            // Stop auto-rotation when not active
+            this.glowingEffect.updateOptions({ autoRotate: false });
+        }
     }
 
     toggleTimer() {
@@ -260,6 +319,9 @@ class TimerController {
         const minutes = String(this.timerMinutes).padStart(2, '0');
         const seconds = String(this.timerSeconds).padStart(2, '0');
         display.textContent = `${hours}:${minutes}:${seconds}`;
+        
+        // Update glowing effect
+        this.updateGlowingEffect();
     }
 
     updateTimerUI() {
@@ -352,6 +414,9 @@ class TimerController {
                 }
             }
         }
+        
+        // Update glowing effect
+        this.updateGlowingEffect();
     }
 
     openTimerEditDropdown(event) {

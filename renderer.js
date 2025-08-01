@@ -166,6 +166,9 @@ class TerminalGUI {
         this.timerInterval = null;
         this.timerExpired = false;
         
+        // Glowing effect for timing wrapper
+        this.glowingEffect = null;
+        
         // MICROWAVE MODE: 5-minute repeat notification system
         this.microwaveRepeatTimer = null;
         this.microwaveRepeatCount = 0;
@@ -3502,10 +3505,18 @@ class TerminalGUI {
             this.timerMinutes = 59;
             this.timerSeconds = 59;
         } else {
-            // Timer reached 00:00:00
+            // Timer reached 00:00:00 - SET EXPIRATION FIRST to prevent blocking
+            this.timerExpired = true;
+            this.timerActive = false;
+            if (this.timerInterval) {
+                clearInterval(this.timerInterval);
+                this.timerInterval = null;
+            }
+            
+            // Store usage limit state before clearing
             const wasUsageLimitWaiting = this.usageLimitWaiting;
             
-            // Clear usage limit state when timer expires naturally
+            // Clear usage limit state when timer expires naturally (AFTER timer expiration is set)
             if (this.usageLimitWaiting) {
                 this.logAction('Usage limit timer reached 00:00:00 - clearing usage limit state', 'info');
                 this.usageLimitWaiting = false;
@@ -3514,14 +3525,6 @@ class TerminalGUI {
                 if (typeof electronAPI !== 'undefined' && electronAPI.setUsageLimitWaiting) {
                     electronAPI.setUsageLimitWaiting(false);
                 }
-            }
-            
-            // Normal timer expiry
-            this.timerExpired = true;
-            this.timerActive = false;
-            if (this.timerInterval) {
-                clearInterval(this.timerInterval);
-                this.timerInterval = null;
             }
             
             // Always clear timer values when timer reaches 0 to prevent 23-hour loop
@@ -3590,6 +3593,39 @@ class TerminalGUI {
         const minutes = String(this.timerMinutes).padStart(2, '0');
         const seconds = String(this.timerSeconds).padStart(2, '0');
         display.textContent = `${hours}:${minutes}:${seconds}`;
+        
+        // Update glowing effect when timer is active and at 00:00:00
+        this.updateGlowingEffect();
+    }
+    
+    updateGlowingEffect() {
+        if (!this.glowingEffect) return;
+
+        // Activate glowing effect when timer is expired (at 00:00:00) and ready to inject
+        const shouldGlow = this.timerExpired && 
+                          this.timerHours === 0 && 
+                          this.timerMinutes === 0 && 
+                          this.timerSeconds === 0;
+
+        this.glowingEffect.setActive(shouldGlow);
+        
+        // Add/remove visual class to timing wrapper
+        const timingWrapper = document.querySelector('.timing-wrapper');
+        if (timingWrapper) {
+            if (shouldGlow) {
+                timingWrapper.classList.add('timer-active-glow');
+            } else {
+                timingWrapper.classList.remove('timer-active-glow');
+            }
+        }
+        
+        if (shouldGlow) {
+            // Start auto-rotation for continuous circling effect
+            this.glowingEffect.updateOptions({ autoRotate: true });
+        } else {
+            // Stop auto-rotation when not active
+            this.glowingEffect.updateOptions({ autoRotate: false });
+        }
     }
     updateTimerUI() {
         const playPauseBtn = document.getElementById('timer-play-pause-btn');
@@ -3598,13 +3634,19 @@ class TerminalGUI {
         const injectionStatus = document.getElementById('injection-status');
         const waitingStatus = document.getElementById('timer-waiting-status');
         const display = document.getElementById('timer-display');
-        if (!playPauseBtn || !stopBtn || !editBtn || !display) {
+        const timerSection = document.querySelector('.timer-section');
+        
+        if (!playPauseBtn || !stopBtn || !editBtn || !display || !timerSection) {
             console.warn('Timer UI elements not found');
             return;
         }
+        
         // Update display
         this.updateTimerDisplay();
-        // Update display classes
+        
+        // Timer section class management removed - will be handled externally
+        
+        // Update display classes (text color only)
         // If timer is expired, let injection manager handle visual state
         if (this.timerExpired) {
             this.injectionManager.updateVisualState();
@@ -7758,9 +7800,15 @@ class TerminalGUI {
             }
             // Check if injection sequence was cancelled entirely
             // Only cancel if injection was explicitly stopped AND we're not in a timer sequence
+            // Allow timer expiration to proceed even when timer reaches 0
             if (!this.injectionInProgress && !this.timerExpired && !this.usageLimitWaiting) {
-                this.logAction('waitForStableReadyState CANCELLED - injection sequence stopped', 'warning');
-                return;
+                // Only cancel if timer hasn't reached 0 - let timer expiration proceed
+                if (this.timerHours !== 0 || this.timerMinutes !== 0 || this.timerSeconds !== 0) {
+                    this.logAction('waitForStableReadyState CANCELLED - injection sequence stopped', 'warning');
+                    return;
+                }
+                // Timer is at 00:00:00, allow injection to proceed
+                this.logAction('waitForStableReadyState proceeding - timer at 00:00:00', 'info');
             }
             // Get current terminal status - check all states that should block auto-injection
             const isReady = !this.currentTerminalStatus.isRunning && 
@@ -7821,11 +7869,17 @@ class TerminalGUI {
             return false;
         }
         // Check if terminal is ready for injection
+        // Override blocks when timer expired at 0 to allow 5/30 second check
+        const timerExpiredAtZero = this.timerExpired && 
+                                  this.timerHours === 0 && 
+                                  this.timerMinutes === 0 && 
+                                  this.timerSeconds === 0;
+        
         const isTerminalReady = !terminalStatus.isRunning && 
                                !terminalStatus.isPrompting && 
-                               !this.isInjecting &&
-                               !this.injectionPaused &&
-                               !this.injectionBlocked;
+                               (timerExpiredAtZero || (!this.isInjecting &&
+                                                      !this.injectionPaused &&
+                                                      !this.injectionBlocked));
         if (!isTerminalReady) {
             // Terminal not ready - reset stability timer
             this.terminalStabilityTimers.delete(terminalId);
@@ -10805,6 +10859,22 @@ class TerminalGUI {
 document.addEventListener('DOMContentLoaded', () => {
     try {
         window.terminalGUI = new TerminalGUI();
+        
+        // Initialize glowing effect for timing wrapper
+        if (window.GlowingEffect && window.terminalGUI) {
+            const timingWrapper = document.querySelector('.timing-wrapper');
+            if (timingWrapper) {
+                window.terminalGUI.glowingEffect = new window.GlowingEffect(timingWrapper, {
+                    spread: 40,
+                    glow: true,
+                    disabled: false,
+                    autoRotate: false,
+                    borderWidth: 2,
+                    variant: 'default'
+                });
+                console.log('Glowing effect initialized for timing wrapper');
+            }
+        }
         
         // Add cleanup event listeners to prevent memory leaks
         window.addEventListener('beforeunload', () => {

@@ -1962,8 +1962,54 @@ button#voice-btn.voice-button.processing:hover,
     gap: 8px;
     background-color: var(--bg-tertiary);
     padding: 12px;
+    position: relative;
+    overflow: visible;
     border-radius: 6px;
     border: 1px solid var(--border-secondary);
+    background-clip: padding-box;
+}
+
+/* Glowing Effect Styles */
+.glowing-effect-static-border {
+    border-color: var(--border-primary);
+}
+
+.glowing-effect-container {
+    z-index: 1;
+}
+
+.glowing-effect-glow {
+    z-index: 2;
+}
+
+/* Timer active state with glow */
+.timing-wrapper.timer-active-glow {
+    animation: subtle-pulse 2s ease-in-out infinite;
+}
+
+@keyframes subtle-pulse {
+    0%, 100% { 
+        box-shadow: 0 0 5px rgba(221, 123, 187, 0.1); 
+    }
+    50% { 
+        box-shadow: 0 0 20px rgba(221, 123, 187, 0.3); 
+    }
+}
+
+/* Ensure proper layering */
+.timing-wrapper > * {
+    position: relative;
+    z-index: 3;
+}
+
+/* Border loading spinner */
+@keyframes spin-border {
+    0% {
+        transform: translate(-50%, -50%) rotate(0deg);
+    }
+    100% {
+        transform: translate(-50%, -50%) rotate(360deg);
+    }
 }
 
 .timer-controls-row {

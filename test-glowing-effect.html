@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glowing Effect Test</title>
+    <style>
+        :root {
+            --bg-primary: #2d2d2d;
+            --bg-secondary: #1e1e1e;
+            --bg-tertiary: #3d3d3d;
+            --border-primary: #3d3d3d;
+            --border-secondary: #555555;
+            --text-primary: #ffffff;
+        }
+
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            padding: 40px;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+
+        .timing-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            background-color: var(--bg-tertiary);
+            padding: 12px;
+            position: relative;
+            overflow: hidden;
+            border-radius: 6px;
+            border: 1px solid var(--border-secondary);
+            width: 300px;
+            margin: 20px;
+        }
+
+        .timer-active-glow {
+            animation: subtle-pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes subtle-pulse {
+            0%, 100% { 
+                box-shadow: 0 0 5px rgba(221, 123, 187, 0.1); 
+            }
+            50% { 
+                box-shadow: 0 0 20px rgba(221, 123, 187, 0.3); 
+            }
+        }
+
+        .timing-wrapper > * {
+            position: relative;
+            z-index: 3;
+        }
+
+        .glowing-effect-container {
+            z-index: 1;
+        }
+
+        .glowing-effect-glow {
+            z-index: 2;
+        }
+
+        button {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-secondary);
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        button:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .timer-display {
+            font-family: 'Courier New', monospace;
+            font-size: 24px;
+            font-weight: bold;
+            text-align: center;
+            padding: 10px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Glowing Effect Integration Test</h1>
+    
+    <div class="timing-wrapper" id="timing-wrapper">
+        <div class="timer-display" id="timer-display">00:00:00</div>
+        <div>
+            <button onclick="startGlowTest()">Start Glow Test</button>
+            <button onclick="stopGlowTest()">Stop Glow Test</button>
+        </div>
+        <p>When active, the timer wrapper should have a circling glow effect around its border.</p>
+    </div>
+
+    <script src="src/ui/effects/glowing-effect.js"></script>
+    <script>
+        let glowingEffect = null;
+        let isGlowing = false;
+
+        // Initialize glowing effect
+        window.addEventListener('DOMContentLoaded', () => {
+            const timingWrapper = document.getElementById('timing-wrapper');
+            if (timingWrapper && window.GlowingEffect) {
+                glowingEffect = new window.GlowingEffect(timingWrapper, {
+                    spread: 40,
+                    glow: true,
+                    disabled: false,
+                    autoRotate: false,
+                    borderWidth: 2,
+                    variant: 'default'
+                });
+                console.log('Glowing effect initialized');
+            } else {
+                console.error('Failed to initialize glowing effect');
+            }
+        });
+
+        function startGlowTest() {
+            if (glowingEffect) {
+                isGlowing = true;
+                glowingEffect.setActive(true);
+                glowingEffect.updateOptions({ autoRotate: true });
+                
+                const timingWrapper = document.getElementById('timing-wrapper');
+                timingWrapper.classList.add('timer-active-glow');
+                
+                console.log('Glow test started - should see circling border effect');
+            }
+        }
+
+        function stopGlowTest() {
+            if (glowingEffect) {
+                isGlowing = false;
+                glowingEffect.setActive(false);
+                glowingEffect.updateOptions({ autoRotate: false });
+                
+                const timingWrapper = document.getElementById('timing-wrapper');
+                timingWrapper.classList.remove('timer-active-glow');
+                
+                console.log('Glow test stopped');
+            }
+        }
+    </script>
+</body>
+</html>
