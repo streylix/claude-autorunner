@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Drag Test</title>
+    <style>
+        .test-message {
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin: 5px;
+            background: #f9f9f9;
+            cursor: move;
+        }
+        .test-message.dragging {
+            opacity: 0.5;
+        }
+        .test-button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            cursor: pointer;
+            float: right;
+        }
+    </style>
+</head>
+<body>
+    <h1>Simple Drag Test</h1>
+    <div id="test-container">
+        <div class="test-message" draggable="true" data-index="0">
+            Message 1
+            <button class="test-button">Button</button>
+        </div>
+        <div class="test-message" draggable="true" data-index="1">
+            Message 2
+            <button class="test-button">Button</button>
+        </div>
+        <div class="test-message" draggable="true" data-index="2">
+            Message 3
+            <button class="test-button">Button</button>
+        </div>
+    </div>
+
+    <script>
+        const container = document.getElementById('test-container');
+        
+        container.addEventListener('dragstart', (e) => {
+            console.log('Drag start:', e.target);
+            if (e.target.closest('button')) {
+                console.log('Preventing drag from button');
+                e.preventDefault();
+                return;
+            }
+            const message = e.target.closest('.test-message');
+            if (message) {
+                message.classList.add('dragging');
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', message.dataset.index);
+            }
+        });
+        
+        container.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+        });
+        
+        container.addEventListener('drop', (e) => {
+            e.preventDefault();
+            console.log('Drop:', e.target);
+        });
+        
+        container.addEventListener('dragend', (e) => {
+            const message = e.target.closest('.test-message');
+            if (message) {
+                message.classList.remove('dragging');
+            }
+        });
+        
+        // Button click handler
+        container.addEventListener('click', (e) => {
+            if (e.target.closest('button')) {
+                alert('Button clicked!');
+            }
+        });
+    </script>
+</body>
+</html>

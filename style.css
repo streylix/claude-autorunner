@@ -1034,6 +1034,18 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     min-height: 24px;
 }
 
+/* Fix drag issue: Actions should never block dragging */
+.message-item:hover .message-actions {
+    opacity: 1;
+    pointer-events: none; /* Keep as none to allow drag events to pass through */
+}
+
+/* Individual buttons need pointer events for clicking */
+.message-actions button,
+.message-actions .message-clipboard-label {
+    pointer-events: auto; /* Only buttons are clickable */
+}
+
 .message-clipboard-label {
     display: flex;
     align-items: center;
@@ -1072,19 +1084,10 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
     cursor: pointer;
 }
 
-.message-item:hover .message-actions {
-    opacity: 1;
+
+.message-actions button,
+.message-actions .message-clipboard-label {
     pointer-events: auto;
-}
-
-/* Fix: Prevent actions from blocking drag events while still allowing button clicks */
-.message-item[draggable="true"] .message-actions {
-    pointer-events: none; /* Don't block drag initiation */
-}
-
-.message-item[draggable="true"] .message-actions:hover,
-.message-item[draggable="true"] .message-actions > button:hover {
-    pointer-events: auto; /* Re-enable when directly hovering actions/buttons */
 }
 
 .message-edit-btn {

@@ -320,11 +320,18 @@ class TerminalGUI {
                     await this.forceSyncAllSessions();
                     // Load status from backend
                     await this.loadStatusFromBackend();
+                    // Load message history from backend
+                    console.log('[TERMINAL_DEBUG] Loading message history...');
+                    this.loadingManager.updateProgress('history', 'Loading message history...');
+                    await this.loadMessageHistory();
                     // Start polling for message updates instead of WebSocket (for now)
                     this.startMessageQueuePolling();
                 } else {
                     console.warn('Backend is not available - using local-only mode');
                     this.backendAPIClient = null; // Disable backend calls
+                    // Load message history from local preferences only
+                    console.log('[TERMINAL_DEBUG] Loading local message history...');
+                    await this.loadMessageHistory();
                 }
             }
             console.log('[TERMINAL_DEBUG] Initializing terminals...');
@@ -2974,18 +2981,8 @@ class TerminalGUI {
     updateMessageList() {
         const messageList = document.getElementById('message-list');
         messageList.innerHTML = '';
-        // Add drag and drop event listeners to the message list container for better event handling
-        if (!messageList.hasAttribute('data-drag-listeners-added')) {
-            messageList.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                this.handleDragOver(e);
-            });
-            messageList.addEventListener('drop', (e) => {
-                e.preventDefault();
-                this.handleDrop(e);
-            });
-            messageList.setAttribute('data-drag-listeners-added', 'true');
-        }
+        // Remove container delegation - go back to individual element listeners
+        messageList.removeAttribute('data-drag-listeners-added');
         this.messageQueue.forEach((message, index) => {
             const messageElement = document.createElement('div');
             messageElement.className = 'message-item';
@@ -3003,20 +3000,33 @@ class TerminalGUI {
                 messageElement.style.setProperty('--terminal-color', terminalData.color);
                 messageElement.setAttribute('data-terminal-color', terminalData.color);
             }
+            // Minimal drag setup
             messageElement.addEventListener('dragstart', (e) => {
-                this.handleDragStart(e);
+                console.log('🎯 DRAGSTART:', e.target);
+                e.dataTransfer.setData('text/plain', index);
+                e.dataTransfer.effectAllowed = 'move';
+                messageElement.style.opacity = '0.5';
+                console.log('✅ Drag data set, opacity changed');
             });
+            
+            messageElement.addEventListener('dragend', (e) => {
+                console.log('🎯 DRAGEND');
+                messageElement.style.opacity = '1';
+            });
+            
             messageElement.addEventListener('dragover', (e) => {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'move';
-                this.handleDragOver(e);
             });
+            
             messageElement.addEventListener('drop', (e) => {
                 e.preventDefault();
-                this.handleDrop(e);
-            });
-            messageElement.addEventListener('dragend', (e) => {
-                this.handleDragEnd(e);
+                const draggedIndex = e.dataTransfer.getData('text/plain');
+                const targetIndex = messageElement.dataset.index;
+                console.log('🎯 DROP:', draggedIndex, '->', targetIndex);
+                if (draggedIndex !== targetIndex) {
+                    this.reorderMessage(parseInt(draggedIndex), parseInt(targetIndex));
+                }
             });
             const content = document.createElement('div');
             content.className = 'message-content';
@@ -3088,6 +3098,11 @@ class TerminalGUI {
             editBtn.className = 'message-edit-btn';
             editBtn.innerHTML = '<i data-lucide="edit-3"></i>';
             editBtn.title = 'Edit message';
+            editBtn.draggable = false; // Prevent dragging buttons
+            editBtn.addEventListener('mousedown', (e) => {
+                console.log('Edit button mousedown - stopping propagation');
+                e.stopPropagation();
+            });
             editBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.editMessage(message.id);
@@ -3096,6 +3111,11 @@ class TerminalGUI {
             deleteBtn.className = 'message-delete-btn';
             deleteBtn.innerHTML = '<i data-lucide="trash-2"></i>';
             deleteBtn.title = 'Delete message';
+            deleteBtn.draggable = false; // Prevent dragging buttons
+            deleteBtn.addEventListener('mousedown', (e) => {
+                console.log('Delete button mousedown - stopping propagation');
+                e.stopPropagation();
+            });
             deleteBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.deleteMessage(message.id);
@@ -3104,6 +3124,11 @@ class TerminalGUI {
             optionsBtn.className = 'message-options-btn';
             optionsBtn.innerHTML = '<i data-lucide="more-horizontal"></i>';
             optionsBtn.title = 'Message options';
+            optionsBtn.draggable = false;
+            optionsBtn.addEventListener('mousedown', (e) => {
+                console.log('Options button mousedown - stopping propagation');
+                e.stopPropagation();
+            });
             actions.appendChild(editBtn);
             actions.appendChild(deleteBtn);
             actions.appendChild(optionsBtn);
@@ -3289,6 +3314,15 @@ class TerminalGUI {
         try {
             const targetTerminalId = terminalId || message.terminalId || this.activeTerminalId;
             const injectionCounter = counter || this.injectionCount;
+            
+            // Debug logging to track terminal ID issues
+            console.log(`[HISTORY_DEBUG] saveToMessageHistory called:`, {
+                passedTerminalId: terminalId,
+                messageTerminalId: message.terminalId,
+                activeTerminalId: this.activeTerminalId,
+                resolvedTargetId: targetTerminalId,
+                messageContent: message.content?.substring(0, 30)
+            });
             const historyItem = {
                 content: message.content || message.processedContent,
                 timestamp: Date.now(),
@@ -3300,18 +3334,40 @@ class TerminalGUI {
             // Also save to backend if available
             if (this.backendAPIClient) {
                 try {
-                    const backendSessionId = this.terminalSessionMap.get(targetTerminalId);
-                    if (backendSessionId) {
-                        await this.backendAPIClient.addMessageToHistory(
-                            backendSessionId,
-                            historyItem.content,
-                            'manual',
-                            targetTerminalId,
-                            injectionCounter
-                        );
+                    let backendSessionId = this.terminalSessionMap.get(targetTerminalId);
+                    
+                    // If no backend session exists, create one
+                    if (!backendSessionId) {
+                        console.log(`No backend session found for terminal ${targetTerminalId}, creating new session...`);
+                        try {
+                            const terminalName = this.terminals.get(targetTerminalId)?.name || `Terminal ${targetTerminalId}`;
+                            const session = await this.backendAPIClient.createTerminalSession(terminalName, this.currentDirectory);
+                            backendSessionId = session.id;
+                            this.terminalSessionMap.set(targetTerminalId, backendSessionId);
+                            this.logAction(`Created backend session ${backendSessionId} for Terminal ${targetTerminalId}`, 'info');
+                        } catch (sessionError) {
+                            console.error('Failed to create backend session for message history:', sessionError);
+                            this.logAction(`Message history backend save failed - session creation error: ${sessionError.message}`, 'warning');
+                            return; // Skip backend save but continue with local save
+                        }
                     }
+                    
+                    // Save to backend history with proper terminal ID
+                    console.log(`[HISTORY_DEBUG] Saving to backend with terminal_id: ${targetTerminalId}`);
+                    await this.backendAPIClient.addMessageToHistory(
+                        backendSessionId,
+                        historyItem.content,
+                        'manual',
+                        targetTerminalId,
+                        injectionCounter
+                    );
+                    console.log(`Message saved to backend history for session ${backendSessionId}`);
+                    this.logAction(`Message history saved to backend for Terminal ${targetTerminalId}`, 'success');
+                    
                 } catch (backendError) {
+                    console.error('[HISTORY_DEBUG] Backend save failed:', backendError);
                     console.warn('Failed to save message history to backend:', backendError);
+                    this.logAction(`Backend history save failed: ${backendError.message}`, 'warning');
                 }
             }
             // Update local array for UI (add id for compatibility)
@@ -3321,16 +3377,37 @@ class TerminalGUI {
                 timestamp: new Date().toISOString(),
                 injectedAt: new Date().toLocaleString(),
                 terminalId: targetTerminalId,
-                counter: injectionCounter
+                counter: injectionCounter,
+                source: 'local'
             };
             this.messageHistory.unshift(localHistoryItem);
             // Keep only last 100 messages in memory
             if (this.messageHistory.length > 100) {
                 this.messageHistory = this.messageHistory.slice(0, 100);
             }
+            
+            // Also update preferences for persistence
+            this.preferences.messageHistory = this.messageHistory;
+            this.saveAllPreferences();
+            
             this.updateMessageHistoryDisplay();
+            console.log(`[HISTORY_DEBUG] Message history saved (local): "${historyItem.content.substring(0, 50)}..."`);
+            console.log(`[HISTORY_DEBUG] Local history now has ${this.messageHistory.length} items`);
+            
+            // Force update history modal if it's open
+            if (document.getElementById('message-history-modal')?.classList.contains('show')) {
+                console.log('[HISTORY_DEBUG] Updating history modal after save');
+                setTimeout(() => {
+                    this.updateHistoryModal();
+                }, 100); // Small delay to ensure DOM is ready
+            }
+            
+            // Also update any time the modal is opened
+            this.forceHistoryModalRefresh = true;
+            
         } catch (error) {
-            console.error('Failed to save message history:', error);
+            console.error('[HISTORY_DEBUG] Failed to save message history:', error);
+            this.logAction(`Message history save failed: ${error.message}`, 'error');
         }
     }
     updateMessageHistoryDisplay() {
@@ -3342,22 +3419,30 @@ class TerminalGUI {
     async loadMessageHistory() {
         // Load from local preferences first
         this.messageHistory = this.preferences.messageHistory || [];
+        
         // Also try to load from backend if available
         if (this.backendAPIClient) {
             try {
                 const backendHistory = await this.backendAPIClient.getMessageHistory();
                 if (backendHistory && backendHistory.length > 0) {
+                    console.log(`Loading ${backendHistory.length} messages from backend`);
+                    
                     // Convert backend format to local format
                     const convertedHistory = backendHistory.map(item => ({
                         id: item.id,
                         content: item.message,
                         timestamp: item.timestamp,
                         injectedAt: new Date(item.timestamp).toLocaleString(),
-                        terminalId: item.terminal_id,
-                        counter: item.counter
+                        terminalId: item.terminal_id || this.activeTerminalId || 1, // Handle null terminal_id
+                        counter: item.counter,
+                        source: 'backend'
                     }));
+                    
+                    console.log(`[HISTORY_DEBUG] Converted ${convertedHistory.length} backend messages`);
+                    
                     // Merge with local history, preferring backend data
-                    this.messageHistory = convertedHistory.concat(this.messageHistory);
+                    this.messageHistory = convertedHistory.concat(this.messageHistory.map(item => ({...item, source: 'local'})));
+                    
                     // Remove duplicates and keep only last 100
                     const uniqueHistory = [];
                     const seen = new Set();
@@ -3369,10 +3454,27 @@ class TerminalGUI {
                         }
                     }
                     this.messageHistory = uniqueHistory.slice(0, 100);
+                    
+                    console.log(`Loaded ${backendHistory.length} messages from backend, ${this.messageHistory.length} total after merge`);
+                    this.logAction(`Message history loaded: ${backendHistory.length} from backend, ${this.messageHistory.length} total`, 'success');
+                } else {
+                    console.log('No message history found in backend');
+                    this.logAction('No message history found in backend - using local history only', 'info');
                 }
             } catch (backendError) {
                 console.warn('Failed to load message history from backend:', backendError);
+                this.logAction(`Failed to load backend history: ${backendError.message}`, 'warning');
             }
+        } else {
+            console.log('Backend API client not available - using local history only');
+        }
+        
+        // Clean up old/duplicate entries
+        this.cleanupOldMessageHistory();
+        
+        // Update the history modal if it's open
+        if (document.getElementById('message-history-modal') && document.getElementById('message-history-modal').classList.contains('show')) {
+            this.updateHistoryModal();
         }
     }
     clearMessageHistory() {
@@ -3380,6 +3482,54 @@ class TerminalGUI {
         this.preferences.messageHistory = [];
         this.saveAllPreferences();
         this.updateHistoryModal();
+        this.logAction('Message history cleared', 'info');
+    }
+    
+    cleanupOldMessageHistory() {
+        // Remove duplicate and malformed entries
+        const cleanHistory = [];
+        const seen = new Set();
+        
+        for (const item of this.messageHistory) {
+            // Skip items without content or with invalid IDs
+            if (!item.content || !item.content.trim() || !item.id || item.id === 'undefined') {
+                console.log(`Removing invalid history item: ${item.content?.substring(0, 30) || 'No content'}`);
+                continue;
+            }
+            
+            // Create a unique key for deduplication
+            const key = `${item.content.trim()}-${item.terminalId}-${item.counter}`;
+            if (seen.has(key)) {
+                console.log(`Removing duplicate history item: ${item.content.substring(0, 30)}...`);
+                continue;
+            }
+            
+            seen.add(key);
+            
+            // Ensure required fields exist
+            if (!item.injectedAt && item.timestamp) {
+                item.injectedAt = new Date(item.timestamp).toLocaleString();
+            }
+            if (!item.injectedAt) {
+                item.injectedAt = new Date().toLocaleString();
+            }
+            
+            cleanHistory.push(item);
+        }
+        
+        // Sort by timestamp (most recent first) and keep only last 50
+        cleanHistory.sort((a, b) => {
+            const aTime = new Date(a.timestamp || a.injectedAt || 0).getTime();
+            const bTime = new Date(b.timestamp || b.injectedAt || 0).getTime();
+            return bTime - aTime;
+        });
+        
+        this.messageHistory = cleanHistory.slice(0, 50);
+        this.preferences.messageHistory = this.messageHistory;
+        this.saveAllPreferences();
+        
+        console.log(`Cleaned message history: removed ${this.messageHistory.length - cleanHistory.length} invalid/duplicate items`);
+        this.logAction(`Message history cleanup: ${cleanHistory.length} valid items remaining`, 'info');
     }
     // New timer system functions
     toggleTimer() {
@@ -6388,7 +6538,16 @@ class TerminalGUI {
         const modal = document.getElementById('message-history-modal');
         console.log('[DEBUG] Opening message history modal', modal);
         modal.classList.add('show');
-        this.updateHistoryModal();
+        
+        // Force refresh if needed or always refresh to show latest data
+        console.log('[HISTORY_DEBUG] Opening modal, refreshing history...');
+        this.loadMessageHistory().then(() => {
+            this.updateHistoryModal();
+            this.forceHistoryModalRefresh = false;
+        }).catch(error => {
+            console.error('[HISTORY_DEBUG] Failed to load history on modal open:', error);
+            this.updateHistoryModal(); // Still show local history
+        });
     }
     closeMessageHistoryModal() {
         const modal = document.getElementById('message-history-modal');
@@ -6636,19 +6795,41 @@ class TerminalGUI {
             `;
             return;
         }
+        
+        // Clean and validate history items, ensuring all have proper IDs
+        this.messageHistory = this.messageHistory.map(item => {
+            // Ensure every item has a valid ID
+            if (!item.id || item.id === 'undefined' || item.id === null) {
+                item.id = Date.now() + Math.random();
+                console.log(`Fixed missing ID for history item: ${item.content?.substring(0, 30)}...`);
+            }
+            
+            // Ensure required fields exist
+            if (!item.injectedAt && item.timestamp) {
+                item.injectedAt = new Date(item.timestamp).toLocaleString();
+            }
+            if (!item.injectedAt) {
+                item.injectedAt = new Date().toLocaleString();
+            }
+            
+            return item;
+        }).filter(item => item.content && item.content.trim().length > 0); // Remove empty items
+        
         const historyHTML = this.messageHistory.map(item => {
             // Get terminal data to extract name and color
             const terminalData = this.terminals.get(item.terminalId);
-            const terminalName = terminalData ? terminalData.name : `Terminal ${item.terminalId}`;
-            const terminalColor = terminalData ? terminalData.color : this.terminalColors[(item.terminalId - 1) % this.terminalColors.length];
+            const terminalName = terminalData ? terminalData.name : `Terminal ${item.terminalId || 'Unknown'}`;
+            const terminalColor = terminalData ? terminalData.color : this.terminalColors[((item.terminalId || 1) - 1) % this.terminalColors.length];
+            
             return `
-                <div class="history-item">
+                <div class="history-item" data-history-id="${item.id}">
                     <div class="history-item-header">
                         <div class="history-item-info">
-                            <span class="history-item-date">${item.injectedAt}</span>
+                            <span class="history-item-date">${item.injectedAt || 'Unknown Date'}</span>
                             <span class="history-item-meta" style="color: ${terminalColor};">
-                                ${item.terminalId ? terminalName : 'Unknown Terminal'}
+                                ${terminalName}
                                 ${item.counter ? ` • #${item.counter}` : ''}
+                                ${item.source ? ` • ${item.source}` : ''}
                             </span>
                         </div>
                         <div class="history-item-actions">
@@ -6664,9 +6845,18 @@ class TerminalGUI {
                 </div>
             `;
         }).join('');
+        
         historyList.innerHTML = historyHTML;
+        
         // Initialize Lucide icons for the new buttons
-        lucide.createIcons();
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+        
+        console.log(`[HISTORY_DEBUG] History modal updated with ${this.messageHistory.length} items`);
+        console.log(`[HISTORY_DEBUG] Modal element exists:`, !!document.getElementById('message-history-modal'));
+        console.log(`[HISTORY_DEBUG] History list element exists:`, !!historyList);
+        console.log(`[HISTORY_DEBUG] Modal is visible:`, document.getElementById('message-history-modal')?.classList.contains('show'));
     }
     undoFromHistory(historyId) {
         // Convert historyId to appropriate type for comparison
@@ -7916,27 +8106,46 @@ class TerminalGUI {
     // Drag and drop functionality
     // Drag and drop functionality
     handleDragStart(e) {
+        console.log('handleDragStart called with:', e.target);
         // Ensure we get the message item element
         const messageItem = e.target.closest('.message-item');
-        if (!messageItem) return;
+        if (!messageItem) {
+            console.log('No message item found');
+            return;
+        }
+        
+        console.log('Setting up drag for message:', messageItem.dataset.index);
         e.dataTransfer.setData('text/plain', '');
         e.dataTransfer.effectAllowed = 'move';
         this.draggedElement = messageItem;
         this.draggedIndex = parseInt(messageItem.dataset.index);
         this.isDragging = true;
         messageItem.classList.add('dragging');
+        
         // Add active class to message list
-        document.getElementById('message-list').classList.add('drag-active');
+        const messageList = document.getElementById('message-list');
+        if (messageList) {
+            messageList.classList.add('drag-active');
+        }
+        
         // Add drag-mode class to sidebar to expand message queue
-        document.querySelector('.sidebar').classList.add('drag-mode');
-        console.log('Drag started:', this.draggedIndex);
+        const sidebar = document.querySelector('.sidebar');
+        if (sidebar) {
+            sidebar.classList.add('drag-mode');
+        }
+        
+        console.log('Drag started successfully:', this.draggedIndex, 'isDragging:', this.isDragging);
     }
     handleDragOver(e) {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
-        if (!this.isDragging) return;
+        if (!this.isDragging) {
+            console.log('DragOver but not dragging');
+            return;
+        }
         const target = e.target.closest('.message-item');
         if (target && target !== this.draggedElement) {
+            console.log('DragOver valid target:', target.dataset.index);
             // Remove drag-over class from all items
             document.querySelectorAll('.message-item').forEach(item => {
                 item.classList.remove('drag-over');
