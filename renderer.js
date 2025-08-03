@@ -4,7 +4,7 @@ const { FitAddon } = require('@xterm/addon-fit');
 const { SearchAddon } = require('@xterm/addon-search');
 const { WebLinksAddon } = require('@xterm/addon-web-links');
 const InjectionManager = require('./src/messaging/injection-manager');
-const getAllTextIn = require('./getAllTextIn');
+const { getAllTextIn, getLastTextIn, cleanTerminalText } = require('./getAllTextIn');
 // Import new modular components
 const PlatformUtils = require('./src/utils/platform-utils');
 const DomUtils = require('./src/utils/dom-utils');
@@ -66,6 +66,9 @@ class TerminalGUI {
         this.previousCompletionStrings = new Map(); // Track previous completion strings per terminal
         this.completionStabilityTimers = new Map(); // Track completion stability timers per terminal
         this.previousTerminalStatuses = new Map(); // Track previous terminal statuses for completion detection
+        // Completion tracking
+        this.completionItems = new Map(); // Map of completion ID to completion data
+        this.completionIdCounter = 1; // Counter for unique completion IDs
         // Application session ID for statistics
         this.sessionId = this.validationUtils.generateSessionId('app');
         // Legacy single terminal references (will be updated to use active terminal)
@@ -1063,11 +1066,21 @@ class TerminalGUI {
                 terminalData.lastOutput = data.content;
                 // Run detection functions for ALL terminals, not just active one
                 this.detectAutoContinuePrompt(data.content, terminalId);
-                this.extractAndTrackCompletionText(data.content, terminalId);
+                
+                // Track previous terminal status for state change detection
+                const previousStatus = terminalData.previousStatus || 'unknown';
+                
+                this.extractAndTrackCompletionText(data.content, terminalId, previousStatus);
                 await this.detectUsageLimit(data.content, terminalId);
                 this.detectCwdChange(data.content, terminalId);
                 // Event-driven status update triggered by terminal output
                 this.updateTerminalStatusFromOutput(terminalId, data.content);
+                
+                // Store current status as previous for next iteration (only if terminal is ready)
+                if (terminalData.terminal) {
+                    const currentStatus = this.scanSingleTerminalStatus(terminalId, terminalData);
+                    terminalData.previousStatus = currentStatus;
+                }
                 // Update active terminal references only for the active terminal
                 if (terminalId === this.activeTerminalId) {
                     this.terminal = terminalData.terminal;
@@ -1531,6 +1544,29 @@ class TerminalGUI {
         document.getElementById('clear-queue-header-btn').addEventListener('click', () => {
             this.clearQueue();
         });
+        // Global click handler for links
+        document.addEventListener('click', (e) => {
+            // Handle external links
+            const link = e.target.closest('a[href]');
+            if (link && link.href) {
+                const href = link.href;
+                // Check if it's an external link (http/https)
+                if (href.startsWith('http://') || href.startsWith('https://')) {
+                    e.preventDefault();
+                    console.log('Opening external link:', href);
+                    const { ipcRenderer } = require('electron');
+                    ipcRenderer.invoke('open-external-link', href).then(result => {
+                        if (!result.success) {
+                            console.error('Failed to open link:', result.error);
+                        }
+                    }).catch(error => {
+                        console.error('Error opening link:', error);
+                    });
+                    return;
+                }
+            }
+        }, true); // Use capture phase to catch before other handlers
+
         // Consolidated click event listener for terminal interactions
         document.addEventListener('click', (e) => {
             // Handle close terminal button
@@ -3323,6 +3359,15 @@ class TerminalGUI {
                 resolvedTargetId: targetTerminalId,
                 messageContent: message.content?.substring(0, 30)
             });
+            
+            // Auto-create completion item for message injection
+            try {
+                const completionId = this.createCompletionItem(message, targetTerminalId);
+                console.log(`[COMPLETION] Auto-created completion item ${completionId} for message injection`);
+            } catch (completionError) {
+                console.warn('[COMPLETION] Failed to auto-create completion item:', completionError.message);
+                // Don't fail the entire operation if completion item creation fails
+            }
             const historyItem = {
                 content: message.content || message.processedContent,
                 timestamp: Date.now(),
@@ -4273,16 +4318,43 @@ class TerminalGUI {
             this.scheduleNextInjection();
             return;
         }
-        const message = this.messageQueue.shift();
+        // Find the highest priority message for the current terminal
+        const currentTerminalId = this.activeTerminalId;
+        const messageIndex = this.messageQueue.findIndex(msg => 
+            (msg.terminalId || 1) === currentTerminalId
+        );
+        
+        let message;
+        if (messageIndex === -1) {
+            // No messages for current terminal, try any terminal
+            this.logAction(`No messages for terminal ${currentTerminalId}, checking all terminals`, 'info');
+            message = this.messageQueue.shift();
+        } else {
+            // Remove the found message from the queue
+            message = this.messageQueue.splice(messageIndex, 1)[0];
+            this.logAction(`Found message at index ${messageIndex} for terminal ${currentTerminalId}`, 'info');
+        }
         this.saveMessageQueue(); // Save queue changes to backend database
         this.isInjecting = true;
         // Keep injectionInProgress true throughout the entire sequence
         this.currentlyInjectingMessageId = message.id; // Track which message is being injected
+        
+        // Create completion item for this injection
+        const terminalId = message.terminalId || this.activeTerminalId;
+        console.log('[DEBUG] Creating completion item - message:', message, 'terminalId:', terminalId);
+        try {
+            const completionId = this.createCompletionItem(message, terminalId);
+            console.log('[DEBUG] Completion item created successfully:', completionId);
+        } catch (error) {
+            console.error('[ERROR] Failed to create completion item:', error);
+            this.logAction(`Failed to create completion item: ${error.message}`, 'error');
+        }
+        
         this.updateTerminalStatusIndicator(); // Use new status system
         this.updateMessageList(); // Update UI to show injecting state
         // Mark message as injected in backend
         this.markMessageAsInjectedInBackend(message);
-        this.logAction(`Sequential injection: "${message.content}"`, 'success');
+        this.logAction(`Sequential injection: "${message.content}" (completion ${completionId})`, 'success');
         this.showSystemNotification('Message Injected', `Injecting: ${message.content.substring(0, 50)}${message.content.length > 50 ? '...' : ''}`);
         // Handle plan mode wrapping and Ctrl+C injection
         console.log('Sequential injection - message:', message);
@@ -4779,8 +4851,11 @@ class TerminalGUI {
             this.logAction('No messages in queue to inject', 'warning');
             return;
         }
-        // Force inject the top message (bypass timer but keep safety checks)
-        const topMessage = this.messageQueue[0];
+        // Find the top message for the current terminal
+        const currentTerminalId = this.activeTerminalId;
+        const topMessage = this.messageQueue.find(msg => 
+            (msg.terminalId || 1) === currentTerminalId
+        ) || this.messageQueue[0]; // Fallback to first message if none for current terminal
         this.logAction(`Force injecting top message: "${topMessage.content}"`, 'info');
         // Start safety checks for immediate injection (no delay for manual injection)
         this.performSafetyChecks(() => {
@@ -4794,8 +4869,11 @@ class TerminalGUI {
             this.logAction('No messages in queue to inject', 'warning');
             return;
         }
-        // Get the first message in the queue
-        const message = this.messageQueue[0];
+        // Get the first message for the current terminal
+        const currentTerminalId = this.activeTerminalId;
+        const message = this.messageQueue.find(msg => 
+            (msg.terminalId || 1) === currentTerminalId
+        ) || this.messageQueue[0]; // Fallback to first message if none for current terminal
         this.logAction(`Manual injection started (bypassing safety checks): "${message.content.substring(0, 50)}..."`, 'info');
         // Force reset any existing injection state for manual injection
         if (this.isInjecting || this.injectionInProgress) {
@@ -4813,6 +4891,18 @@ class TerminalGUI {
         this.isInjecting = true;
         this.injectionInProgress = true;
         this.currentlyInjectingMessageId = message.id;
+        
+        // Create completion item for manual injection
+        const terminalId = message.terminalId || this.activeTerminalId;
+        console.log('[DEBUG] Creating completion item for manual injection - message:', message, 'terminalId:', terminalId);
+        try {
+            const completionId = this.createCompletionItem(message, terminalId);
+            console.log('[DEBUG] Manual injection completion item created successfully:', completionId);
+        } catch (error) {
+            console.error('[ERROR] Failed to create completion item for manual injection:', error);
+            this.logAction(`Failed to create completion item for manual injection: ${error.message}`, 'error');
+        }
+        
         this.updateMessageList(); // Update UI to show injecting state
         // Create a robust typing function that handles all cases
         const performManualInjection = () => {
@@ -5410,29 +5500,136 @@ class TerminalGUI {
     }
     
     // Extract and track completion text between ⏺ and ╭ characters
-    extractAndTrackCompletionText(data, terminalId = this.activeTerminalId) {
+    extractAndTrackCompletionText(data, terminalId = this.activeTerminalId, previousStatus = 'unknown') {
         try {
-            // Use our getAllTextIn function to extract text between ⏺ and ╭
-            const completionText = getAllTextIn(data, '⏺', '╭');
+            // Safety check: ensure terminal data exists before proceeding
+            const terminalData = this.terminals.get(terminalId);
+            if (!terminalData || !terminalData.terminal) {
+                return; // Skip if terminal isn't ready yet
+            }
             
-            if (completionText) {
-                // Get the previous string for this terminal
-                const previousString = this.previousCompletionStrings.get(terminalId) || '';
+            // Get current terminal status
+            const currentStatus = this.scanSingleTerminalStatus(terminalId, terminalData);
+            
+            // Only extract completion text on state transitions from 'running' to idle states
+            // This prevents excessive extraction during active processing
+            const shouldExtract = this.shouldExtractCompletionText(previousStatus, currentStatus, terminalId);
+            
+            if (!shouldExtract) {
+                return; // Skip extraction if not a significant state change
+            }
+            
+            // Use our getAllTextIn function to extract text between ⏺ and ╭
+            const rawCompletionText = getAllTextIn(data, '⏺', '╭');
+            
+            if (rawCompletionText && rawCompletionText.trim()) {
+                // Clean the completion text by removing intermediate/processing indicators
+                const cleanedText = this.cleanCompletionText(rawCompletionText);
                 
-                // Check if the string is different from the previous one
-                if (completionText !== previousString) {
-                    // Update the stored previous string
-                    this.previousCompletionStrings.set(terminalId, completionText);
+                if (cleanedText) {
+                    // Get the previous string for this terminal
+                    const previousString = this.previousCompletionStrings.get(terminalId) || '';
                     
-                    // Find and append to the active completion item for this terminal
-                    this.appendToActiveCompletionItem(terminalId, completionText);
-                    
-                    console.log(`[Terminal ${terminalId}] New completion text extracted:`, completionText);
+                    // Check if the string is different from the previous one
+                    if (cleanedText !== previousString) {
+                        // Update the stored previous string
+                        this.previousCompletionStrings.set(terminalId, cleanedText);
+                        
+                        // Find and append to the active completion item for this terminal
+                        this.appendToActiveCompletionItem(terminalId, cleanedText);
+                        
+                        console.log(`[Terminal ${terminalId}] Terminal idle for timeout period - completion text extracted:`, cleanedText.substring(0, 100) + '...');
+                    }
                 }
             }
         } catch (error) {
             console.error('Error extracting completion text:', error);
         }
+    }
+    
+    // Clean completion text by removing processing indicators and intermediate states
+    cleanCompletionText(rawText) {
+        if (!rawText) return '';
+        
+        // Split into lines for cleaning
+        let lines = rawText.split('\n');
+        
+        // Remove lines that contain processing indicators
+        lines = lines.filter(line => {
+            const trimmedLine = line.trim();
+            
+            // Skip empty lines
+            if (!trimmedLine) return false;
+            
+            // Skip lines with processing indicators
+            if (trimmedLine.includes('Cogitating') ||
+                trimmedLine.includes('Determining') ||
+                trimmedLine.includes('esc to interrupt') ||
+                trimmedLine.includes('↓') ||
+                trimmedLine.includes('⚒') ||
+                trimmedLine.includes('✻') ||
+                trimmedLine.includes('✽') ||
+                trimmedLine.includes('✢') ||
+                trimmedLine.includes('✳') ||
+                trimmedLine.includes('✶') ||
+                trimmedLine.includes('tokens') ||
+                trimmedLine.match(/^\s*·.*$/)) { // Lines starting with · are usually processing
+                return false;
+            }
+            
+            // Keep lines that look like actual completion content
+            return true;
+        });
+        
+        // Join back and clean up
+        let cleanedText = lines.join('\n').trim();
+        
+        // Remove multiple consecutive newlines
+        cleanedText = cleanedText.replace(/\n\s*\n\s*\n/g, '\n\n');
+        
+        // Only return if we have substantial content (not just processing artifacts)
+        if (cleanedText.length > 10 && !cleanedText.match(/^[\s\n·✻✽✢✳✶⚒↓]*$/)) {
+            return cleanedText;
+        }
+        
+        return '';
+    }
+    
+    // Determine if completion text should be extracted based on terminal status
+    shouldExtractCompletionText(previousStatus, currentStatus, terminalId) {
+        // Skip if terminal data is not available yet
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData || !terminalData.terminal) {
+            return false; // Don't extract if terminal isn't ready
+        }
+        
+        // Get terminal status information
+        const terminalStatus = terminalData.status || {};
+        const now = Date.now();
+        
+        // Check if terminal is currently in the '...' waiting state
+        const isInWaitingState = currentStatus === '...' || 
+                                terminalStatus.status === '...' ||
+                                terminalStatus.status === 'idle';
+        
+        if (!isInWaitingState) {
+            return false; // Not in waiting state, don't extract
+        }
+        
+        // Check if terminal has been in waiting state long enough
+        if (terminalStatus.lastUpdate) {
+            const waitingTime = now - terminalStatus.lastUpdate;
+            
+            // Determine timeout based on plan mode
+            const isInPlanMode = this.planModeEnabled || 
+                               (terminalData.lastOutput && terminalData.lastOutput.includes('claude --flow'));
+            const requiredWaitTime = isInPlanMode ? 30000 : 5000; // 30s for plan mode, 5s for normal
+            
+            // Only extract if we've been waiting long enough
+            return waitingTime >= requiredWaitTime;
+        }
+        
+        return false; // No timestamp available, don't extract
     }
     
     // Find the active completion item for a terminal and append text
@@ -5497,8 +5694,8 @@ class TerminalGUI {
                 
                 // Detect transition from running to idle (...)
                 if (wasRunning && isNowIdle) {
-                    console.log(`[Terminal ${terminalId}] Status changed from running to idle - starting completion timer`);
-                    this.startCompletionStabilityTimer(terminalId);
+                    console.log(`[Terminal ${terminalId}] Status changed from running to idle - waiting for stable state`);
+                    this.waitForStableCompletionState(terminalId);
                 }
                 // If terminal becomes running again, cancel the completion timer
                 else if (currentStatus.isRunning && this.completionStabilityTimers.has(terminalId)) {
@@ -5517,6 +5714,77 @@ class TerminalGUI {
         } catch (error) {
             console.error('Error checking terminal completion status:', error);
         }
+    }
+    
+    // Wait for stable completion state (similar to injection system)
+    waitForStableCompletionState(terminalId) {
+        // Use the same logic as the injection system for determining stability duration
+        let requiredStableDuration = 5000; // 5 seconds default
+        
+        // Check for plan mode like the injection system does
+        if (this.injectionManager && this.injectionManager.lastPlanModeCompletionTime) {
+            const timeSinceLastPlanMode = Date.now() - this.injectionManager.lastPlanModeCompletionTime;
+            if (timeSinceLastPlanMode < this.injectionManager.planModeDelay) {
+                requiredStableDuration = 30000; // 30 seconds for plan mode
+            }
+        }
+        
+        const checkInterval = 100; // 100ms checks
+        const maxWaitTime = 120000; // 2 minutes timeout
+        let stableStartTime = null;
+        const startTime = Date.now();
+        
+        const checkStatus = () => {
+            // Check for timeout
+            const elapsedTime = Date.now() - startTime;
+            if (elapsedTime > maxWaitTime) {
+                console.log(`[Terminal ${terminalId}] Completion stability check TIMEOUT after ${elapsedTime}ms - completing anyway`);
+                this.completeCompletionItem(terminalId);
+                return;
+            }
+            
+            // Get current terminal status
+            const currentStatus = this.terminalStatuses.get(terminalId);
+            if (!currentStatus) {
+                // No status available, try again
+                setTimeout(checkStatus, checkInterval);
+                return;
+            }
+            
+            // Check if terminal is in stable state (not running, not prompting)
+            const isStable = !currentStatus.isRunning && !currentStatus.isPrompting;
+            
+            if (isStable) {
+                // Terminal is stable
+                if (stableStartTime === null) {
+                    // Just became stable - start timing
+                    stableStartTime = Date.now();
+                    const delayType = requiredStableDuration === 30000 ? '30-second plan mode' : '5-second standard';
+                    console.log(`[Terminal ${terminalId}] Terminal became stable - starting ${delayType} completion timer`);
+                } else {
+                    // Check if we've been stable long enough
+                    const stableDuration = Date.now() - stableStartTime;
+                    if (stableDuration >= requiredStableDuration) {
+                        const delayType = requiredStableDuration === 30000 ? '30-second plan mode' : '5-second standard';
+                        console.log(`[Terminal ${terminalId}] Terminal stable for ${stableDuration}ms (${delayType} delay) - completing completion item`);
+                        this.completeCompletionItem(terminalId);
+                        return;
+                    }
+                }
+            } else {
+                // Terminal not stable - reset timer
+                if (stableStartTime !== null) {
+                    console.log(`[Terminal ${terminalId}] Terminal no longer stable - resetting completion timer`);
+                    stableStartTime = null;
+                }
+            }
+            
+            // Continue checking
+            setTimeout(checkStatus, checkInterval);
+        };
+        
+        // Start the checking process
+        setTimeout(checkStatus, checkInterval);
     }
     
     // Start 5-second stability timer for completion
@@ -9906,15 +10174,7 @@ class TerminalGUI {
         } else {
             console.error('[DEBUG] todo-nav-btn element not found!');
         }
-        // Footer buttons
-        const clearTodosBtn = document.getElementById('clear-todos-btn');
-        if (clearTodosBtn) {
-            clearTodosBtn.addEventListener('click', () => this.clearCompletedTodos());
-        }
-        const clearAllTodosBtn = document.getElementById('clear-all-todos-btn');
-        if (clearAllTodosBtn) {
-            clearAllTodosBtn.addEventListener('click', () => this.clearAllTodos());
-        }
+        // Footer buttons removed - clear completed and clear all functionality disabled
         // Todo search
         const todoSearch = document.getElementById('todo-search');
         if (todoSearch) {
@@ -10001,8 +10261,9 @@ class TerminalGUI {
         const modal = document.getElementById('completion-details-modal');
         const modalTitle = document.getElementById('completion-modal-title');
         const modalPrompt = document.getElementById('completion-modal-prompt');
+        const modalOutput = document.getElementById('completion-modal-output');
         
-        if (!modal || !modalTitle || !modalPrompt) return;
+        if (!modal || !modalTitle || !modalPrompt || !modalOutput) return;
         
         // Get terminal information from the completion item
         const terminalElement = completionItem.querySelector('.completion-terminal');
@@ -10031,6 +10292,9 @@ class TerminalGUI {
         // Set prompt content with "Prompt #X - text" format in single line
         modalPrompt.innerHTML = `Prompt #${promptNumber} - ${promptText}`;
         
+        // Get and display the last completion text from terminal output
+        this.displayCompletionOutput(modalOutput, terminalId);
+        
         // Show modal
         modal.classList.add('show');
         
@@ -10038,6 +10302,375 @@ class TerminalGUI {
         document.body.style.overflow = 'hidden';
         
         console.log(`[DEBUG] Opened completion modal for ${terminalName}, prompt #${promptNumber}`);
+    }
+    
+    displayCompletionOutput(outputElement, terminalId) {
+        // Get terminal data for the specified terminal
+        const terminalData = this.terminals.get(parseInt(terminalId));
+        if (!terminalData || !outputElement) {
+            outputElement.innerHTML = '<div class="no-output">No terminal output available</div>';
+            return;
+        }
+        
+        // Get the terminal's last output
+        const terminalOutput = terminalData.lastOutput || '';
+        
+        if (!terminalOutput) {
+            outputElement.innerHTML = '<div class="no-output">No terminal output available</div>';
+            return;
+        }
+        
+        // Extract the last completion text between ⏺ and ╭ characters
+        const rawCompletionText = getLastTextIn(terminalOutput, '⏺', '╭');
+        
+        if (!rawCompletionText) {
+            outputElement.innerHTML = '<div class="no-output">No completion text found between ⏺ and ╭ markers</div>';
+            return;
+        }
+        
+        // Clean the terminal text to remove control characters and formatting
+        const cleanedText = cleanTerminalText(rawCompletionText);
+        
+        if (!cleanedText) {
+            outputElement.innerHTML = '<div class="no-output">Completion text found but appears to be empty after cleaning</div>';
+            return;
+        }
+        
+        // Display the cleaned text with proper formatting
+        outputElement.innerHTML = `<pre class="completion-text">${this.escapeHtml(cleanedText)}</pre>`;
+    }
+    
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    // Completion management functions
+    createCompletionItem(message, terminalId) {
+        console.log('[DEBUG] createCompletionItem called with:', { message, terminalId });
+        
+        if (!message) {
+            throw new Error('Message is required to create completion item');
+        }
+        
+        if (!terminalId) {
+            throw new Error('Terminal ID is required to create completion item');
+        }
+        
+        const completionId = this.completionIdCounter++;
+        const now = Date.now();
+        
+        // Get terminal color
+        const terminalData = this.terminals.get(terminalId);
+        console.log('[DEBUG] Terminal data for completion:', terminalData);
+        const terminalColor = terminalData?.color || '#007acc';
+        
+        // Create completion item data
+        const completionItem = {
+            id: completionId,
+            messageId: message.id,
+            terminalId: terminalId,
+            terminalColor: terminalColor,
+            prompt: message.content || 'No content',
+            status: 'in-progress', // Start in processing state
+            createdAt: now,
+            startTime: now,
+            endTime: null,
+            duration: null
+        };
+        
+        console.log('[DEBUG] Created completion item data:', completionItem);
+        
+        // Store completion item
+        this.completionItems.set(completionId, completionItem);
+        console.log('[DEBUG] Stored completion item, map size:', this.completionItems.size);
+        
+        // Add to DOM
+        try {
+            this.renderCompletionItem(completionItem);
+            console.log('[DEBUG] Rendered completion item to DOM');
+        } catch (error) {
+            console.error('[ERROR] Failed to render completion item:', error);
+            throw new Error(`Failed to render completion item: ${error.message}`);
+        }
+        
+        // Start monitoring for completion
+        try {
+            this.startCompletionMonitoring(completionId, terminalId);
+            console.log('[DEBUG] Started monitoring for completion');
+        } catch (error) {
+            console.error('[ERROR] Failed to start completion monitoring:', error);
+            // Don't throw here since the item was created successfully
+        }
+        
+        this.logAction(`Created completion item ${completionId} for terminal ${terminalId}`, 'info');
+        console.log('[DEBUG] createCompletionItem finished successfully, returning:', completionId);
+        return completionId;
+    }
+    
+    renderCompletionItem(completionItem) {
+        const todoList = document.getElementById('todo-list');
+        if (!todoList) return;
+        
+        // Create completion item element
+        const itemElement = document.createElement('div');
+        itemElement.className = `completion-item ${completionItem.status}`;
+        itemElement.dataset.terminal = completionItem.terminalId;
+        itemElement.dataset.completionId = completionItem.id;
+        
+        // Get terminal name
+        const terminalData = this.terminals.get(completionItem.terminalId);
+        const terminalName = terminalData?.name || `Terminal ${completionItem.terminalId}`;
+        
+        // Generate status icon
+        let statusIcon = '';
+        if (completionItem.status === 'completed') {
+            statusIcon = `<svg class="status-icon completed-icon" width="18" height="18" viewBox="0 0 18 18">
+                <path d="M15.464 4.101a.562.562 0 0 1 0 .796l-7.875 7.875a.562.562 0 0 1-.796 0l-3.937-3.937a.562.562 0 1 1 .796-.796L7.313 11.579l7.355-7.478a.562.562 0 0 1 .796 0z"/>
+            </svg>`;
+        } else if (completionItem.status === 'failed') {
+            statusIcon = `<svg class="status-icon failed-icon" width="18" height="18" viewBox="0 0 18 18">
+                <path d="M5.227 5.227a.562.562 0 0 1 .796 0L9 8.204l2.977-2.977a.562.562 0 0 1 .796.796L9.796 9l2.977 2.977a.562.562 0 0 1-.796.796L9 9.796l-2.977 2.977a.562.562 0 0 1-.796-.796L8.204 9 5.227 6.023a.562.562 0 0 1 0-.796z"/>
+            </svg>`;
+        } else {
+            statusIcon = `<svg class="status-icon progress-icon" width="18" height="18" viewBox="0 0 18 18">
+                <circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-dasharray="18.85 6.28"></circle>
+            </svg>`;
+        }
+        
+        // Set the border color to match the terminal color
+        itemElement.style.borderLeftColor = completionItem.terminalColor;
+        
+        itemElement.innerHTML = `
+            <div class="completion-header">
+                <div class="completion-terminal">${terminalName}</div>
+                <div class="completion-status">
+                    ${statusIcon}
+                </div>
+            </div>
+            <div class="completion-content">
+                <div class="completion-prompt">${this.escapeHtml(completionItem.prompt)}</div>
+            </div>
+            <div class="completion-timer">${this.formatDuration(completionItem.duration || 0)}</div>
+        `;
+        
+        // Add to the beginning of the list (most recent first)
+        todoList.insertBefore(itemElement, todoList.firstChild);
+        
+        // Set up click handler for modal
+        itemElement.addEventListener('click', () => {
+            this.openCompletionModal(itemElement, 0); // Index doesn't matter for dynamic items
+        });
+    }
+    
+    updateCompletionStatus(completionId, status, endTime = null) {
+        const completionItem = this.completionItems.get(completionId);
+        if (!completionItem) return;
+        
+        const previousStatus = completionItem.status;
+        completionItem.status = status;
+        
+        if (endTime) {
+            completionItem.endTime = endTime;
+            completionItem.duration = Math.floor((endTime - completionItem.startTime) / 1000);
+        }
+        
+        // Clean up timers when completion finishes
+        if (status !== 'in-progress') {
+            if (completionItem.updateTimer) {
+                clearInterval(completionItem.updateTimer);
+                completionItem.updateTimer = null;
+            }
+            if (completionItem.absoluteTimer) {
+                clearTimeout(completionItem.absoluteTimer);
+                completionItem.absoluteTimer = null;
+            }
+        }
+        
+        // Update DOM element
+        const domElement = document.querySelector(`[data-completion-id="${completionId}"]`);
+        console.log(`[COMPLETION] Updating DOM for completion ${completionId} to status: ${status}, found element:`, !!domElement);
+        
+        if (domElement) {
+            // Update classes
+            domElement.classList.remove('in-progress', 'completed', 'failed');
+            domElement.classList.add(status);
+            console.log(`[COMPLETION] Updated classes for completion ${completionId}, new classes:`, domElement.className);
+            
+            // Update terminal color border (in case it changed)
+            const currentTerminalData = this.terminals.get(completionItem.terminalId);
+            if (currentTerminalData?.color) {
+                domElement.style.borderLeftColor = currentTerminalData.color;
+                completionItem.terminalColor = currentTerminalData.color; // Update stored color
+            }
+            
+            // Update status icon
+            const statusContainer = domElement.querySelector('.completion-status');
+            const timerElement = domElement.querySelector('.completion-timer');
+            console.log(`[COMPLETION] Found status container:`, !!statusContainer, `timer element:`, !!timerElement);
+            
+            if (statusContainer) {
+                let iconHtml = '';
+                if (status === 'completed') {
+                    iconHtml = `<svg class="status-icon completed-icon" width="18" height="18" viewBox="0 0 18 18">
+                        <path d="M15.464 4.101a.562.562 0 0 1 0 .796l-7.875 7.875a.562.562 0 0 1-.796 0l-3.937-3.937a.562.562 0 1 1 .796-.796L7.313 11.579l7.355-7.478a.562.562 0 0 1 .796 0z"/>
+                    </svg>`;
+                } else if (status === 'failed') {
+                    iconHtml = `<svg class="status-icon failed-icon" width="18" height="18" viewBox="0 0 18 18">
+                        <path d="M5.227 5.227a.562.562 0 0 1 .796 0L9 8.204l2.977-2.977a.562.562 0 0 1 .796.796L9.796 9l2.977 2.977a.562.562 0 0 1-.796.796L9 9.796l-2.977 2.977a.562.562 0 0 1-.796-.796L8.204 9 5.227 6.023a.562.562 0 0 1 0-.796z"/>
+                    </svg>`;
+                } else {
+                    iconHtml = `<svg class="status-icon progress-icon" width="18" height="18" viewBox="0 0 18 18">
+                        <circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-dasharray="18.85 6.28"></circle>
+                    </svg>`;
+                }
+                statusContainer.innerHTML = iconHtml;
+                console.log(`[COMPLETION] Updated status icon for completion ${completionId} to:`, status);
+            }
+            
+            // Update timer
+            if (timerElement && completionItem.duration !== null) {
+                timerElement.textContent = this.formatDuration(completionItem.duration);
+                timerElement.classList.remove('completed', 'failed');
+                timerElement.classList.add(status);
+                console.log(`[COMPLETION] Updated timer for completion ${completionId} to: ${this.formatDuration(completionItem.duration)}`);
+            }
+        }
+        
+        this.logAction(`Updated completion ${completionId} from ${previousStatus} to ${status}`, 'info');
+    }
+    
+    formatDuration(seconds) {
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = seconds % 60;
+        return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+    }
+    
+    startCompletionMonitoring(completionId, terminalId) {
+        const completionItem = this.completionItems.get(completionId);
+        if (!completionItem) return;
+        
+        // Start a timer to update the duration display
+        const updateTimer = setInterval(() => {
+            if (completionItem.status === 'in-progress') {
+                const now = Date.now();
+                const duration = Math.floor((now - completionItem.startTime) / 1000);
+                
+                // Update timer display
+                const domElement = document.querySelector(`[data-completion-id="${completionId}"]`);
+                if (domElement) {
+                    const timerElement = domElement.querySelector('.completion-timer');
+                    if (timerElement) {
+                        timerElement.textContent = this.formatDuration(duration);
+                    }
+                }
+            } else {
+                // Stop timer when completion is no longer in progress
+                clearInterval(updateTimer);
+            }
+        }, 1000);
+        
+        // Store timer ID for cleanup
+        completionItem.updateTimer = updateTimer;
+        
+        // Start monitoring terminal status for completion detection
+        this.monitorTerminalForCompletion(completionId, terminalId);
+    }
+    
+    monitorTerminalForCompletion(completionId, terminalId) {
+        const completionItem = this.completionItems.get(completionId);
+        if (!completionItem) return;
+        
+        // Determine if this is a plan mode injection
+        const isInPlanMode = this.planModeEnabled || (completionItem.prompt && completionItem.prompt.includes('claude --flow'));
+        const absoluteTimeout = isInPlanMode ? 30000 : 5000; // 30s for plan mode, 5s for normal
+        
+        // Set timeout that respects terminal status - only complete when terminal is stable
+        const createSmartTimer = () => {
+            return setTimeout(() => {
+                if (completionItem.status === 'in-progress') {
+                    const terminalStatus = this.terminalStatuses.get(terminalId) || {};
+                    const isStillRunning = terminalStatus.isRunning || terminalStatus.isPrompting;
+                    
+                    if (isStillRunning) {
+                        console.log(`[COMPLETION] Terminal still running/prompting for item ${completionId} - waiting another ${absoluteTimeout/1000}s`);
+                        // Create a new timer since terminal is still active
+                        completionItem.absoluteTimer = createSmartTimer();
+                    } else {
+                        console.log(`[COMPLETION] Auto-completing item ${completionId} after waiting for terminal to become stable`);
+                        this.updateCompletionStatus(completionId, 'completed', Date.now());
+                    }
+                }
+            }, absoluteTimeout);
+        };
+        
+        const absoluteTimer = createSmartTimer();
+        
+        // Store timeout for cleanup
+        completionItem.absoluteTimer = absoluteTimer;
+        
+        // Check terminal status periodically to detect completion
+        const statusCheck = () => {
+            const terminalData = this.terminals.get(terminalId);
+            if (!terminalData || completionItem.status !== 'in-progress') {
+                // Clean up timeout if monitoring stops
+                if (completionItem.absoluteTimer) {
+                    clearTimeout(completionItem.absoluteTimer);
+                }
+                return;
+            }
+            
+            const now = Date.now();
+            
+            // Check 1: Has a new completion item been created for this terminal?
+            const hasNewerCompletion = Array.from(this.completionItems.values()).some(item => 
+                item.terminalId === terminalId && 
+                item.id !== completionId && 
+                item.createdAt > completionItem.createdAt &&
+                item.status === 'in-progress'
+            );
+            
+            if (hasNewerCompletion) {
+                console.log(`[COMPLETION] Auto-completing item ${completionId} - newer injection detected`);
+                this.updateCompletionStatus(completionId, 'completed', now);
+                clearTimeout(completionItem.absoluteTimer);
+                return;
+            }
+            
+            // Check 2: Has Claude been in idle state for the required time?
+            const terminalStatus = this.terminalStatuses.get(terminalId) || {};
+            const claudeOutput = terminalData.lastOutput || '';
+            
+            // Detect if Claude is in waiting state (shows "..." or not running/prompting)
+            const isInWaitingState = claudeOutput.includes('...') || 
+                                   claudeOutput.includes('⏹') || 
+                                   (!terminalStatus.isRunning && !terminalStatus.isPrompting);
+            
+            console.log(`[COMPLETION] Item ${completionId} status check: isRunning=${terminalStatus.isRunning}, isPrompting=${terminalStatus.isPrompting}, isInWaitingState=${isInWaitingState}`);
+            
+            if (isInWaitingState && terminalStatus.lastUpdate) {
+                const idleTime = now - terminalStatus.lastUpdate;
+                const requiredIdleTime = isInPlanMode ? 30000 : 5000;
+                
+                if (idleTime >= requiredIdleTime) {
+                    console.log(`[COMPLETION] Auto-completing item ${completionId} after ${requiredIdleTime/1000}s idle time`);
+                    this.updateCompletionStatus(completionId, 'completed', now);
+                    clearTimeout(completionItem.absoluteTimer);
+                    return;
+                } else {
+                    console.log(`[COMPLETION] Item ${completionId} still waiting: ${Math.round(idleTime/1000)}s/${Math.round(requiredIdleTime/1000)}s`);
+                }
+            }
+            
+            // Continue monitoring if still in progress
+            if (completionItem.status === 'in-progress') {
+                setTimeout(statusCheck, 1000); // Check every second
+            }
+        };
+        
+        // Start monitoring after a short delay to let terminal settle
+        setTimeout(statusCheck, 2000);
     }
     
     closeCompletionModal() {

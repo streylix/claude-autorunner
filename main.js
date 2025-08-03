@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, powerSaveBlocker, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, powerSaveBlocker, Notification, shell } = require('electron');
 const path = require('path');
 const pty = require('node-pty');
 const os = require('os');
@@ -721,6 +721,17 @@ function setupIpcHandlers() {
       return { success: true };
     } catch (error) {
       try { console.error('Error changing terminal directory:', error); } catch (e) { /* ignore */ }
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Handle opening external links
+  ipcMain.handle('open-external-link', async (event, url) => {
+    try {
+      await shell.openExternal(url);
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to open external link:', error);
       return { success: false, error: error.message };
     }
   });

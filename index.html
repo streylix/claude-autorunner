@@ -78,73 +78,9 @@
                         </button>
                     </div>
                     <div class="todo-content" id="todo-list">
-                        <!-- Completed Container -->
-                        <div class="completion-item completed" data-terminal="1">
-                            <div class="completion-header">
-                                <div class="completion-terminal">claudecodebot • #6</div>
-                                <div class="completion-status">
-                                    <svg class="status-icon completed-icon" width="18" height="18" viewBox="0 0 18 18">
-                                        <path d="M15.464 4.101a.562.562 0 0 1 0 .796l-7.875 7.875a.562.562 0 0 1-.796 0l-3.937-3.937a.562.562 0 1 1 .796-.796L7.313 11.579l7.355-7.478a.562.562 0 0 1 .796 0z"/>
-                                    </svg>
-                                </div>
-                            </div>
-                            <div class="completion-content">
-                                <div class="completion-prompt">
-                                    Create a new React component for user authentication with login and signup forms
-                                </div>
-                                <div class="completion-subtitle">+2 more</div>
-                            </div>
-                            <div class="completion-timer completed">1:24</div>
-                        </div>
-
-                        <!-- In Progress Container -->
-                        <div class="completion-item in-progress" data-terminal="2">
-                            <div class="completion-header">
-                                <div class="completion-terminal">claudecodebot • #7</div>
-                                <div class="completion-status">
-                                    <svg class="status-icon progress-icon" width="18" height="18" viewBox="0 0 18 18">
-                                        <circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-dasharray="18.85 6.28">
-                                        </circle>
-                                    </svg>
-                                </div>
-                            </div>
-                            <div class="completion-content">
-                                <div class="completion-prompt">
-                                    Implement API endpoints for user data management including CRUD operations and validation middleware
-                                </div>
-                                <div class="completion-subtitle">+4 more</div>
-                            </div>
-                            <div class="completion-timer">0:47</div>
-                        </div>
-
-                        <!-- Failed Container -->
-                        <div class="completion-item failed" data-terminal="3">
-                            <div class="completion-header">
-                                <div class="completion-terminal">claudecodebot • #8</div>
-                                <div class="completion-status">
-                                    <svg class="status-icon failed-icon" width="18" height="18" viewBox="0 0 18 18">
-                                        <path d="M5.227 5.227a.562.562 0 0 1 .796 0L9 8.204l2.977-2.977a.562.562 0 0 1 .796.796L9.796 9l2.977 2.977a.562.562 0 0 1-.796.796L9 9.796l-2.977 2.977a.562.562 0 0 1-.796-.796L8.204 9 5.227 6.023a.562.562 0 0 1 0-.796z"/>
-                                    </svg>
-                                </div>
-                            </div>
-                            <div class="completion-content">
-                                <div class="completion-prompt">
-                                    Deploy the application to production server with SSL certificates and configure nginx reverse proxy
-                                </div>
-                                <div class="completion-subtitle">+3 more</div>
-                            </div>
-                            <div class="completion-timer failed">2:15</div>
-                        </div>
+                        <!-- Completion items will be dynamically added here -->
                     </div>
                     <div class="sidebar-footer">
-                        <button class="footer-btn" id="clear-todos-btn" title="Clear completed todos" data-test-id="clear-todos-btn">
-                            <i data-lucide="check"></i>
-                            Clear completed
-                        </button>
-                        <button class="footer-btn" id="clear-all-todos-btn" title="Clear all todos" data-test-id="clear-all-todos-btn">
-                            <i data-lucide="trash-2"></i>
-                            Clear all
-                        </button>
                     </div>
                 </div>
 
@@ -694,6 +630,9 @@
             <div class="modal-body completion-modal-body">
                 <div class="completion-modal-prompt" id="completion-modal-prompt">
                     > Create a new React component for user authentication with login and signup forms
+                </div>
+                <div class="completion-modal-output" id="completion-modal-output">
+                    <!-- Terminal output will be displayed here -->
                 </div>
             </div>
         </div>
