@@ -1,0 +1,27 @@
+name: "Claude Code Bot"
+description: "Automated message injection terminal with queuing system"
+languages:
+  - javascript
+  - typescript
+entry_points:
+  - main.js
+  - renderer.js
+  - src/terminal-gui.js
+key_directories:
+  - src/
+  - backend/
+important_files:
+  - package.json
+  - CLAUDE.md
+  - README.md
+architecture_notes: |
+  Electron-based application with:
+  - Frontend: Terminal GUI with message queue system
+  - Backend: Django REST API with WebSocket support
+  - Key modules: terminal management, message injection, timer system
+  - Manager pattern used throughout (timerManager, settingsManager, etc.)
+cleanup_focus:
+  - unused_imports
+  - dead_code
+  - duplicate_functionality
+  - optimization_opportunities
