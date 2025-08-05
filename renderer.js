@@ -7422,6 +7422,10 @@ class TerminalGUI {
             if (verbose) this.logAction('No backend API client available', 'warning');
             return;
         }
+        
+        // Clean up orphaned terminal sessions before syncing
+        this.cleanupOrphanedTerminalSessions(verbose);
+        
         try {
             let totalNewMessages = 0;
             // Get messages for each terminal session (filtered by specificTerminalId if provided)
@@ -7429,6 +7433,13 @@ class TerminalGUI {
                 if (specificTerminalId && terminalId !== specificTerminalId) {
                     continue; // Skip if we're only syncing for a specific terminal
                 }
+                
+                // CRITICAL FIX: Only sync for terminals that actually exist
+                if (!this.terminals.has(terminalId)) {
+                    if (verbose) this.logAction(`Skipping sync for non-existent terminal ${terminalId}, will clean up`, 'warning');
+                    continue;
+                }
+                
                 if (verbose) this.logAction(`Getting messages for terminal ${terminalId}, session ${sessionId}`, 'info');
                 const backendMessages = await this.backendAPIClient.getQueuedMessages(sessionId, 'pending');
                 const messages = backendMessages.results || backendMessages;
@@ -7630,6 +7641,23 @@ class TerminalGUI {
             this.logAction(`Message injected via WebSocket: "${message.content}"`, 'success');
         }
     }
+    cleanupOrphanedTerminalSessions(verbose = false) {
+        // Remove terminal sessions from the map that no longer have corresponding terminals
+        const orphanedSessions = [];
+        for (const [terminalId, sessionId] of this.terminalSessionMap) {
+            if (!this.terminals.has(terminalId)) {
+                orphanedSessions.push(terminalId);
+            }
+        }
+        
+        if (orphanedSessions.length > 0) {
+            if (verbose) this.logAction(`Cleaning up ${orphanedSessions.length} orphaned terminal sessions: ${orphanedSessions.join(', ')}`, 'info');
+            for (const terminalId of orphanedSessions) {
+                this.terminalSessionMap.delete(terminalId);
+            }
+            if (verbose) this.logAction(`Terminal session map size after cleanup: ${this.terminalSessionMap.size}`, 'info');
+        }
+    }
     startMessageQueuePolling() {
         // Poll for message updates every 2 seconds
         this.messageQueuePolling = setInterval(async () => {
@@ -7639,13 +7667,25 @@ class TerminalGUI {
                 // Silently continue - error logging is handled in syncMessagesFromBackend
             }
         }, 2000);
+        
+        // Also set up periodic cleanup every 30 seconds to prevent session accumulation
+        this.sessionCleanupInterval = setInterval(() => {
+            this.cleanupOrphanedTerminalSessions();
+        }, 30000);
+        
         this.logAction('Started polling for message queue updates every 2 seconds', 'info');
+        this.logAction('Started periodic terminal session cleanup every 30 seconds', 'info');
     }
     stopMessageQueuePolling() {
         if (this.messageQueuePolling) {
             clearInterval(this.messageQueuePolling);
             this.messageQueuePolling = null;
             this.logAction('Stopped message queue polling', 'info');
+        }
+        if (this.sessionCleanupInterval) {
+            clearInterval(this.sessionCleanupInterval);
+            this.sessionCleanupInterval = null;
+            this.logAction('Stopped terminal session cleanup', 'info');
         }
     }
     async syncTerminalSessions() {
