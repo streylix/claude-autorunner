@@ -15,20 +15,21 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 
-from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
 urlpatterns = [
-    path("admin/", admin.site.urls),
-    path("api/terminal/", include("terminal.urls")),
-    path("api/queue/", include("message_queue.urls")),
-    path("api/voice/", include("voice_transcription.urls")),
-    path("api/settings/", include("settings.urls")),
-    path("api/settings/", include("user_settings.urls")),
-    path("api/todos/", include("todos.urls")),
-    path("", include("pricing.urls")),
+    # CORE FUNCTIONALITY ONLY - Simplified backend for 3 essential features:
+    # 1. ccusage (pricing) - credit card usage tracking
+    # 2. addmsg (message_queue) - add messages to terminal queue  
+    # 3. audio transcription (voice_transcription) - Whisper audio processing
+    path("", include("pricing.urls")),                    # ccusage functionality
+    path("api/queue/", include("message_queue.urls")),    # addmsg functionality  
+    path("api/voice/", include("voice_transcription.urls")), # audio transcribing
+    
+    # REMOVED: admin, terminal sessions, settings, todos - all moved to frontend-only
+    # This eliminates the problematic terminal state persistence and database bloat
 ]
 
 # Serve media files in development

@@ -153,7 +153,10 @@ class TerminalGUI {
             minimizeToTray: true,
             startMinimized: false,
             // Todo generation preferences
-            automaticTodoGeneration: false
+            automaticTodoGeneration: false,
+            // Terminal chunk layout preferences
+            terminalsPerChunk: 4,
+            chunkOrientation: 'horizontal'
         };
         this.usageLimitSyncInterval = null;
         this.usageLimitResetTime = null;
@@ -1780,6 +1783,26 @@ class TerminalGUI {
             this.logAction(`Terminal scroll behavior set to: ${behavior}`, 'info');
         });
         
+        // Terminal chunk layout controls
+        const terminalsPerChunkSlider = document.getElementById('terminals-per-chunk');
+        const terminalsPerChunkValue = document.getElementById('terminals-per-chunk-value');
+        
+        terminalsPerChunkSlider.addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            terminalsPerChunkValue.textContent = value;
+            this.updatePref('terminalsPerChunk', value);
+            this.updateTerminalLayout(); // Re-organize existing terminals
+            this.logAction(`Terminals per chunk set to: ${value}`, 'info');
+        });
+        
+        document.getElementById('chunk-orientation').addEventListener('change', (e) => {
+            const orientation = e.target.value;
+            this.updatePref('chunkOrientation', orientation);
+            this.updateTerminalLayout(); // Re-organize existing terminals
+            this.logAction(`Chunk orientation set to: ${orientation}`, 'info');
+        });
+        
+        
         // Keyword blocking controls
         document.getElementById('add-keyword-btn').addEventListener('click', () => {
             this.addKeywordRule();
@@ -2653,14 +2676,10 @@ class TerminalGUI {
         if (this.isRecording) {
             // If currently recording, stop it
             this.stopRecording();
-        } else if (this.voiceEnabled) {
-            // If enabled (red), start recording
-            await this.startRecording();
         } else {
-            // If not enabled, enable it (turn red)
-            this.voiceEnabled = true;
-            this.updateVoiceButtonState('enabled');
-            this.logAction('Voice transcription ready - click again to start recording', 'info');
+            // If not recording, start recording immediately (single click)
+            this.voiceEnabled = true; // Ensure voice is enabled
+            await this.startRecording();
         }
     }
     
@@ -6533,11 +6552,8 @@ class TerminalGUI {
                     if (this.microwaveMode) {
                         this.microwaveMode.onTaskCompleted();
                     }
-                    this.logAction(`Terminal ${terminalId} completed - playing sound`, 'info');
-                } else {
-                    this.logAction(`Terminal ${terminalId} completion sound cancelled - status changed`, 'info');
                 }
-            }, 1000);
+            }, 3000);
         }
     }
     checkStatusChangeSounds(previousStatus, currentStatus, terminalId) {
@@ -7345,6 +7361,18 @@ class TerminalGUI {
             // Update terminal scroll behavior UI
             const scrollBehaviorEl = document.getElementById('terminal-scroll-behavior');
             if (scrollBehaviorEl) scrollBehaviorEl.value = this.getTerminalScrollBehavior();
+            
+            // Update terminal chunk layout settings UI
+            const terminalsPerChunkEl = document.getElementById('terminals-per-chunk');
+            const terminalsPerChunkValueEl = document.getElementById('terminals-per-chunk-value');
+            if (terminalsPerChunkEl) {
+                terminalsPerChunkEl.value = this.preferences.terminalsPerChunk || 4;
+                if (terminalsPerChunkValueEl) terminalsPerChunkValueEl.textContent = this.preferences.terminalsPerChunk || 4;
+            }
+            const chunkOrientationEl = document.getElementById('chunk-orientation');
+            if (chunkOrientationEl) chunkOrientationEl.value = this.preferences.chunkOrientation || 'horizontal';
+            
+            // Update max terminals settings UI
             
             // Update sound settings UI
             const soundEffectsEl = document.getElementById('sound-effects-enabled');
@@ -8732,8 +8760,10 @@ class TerminalGUI {
             terminalsContainer.classList.add('layout-quad');
             terminalsContainer.appendChild(terminalWrapper);
         } else {
-            // 5+ terminals: horizontal scrolling with chunk-based layout
-            terminalsContainer.classList.add('layout-scroll');
+            // 5+ terminals: configurable scrolling with chunk-based layout
+            const chunkOrientation = this.preferences.chunkOrientation || 'horizontal';
+            const layoutClass = chunkOrientation === 'vertical' ? 'layout-scroll-vertical' : 'layout-scroll';
+            terminalsContainer.classList.add(layoutClass);
             
             // Get all terminals including the new one and sort by terminal ID
             const allWrappers = Array.from(terminalsContainer.querySelectorAll('.terminal-wrapper'));
@@ -8760,7 +8790,7 @@ class TerminalGUI {
                 return idA - idB;
             });
         
-        // Organize terminals into chunks of 4
+        // Organize terminals into configurable chunks
         this.organizeTerminalsIntoChunks(terminalsContainer, existingWrappers);
     }
     
@@ -8774,7 +8804,9 @@ class TerminalGUI {
             return;
         }
         
-        const chunksNeeded = Math.ceil(terminalWrappers.length / 4);
+        // Use configurable terminals per chunk
+        const terminalsPerChunk = this.preferences.terminalsPerChunk || 4;
+        const chunksNeeded = Math.ceil(terminalWrappers.length / terminalsPerChunk);
         let processedTerminals = 0;
         
         for (let chunkIndex = 0; chunkIndex < chunksNeeded; chunkIndex++) {
@@ -8782,9 +8814,9 @@ class TerminalGUI {
             const chunk = document.createElement('div');
             chunk.setAttribute('data-chunk-index', chunkIndex);
             
-            // Add up to 4 terminals to this chunk
-            const startIndex = chunkIndex * 4;
-            const endIndex = Math.min(startIndex + 4, terminalWrappers.length);
+            // Add up to terminalsPerChunk terminals to this chunk
+            const startIndex = chunkIndex * terminalsPerChunk;
+            const endIndex = Math.min(startIndex + terminalsPerChunk, terminalWrappers.length);
             const terminalsInChunk = endIndex - startIndex;
             
             // Set chunk class based on number of terminals
@@ -8838,7 +8870,10 @@ class TerminalGUI {
         } else if (terminalCount === 4) {
             terminalsContainer.classList.add('layout-quad');
         } else if (terminalCount >= 5) {
-            terminalsContainer.classList.add('layout-scroll');
+            // Use configurable chunk orientation for 5+ terminals
+            const chunkOrientation = this.preferences.chunkOrientation || 'horizontal';
+            const layoutClass = chunkOrientation === 'vertical' ? 'layout-scroll-vertical' : 'layout-scroll';
+            terminalsContainer.classList.add(layoutClass);
             this.ensureScrollLayout(terminalsContainer);
         }
         
@@ -9114,7 +9149,10 @@ class TerminalGUI {
         if (currentCount >= 5) {
             // For scroll layout, reorganize terminals into proper chunks
             terminalsContainer.className = terminalsContainer.className.replace(/layout-\w+/g, '').trim();
-            terminalsContainer.classList.add('layout-scroll');
+            // Use configurable chunk orientation for 5+ terminals
+            const chunkOrientation = this.preferences.chunkOrientation || 'horizontal';
+            const layoutClass = chunkOrientation === 'vertical' ? 'layout-scroll-vertical' : 'layout-scroll';
+            terminalsContainer.classList.add(layoutClass);
             
             // Force reflow before reorganizing to ensure clean state
             terminalsContainer.offsetHeight;

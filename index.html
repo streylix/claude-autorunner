@@ -358,6 +358,36 @@
                     </select>
                     <p class="setting-description">Smart: Only scrolls to bottom if you were already there. Always: Always scrolls to bottom on new output. Preserve: Never auto-scrolls.</p>
                 </div>
+
+                <div class="setting-group">
+                    <label class="setting-label">
+                        <span class="setting-title">Terminal Chunk Layout</span>
+                    </label>
+                    <p class="setting-description">Configure how multiple terminals are arranged in chunks and set the maximum number of terminals allowed.</p>
+                    
+                    <div class="setting-row">
+                        <label class="setting-label">
+                            <span class="setting-text">Terminals per chunk</span>
+                        </label>
+                        <div class="setting-input-group">
+                            <input type="range" id="terminals-per-chunk" min="1" max="8" value="4" class="setting-range">
+                            <span id="terminals-per-chunk-value" class="setting-value">4</span>
+                        </div>
+                        <p class="setting-help">Number of terminals to display in each chunk (1-8 terminals).</p>
+                    </div>
+                    
+                    <div class="setting-row">
+                        <label class="setting-label">
+                            <span class="setting-text">Chunk orientation</span>
+                        </label>
+                        <select id="chunk-orientation" class="setting-select">
+                            <option value="horizontal">Horizontal (chunks scroll right)</option>
+                            <option value="vertical">Vertical (chunks stack below)</option>
+                        </select>
+                        <p class="setting-help">Choose whether chunks are arranged horizontally or vertically.</p>
+                    </div>
+                    
+                </div>
                 
                 <div class="setting-group">
                     <label class="setting-label">

@@ -517,6 +517,110 @@ body {
     grid-template-rows: 1fr 1fr;
 }
 
+/* Support for 5-8 terminals per chunk */
+.terminals-container.layout-scroll .terminal-chunk.chunk-5 {
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.terminals-container.layout-scroll .terminal-chunk.chunk-5 .terminal-wrapper:first-child {
+    grid-row: 1 / 3;
+    grid-column: 1;
+}
+
+.terminals-container.layout-scroll .terminal-chunk.chunk-6 {
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.terminals-container.layout-scroll .terminal-chunk.chunk-7 {
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr 1fr;
+}
+
+.terminals-container.layout-scroll .terminal-chunk.chunk-7 .terminal-wrapper:first-child {
+    grid-row: 1 / 4;
+    grid-column: 1;
+}
+
+.terminals-container.layout-scroll .terminal-chunk.chunk-8 {
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+/* Vertical layout support */
+.terminals-container.layout-scroll-vertical {
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+    gap: 1px;
+}
+
+.terminals-container.layout-scroll-vertical .terminal-chunk {
+    display: grid;
+    grid-gap: 1px;
+    width: 100%;
+    height: 400px; /* Fixed height per chunk in vertical mode */
+    flex-shrink: 0;
+}
+
+/* Vertical layout uses the same grid templates but with fixed height */
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-1 {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+}
+
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-2 {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr;
+}
+
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-3 {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-3 .terminal-wrapper:first-child {
+    grid-row: 1 / 3;
+    grid-column: 1;
+}
+
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-4 {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-5 {
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-5 .terminal-wrapper:first-child {
+    grid-row: 1 / 3;
+    grid-column: 1;
+}
+
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-6 {
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-7 {
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr 1fr;
+}
+
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-7 .terminal-wrapper:first-child {
+    grid-row: 1 / 4;
+    grid-column: 1;
+}
+
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-8 {
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
 /* Triple layout specific positioning */
 .terminals-container.layout-triple .terminal-wrapper:first-child {
     grid-row: 1 / 3;
@@ -2882,6 +2986,56 @@ button#voice-btn.voice-button.processing:hover,
 .setting-input:focus {
     outline: none;
     border-color: var(--accent-primary);
+}
+
+/* Range slider and value display styles */
+.setting-input-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.setting-range {
+    flex: 1;
+    height: 4px;
+    background: var(--bg-tertiary);
+    outline: none;
+    border-radius: 2px;
+    border: none;
+    cursor: pointer;
+}
+
+.setting-range::-webkit-slider-thumb {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: var(--accent-primary);
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid var(--bg-primary);
+}
+
+.setting-range::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: var(--accent-primary);
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid var(--bg-primary);
+    box-sizing: border-box;
+}
+
+.setting-value {
+    min-width: 20px;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-secondary);
 }
 
 /* Keyword blocking table styles */

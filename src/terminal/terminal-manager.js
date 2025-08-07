@@ -432,10 +432,6 @@ class TerminalManager {
 
     async addTerminal(startDirectory = null) {
         const terminalCount = this.terminals.size;
-        if (terminalCount >= 4) {
-            this.gui.logAction('Maximum of 4 terminals allowed', 'warning');
-            return;
-        }
 
         const newId = this.terminalIdCounter++;
         const terminalsContainer = document.getElementById('terminals-container');

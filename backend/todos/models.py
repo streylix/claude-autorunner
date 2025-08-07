@@ -1,12 +1,13 @@
 from django.db import models
-from terminal.models import TerminalSession
 import uuid
+
+# Updated todos models to work without problematic terminal session persistence
 
 
 class TodoItem(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    terminal_session = models.ForeignKey(TerminalSession, on_delete=models.CASCADE, related_name='todos')
-    terminal_id = models.IntegerField(default=1)  # Store the original terminal ID for color persistence
+    # Removed terminal_session foreign key to eliminate orphaned session issues
+    terminal_id = models.CharField(max_length=255, null=True, blank=True)  # Simple string reference
     title = models.CharField(max_length=500)
     description = models.TextField(blank=True)
     completed = models.BooleanField(default=False)
@@ -24,13 +25,14 @@ class TodoItem(models.Model):
         ordering = ['-created_at']
     
     def __str__(self):
-        return f"{self.title[:50]} - Terminal {self.terminal_session.name}"
+        return f"{self.title[:50]} - Terminal {self.terminal_id or 'unknown'}"
 
 
 class TodoGeneration(models.Model):
     """Track todo generation attempts"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    terminal_session = models.ForeignKey(TerminalSession, on_delete=models.CASCADE, related_name='todo_generations')
+    # Removed terminal_session foreign key to eliminate orphaned session issues
+    terminal_id = models.CharField(max_length=255, null=True, blank=True)  # Simple string reference
     terminal_output = models.TextField()
     generated_at = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, choices=[
@@ -46,4 +48,4 @@ class TodoGeneration(models.Model):
         ordering = ['-generated_at']
     
     def __str__(self):
-        return f"Generation for {self.terminal_session.name} - {self.status}"
+        return f"Generation for Terminal {self.terminal_id or 'unknown'} - {self.status}"

@@ -1,11 +1,13 @@
 from django.db import models
-from terminal.models import TerminalSession
 import uuid
+
+# Message models updated to work without problematic terminal session persistence
 
 
 class QueuedMessage(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    terminal_session = models.ForeignKey(TerminalSession, on_delete=models.CASCADE, related_name='queued_messages')
+    # Removed terminal_session foreign key to eliminate orphaned session issues
+    terminal_id = models.CharField(max_length=255, null=True, blank=True)  # Simple string reference
     content = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
     scheduled_for = models.DateTimeField(null=True, blank=True)
@@ -25,7 +27,8 @@ class QueuedMessage(models.Model):
 
 class MessageHistory(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    terminal_session = models.ForeignKey(TerminalSession, on_delete=models.CASCADE, related_name='message_history')
+    # Removed terminal_session foreign key to eliminate orphaned session issues
+    terminal_id = models.CharField(max_length=255, null=True, blank=True)  # Simple string reference
     message = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
     source = models.CharField(max_length=20, choices=[
@@ -33,7 +36,6 @@ class MessageHistory(models.Model):
         ('auto', 'Auto'),
         ('voice', 'Voice'),
     ], default='manual')
-    terminal_id = models.IntegerField(null=True, blank=True)
     counter = models.IntegerField(null=True, blank=True)
     
     class Meta:

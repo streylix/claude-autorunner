@@ -12,9 +12,9 @@ class QueuedMessageViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         queryset = super().get_queryset()
-        terminal_session_id = self.request.query_params.get('terminal_session')
-        if terminal_session_id:
-            queryset = queryset.filter(terminal_session_id=terminal_session_id)
+        terminal_id = self.request.query_params.get('terminal_id')
+        if terminal_id:
+            queryset = queryset.filter(terminal_id=terminal_id)
         status_filter = self.request.query_params.get('status')
         if status_filter:
             queryset = queryset.filter(status=status_filter)
@@ -32,7 +32,7 @@ class QueuedMessageViewSet(viewsets.ModelViewSet):
         
         # Create history entry
         MessageHistory.objects.create(
-            terminal_session=message.terminal_session,
+            terminal_id=message.terminal_id,
             message=message.content,
             source='auto'
         )
@@ -42,10 +42,10 @@ class QueuedMessageViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['post'])
     def clear_queue(self, request):
-        terminal_session_id = request.data.get('terminal_session')
-        if terminal_session_id:
+        terminal_id = request.data.get('terminal_id')
+        if terminal_id:
             QueuedMessage.objects.filter(
-                terminal_session_id=terminal_session_id,
+                terminal_id=terminal_id,
                 status='pending'
             ).update(status='cancelled')
         return Response({'status': 'Queue cleared'})
@@ -57,7 +57,7 @@ class MessageHistoryViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         queryset = super().get_queryset()
-        terminal_session_id = self.request.query_params.get('terminal_session')
-        if terminal_session_id:
-            queryset = queryset.filter(terminal_session_id=terminal_session_id)
+        terminal_id = self.request.query_params.get('terminal_id')
+        if terminal_id:
+            queryset = queryset.filter(terminal_id=terminal_id)
         return queryset

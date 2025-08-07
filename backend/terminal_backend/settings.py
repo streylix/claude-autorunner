@@ -36,9 +36,8 @@ ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*']
 # Application definition
 
 INSTALLED_APPS = [
-    # "daphne",  # Disabled for now - using polling instead of WebSocket
-    "django.contrib.admin",
-    "django.contrib.auth",
+    # Essential Django apps  
+    "django.contrib.auth",        # Required by rest_framework
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
@@ -46,15 +45,13 @@ INSTALLED_APPS = [
     # Third party apps
     "rest_framework",
     "corsheaders",
-    "channels",
-    # Local apps
-    "terminal",
-    "message_queue",
-    "voice_transcription",
-    "settings",
-    "todos",
-    "user_settings",
-    "pricing",
+    # CORE FUNCTIONALITY ONLY - 3 essential apps:
+    "pricing",              # ccusage functionality
+    "message_queue",        # addmsg functionality 
+    "voice_transcription",  # audio transcribing
+    
+    # REMOVED: admin, channels, terminal, settings, todos, user_settings
+    # This eliminates database bloat and session persistence issues
 ]
 
 MIDDLEWARE = [
@@ -63,7 +60,7 @@ MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",  # Required by rest_framework
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]

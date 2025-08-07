@@ -1,6 +1,13 @@
-from django.urls import re_path
-from . import consumers
+# WebSocket routing disabled for simplified backend
+# No real-time functionality needed for core use cases
+
+# from django.urls import re_path
+# from . import consumers
+
+# websocket_urlpatterns = [
+#     # WebSocket patterns removed to eliminate complexity
+# ]
 
 websocket_urlpatterns = [
-    re_path(r'ws/message_queue/$', consumers.MessageQueueConsumer.as_asgi()),
+    # No WebSocket patterns in simplified backend
 ]
