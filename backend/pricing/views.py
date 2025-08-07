@@ -55,8 +55,24 @@ class PricingViewSet(viewsets.ModelViewSet):
 
             raw_output = result.stdout
             
-            # Parse the output
-            parsed_data = self._parse_ccusage_output(raw_output)
+            # Clean ANSI codes but preserve line structure
+            import re
+            clean_output = raw_output
+            # Remove ANSI escape sequences but keep newlines
+            clean_output = re.sub(r'\x1b\[[0-9;]*m', '', clean_output)
+            clean_output = re.sub(r'\x1b\[[0-9;]*[mGKHJ]', '', clean_output)
+            clean_output = re.sub(r'\x1b\[[0-9]+[ABCD]', '', clean_output)
+            clean_output = re.sub(r'\x1b\[2J', '', clean_output)
+            clean_output = re.sub(r'\x1b\[3J', '', clean_output)
+            clean_output = re.sub(r'\x1b\[H', '', clean_output)
+            clean_output = re.sub(r'\x1b\[2K', '', clean_output)
+            clean_output = re.sub(r'\x1b\[1A', '', clean_output)
+            clean_output = re.sub(r'\x1b\[G', '', clean_output)
+            # Remove control characters but preserve newlines and tabs
+            clean_output = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1f\x7f-\x9f]', '', clean_output)
+            
+            # Parse the cleaned output
+            parsed_data = self._parse_ccusage_output(clean_output)
             
             # Store in database
             session_id = request.data.get('session_id', 'default')
@@ -124,7 +140,7 @@ class PricingViewSet(viewsets.ModelViewSet):
         return Response({'success': True, 'message': 'Cache cleared'})
 
     def _parse_ccusage_output(self, output):
-        """Parse ccusage command output into structured data"""
+        """Parse ccusage command output - exact copy of working debug script logic"""
         try:
             lines = output.split('\n')
             data = {
@@ -136,111 +152,77 @@ class PricingViewSet(viewsets.ModelViewSet):
                 'daily_cost': None
             }
             
-            # Dictionary to track separate date entries
-            daily_entries = []
+            # Clean ANSI function - exact copy from debug script
+            def clean_ansi(text):
+                text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
+                text = re.sub(r'\[[0-9;]*m', '', text)
+                return text
+            
+            # Find total cost - exact copy from debug script
+            for line in lines:
+                clean_line = clean_ansi(line)
+                if 'Total' in clean_line and '$' in clean_line:
+                    cost_match = re.search(r'\$(\d+\.?\d*)', clean_line)
+                    if cost_match:
+                        data['total_cost'] = float(cost_match.group(1))
+                        break
+            
+            # Parse table entries - exact copy from debug script
             current_year = None
+            current_date_part = None
             
             for i, line in enumerate(lines):
-                # Skip pseudo-ANSI color codes
-                clean_line = re.sub(r'\[[0-9;]*m', '', line)
+                clean_line = clean_ansi(line)
                 
-                # Skip header and border lines
-                if not '│' in clean_line or any(x in clean_line for x in ['Date', 'Models', 'Input', 'Output', 'Cache', 'Total']):
-                    # Look for total cost in non-table lines
-                    if 'Total' in clean_line and '$' in clean_line:
-                        cost_match = re.search(r'\$(\d+\.?\d*)', clean_line)
-                        if cost_match:
-                            data['total_cost'] = float(cost_match.group(1))
+                # Skip non-table lines
+                if not '│' in clean_line:
+                    continue
+                    
+                # Skip header lines
+                if any(header in clean_line for header in ['Date', 'Models', 'Input', 'Output', 'Cache', 'Total']):
+                    continue
+                    
+                # Skip border lines
+                if all(c in '├┼┤─│┌┐└┘ ' for c in clean_line.replace('│', '')):
                     continue
                 
-                # Parse table data rows
+                # Parse table row
                 columns = [col.strip() for col in clean_line.split('│')]
-                if len(columns) < 9:
+                if len(columns) < 8:
                     continue
                 
-                date_col = columns[1].strip()
-                model_col = columns[2].strip()
-                cost_col = columns[8].strip() if len(columns) > 8 else columns[-1].strip()
+                date_col = columns[1].strip() if len(columns) > 1 else ''
+                model_col = columns[2].strip() if len(columns) > 2 else ''
+                cost_col = columns[8].strip() if len(columns) > 8 else (columns[-1].strip() if columns else '')
                 
-                # Check if this is a year row (contains 20XX)
-                if re.search(r'20\d{2}', date_col):
-                    current_year = re.search(r'(20\d{2})', date_col).group(1)
-                    
-                    # Extract cost from this row if present
-                    cost_match = re.search(r'\$(\d+\.?\d*)', cost_col)
-                    if cost_match:
-                        cost = float(cost_match.group(1))
-                        
-                        # Clean model name - remove pseudo-ANSI codes and dashes
-                        model_name = re.sub(r'\[[0-9;]*m', '', model_col).replace('-', '').strip() if model_col else 'unknown'
-                        
-                        # Store as pending entry (we'll get the date in the next row)
-                        daily_entries.append({
-                            'year': current_year,
-                            'date_part': None,  # Will be filled by next row
-                            'model': model_name,
-                            'cost': cost,
-                            'complete': False
-                        })
+                # Check for year
+                year_match = re.search(r'(20\d{2})', date_col)
+                if year_match:
+                    current_year = year_match.group(1)
                 
-                # Check if this is a date continuation row (MM-DD format)
-                elif current_year and re.search(r'\d{2}-\d{2}', date_col):
-                    # Clean up pseudo-ANSI codes from date
-                    date_part = re.sub(r'\[[0-9;]*m', '', date_col).strip()
-                    
-                    # Find the most recent incomplete entry and complete it
-                    for entry in reversed(daily_entries):
-                        if not entry['complete']:
-                            entry['date_part'] = date_part
-                            entry['complete'] = True
-                            break
-                    
-                    # Check if this row also has a model and cost (additional model for same date)
-                    if model_col and model_col.strip() and '$' in cost_col:
-                        cost_match = re.search(r'\$(\d+\.?\d*)', cost_col)
-                        if cost_match:
-                            cost = float(cost_match.group(1))
-                            model_name = re.sub(r'\[[0-9;]*m', '', model_col).replace('-', '').strip()
-                            
-                            daily_entries.append({
-                                'year': current_year,
-                                'date_part': date_part,
-                                'model': model_name,
-                                'cost': cost,
-                                'complete': True
-                            })
-            
-            # Group completed entries by date and combine models
-            date_groups = {}
-            for entry in daily_entries:
-                if entry['complete'] and entry['date_part']:
-                    full_date = f"{entry['year']} {entry['date_part']}"
-                    
-                    if full_date in date_groups:
-                        date_groups[full_date]['cost'] += entry['cost']
-                        if entry['model'] and entry['model'] not in date_groups[full_date]['models']:
-                            date_groups[full_date]['models'].append(entry['model'])
-                    else:
-                        date_groups[full_date] = {
-                            'cost': entry['cost'],
-                            'models': [entry['model']] if entry['model'] else []
-                        }
-            
-            # Convert to final format
-            for date_str, group_data in date_groups.items():
-                models_text = ', '.join(set(group_data['models'])) if group_data['models'] else 'multiple models'
+                # Check for date
+                date_match = re.search(r'(\d{2}-\d{2})', date_col)
+                if date_match:
+                    current_date_part = date_match.group(1)
                 
-                data['daily_entries'].append({
-                    'date': date_str,
-                    'model': models_text,
-                    'cost': round(group_data['cost'], 2)
-                })
+                # Check for cost
+                cost_match = re.search(r'\$(\d+\.?\d*)', cost_col)
+                if cost_match and current_year and current_date_part:
+                    cost = float(cost_match.group(1))
+                    
+                    # Add entry
+                    data['daily_entries'].append({
+                        'date': f"{current_year} {current_date_part}",
+                        'model': model_col or 'claude',
+                        'cost': round(cost, 2)
+                    })
+                    
+                    # Reset date part
+                    current_date_part = None
             
             # Sort by date (most recent first)
             def parse_date_for_sorting(date_str):
-                """Parse date string for proper sorting"""
                 try:
-                    # Extract year and month-day from "2025 07-26" format
                     year_match = re.search(r'(20\d{2})', date_str)
                     date_match = re.search(r'(\d{2})-(\d{2})', date_str)
                     
@@ -262,7 +244,9 @@ class PricingViewSet(viewsets.ModelViewSet):
                 week_ago = now - datetime.timedelta(days=7)
                 month_ago = now - datetime.timedelta(days=30)
                 
-                daily_cost = 0
+                # Daily cost = most recent day's usage (first entry since sorted by date desc)
+                daily_cost = data['daily_entries'][0]['cost'] if data['daily_entries'] else 0
+                
                 weekly_cost = 0
                 monthly_cost = 0
                 
@@ -278,10 +262,6 @@ class PricingViewSet(viewsets.ModelViewSet):
                             month = int(date_match.group(1))
                             day = int(date_match.group(2))
                             entry_date = datetime.datetime(year, month, day)
-                            
-                            # Check if it's today
-                            if entry_date.date() == today:
-                                daily_cost += entry['cost']
                             
                             # Check if it's within the last week
                             if entry_date >= week_ago:
@@ -312,52 +292,7 @@ class PricingViewSet(viewsets.ModelViewSet):
 def execute_ccusage_simple(request):
     """Simple endpoint for executing ccusage command"""
     try:
-        # For testing, return mock data instead of executing ccusage
-        # Remove this mock when ccusage is working properly
-        from datetime import datetime, timedelta
-        
-        # Generate realistic daily entries for the past 30 days (sorted most recent first)
-        today = datetime.now()
-        daily_entries = []
-        total_cost = 0
-        
-        for i in range(30):
-            date = today - timedelta(days=i)
-            cost = 30 + (i * 3.5) + (i % 7) * 10  # Varying costs
-            total_cost += cost
-            
-            entry = {
-                'date': f"2025 {date.strftime('%m-%d')}",
-                'model': 'opus-4, sonnet-4',
-                'cost': round(cost, 2)
-            }
-            daily_entries.append(entry)
-        
-        # Entries are already in correct order (most recent first) since i=0 is today
-        
-        # Calculate time-based costs
-        daily_cost = daily_entries[0]['cost'] if daily_entries else 0
-        weekly_cost = sum(entry['cost'] for entry in daily_entries[:7])
-        monthly_cost = sum(entry['cost'] for entry in daily_entries)
-        
-        data = {
-            'daily_entries': daily_entries,
-            'total_cost': round(total_cost, 2),
-            'daily_cost': round(daily_cost, 2),
-            'weekly_cost': round(weekly_cost, 2),
-            'monthly_cost': round(monthly_cost, 2),
-            'last_updated': timezone.now().isoformat()
-        }
-        
-        return JsonResponse({
-            'success': True,
-            'data': data,
-            'cached': False,
-            'timestamp': timezone.now().isoformat()
-        })
-        
-        # Original ccusage execution (commented out for testing)
-        """
+        # Execute ccusage command to get real usage data
         result = subprocess.run(
             ['npx', 'ccusage'],
             capture_output=True,
@@ -366,17 +301,64 @@ def execute_ccusage_simple(request):
         )
         
         if result.returncode == 0:
-            return JsonResponse({
-                'success': True,
-                'output': result.stdout,
-                'timestamp': timezone.now().isoformat()
-            })
+            # Parse the output using existing parser
+            from .ccusage_simple_parser import create_mock_pricing_data
+            
+            # Try to parse real ccusage output, fall back to mock if parsing fails
+            try:
+                # Clean ANSI codes before parsing - comprehensive cleaning
+                import re
+                clean_output = result.stdout
+                # Remove all ANSI escape sequences
+                clean_output = re.sub(r'\x1b\[[0-9;]*m', '', clean_output)
+                clean_output = re.sub(r'\x1b\[[0-9;]*[mGKHJ]', '', clean_output)
+                clean_output = re.sub(r'\x1b\[[0-9]+[ABCD]', '', clean_output)
+                clean_output = re.sub(r'\x1b\[2J', '', clean_output)
+                clean_output = re.sub(r'\x1b\[3J', '', clean_output)
+                clean_output = re.sub(r'\x1b\[H', '', clean_output)
+                clean_output = re.sub(r'\x1b\[2K', '', clean_output)
+                clean_output = re.sub(r'\x1b\[1A', '', clean_output)
+                clean_output = re.sub(r'\x1b\[G', '', clean_output)
+                # Remove any remaining control characters
+                clean_output = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', clean_output)
+                # Normalize whitespace
+                clean_output = re.sub(r'\s+', ' ', clean_output)
+                
+                # Use the main parser from views.py
+                pricing_view = PricingViewSet()
+                parsed_data = pricing_view._parse_ccusage_output(clean_output)
+                
+                return JsonResponse({
+                    'success': True,
+                    'data': parsed_data,
+                    'cached': False,
+                    'timestamp': timezone.now().isoformat()
+                })
+            except Exception as parse_error:
+                # If parsing fails, return the raw output for debugging
+                return JsonResponse({
+                    'success': True,
+                    'raw_output': result.stdout,
+                    'parse_error': str(parse_error),
+                    'timestamp': timezone.now().isoformat()
+                })
         else:
+            # If ccusage command fails, try to provide more details
+            error_msg = result.stderr or 'Unknown error executing ccusage'
+            
+            # Check if it's an authentication error
+            if 'Invalid API key' in error_msg or 'authentication' in error_msg.lower():
+                return JsonResponse({
+                    'success': False,
+                    'error': 'Authentication error: Please ensure Claude Code is properly authenticated. Run `claude auth status` to check.',
+                    'details': error_msg
+                }, status=500)
+            
             return JsonResponse({
                 'success': False,
-                'error': result.stderr
+                'error': f'ccusage command failed: {error_msg}',
+                'returncode': result.returncode
             }, status=500)
-        """
             
     except Exception as e:
         return JsonResponse({

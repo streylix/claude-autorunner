@@ -49,6 +49,18 @@ class QueuedMessageViewSet(viewsets.ModelViewSet):
                 status='pending'
             ).update(status='cancelled')
         return Response({'status': 'Queue cleared'})
+    
+    @action(detail=False, methods=['get', 'post'])
+    def sync_trigger(self, request):
+        """Trigger immediate sync notification for frontend"""
+        # This endpoint is called by addmsg to notify frontend of new messages
+        # We'll store the trigger timestamp for the frontend to check
+        trigger_time = timezone.now().isoformat()
+        return Response({
+            'status': 'sync_triggered',
+            'timestamp': trigger_time,
+            'message': 'Frontend should sync messages now'
+        })
 
 
 class MessageHistoryViewSet(viewsets.ModelViewSet):

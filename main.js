@@ -848,6 +848,50 @@ function setupIpcHandlers() {
     }
   });
 
+  // Set up file watcher for addmsg sync triggers
+  const syncTriggerPath = '/tmp/claude-code-addmsg-trigger';
+  let syncTriggerWatcher = null;
+  
+  const setupSyncWatcher = () => {
+    try {
+      // Create the trigger file if it doesn't exist
+      const fs_sync = require('fs');
+      if (!fs_sync.existsSync(syncTriggerPath)) {
+        fs_sync.writeFileSync(syncTriggerPath, 'init');
+      }
+      
+      // Watch for changes to the sync trigger file
+      syncTriggerWatcher = fs_sync.watch(syncTriggerPath, (eventType, filename) => {
+        if ((eventType === 'change' || eventType === 'rename') && mainWindow && !mainWindow.isDestroyed()) {
+          console.log('[Main] Addmsg sync trigger detected, notifying renderer');
+          mainWindow.webContents.send('addmsg-sync-trigger');
+        }
+      });
+      
+      syncTriggerWatcher.on('error', (error) => {
+        console.log('[Main] Sync trigger watcher error:', error.message);
+        // Try to recreate the watcher after a short delay
+        setTimeout(setupSyncWatcher, 1000);
+      });
+      
+      console.log('[Main] Addmsg sync trigger watcher started');
+    } catch (error) {
+      console.log('[Main] Could not start sync trigger watcher:', error.message);
+      // Try again after a delay
+      setTimeout(setupSyncWatcher, 5000);
+    }
+  };
+  
+  setupSyncWatcher();
+  
+  // Cleanup sync trigger watcher on app quit
+  app.on('before-quit', () => {
+    if (syncTriggerWatcher) {
+      syncTriggerWatcher.close();
+      syncTriggerWatcher = null;
+    }
+  });
+
   // Get file information
   ipcMain.handle('get-file-info', async (event, filePath) => {
     try {

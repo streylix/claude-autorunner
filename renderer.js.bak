@@ -323,8 +323,10 @@ class TerminalGUI {
                 const isBackendAvailable = await this.backendAPIClient.isBackendAvailable();
                 if (isBackendAvailable) {
                     console.log('Backend is available - enabling enhanced persistence');
-                    // Backend session sync removed - all session management is frontend-only
-                    // Backend stats loading removed - all stats are frontend-only
+                    // Force sync all backend sessions with frontend terminals
+                    await this.forceSyncAllSessions();
+                    // Load status from backend
+                    await this.loadStatusFromBackend();
                     // Load message history from backend
                     console.log('[TERMINAL_DEBUG] Loading message history...');
                     this.loadingManager.updateProgress('history', 'Loading message history...');
@@ -1277,6 +1279,7 @@ class TerminalGUI {
                     { key: 'i', cmd: true, shift: false }, // Cmd+I - Manual injection
                     { key: 'p', cmd: true, shift: false }, // Cmd+P - Play/pause timer
                     { key: 'k', cmd: true, shift: false }, // Cmd+K - Terminal selector
+                    { key: 'r', cmd: true, shift: true }, // Cmd+Shift+R - Sync messages
                 ];
                 // Check if current hotkey is in allowed global list
                 const isAllowedGlobalHotkey = allowedGlobalHotkeys.some(hotkey => 
@@ -1314,6 +1317,7 @@ class TerminalGUI {
                     { key: 'l', cmd: true, shift: true }, // Cmd+Shift+L - Clear log
                     { key: 'h', cmd: true, shift: true }, // Cmd+Shift+H - Message history
                     { key: '.', cmd: true, shift: true }, // Cmd+Shift+. - Clear queue
+                    { key: 'r', cmd: true, shift: true }, // Cmd+Shift+R - Sync messages
                     { key: 't', cmd: true, shift: false }, // Cmd+T - Add terminal
                     { key: 'w', cmd: true, shift: true }, // Cmd+Shift+W - Close terminal
                     { key: 's', cmd: true, shift: false }, // Cmd+S - Settings
@@ -1458,6 +1462,11 @@ class TerminalGUI {
                 e.preventDefault();
                 this.openMessageHistoryModal();
                 this.logAction('Message history opened (Cmd+Shift+H)', 'info');
+            } else if (this.isCommandKey(e) && e.shiftKey && (e.key === 'R' || e.key === 'r')) {
+                // Force sync messages from backend
+                e.preventDefault();
+                await this.forceSyncMessages();
+                this.logAction('Manual message sync triggered (Cmd+Shift+R)', 'info');
             } else if (this.isCommandKey(e) && e.key >= '1' && e.key <= '9') {
                 // Switch to terminal by number (Cmd+1-9)
                 e.preventDefault();
@@ -6665,7 +6674,7 @@ class TerminalGUI {
     }
     
     async updateBackendQueueCount() {
-        // Silently sync with backend without showing backend count in UI
+        // Fetch backend queue count and update display if different from local count
         if (this.backendAPIClient) {
             try {
                 // Get all pending messages from backend (including messages added via addmsg)
@@ -6674,10 +6683,22 @@ class TerminalGUI {
                                    (backendMessages.results ? backendMessages.results.length : 0);
                 
                 const localCount = this.messageQueue.length;
+                const queueCountElement = document.getElementById('queue-count');
                 
-                // Only log discrepancies for debugging - don't show in UI
+                // Update display to show both local and backend counts if they differ
                 if (backendCount !== localCount && backendCount > 0) {
+                    queueCountElement.textContent = `${localCount} (${backendCount} backend)`;
+                    queueCountElement.style.color = '#ff6b35'; // Orange to indicate discrepancy
+                    queueCountElement.title = `Local queue: ${localCount}, Backend queue: ${backendCount}`;
+                    
+                    // Log the discrepancy for debugging
                     console.log(`Queue count discrepancy: Local=${localCount}, Backend=${backendCount}`);
+                } else if (backendCount === localCount && backendCount > 0) {
+                    // Counts match but show backend count for clarity
+                    queueCountElement.title = `Backend synchronized: ${backendCount} messages`;
+                } else {
+                    queueCountElement.style.color = ''; // Reset color
+                    queueCountElement.title = '';
                 }
             } catch (error) {
                 console.warn('Failed to fetch backend queue count:', error);
@@ -6695,7 +6716,7 @@ class TerminalGUI {
                     active_terminal_id: this.activeTerminalId,
                     terminal_id_counter: this.terminalIdCounter
                 };
-                // Backend stats removed - no longer persisting to backend
+                await this.backendAPIClient.updateApplicationStats(this.sessionId, statusData);
             } catch (error) {
                 console.warn('Failed to save status to backend:', error);
                 // Fallback: continue with local functionality
@@ -6703,8 +6724,25 @@ class TerminalGUI {
             }
         }
     }
-    // loadStatusFromBackend - REMOVED
-    // Backend stats removed - all stats are now frontend-only
+    async loadStatusFromBackend() {
+        if (this.backendAPIClient && this.sessionId) {
+            try {
+                const backendStats = await this.backendAPIClient.getApplicationStats(this.sessionId);
+                if (backendStats) {
+                    // Restore counts and directory from backend
+                    this.currentDirectory = backendStats.current_directory || this.currentDirectory;
+                    this.injectionCount = backendStats.injection_count || this.injectionCount;
+                    this.keywordCount = backendStats.keyword_count || this.keywordCount;
+                    this.activeTerminalId = backendStats.active_terminal_id || this.activeTerminalId;
+                    this.terminalIdCounter = backendStats.terminal_id_counter || this.terminalIdCounter;
+                    // Update the display with loaded values
+                    this.updateStatusDisplay();
+                }
+            } catch (error) {
+                console.warn('Failed to load status from backend:', error);
+            }
+        }
+    }
     async openDirectoryBrowser() {
         try {
             const result = await ipcRenderer.invoke('show-directory-dialog', this.currentDirectory);
@@ -7522,7 +7560,7 @@ class TerminalGUI {
                 }
                 
                 if (verbose) this.logAction(`Getting messages for terminal ${terminalId}, session ${sessionId}`, 'info');
-                const backendMessages = await this.backendAPIClient.getQueuedMessages(null, 'pending', terminalId);
+                const backendMessages = await this.backendAPIClient.getQueuedMessages(sessionId, 'pending');
                 const messages = backendMessages.results || backendMessages;
                 if (verbose) this.logAction(`Got ${messages.length} messages from backend for terminal ${terminalId}`, 'info');
                 // Add backend messages that aren't already in local queue
@@ -7562,14 +7600,10 @@ class TerminalGUI {
                 const globalMessages = await this.backendAPIClient.getQueuedMessages(null, 'pending', null);
                 const messages = globalMessages.results || globalMessages;
                 
-                if (verbose) console.log(`[SYNC] Total pending messages: ${messages.length}`);
-                
                 // Filter for messages that don't have terminal_id or terminal_session (global messages)
                 const addmsgGlobalMessages = messages.filter(msg => !msg.terminal_id && !msg.terminal_session);
                 
                 if (verbose) this.logAction(`Got ${addmsgGlobalMessages.length} global addmsg messages`, 'info');
-                if (verbose) console.log(`[SYNC] Global messages:`, addmsgGlobalMessages.map(m => m.content));
-                
                 if (verbose && addmsgGlobalMessages.length > 0) {
                     this.logAction(`Sample addmsg message: "${addmsgGlobalMessages[0].content}"`, 'info');
                 }
@@ -7790,37 +7824,195 @@ class TerminalGUI {
         }
     }
     startMessageQueuePolling() {
-        // Set up IPC listener for addmsg sync triggers
-        ipcRenderer.on('addmsg-sync-trigger', async () => {
-            console.log('[EVENT-SYNC] Received addmsg sync trigger');
+        // Poll for sync triggers every 200ms for immediate webhook response
+        this.messageQueuePolling = setInterval(async () => {
             try {
-                await this.syncMessagesFromBackend(true);
-                this.logAction('🚀 Sync triggered by addmsg event', 'success');
+                await this.checkSyncTriggers();
             } catch (error) {
-                console.log('[EVENT-SYNC] Sync failed:', error.message);
+                // Silently continue - error logging is handled in sync functions
             }
-        });
+        }, 200);
         
-        // Only periodic cleanup every 30 seconds to prevent session accumulation
+        // Also do regular sync every 2 seconds as backup
+        this.regularSyncPolling = setInterval(async () => {
+            try {
+                await this.syncMessagesFromBackend();
+            } catch (error) {
+                // Silently continue
+            }
+        }, 2000);
+        
+        // Also set up periodic cleanup every 30 seconds to prevent session accumulation
         this.sessionCleanupInterval = setInterval(() => {
             this.cleanupOrphanedTerminalSessions();
         }, 30000);
         
-        this.logAction('Started event-driven sync system', 'info');
+        this.logAction('Started webhook polling every 200ms and backup sync every 2s', 'info');
         this.logAction('Started periodic terminal session cleanup every 30 seconds', 'info');
     }
     stopMessageQueuePolling() {
-        // Remove IPC listener
-        ipcRenderer.removeAllListeners('addmsg-sync-trigger');
-        this.logAction('Stopped event-driven sync system', 'info');
+        if (this.messageQueuePolling) {
+            clearInterval(this.messageQueuePolling);
+            this.messageQueuePolling = null;
+            this.logAction('Stopped webhook polling', 'info');
+        }
+        
+        if (this.regularSyncPolling) {
+            clearInterval(this.regularSyncPolling);
+            this.regularSyncPolling = null;
+            this.logAction('Stopped regular sync polling', 'info');
+        }
     }
     
+    async checkSyncTriggers() {
+        // Check for sync triggers from addmsg webhook
+        if (!this.backendAPIClient) return;
+        
+        try {
+            const response = await this.backendAPIClient._fetch('/queue/queue/sync_trigger/');
+            if (response && response.timestamp) {
+                const triggerTime = new Date(response.timestamp).getTime();
+                
+                if (!this.lastSyncTriggerCheck || triggerTime > this.lastSyncTriggerCheck) {
+                    this.lastSyncTriggerCheck = triggerTime;
+                    // Trigger immediate sync
+                    await this.syncMessagesFromBackend(true);
+                    this.logAction('🚀 Immediate sync triggered by addmsg webhook', 'success');
+                }
+            }
+        } catch (error) {
+            // Silently continue - webhook checking is not critical
+        }
+    }
     
+    async forceSyncMessages() {
+        // Manually trigger immediate sync of messages from backend
+        this.logAction('🔄 Manually triggering message sync...', 'info');
+        this.logAction(`🔍 Active terminals: ${Array.from(this.terminals.keys()).join(', ')}`, 'info');
+        this.logAction(`📊 Current message queue size: ${this.messageQueue.length}`, 'info');
+        try {
+            await this.syncMessagesFromBackend(true); // verbose = true for manual sync
+            this.logAction(`✅ Manual message sync completed. New queue size: ${this.messageQueue.length}`, 'success');
+        } catch (error) {
+            this.logAction(`❌ Manual message sync failed: ${error.message}`, 'error');
+            console.error('Sync error details:', error);
+        }
+    }
     
-    // syncTerminalSessions - REMOVED
-    // Backend terminal sessions removed - all session management is now frontend-only
-    // forceSyncAllSessions - REMOVED
-    // Backend terminal sessions removed - all session management is now frontend-only
+    startSyncTriggerMonitoring() {
+        // Monitor sync trigger file for immediate addmsg notifications
+        const fs = require('fs');
+        const path = '/tmp/claude-code-sync-trigger';
+        
+        // Check for sync trigger file every 100ms for ultra-fast response
+        this.syncTriggerMonitor = setInterval(async () => {
+            try {
+                if (fs.existsSync(path)) {
+                    const stats = fs.statSync(path);
+                    const currentMtime = stats.mtime.getTime();
+                    
+                    if (!this.lastSyncTriggerTime || currentMtime > this.lastSyncTriggerTime) {
+                        this.lastSyncTriggerTime = currentMtime;
+                        
+                        // Read trigger content for logging
+                        const triggerContent = fs.readFileSync(path, 'utf8').trim();
+                        this.logAction(`Sync trigger detected: ${triggerContent}`, 'info');
+                        
+                        // Immediate sync
+                        await this.syncMessagesFromBackend(true);
+                        this.logAction('Immediate sync completed from addmsg trigger', 'success');
+                    }
+                }
+            } catch (error) {
+                // Silently continue - file monitoring errors are not critical
+            }
+        }, 100); // Check every 100ms for ultra-fast response
+        
+        this.logAction('Started sync trigger monitoring (100ms interval)', 'info');
+
+        if (this.sessionCleanupInterval) {
+            clearInterval(this.sessionCleanupInterval);
+            this.sessionCleanupInterval = null;
+            this.logAction('Stopped terminal session cleanup', 'info');
+        }
+    }
+    async syncTerminalSessions() {
+        // Sync existing backend sessions with frontend terminals
+        // This helps maintain mapping across app restarts
+        if (!this.backendAPIClient) return;
+        try {
+            const sessions = await this.backendAPIClient.getTerminalSessions();
+            const existingSessions = sessions.results || sessions;
+            
+            // Group sessions by terminal name and get the most recent one for each
+            const sessionsByTerminal = new Map();
+            for (const session of existingSessions) {
+                const match = session.name.match(/Terminal (\d+)/);
+                if (match) {
+                    const terminalId = parseInt(match[1]);
+                    const existing = sessionsByTerminal.get(terminalId);
+                    
+                    // Keep the most recent session (by updated_at timestamp)
+                    if (!existing || new Date(session.updated_at) > new Date(existing.updated_at)) {
+                        sessionsByTerminal.set(terminalId, session);
+                    }
+                }
+            }
+            
+            // Map the most recent session for each terminal
+            for (const [terminalId, session] of sessionsByTerminal) {
+                if (!this.terminalSessionMap.has(terminalId)) {
+                    this.terminalSessionMap.set(terminalId, session.id);
+                    this.logAction(`Mapped Terminal ${terminalId} to backend session ${session.id}`, 'info');
+                }
+            }
+            
+            // Terminal session mapping save removed
+            this.logAction(`Synced ${sessionsByTerminal.size} terminal sessions from backend`, 'info');
+        } catch (error) {
+            console.error('Failed to sync terminal sessions:', error);
+        }
+    }
+    async forceSyncAllSessions() {
+        // Force sync all backend sessions, replacing existing mappings
+        if (!this.backendAPIClient) return;
+        try {
+            const sessions = await this.backendAPIClient.getTerminalSessions();
+            const existingSessions = sessions.results || sessions;
+            
+            // Clear existing mappings
+            this.terminalSessionMap.clear();
+            
+            // Group sessions by terminal name and get the most recent one for each
+            const sessionsByTerminal = new Map();
+            for (const session of existingSessions) {
+                const match = session.name.match(/Terminal (\d+)/);
+                if (match) {
+                    const terminalId = parseInt(match[1]);
+                    const existing = sessionsByTerminal.get(terminalId);
+                    
+                    // Keep the most recent session (by updated_at timestamp)
+                    if (!existing || new Date(session.updated_at) > new Date(existing.updated_at)) {
+                        sessionsByTerminal.set(terminalId, session);
+                    }
+                }
+            }
+            
+            // Map the most recent session for each terminal
+            for (const [terminalId, session] of sessionsByTerminal) {
+                this.terminalSessionMap.set(terminalId, session.id);
+                this.logAction(`Force mapped Terminal ${terminalId} to backend session ${session.id}`, 'info');
+            }
+            
+            // Terminal session mapping save removed
+            this.logAction(`Force synced ${sessionsByTerminal.size} terminal sessions from backend`, 'success');
+            
+            // Immediately sync messages after remapping
+            await this.syncMessagesFromBackend(true);
+        } catch (error) {
+            console.error('Failed to force sync terminal sessions:', error);
+        }
+    }
     async checkAndMigrateLocalStorageData() {
         try {
             // Check if localStorage has data
@@ -11038,8 +11230,11 @@ class TerminalGUI {
     async generateTodosViaBackend(terminalId, terminalOutput) {
         try {
             // Get the session ID for this specific terminal
-            // Backend sessions removed - using frontend-only terminal ID
-            let sessionId = terminalId;
+            let sessionId = this.terminalSessionMap.get(terminalId);
+            // If no session ID found, create one
+            if (!sessionId) {
+                sessionId = await this.createBackendSession(terminalId);
+            }
             console.log('[DEBUG] Generating todos:', {
                 terminalId,
                 sessionId,
@@ -11071,9 +11266,28 @@ class TerminalGUI {
             return { success: false, error: error.message };
         }
     }
-    // createBackendSession - REMOVED
-    // Backend sessions removed to eliminate database persistence issues
-    // All session management is now frontend-only
+    async createBackendSession(terminalId) {
+        try {
+            const response = await fetch('http://127.0.0.1:8001/api/terminal/sessions/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    name: `Terminal ${terminalId}`,
+                    current_directory: process.cwd()
+                })
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const session = await response.json();
+            // Store the mapping
+            this.terminalSessionMap.set(terminalId, session.id);
+            // Terminal session mapping save removed
+            return session.id;
+        } catch (error) {
+            throw new Error(`Failed to create backend session: ${error.message}`);
+        }
+    }
     async manualGenerateTodos() {
         try {
             const activeTerminal = this.terminals.get(this.activeTerminalId);
@@ -11098,8 +11312,11 @@ class TerminalGUI {
     async generateTodosViaBackendWithMode(terminalId, terminalOutput, mode) {
         try {
             // Get the session ID for this specific terminal
-            // Backend sessions removed - using frontend-only terminal ID
-            let sessionId = terminalId;
+            let sessionId = this.terminalSessionMap.get(terminalId);
+            // If no session ID found, create one
+            if (!sessionId) {
+                sessionId = await this.createBackendSession(terminalId);
+            }
             // Prepare the request body based on mode
             const requestBody = {
                 terminal_session: sessionId,
@@ -11246,8 +11463,15 @@ class TerminalGUI {
             let terminalSessionId = this.backendAPIClient.currentSessionId;
             console.log('[DEBUG] Current session ID:', terminalSessionId);
             if (!terminalSessionId) {
-                // Backend sessions removed - using frontend-only terminal ID
-                terminalSessionId = this.activeTerminalId;
+                // Try to create a session if none exists
+                this.logAction('No session found, creating one...', 'info');
+                try {
+                    terminalSessionId = await this.createBackendSession(this.activeTerminalId);
+                    console.log('[DEBUG] Created session ID:', terminalSessionId);
+                } catch (sessionError) {
+                    this.logAction(`Failed to create session: ${sessionError.message}`, 'error');
+                    return;
+                }
             }
             // For now, clear all completed todos regardless of session to handle legacy todos
             const result = await this.backendAPIClient.clearCompletedTodos(null);
@@ -11521,7 +11745,12 @@ class TerminalGUI {
             ipcRenderer.send('get-cwd', { terminalId: id });
         }
         
-        // Backend session creation removed - all session management is frontend-only
+        // Create backend session if API client is available
+        if (this.backendAPIClient) {
+            this.createBackendSession(id).catch(error => {
+                console.warn('Failed to create backend session for terminal', id, ':', error);
+            });
+        }
     }
     
     escapeHtml(text) {

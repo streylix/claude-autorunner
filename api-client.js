@@ -33,57 +33,9 @@ class BackendAPIClient {
         }
     }
 
-    // Terminal Session Management
-    async createTerminalSession(name, currentDirectory = '~') {
-        const data = await this._fetch('/terminal/sessions/', {
-            method: 'POST',
-            body: JSON.stringify({
-                name,
-                current_directory: currentDirectory
-            })
-        });
-        
-        this.currentSessionId = data.id;
-        return data;
-    }
-
-    async getTerminalSessions() {
-        return await this._fetch('/terminal/sessions/');
-    }
-
-    async getTerminalSession(sessionId) {
-        return await this._fetch(`/terminal/sessions/${sessionId}/`);
-    }
-
-    async updateTerminalSession(sessionId, updates) {
-        return await this._fetch(`/terminal/sessions/${sessionId}/`, {
-            method: 'PUT',
-            body: JSON.stringify(updates)
-        });
-    }
-
-    async updateTerminalSessionComplete(sessionId, name, color, frontendTerminalId, positionIndex, currentDirectory) {
-        return await this._fetch(`/terminal/sessions/${sessionId}/`, {
-            method: 'PUT',
-            body: JSON.stringify({
-                name,
-                color,
-                frontend_terminal_id: frontendTerminalId,
-                position_index: positionIndex,
-                current_directory: currentDirectory
-            })
-        });
-    }
-
-    async deleteTerminalSession(sessionId) {
-        return await this._fetch(`/terminal/sessions/${sessionId}/`, {
-            method: 'DELETE'
-        });
-    }
-
-    async getTerminalHistory(sessionId) {
-        return await this._fetch(`/terminal/sessions/${sessionId}/history/`);
-    }
+    // Terminal Session Management - REMOVED
+    // Backend terminal sessions have been removed to eliminate database persistence issues
+    // All terminal functionality is now frontend-only
 
     // Message Queue Management
     async addMessageToQueue(terminalSessionId, content, scheduledFor = null) {
@@ -97,11 +49,12 @@ class BackendAPIClient {
         });
     }
 
-    async getQueuedMessages(terminalSessionId = null, status = null) {
+    async getQueuedMessages(terminalSessionId = null, status = null, terminalId = null) {
         let url = '/queue/queue/';
         const params = new URLSearchParams();
         
         if (terminalSessionId) params.append('terminal_session', terminalSessionId);
+        if (terminalId) params.append('terminal_id', terminalId);
         if (status) params.append('status', status);
         
         if (params.toString()) {
@@ -214,27 +167,9 @@ class BackendAPIClient {
         });
     }
 
-    // Application Statistics Management
-    async getApplicationStats(sessionId) {
-        return await this._fetch(`/terminal/stats/${sessionId}/`);
-    }
-
-    async updateApplicationStats(sessionId, stats) {
-        return await this._fetch(`/terminal/stats/${sessionId}/update_stats/`, {
-            method: 'POST',
-            body: JSON.stringify(stats)
-        });
-    }
-
-    async createApplicationStats(sessionId, initialStats = {}) {
-        return await this._fetch('/terminal/stats/', {
-            method: 'POST',
-            body: JSON.stringify({
-                session_id: sessionId,
-                ...initialStats
-            })
-        });
-    }
+    // Application Statistics Management - REMOVED
+    // Backend stats have been removed to eliminate database persistence issues
+    // All statistics are now frontend-only
 
     // WebSocket Connection
     createWebSocket(sessionId) {
@@ -401,7 +336,8 @@ class BackendAPIClient {
     // Health Check
     async isBackendAvailable() {
         try {
-            await this._fetch('/terminal/sessions/');
+            // Use the queue endpoint which exists in simplified backend
+            await this._fetch('/queue/queue/');
             return true;
         } catch (error) {
             return false;
