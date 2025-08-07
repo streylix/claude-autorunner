@@ -339,6 +339,29 @@ function createWindow() {
     icon: getIcon(),
   });
 
+  // Prevent new windows from opening - instead open links in default browser
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    console.log('Intercepting window open request for:', url);
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  // Handle navigation requests - prevent navigation away from the app
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    const parsedUrl = new URL(navigationUrl);
+    const currentUrl = mainWindow.webContents.getURL();
+    
+    // Allow navigation within the same origin or to local files
+    if (navigationUrl.startsWith('file://') || navigationUrl === currentUrl) {
+      return;
+    }
+    
+    // External links - open in default browser instead
+    console.log('Intercepting navigation to:', navigationUrl);
+    event.preventDefault();
+    shell.openExternal(navigationUrl);
+  });
+
   mainWindow.loadFile('index.html');
   
   // Open DevTools in development

@@ -2,7 +2,8 @@ const { ipcRenderer } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { SearchAddon } = require('@xterm/addon-search');
-const { WebLinksAddon } = require('@xterm/addon-web-links');
+// Removed WebLinksAddon to prevent opening links in new Electron windows
+// Links are now handled by click event listener to open in default browser
 const InjectionManager = require('./src/messaging/injection-manager');
 const { getAllTextIn, getLastTextIn, cleanTerminalText } = require('./getAllTextIn');
 // Import new modular components
@@ -651,7 +652,7 @@ class TerminalGUI {
         const searchAddon = new SearchAddon();
         terminal.loadAddon(fitAddon);
         terminal.loadAddon(searchAddon);
-        terminal.loadAddon(new WebLinksAddon());
+        // Removed WebLinksAddon - links handled by global click listener instead
         // Store terminal data
         const terminalData = {
             id,
@@ -11402,22 +11403,72 @@ class TerminalGUI {
             }
         });
         
-        // Add custom key handler for Option+Backspace word deletion
+        // Add custom key handler for advanced keyboard shortcuts
         terminal.attachCustomKeyEventHandler((e) => {
-            // Handle Option+Backspace (Alt+Backspace) for word deletion
-            if (e.type === 'keydown' && e.altKey && e.key === 'Backspace') {
-                e.preventDefault();
-                // Send Ctrl+W (word delete backward) to terminal
-                const terminalData = this.terminals.get(id);
+            const terminalData = this.terminals.get(id);
+            const isMac = this.platformUtils ? this.platformUtils.isMac : navigator.platform.toLowerCase().includes('mac');
+            
+            // Helper function to send input to terminal
+            const sendTerminalInput = (data, actionLog) => {
                 if (terminalData && terminalData.isReady !== false) {
-                    ipcRenderer.send('terminal-input', { terminalId: id, data: '\x17' });
+                    ipcRenderer.send('terminal-input', { terminalId: id, data });
                 } else {
                     if (!terminalData.queuedInput) terminalData.queuedInput = [];
-                    terminalData.queuedInput.push('\x17');
+                    terminalData.queuedInput.push(data);
                 }
-                this.logAction(`Option+Backspace word delete in Terminal ${id}`, 'info');
-                return false; // Prevent default handling
+                this.logAction(actionLog, 'info');
+            };
+
+            if (e.type === 'keydown') {
+                // Handle Option+Backspace (Alt+Backspace) for word deletion
+                if (e.altKey && e.key === 'Backspace') {
+                    e.preventDefault();
+                    // Send Ctrl+W (word delete backward) to terminal
+                    sendTerminalInput('\x17', `Option+Backspace word delete in Terminal ${id}`);
+                    return false;
+                }
+                
+                // Handle Cmd+Backspace (delete to beginning of line) on Mac
+                if (isMac && e.metaKey && e.key === 'Backspace' && !e.altKey && !e.shiftKey) {
+                    e.preventDefault();
+                    // Send Ctrl+U (delete line backward) to terminal
+                    sendTerminalInput('\x15', `Cmd+Backspace delete to line start in Terminal ${id}`);
+                    return false;
+                }
+                
+                // Handle Cmd+Left Arrow (move to beginning of line) on Mac
+                if (isMac && e.metaKey && e.key === 'ArrowLeft' && !e.altKey && !e.shiftKey) {
+                    e.preventDefault();
+                    // Send Ctrl+A (beginning of line) to terminal
+                    sendTerminalInput('\x01', `Cmd+Left move to line start in Terminal ${id}`);
+                    return false;
+                }
+                
+                // Handle Cmd+Right Arrow (move to end of line) on Mac
+                if (isMac && e.metaKey && e.key === 'ArrowRight' && !e.altKey && !e.shiftKey) {
+                    e.preventDefault();
+                    // Send Ctrl+E (end of line) to terminal
+                    sendTerminalInput('\x05', `Cmd+Right move to line end in Terminal ${id}`);
+                    return false;
+                }
+                
+                // Handle Alt+Left Arrow (move word backward)
+                if (e.altKey && e.key === 'ArrowLeft' && !e.metaKey && !e.shiftKey) {
+                    e.preventDefault();
+                    // Send Alt+B (word backward) to terminal
+                    sendTerminalInput('\x1bb', `Alt+Left move word backward in Terminal ${id}`);
+                    return false;
+                }
+                
+                // Handle Alt+Right Arrow (move word forward)
+                if (e.altKey && e.key === 'ArrowRight' && !e.metaKey && !e.shiftKey) {
+                    e.preventDefault();
+                    // Send Alt+F (word forward) to terminal
+                    sendTerminalInput('\x1bf', `Alt+Right move word forward in Terminal ${id}`);
+                    return false;
+                }
             }
+            
             return true; // Allow normal key processing
         });
         
