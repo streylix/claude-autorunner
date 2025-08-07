@@ -3052,10 +3052,25 @@ class TerminalGUI {
             }
             // Set terminal color for message border
             const terminalId = message.terminalId || 1;
-            const terminalData = this.terminals.get(terminalId);
-            if (terminalData) {
-                messageElement.style.setProperty('--terminal-color', terminalData.color);
-                messageElement.setAttribute('data-terminal-color', terminalData.color);
+            
+            // Handle unassigned messages with grey color
+            if (message.terminalId === 'unassigned') {
+                messageElement.style.setProperty('--terminal-color', '#6b7280'); // grey-500
+                messageElement.setAttribute('data-terminal-color', '#6b7280');
+                messageElement.setAttribute('data-terminal-status', 'unassigned');
+            } else {
+                const terminalData = this.terminals.get(terminalId);
+                if (terminalData) {
+                    messageElement.style.setProperty('--terminal-color', terminalData.color);
+                    messageElement.setAttribute('data-terminal-color', terminalData.color);
+                    messageElement.setAttribute('data-terminal-status', 'assigned');
+                } else {
+                    // Terminal doesn't exist - mark as unassigned and use grey
+                    message.terminalId = 'unassigned';
+                    messageElement.style.setProperty('--terminal-color', '#6b7280');
+                    messageElement.setAttribute('data-terminal-color', '#6b7280');
+                    messageElement.setAttribute('data-terminal-status', 'unassigned');
+                }
             }
             // Minimal drag setup
             messageElement.addEventListener('dragstart', (e) => {
@@ -3483,59 +3498,8 @@ class TerminalGUI {
         }
     }
     async loadMessageHistory() {
-        // Load from local preferences first
+        // DISABLED: Backend no longer stores message history, using local only
         this.messageHistory = this.preferences.messageHistory || [];
-        
-        // Also try to load from backend if available
-        if (this.backendAPIClient) {
-            try {
-                const backendHistory = await this.backendAPIClient.getMessageHistory();
-                if (backendHistory && backendHistory.length > 0) {
-                    console.log(`Loading ${backendHistory.length} messages from backend`);
-                    
-                    // Convert backend format to local format
-                    const convertedHistory = backendHistory.map(item => ({
-                        id: item.id,
-                        content: item.message,
-                        timestamp: item.timestamp,
-                        injectedAt: new Date(item.timestamp).toLocaleString(),
-                        terminalId: item.terminal_id || this.activeTerminalId || 1, // Handle null terminal_id
-                        counter: item.counter,
-                        source: 'backend'
-                    }));
-                    
-                    console.log(`[HISTORY_DEBUG] Converted ${convertedHistory.length} backend messages`);
-                    
-                    // Merge with local history, preferring backend data
-                    this.messageHistory = convertedHistory.concat(this.messageHistory.map(item => ({...item, source: 'local'})));
-                    
-                    // Remove duplicates and keep only last 100
-                    const uniqueHistory = [];
-                    const seen = new Set();
-                    for (const item of this.messageHistory) {
-                        const key = `${item.content}-${item.terminalId}-${item.counter}`;
-                        if (!seen.has(key)) {
-                            seen.add(key);
-                            uniqueHistory.push(item);
-                        }
-                    }
-                    this.messageHistory = uniqueHistory.slice(0, 100);
-                    
-                    console.log(`Loaded ${backendHistory.length} messages from backend, ${this.messageHistory.length} total after merge`);
-                    this.logAction(`Message history loaded: ${backendHistory.length} from backend, ${this.messageHistory.length} total`, 'success');
-                } else {
-                    console.log('No message history found in backend');
-                    this.logAction('No message history found in backend - using local history only', 'info');
-                }
-            } catch (backendError) {
-                console.warn('Failed to load message history from backend:', backendError);
-                this.logAction(`Failed to load backend history: ${backendError.message}`, 'warning');
-            }
-        } else {
-            console.log('Backend API client not available - using local history only');
-        }
-        
-        // Clean up old/duplicate entries
         this.cleanupOldMessageHistory();
         
         // Update the history modal if it's open
@@ -6665,24 +6629,8 @@ class TerminalGUI {
     }
     
     async updateBackendQueueCount() {
-        // Silently sync with backend without showing backend count in UI
-        if (this.backendAPIClient) {
-            try {
-                // Get all pending messages from backend (including messages added via addmsg)
-                const backendMessages = await this.backendAPIClient.getQueuedMessages(null, 'pending');
-                const backendCount = Array.isArray(backendMessages) ? backendMessages.length : 
-                                   (backendMessages.results ? backendMessages.results.length : 0);
-                
-                const localCount = this.messageQueue.length;
-                
-                // Only log discrepancies for debugging - don't show in UI
-                if (backendCount !== localCount && backendCount > 0) {
-                    console.log(`Queue count discrepancy: Local=${localCount}, Backend=${backendCount}`);
-                }
-            } catch (error) {
-                console.warn('Failed to fetch backend queue count:', error);
-            }
-        }
+        // DISABLED: Backend no longer stores messages, using direct IPC instead
+        // console.log('Backend queue count update disabled - using frontend-only queue');
     }
     async saveStatusToBackend() {
         if (this.backendAPIClient && this.sessionId) {
@@ -7381,10 +7329,10 @@ class TerminalGUI {
             }
             this.updateMessageList();
             this.validateMessageIds(); // Debug: Check for ID conflicts after loading
-            // Sync messages from backend after loading local messages - only for terminal 1
-            this.logAction('About to sync messages from backend for terminal 1...', 'info');
-            await this.syncMessagesFromBackend(true, 1); // verbose = true for initial sync, terminal 1 only
-            this.logAction('Finished syncing messages from backend for terminal 1', 'info');
+            // DISABLED: Backend no longer stores messages, using direct file watcher instead
+            // this.logAction('About to sync messages from backend for terminal 1...', 'info');
+            // await this.syncMessagesFromBackend(true, 1); // verbose = true for initial sync, terminal 1 only
+            // this.logAction('Finished syncing messages from backend for terminal 1', 'info');
             // Load message history from database
             const dbHistory = await ipcRenderer.invoke('db-get-message-history');
             this.messageHistory = dbHistory.map(item => ({
@@ -7522,7 +7470,8 @@ class TerminalGUI {
                 }
                 
                 if (verbose) this.logAction(`Getting messages for terminal ${terminalId}, session ${sessionId}`, 'info');
-                const backendMessages = await this.backendAPIClient.getQueuedMessages(null, 'pending', terminalId);
+                // Backend doesn't store messages in pass-through mode - skip API call
+                const backendMessages = [];
                 const messages = backendMessages.results || backendMessages;
                 if (verbose) this.logAction(`Got ${messages.length} messages from backend for terminal ${terminalId}`, 'info');
                 // Add backend messages that aren't already in local queue
@@ -7559,7 +7508,8 @@ class TerminalGUI {
                 if (verbose) this.logAction('Syncing global addmsg messages...', 'info');
                 
                 // Fetch all pending messages without terminal_id (global messages from addmsg)
-                const globalMessages = await this.backendAPIClient.getQueuedMessages(null, 'pending', null);
+                // Backend doesn't store messages in pass-through mode - skip API call  
+                const globalMessages = [];
                 const messages = globalMessages.results || globalMessages;
                 
                 if (verbose) console.log(`[SYNC] Total pending messages: ${messages.length}`);
@@ -7790,29 +7740,163 @@ class TerminalGUI {
         }
     }
     startMessageQueuePolling() {
-        // Set up IPC listener for addmsg sync triggers
-        ipcRenderer.on('addmsg-sync-trigger', async () => {
-            console.log('[EVENT-SYNC] Received addmsg sync trigger');
+        // WebSocket disabled - using WSGI backend with file-based triggers
+        // this.setupWebSocketConnection();
+        
+        // Re-enabled: Direct IPC listener - main process sends parsed message data
+        ipcRenderer.on('addmsg-message', (event, messageData) => {
+            console.log('[EVENT-SYNC] Received direct addmsg message via IPC:', messageData);
             try {
-                await this.syncMessagesFromBackend(true);
-                this.logAction('🚀 Sync triggered by addmsg event', 'success');
+                this.addMessageDirectlyToQueue(messageData.content, messageData.terminalId);
+                this.logAction('✅ Added message directly to frontend queue', 'success');
             } catch (error) {
-                console.log('[EVENT-SYNC] Sync failed:', error.message);
+                console.log('[EVENT-SYNC] Failed to add message:', error.message);
+                this.logAction(`Failed to add message: ${error.message}`, 'error');
             }
         });
+
+        // DISABLED: Sync trigger handler to prevent duplicates (using direct IPC instead)
+        // The sync trigger functionality has been removed to prevent duplicate messages
         
         // Only periodic cleanup every 30 seconds to prevent session accumulation
         this.sessionCleanupInterval = setInterval(() => {
             this.cleanupOrphanedTerminalSessions();
         }, 30000);
         
-        this.logAction('Started event-driven sync system', 'info');
+        this.logAction('Started IPC sync system with file-based triggers', 'info');
         this.logAction('Started periodic terminal session cleanup every 30 seconds', 'info');
     }
+
+    setupWebSocketConnection() {
+        // WebSocket URL for backend message queue
+        const wsUrl = 'ws://localhost:8001/ws/message_queue/';
+        
+        console.log('[WebSocket] Connecting to:', wsUrl);
+        
+        try {
+            this.messageQueueWebSocket = new WebSocket(wsUrl);
+            
+            this.messageQueueWebSocket.onopen = () => {
+                console.log('[WebSocket] Connected to message queue');
+                this.logAction('🔗 Connected to backend WebSocket', 'success');
+            };
+            
+            this.messageQueueWebSocket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log('[WebSocket] Received message:', data);
+                    
+                    if (data.type === 'addmsg') {
+                        this.addMessageDirectlyToQueue(data.content, data.terminal_id);
+                        this.logAction(`✅ Added WebSocket message: "${data.content}"`, 'success');
+                    }
+                } catch (error) {
+                    console.error('[WebSocket] Error parsing message:', error);
+                }
+            };
+            
+            this.messageQueueWebSocket.onclose = (event) => {
+                console.log('[WebSocket] Connection closed:', event.code, event.reason);
+                this.logAction('🔗 WebSocket connection closed', 'warning');
+                
+                // Attempt to reconnect after 5 seconds
+                setTimeout(() => {
+                    console.log('[WebSocket] Attempting to reconnect...');
+                    this.setupWebSocketConnection();
+                }, 5000);
+            };
+            
+            this.messageQueueWebSocket.onerror = (error) => {
+                console.error('[WebSocket] Connection error:', error);
+                this.logAction('❌ WebSocket connection error', 'error');
+            };
+            
+        } catch (error) {
+            console.error('[WebSocket] Failed to create WebSocket connection:', error);
+            this.logAction(`Failed to connect WebSocket: ${error.message}`, 'error');
+        }
+    }
+
+    addMessageDirectlyToQueue(content, terminalId = 'terminal_1') {
+        // Add message directly to frontend queue (bypass backend entirely)
+        console.log(`[QUEUE] Adding message directly to queue: "${content}" for ${terminalId}`);
+        
+        // Convert terminal_id to terminalId format (remove 'terminal_' prefix)
+        let numericTerminalId = terminalId.replace('terminal_', '') || 1;
+        
+        // Use the specified terminal number, mark as unassigned if terminal doesn't exist
+        let displayTerminalId = parseInt(numericTerminalId);
+        
+        // Mark as unassigned if invalid number
+        if (isNaN(displayTerminalId) || displayTerminalId < 1) {
+            displayTerminalId = 'unassigned';
+            console.log('[QUEUE] Invalid terminal ID, marking message as unassigned');
+        } 
+        // Mark as unassigned if terminal doesn't exist (except for terminal 1)
+        else if (displayTerminalId > 1 && this.terminals.size > 0 && !this.terminals.has(displayTerminalId)) {
+            console.log(`[QUEUE] Terminal ${displayTerminalId} doesn't exist, marking as unassigned`);
+            displayTerminalId = 'unassigned';
+        }
+        // Terminal 1 is always valid, other existing terminals are valid
+        else {
+            console.log(`[QUEUE] Adding message for terminal ${displayTerminalId}`);
+        }
+        
+        // Create message object in same format as other queue messages
+        const message = {
+            id: this.generateMessageId(),
+            content: content.trim(),
+            timestamp: Date.now(),
+            createdAt: Date.now(),
+            terminalId: displayTerminalId,
+            source: 'addmsg',
+            wrapWithPlan: false // Default to not wrapping with plan mode
+        };
+        
+        // Check for duplicates to prevent spam
+        const isDuplicate = this.messageQueue.some(existingMsg => 
+            existingMsg.content === message.content && 
+            existingMsg.terminalId === message.terminalId &&
+            Math.abs(existingMsg.createdAt - message.createdAt) < 1000
+        );
+        
+        if (isDuplicate) {
+            this.logAction(`Skipped duplicate message: "${content}"`, 'warning');
+            return false;
+        }
+        
+        // Add to queue
+        this.messageQueue.push(message);
+        
+        // Update UI and save
+        this.updateMessageList();
+        this.updateStatusDisplay();
+        this.saveMessageQueue();
+        this.updateTrayBadge();
+        
+        this.logAction(`Added message to queue: "${content}" (Terminal ${displayTerminalId})`, 'success');
+        return true;
+    }
+
     stopMessageQueuePolling() {
-        // Remove IPC listener
+        // Close WebSocket connection
+        if (this.messageQueueWebSocket) {
+            this.messageQueueWebSocket.close();
+            this.messageQueueWebSocket = null;
+            console.log('[WebSocket] Closed WebSocket connection');
+        }
+        
+        // Remove IPC listeners
+        ipcRenderer.removeAllListeners('addmsg-message');
         ipcRenderer.removeAllListeners('addmsg-sync-trigger');
-        this.logAction('Stopped event-driven sync system', 'info');
+        
+        // Clear cleanup interval
+        if (this.sessionCleanupInterval) {
+            clearInterval(this.sessionCleanupInterval);
+            this.sessionCleanupInterval = null;
+        }
+        
+        this.logAction('Stopped WebSocket + IPC sync system', 'info');
     }
     
     
@@ -9891,13 +9975,19 @@ class TerminalGUI {
         // Create dropdown
         const dropdown = document.createElement('div');
         dropdown.className = 'message-terminal-dropdown';
-        const messageId = parseInt(messageItem.getAttribute('data-message-id'));
+        const messageIdAttr = messageItem.getAttribute('data-message-id');
+        const messageId = parseInt(messageIdAttr);
+        console.log('[DEBUG] Dropdown - messageIdAttr:', messageIdAttr, 'parsed:', messageId);
         const message = this.messageQueue.find(m => m.id === messageId);
-        const currentTerminalId = message ? message.terminalId || 1 : 1;
+        console.log('[DEBUG] Found message:', message);
+        const currentTerminalId = message ? message.terminalId : 1;
+        
+        // Add existing terminals
         this.terminals.forEach((terminalData) => {
             const item = document.createElement('div');
             item.className = 'terminal-selector-item';
-            if (terminalData.id === currentTerminalId) {
+            // Only mark as selected if message is actually assigned to this terminal
+            if (message && message.terminalId !== 'unassigned' && terminalData.id === currentTerminalId) {
                 item.classList.add('selected');
             }
             item.innerHTML = `
@@ -9910,6 +10000,20 @@ class TerminalGUI {
             });
             dropdown.appendChild(item);
         });
+        
+        // Add "unassigned" option if message is currently unassigned
+        console.log('[DEBUG] Message in dropdown:', message ? {id: message.id, terminalId: message.terminalId, content: message.content} : 'no message');
+        if (message && message.terminalId === 'unassigned') {
+            console.log('[DEBUG] Adding unassigned option to dropdown');
+            const unassignedItem = document.createElement('div');
+            unassignedItem.className = 'terminal-selector-item';
+            unassignedItem.classList.add('selected'); // Always selected if showing
+            unassignedItem.innerHTML = `
+                <span class="terminal-selector-dot" style="background-color: #6b7280;"></span>
+                <span>Unassigned</span>
+            `;
+            dropdown.appendChild(unassignedItem);
+        }
         // Add Plan Mode option styled like terminals
         const messagePlanState = message ? message.wrapWithPlan : false;
         const planModeItem = document.createElement('div');
@@ -9962,16 +10066,35 @@ class TerminalGUI {
     updateMessageTerminal(messageId, terminalId) {
         const message = this.messageQueue.find(m => m.id === messageId);
         if (!message) return;
+        
+        // Handle unassigned case
+        if (terminalId === 'unassigned') {
+            message.terminalId = 'unassigned';
+            const messageItem = document.querySelector(`[data-message-id="${messageId}"]`);
+            if (messageItem) {
+                messageItem.style.setProperty('--terminal-color', '#6b7280');
+                messageItem.setAttribute('data-terminal-color', '#6b7280');
+                messageItem.setAttribute('data-terminal-status', 'unassigned');
+            }
+            this.logAction('Message marked as unassigned', 'info');
+            this.saveMessageQueue();
+            return;
+        }
+        
+        // Handle normal terminal assignment
         const terminalData = this.terminals.get(terminalId);
         if (!terminalData) return;
+        
         message.terminalId = terminalId;
         // Update message border color
         const messageItem = document.querySelector(`[data-message-id="${messageId}"]`);
         if (messageItem) {
             messageItem.style.setProperty('--terminal-color', terminalData.color);
             messageItem.setAttribute('data-terminal-color', terminalData.color);
+            messageItem.setAttribute('data-terminal-status', 'assigned');
         }
         this.logAction(`Updated message to inject into ${terminalData.name}`, 'info');
+        this.saveMessageQueue();
     }
     togglePlanMode() {
         this.planModeEnabled = !this.planModeEnabled;

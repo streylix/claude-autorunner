@@ -1,5 +1,43 @@
 # Claude Code Configuration for Claude Flow
 
+## 🔧 SERENA MCP SETUP INSTRUCTIONS
+
+**How to Fix Serena MCP Configuration:**
+
+1. **Add Serena MCP Server:**
+```bash
+claude mcp add serena -- uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context ide-assistant --project claude-code-bot
+```
+
+2. **Fix .serena/project.yml - Add missing `language` field:**
+```yaml
+name: "Project Name"
+description: "Project description"
+language: javascript  # ← ADD THIS LINE (singular)
+languages:             # Keep existing languages array
+  - javascript
+  - typescript
+```
+
+3. **Index the project:**
+```bash
+uvx --from git+https://github.com/oraios/serena serena project index
+```
+
+4. **Verify connection:**
+```bash
+claude mcp list
+# Should show serena as ✓ Connected
+```
+
+5. **Restart Claude Code** - The MCP connection only works after restart
+
+**Common Issues:**
+- Path with spaces causes errors - use project name instead of path
+- Missing `language` field in project.yml causes KeyError
+- Need to index project before MCP will work
+- MCP changes require Claude Code restart to take effect
+
 ## 🚨 CRITICAL: PARALLEL EXECUTION AFTER SWARM INIT
 
 **MANDATORY RULE**: Once swarm is initialized with memory, ALL subsequent operations MUST be parallel:

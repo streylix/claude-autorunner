@@ -1,75 +1,63 @@
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.response import Response
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
 from django.utils import timezone
-from .models import QueuedMessage, MessageHistory
-from .serializers import QueuedMessageSerializer, MessageHistorySerializer
+import json
+import os
 
 
-class QueuedMessageViewSet(viewsets.ModelViewSet):
-    queryset = QueuedMessage.objects.all()
-    serializer_class = QueuedMessageSerializer
-    
-    def get_queryset(self):
-        queryset = super().get_queryset()
-        terminal_id = self.request.query_params.get('terminal_id')
-        if terminal_id:
-            queryset = queryset.filter(terminal_id=terminal_id)
-        status_filter = self.request.query_params.get('status')
-        if status_filter:
-            queryset = queryset.filter(status=status_filter)
-        return queryset
-    
-    @action(detail=True, methods=['post'])
-    def inject(self, request, pk=None):
-        message = self.get_object()
-        if message.status != 'pending':
-            return Response({'error': 'Message already processed'}, status=status.HTTP_400_BAD_REQUEST)
+@csrf_exempt
+@require_http_methods(["POST"])
+def add_message_trigger(request):
+    """
+    Simple pass-through endpoint for addmsg command.
+    Does NOT store messages in database - just triggers frontend notification.
+    The frontend queue is the single source of truth for all messages.
+    """
+    try:
+        # Parse JSON request body
+        data = json.loads(request.body.decode('utf-8'))
+        content = data.get('content', '')
+        terminal_id = data.get('terminal_id', 'terminal_1')
         
-        message.status = 'injected'
-        message.injected_at = timezone.now()
-        message.save()
+        if not content:
+            return JsonResponse(
+                {'error': 'Message content is required'}, 
+                status=400
+            )
         
-        # Create history entry
-        MessageHistory.objects.create(
-            terminal_id=message.terminal_id,
-            message=message.content,
-            source='auto'
-        )
+        # WebSocket functionality removed - using WSGI server
+        print(f"[API] Processing message: {content} for {terminal_id}")
+            
+        # Fallback: Create file-based trigger for compatibility
+        trigger_file = '/tmp/claude-code-addmsg-trigger'
+        trigger_content = f"{int(timezone.now().timestamp())}:addmsg:{content}:{terminal_id}"
         
-        serializer = self.get_serializer(message)
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['post'])
-    def clear_queue(self, request):
-        terminal_id = request.data.get('terminal_id')
-        if terminal_id:
-            QueuedMessage.objects.filter(
-                terminal_id=terminal_id,
-                status='pending'
-            ).update(status='cancelled')
-        return Response({'status': 'Queue cleared'})
-    
-    @action(detail=False, methods=['get', 'post'])
-    def sync_trigger(self, request):
-        """Trigger immediate sync notification for frontend"""
-        # This endpoint is called by addmsg to notify frontend of new messages
-        # We'll store the trigger timestamp for the frontend to check
-        trigger_time = timezone.now().isoformat()
-        return Response({
-            'status': 'sync_triggered',
-            'timestamp': trigger_time,
-            'message': 'Frontend should sync messages now'
+        with open(trigger_file, 'w') as f:
+            f.write(trigger_content)
+        
+        # Return success response
+        return JsonResponse({
+            'status': 'success',
+            'message': 'Message trigger sent to frontend',
+            'content': content,
+            'terminal_id': terminal_id,
+            'timestamp': timezone.now().isoformat()
         })
+        
+    except Exception as e:
+        return JsonResponse(
+            {'error': f'Failed to trigger message: {str(e)}'}, 
+            status=500
+        )
 
 
-class MessageHistoryViewSet(viewsets.ModelViewSet):
-    queryset = MessageHistory.objects.all()
-    serializer_class = MessageHistorySerializer
-    
-    def get_queryset(self):
-        queryset = super().get_queryset()
-        terminal_id = self.request.query_params.get('terminal_id')
-        if terminal_id:
-            queryset = queryset.filter(terminal_id=terminal_id)
-        return queryset
+@csrf_exempt
+@require_http_methods(["GET"])
+def health_check(request):
+    """Simple health check endpoint"""
+    return JsonResponse({
+        'status': 'healthy',
+        'service': 'message-pass-through',
+        'timestamp': timezone.now().isoformat()
+    })

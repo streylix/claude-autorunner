@@ -1,5 +1,6 @@
 name: "Claude Code Bot"
 description: "Automated message injection terminal with queuing system"
+language: javascript
 languages:
   - javascript
   - typescript

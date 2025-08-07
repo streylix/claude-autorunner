@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     # Third party apps
     "rest_framework",
     "corsheaders",
+    "channels",
     # CORE FUNCTIONALITY ONLY - 3 essential apps:
     "pricing",              # ccusage functionality
     "message_queue",        # addmsg functionality 

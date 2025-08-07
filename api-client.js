@@ -336,8 +336,8 @@ class BackendAPIClient {
     // Health Check
     async isBackendAvailable() {
         try {
-            // Use the queue endpoint which exists in simplified backend
-            await this._fetch('/queue/queue/');
+            // Use the health endpoint which exists in simplified backend
+            await this._fetch('/queue/health/');
             return true;
         } catch (error) {
             return false;

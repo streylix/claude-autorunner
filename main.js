@@ -862,9 +862,31 @@ function setupIpcHandlers() {
       
       // Watch for changes to the sync trigger file
       syncTriggerWatcher = fs_sync.watch(syncTriggerPath, (eventType, filename) => {
+        console.log('[Main] File watcher triggered - Event:', eventType, 'File:', filename);
         if ((eventType === 'change' || eventType === 'rename') && mainWindow && !mainWindow.isDestroyed()) {
-          console.log('[Main] Addmsg sync trigger detected, notifying renderer');
-          mainWindow.webContents.send('addmsg-sync-trigger');
+          try {
+            // Read the trigger file to get message content
+            const triggerContent = fs_sync.readFileSync(syncTriggerPath, 'utf8').trim();
+            console.log('[Main] Addmsg trigger content:', triggerContent);
+            
+            // Parse trigger content: timestamp:addmsg:content:terminal_id
+            const parts = triggerContent.split(':');
+            if (parts.length >= 3 && parts[1] === 'addmsg') {
+              const content = parts.slice(2, -1).join(':'); // Rejoin in case content had colons
+              const terminalId = parts[parts.length - 1];
+              
+              console.log('[Main] Sending message to frontend:', { content, terminalId });
+              mainWindow.webContents.send('addmsg-message', { content, terminalId });
+            } else {
+              // Fallback to old behavior
+              console.log('[Main] Using fallback sync trigger');
+              mainWindow.webContents.send('addmsg-sync-trigger');
+            }
+          } catch (error) {
+            console.log('[Main] Error reading trigger file:', error.message);
+            // Fallback to old behavior
+            mainWindow.webContents.send('addmsg-sync-trigger');
+          }
         }
       });
       

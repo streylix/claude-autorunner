@@ -1,11 +1,10 @@
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
-from .views import QueuedMessageViewSet, MessageHistoryViewSet
-
-router = DefaultRouter()
-router.register(r'queue', QueuedMessageViewSet)
-router.register(r'history', MessageHistoryViewSet)
+from django.urls import path
+from . import views
 
 urlpatterns = [
-    path('', include(router.urls)),
+    # Simple pass-through endpoint for addmsg command
+    path('add/', views.add_message_trigger, name='add_message_trigger'),
+    
+    # Health check endpoint
+    path('health/', views.health_check, name='health_check'),
 ]
