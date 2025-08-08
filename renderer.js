@@ -584,7 +584,7 @@ class TerminalGUI {
         // Create terminal instance
         this.createTerminal(id);
         // Create backend session if available and not already mapped
-        if (this.backendAPIClient && !this.terminalSessionMap.has(id)) {
+        if (this.backendAPIClient && typeof this.backendAPIClient.createTerminalSession === 'function' && !this.terminalSessionMap.has(id)) {
             this.backendAPIClient.createTerminalSession(termData.name || `Terminal ${id}`, this.currentDirectory)
                 .then(async session => {
                     // Store the mapping of frontend terminal ID to backend session UUID
@@ -3421,11 +3421,15 @@ class TerminalGUI {
                     if (!backendSessionId) {
                         console.log(`No backend session found for terminal ${targetTerminalId}, creating new session...`);
                         try {
-                            const terminalName = this.terminals.get(targetTerminalId)?.name || `Terminal ${targetTerminalId}`;
-                            const session = await this.backendAPIClient.createTerminalSession(terminalName, this.currentDirectory);
-                            backendSessionId = session.id;
-                            this.terminalSessionMap.set(targetTerminalId, backendSessionId);
-                            this.logAction(`Created backend session ${backendSessionId} for Terminal ${targetTerminalId}`, 'info');
+                            if (typeof this.backendAPIClient.createTerminalSession === 'function') {
+                                const terminalName = this.terminals.get(targetTerminalId)?.name || `Terminal ${targetTerminalId}`;
+                                const session = await this.backendAPIClient.createTerminalSession(terminalName, this.currentDirectory);
+                                backendSessionId = session.id;
+                                this.terminalSessionMap.set(targetTerminalId, backendSessionId);
+                                this.logAction(`Created backend session ${backendSessionId} for Terminal ${targetTerminalId}`, 'info');
+                            } else {
+                                throw new Error('createTerminalSession method not available');
+                            }
                         } catch (sessionError) {
                             console.error('Failed to create backend session for message history:', sessionError);
                             this.logAction(`Message history backend save failed - session creation error: ${sessionError.message}`, 'warning');
@@ -8855,40 +8859,22 @@ class TerminalGUI {
         // Clear any existing layout classes
         terminalsContainer.className = terminalsContainer.className.replace(/layout-\w+/g, '').trim();
         
-        if (totalCount === 1) {
-            // Single terminal takes up entire view
-            terminalsContainer.classList.add('layout-single');
-            terminalsContainer.appendChild(terminalWrapper);
-        } else if (totalCount === 2) {
-            // Two terminals side by side
-            terminalsContainer.classList.add('layout-dual');
-            terminalsContainer.appendChild(terminalWrapper);
-        } else if (totalCount === 3) {
-            // Three terminals: first on left, second top-right, third bottom-right
-            terminalsContainer.classList.add('layout-triple');
-            terminalsContainer.appendChild(terminalWrapper);
-        } else if (totalCount === 4) {
-            // Four terminals in 2x2 grid
-            terminalsContainer.classList.add('layout-quad');
-            terminalsContainer.appendChild(terminalWrapper);
-        } else {
-            // 5+ terminals: configurable scrolling with chunk-based layout
-            const chunkOrientation = this.preferences.chunkOrientation || 'horizontal';
-            const layoutClass = chunkOrientation === 'vertical' ? 'layout-scroll-vertical' : 'layout-scroll';
-            terminalsContainer.classList.add(layoutClass);
-            
-            // Get all terminals including the new one and sort by terminal ID
-            const allWrappers = Array.from(terminalsContainer.querySelectorAll('.terminal-wrapper'));
-            allWrappers.push(terminalWrapper);
-            allWrappers.sort((a, b) => {
-                const idA = parseInt(a.getAttribute('data-terminal-id'));
-                const idB = parseInt(b.getAttribute('data-terminal-id'));
-                return idA - idB;
-            });
-            
-            // Reorganize into chunks
-            this.organizeTerminalsIntoChunks(terminalsContainer, allWrappers);
-        }
+        // Always use chunk-based layout to respect user preferences
+        const chunkOrientation = this.preferences.chunkOrientation || 'horizontal';
+        const layoutClass = chunkOrientation === 'vertical' ? 'layout-scroll-vertical' : 'layout-scroll';
+        terminalsContainer.classList.add(layoutClass);
+        
+        // Get all terminals including the new one and sort by terminal ID
+        const allWrappers = Array.from(terminalsContainer.querySelectorAll('.terminal-wrapper'));
+        allWrappers.push(terminalWrapper);
+        allWrappers.sort((a, b) => {
+            const idA = parseInt(a.getAttribute('data-terminal-id'));
+            const idB = parseInt(b.getAttribute('data-terminal-id'));
+            return idA - idB;
+        });
+        
+        // Always organize into chunks based on user preference
+        this.organizeTerminalsIntoChunks(terminalsContainer, allWrappers);
         
         this.updateTerminalLayout();
     }
@@ -8972,8 +8958,16 @@ class TerminalGUI {
             }
         });
         
-        // Apply appropriate layout based on terminal count
-        if (terminalCount === 1) {
+        // Apply appropriate layout based on terminal count and preferences
+        const terminalsPerChunk = this.preferences.terminalsPerChunk;
+        
+        // If terminalsPerChunk is configured, always use chunk-based layout
+        if (terminalsPerChunk && terminalCount > 1) {
+            const chunkOrientation = this.preferences.chunkOrientation || 'horizontal';
+            const layoutClass = chunkOrientation === 'vertical' ? 'layout-scroll-vertical' : 'layout-scroll';
+            terminalsContainer.classList.add(layoutClass);
+            this.ensureScrollLayout(terminalsContainer);
+        } else if (terminalCount === 1) {
             terminalsContainer.classList.add('layout-single');
         } else if (terminalCount === 2) {
             terminalsContainer.classList.add('layout-dual');
@@ -8981,8 +8975,8 @@ class TerminalGUI {
             terminalsContainer.classList.add('layout-triple');
         } else if (terminalCount === 4) {
             terminalsContainer.classList.add('layout-quad');
-        } else if (terminalCount >= 5) {
-            // Use configurable chunk orientation for 5+ terminals
+        } else {
+            // Fallback for 5+ terminals without terminalsPerChunk setting
             const chunkOrientation = this.preferences.chunkOrientation || 'horizontal';
             const layoutClass = chunkOrientation === 'vertical' ? 'layout-scroll-vertical' : 'layout-scroll';
             terminalsContainer.classList.add(layoutClass);
@@ -9051,8 +9045,8 @@ class TerminalGUI {
         terminalsContainer.setAttribute('data-terminal-count', terminalCount + 1);
         // Create terminal instance
         const terminalData = this.createTerminal(newId);
-        // Create backend session if available
-        if (this.backendAPIClient) {
+        // Create backend session if available and method exists
+        if (this.backendAPIClient && typeof this.backendAPIClient.createTerminalSession === 'function') {
             this.backendAPIClient.createTerminalSession(`Terminal ${newId}`, this.currentDirectory)
                 .then(async session => {
                     // Store the mapping of frontend terminal ID to backend session UUID
@@ -9064,6 +9058,8 @@ class TerminalGUI {
                     console.error('Failed to create backend terminal session:', error);
                     this.logAction(`Failed to create backend session for Terminal ${newId}`, 'error');
                 });
+        } else {
+            this.logAction(`Backend terminal session creation not available for Terminal ${newId}`, 'info');
         }
         // Start terminal process
         const directoryToUse = startDirectory || this.currentDirectory;
@@ -9671,12 +9667,24 @@ class TerminalGUI {
             return;
         }
         
-        // Always scroll horizontally to center the selected terminal
-        const scrollLeft = activeWrapper.offsetLeft - (terminalsContainer.offsetWidth / 2) + (activeWrapper.offsetWidth / 2);
-        terminalsContainer.scrollTo({
-            left: scrollLeft,
-            behavior: 'smooth'
-        });
+        // Check orientation and scroll accordingly
+        const isVertical = terminalsContainer.classList.contains('layout-scroll-vertical');
+        
+        if (isVertical) {
+            // Vertical scrolling - scroll to show the active terminal's chunk
+            const scrollTop = activeWrapper.offsetTop - (terminalsContainer.offsetHeight / 2) + (activeWrapper.offsetHeight / 2);
+            terminalsContainer.scrollTo({
+                top: scrollTop,
+                behavior: 'smooth'
+            });
+        } else {
+            // Horizontal scrolling (original behavior)
+            const scrollLeft = activeWrapper.offsetLeft - (terminalsContainer.offsetWidth / 2) + (activeWrapper.offsetWidth / 2);
+            terminalsContainer.scrollTo({
+                left: scrollLeft,
+                behavior: 'smooth'
+            });
+        }
         
         // Add highlight animation to terminal header (always trigger animation)
         const terminalHeader = activeWrapper.querySelector('.terminal-header');
