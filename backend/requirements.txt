@@ -8,8 +8,7 @@ channels==4.0.0
 channels-redis==4.1.0
 daphne==4.0.0
 
-# Environment and utilities
-python-dotenv==1.0.1
+# Utilities
 Pillow==10.4.0  # Python 3.13 compatible version
 websockets==12.0
 redis==5.0.1

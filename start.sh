@@ -126,13 +126,6 @@ if [ "$RUN_SETUP" == "true" ]; then
         print_status "Backend requirements verified"
     fi
 
-    # Check if .env file exists
-    if [ ! -f ".env" ] && [ -f ".env.example" ]; then
-        print_warning ".env file not found. Creating from .env.example..."
-        cp .env.example .env
-        print_status ".env file created. You may need to update it with your settings."
-    fi
-
     # Run migrations if needed
     echo "🗄️  Checking database migrations..."
     python manage.py migrate --noinput 2>/dev/null

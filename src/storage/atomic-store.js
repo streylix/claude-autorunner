@@ -60,6 +60,9 @@ class AtomicStore {
     this.lockPath = `${this.storePath}.lock`;
     this.backupPath = path.join(this.userDataPath, 'backups');
     
+    // Ensure userData directory exists
+    this.ensureUserDataDir();
+    
     // Ensure backup directory exists
     this.ensureBackupDir();
     
@@ -76,6 +79,17 @@ class AtomicStore {
     this.backupThrottle = 300000; // 5 minutes
     
     console.log(`🏪 AtomicStore initialized: ${this.storePath}`);
+  }
+  
+  ensureUserDataDir() {
+    try {
+      if (!fsSync.existsSync(this.userDataPath)) {
+        fsSync.mkdirSync(this.userDataPath, { recursive: true });
+        console.log('📁 Created userData directory:', this.userDataPath);
+      }
+    } catch (error) {
+      console.error('❌ Could not create userData directory:', error.message);
+    }
   }
   
   ensureBackupDir() {
@@ -138,6 +152,15 @@ class AtomicStore {
           // Lock exists, wait and retry
           await new Promise(resolve => setTimeout(resolve, 10));
           continue;
+        }
+        if (error.code === 'ENOENT') {
+          // Directory doesn't exist, try to create it
+          try {
+            fsSync.mkdirSync(path.dirname(this.lockPath), { recursive: true });
+            continue; // Retry lock acquisition
+          } catch (mkdirError) {
+            console.error('Failed to create lock directory:', mkdirError);
+          }
         }
         throw error;
       }
@@ -234,7 +257,15 @@ class AtomicStore {
     } catch (error) {
       if (error.code === 'ENOENT') {
         console.log('📁 Store file not found, creating with defaults');
-        return this.getDefaults();
+        const defaults = this.getDefaults();
+        // Initialize the file with defaults
+        try {
+          await this.atomicWrite(defaults);
+          console.log('✅ Created initial store file');
+        } catch (writeError) {
+          console.error('❌ Failed to create initial store file:', writeError);
+        }
+        return defaults;
       }
       
       console.error('❌ Failed to read store:', error.message);

@@ -463,6 +463,11 @@ app.on('activate', () => {
 
 // Terminal state functionality removed - terminals now created fresh on each startup
 
+// Global file watcher variables for cleanup
+let syncTriggerWatcher = null;
+let clearTriggerWatcher = null;
+let terminalStatusWatcher = null;
+
 function setupIpcHandlers() {
   // Terminal handling
   ipcMain.on('terminal-start', (event, options = {}) => {
@@ -850,11 +855,9 @@ function setupIpcHandlers() {
 
   // Set up file watcher for addmsg sync triggers
   const syncTriggerPath = '/tmp/claude-code-addmsg-trigger';
-  let syncTriggerWatcher = null;
   
   // Set up file watcher for clear queue triggers
   const clearTriggerPath = '/tmp/claude-code-clear-trigger';
-  let clearTriggerWatcher = null;
   
   const setupSyncWatcher = () => {
     try {
@@ -958,7 +961,6 @@ function setupIpcHandlers() {
   // Set up file watcher for terminal status requests
   const terminalStatusTriggerPath = '/tmp/claude-code-terminal-status-trigger';
   const terminalStatusResponsePath = '/tmp/claude-code-terminal-status-response';
-  let terminalStatusWatcher = null;
   
   const setupTerminalStatusWatcher = () => {
     try {
