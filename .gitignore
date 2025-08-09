@@ -275,7 +275,6 @@ claude-flow.ps1
 hive-mind-prompt-*.txt
 
 # App-specific files and directories
-src/
 screenshots/
 test_*.js
 test_*.py
@@ -332,12 +331,8 @@ imported-files/
 # Memory and session data
 memory/
 
-# Plan mode configuration
-plan-mode-config.js
-
 # Additional development files
 # *.gif  # Commented out to allow README demo GIFs
-completion-*.js
 
 # Claude-related files and directories
 .claude/
