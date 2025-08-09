@@ -46,10 +46,11 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "channels",
-    # CORE FUNCTIONALITY ONLY - 3 essential apps:
+    # CORE FUNCTIONALITY ONLY - 4 essential apps:
     "pricing",              # ccusage functionality
     "message_queue",        # addmsg functionality 
     "voice_transcription",  # audio transcribing
+    "frontend_control",     # timer and frontend control API
     
     # REMOVED: admin, channels, terminal, settings, todos, user_settings
     # This eliminates database bloat and session persistence issues

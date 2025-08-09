@@ -2542,9 +2542,9 @@ class TerminalGUI {
         }
         return ids.length === uniqueIds.size;
     }
-    async addMessageToQueue() {
+    async addMessageToQueue(providedContent = null, providedTerminalId = null) {
         const input = document.getElementById('message-input');
-        const content = input.value.trim();
+        const content = providedContent !== null ? providedContent.trim() : input.value.trim();
         // Validate content is not empty or just whitespace
         if (this.isValidMessageContent(content)) {
             // Handle special usage limit commands
@@ -2602,7 +2602,7 @@ class TerminalGUI {
                 executeAt: now,
                 createdAt: now,
                 timestamp: now, // For compatibility
-                terminalId: this.activeTerminalId, // Use currently selected terminal
+                terminalId: providedTerminalId !== null ? providedTerminalId : this.activeTerminalId, // Use provided or currently selected terminal
                 sequence: ++this.messageSequenceCounter, // Add sequence counter for proper ordering
                 imagePreviews: this.imagePreviews ? [...this.imagePreviews] : [], // Copy current image previews
                 attachedFiles: this.attachedFiles ? [...this.attachedFiles] : [], // Copy attached files
@@ -2613,7 +2613,11 @@ class TerminalGUI {
             this.saveMessageQueue();
             this.updateMessageList();
             this.updateStatusDisplay();
-            input.value = '';
+            
+            // Only clear input if we're using the input field content (not provided content)
+            if (providedContent === null) {
+                input.value = '';
+            }
             
             // Auto-disable plan mode after message is sent to prevent accidental plan mode messages
             if (this.planModeEnabled) {
@@ -4728,19 +4732,60 @@ class TerminalGUI {
             // Fallback to terminal's lastOutput
             recentOutput = terminalData.lastOutput.slice(-2000);
         }
-        // Better detection patterns for running state
-        const isRunning = recentOutput.includes('esc to interrupt') || 
-                         recentOutput.includes('(esc to interrupt)') ||
-                         recentOutput.includes('ESC to interrupt') ||
-                         recentOutput.includes('offline)');
+        
+        // Split output into lines for better analysis
+        const lines = recentOutput.split('\n');
+        const lastFewLines = lines.slice(-10).join('\n');
+        
+        // Check if "esc to interrupt" appears in the last few lines
+        const hasInterruptPattern = lastFewLines.includes('esc to interrupt') || 
+                                   lastFewLines.includes('(esc to interrupt)') ||
+                                   lastFewLines.includes('ESC to interrupt') ||
+                                   lastFewLines.includes('offline)');
+        
+        // Check for a command prompt after the interrupt pattern
+        // If there's a prompt after "esc to interrupt", the command has finished
+        let hasPromptAfterInterrupt = false;
+        if (hasInterruptPattern) {
+            // Find the last occurrence of the interrupt pattern
+            let lastInterruptIndex = -1;
+            for (let i = lines.length - 1; i >= 0; i--) {
+                if (lines[i].includes('esc to interrupt') || 
+                    lines[i].includes('(esc to interrupt)') ||
+                    lines[i].includes('ESC to interrupt') ||
+                    lines[i].includes('offline)')) {
+                    lastInterruptIndex = i;
+                    break;
+                }
+            }
+            
+            // Check if there's a prompt after the interrupt pattern
+            if (lastInterruptIndex >= 0) {
+                for (let i = lastInterruptIndex + 1; i < lines.length; i++) {
+                    // Look for common prompt patterns
+                    if (/[$>%#]\s*$/.test(lines[i]) || // Ends with prompt
+                        /^[~\/].*[$>%#]\s*$/.test(lines[i]) || // Path followed by prompt
+                        lines[i].includes('╭─') || // Starship prompt
+                        lines[i].includes('└─')) { // Other prompt styles
+                        hasPromptAfterInterrupt = true;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // A terminal is running if it has the interrupt pattern and NO prompt after it
+        const isRunning = hasInterruptPattern && !hasPromptAfterInterrupt;
+        
         // Enhanced prompt detection to catch various prompt patterns
         const isPrompting = recentOutput.includes('No, and tell Claude what to do differently') ||
                            /\b[yY]\/[nN]\b/.test(recentOutput) ||
                            /\b[nN]\/[yY]\b/.test(recentOutput) ||
                            /Do you want to proceed\?/i.test(recentOutput) ||
-                           /Continue\?/i.test(recentOutput) ||
-                           /\?\s*$/.test(recentOutput.trim()) ||
-                           recentOutput.includes('Do you trust the files in this folder?') ||
+                           /Are you sure\?/i.test(recentOutput) ||
+                           recentOutput.includes('[Y/n]') ||
+                           recentOutput.includes('[y/N]') ||
+                           recentOutput.includes('Yes, continue as planned') ||
                            recentOutput.includes('No, keep planning');
         // Get current status for this terminal
         const currentStatus = this.terminalStatuses.get(terminalId) || {
@@ -4748,17 +4793,14 @@ class TerminalGUI {
             isPrompting: false,
             lastUpdate: Date.now()
         };
-        // Update status for this terminal
+        // Check if status has changed
         const statusChanged = (currentStatus.isRunning !== isRunning || 
                              currentStatus.isPrompting !== isPrompting);
         if (statusChanged) {
             const newStatus = isRunning ? 'running' : (isPrompting ? 'prompting' : 'ready');
             const oldStatus = currentStatus.isRunning ? 'running' : 
-                             (currentStatus.isPrompting ? 'prompting' : 'ready');
-            // Debug logging for status changes
-            this.logAction(`Terminal ${terminalId} status changed: ${oldStatus} → ${newStatus}`, 'info');
-            // Handle terminal state changes for todo generation with 3-minute delay
-            this.handleTerminalStateChangeForTodos(terminalId, oldStatus, newStatus);
+                            (currentStatus.isPrompting ? 'prompting' : 'ready');
+            console.log(`[Terminal ${terminalId}] Status changed: ${oldStatus} → ${newStatus}`);
         }
         // Update the terminal's status
         this.terminalStatuses.set(terminalId, {
@@ -4767,11 +4809,7 @@ class TerminalGUI {
             lastUpdate: Date.now()
         });
         
-        // Check for completion status change after updating terminal status
-        this.checkTerminalCompletionStatus(terminalId);
-        
-        // Update terminal status display
-        this.updateTerminalStatusIndicator();
+        return { isRunning, isPrompting };
     }
     updateTerminalStatusIndicator() {
         console.log('🔍 DEBUG: updateTerminalStatusIndicator() called');
@@ -7775,6 +7813,61 @@ class TerminalGUI {
                 this.logAction(`Failed to add message: ${error.message}`, 'error');
             }
         });
+        
+        // Listen for terminal status requests from backend
+        ipcRenderer.on('request-terminal-status', () => {
+            console.log('[Terminal Status] Backend requested terminal status');
+            
+            // Gather current terminal information
+            const terminalStatus = {
+                activeTerminal: this.activeTerminalId,
+                terminals: {}
+            };
+            
+            // Add info for each terminal
+            for (const [terminalId, terminal] of this.terminals) {
+                // Get the per-terminal status from terminalStatuses Map
+                const status = this.terminalStatuses.get(terminalId);
+                const isRunning = status ? status.isRunning : false;
+                const isPrompting = status ? status.isPrompting : false;
+                
+                // Try to get the current command from the terminal's content
+                let currentCommand = null;
+                if (isRunning || isPrompting) {
+                    // Get the last command entered (look for line after prompt)
+                    const term = terminal.term;
+                    if (term && term.buffer && term.buffer.active) {
+                        const buffer = term.buffer.active;
+                        // Search backwards for the most recent prompt
+                        for (let i = buffer.length - 1; i >= 0 && i > buffer.length - 50; i--) {
+                            const line = buffer.getLine(i);
+                            if (line) {
+                                const lineText = line.translateToString(true);
+                                // Look for command after prompt markers
+                                const cmdMatch = lineText.match(/^.*[$>%#]\s+(.+)/);
+                                if (cmdMatch && cmdMatch[1].trim() && !cmdMatch[1].includes('esc to interrupt')) {
+                                    currentCommand = cmdMatch[1].trim();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                terminalStatus.terminals[terminalId] = {
+                    name: `Terminal ${terminalId}`,
+                    running: isRunning,
+                    prompting: isPrompting,
+                    current_command: currentCommand,
+                    exists: true
+                };
+            }
+            
+            console.log('[Terminal Status] Sending status to backend:', terminalStatus);
+            
+            // Send response back to main process
+            ipcRenderer.send('terminal-status-response', terminalStatus);
+        });
 
         // Clear queue IPC listener - triggered when backend clears the queue
         ipcRenderer.on('clear-queue', (event, data) => {
@@ -7852,63 +7945,18 @@ class TerminalGUI {
     }
 
     addMessageDirectlyToQueue(content, terminalId = 'terminal_1') {
-        // Add message directly to frontend queue (bypass backend entirely)
-        console.log(`[QUEUE] Adding message directly to queue: "${content}" for ${terminalId}`);
-        
-        // Convert terminal_id to terminalId format (remove 'terminal_' prefix)
+        // Just a wrapper for backwards compatibility - redirect to main function
+        // Convert terminal_id format to numeric (remove 'terminal_' prefix)
         let numericTerminalId = terminalId.replace('terminal_', '') || 1;
+        let targetTerminalId = parseInt(numericTerminalId);
         
-        // Use the specified terminal number, mark as unassigned if terminal doesn't exist
-        let displayTerminalId = parseInt(numericTerminalId);
-        
-        // Mark as unassigned if invalid number
-        if (isNaN(displayTerminalId) || displayTerminalId < 1) {
-            displayTerminalId = 'unassigned';
-            console.log('[QUEUE] Invalid terminal ID, marking message as unassigned');
-        } 
-        // Mark as unassigned if terminal doesn't exist (except for terminal 1)
-        else if (displayTerminalId > 1 && this.terminals.size > 0 && !this.terminals.has(displayTerminalId)) {
-            console.log(`[QUEUE] Terminal ${displayTerminalId} doesn't exist, marking as unassigned`);
-            displayTerminalId = 'unassigned';
-        }
-        // Terminal 1 is always valid, other existing terminals are valid
-        else {
-            console.log(`[QUEUE] Adding message for terminal ${displayTerminalId}`);
+        // Validate terminal ID
+        if (isNaN(targetTerminalId) || targetTerminalId < 1) {
+            targetTerminalId = 1; // Default to terminal 1
         }
         
-        // Create message object in same format as other queue messages
-        const message = {
-            id: this.generateMessageId(),
-            content: content.trim(),
-            timestamp: Date.now(),
-            createdAt: Date.now(),
-            terminalId: displayTerminalId,
-            source: 'addmsg',
-            wrapWithPlan: false // Default to not wrapping with plan mode
-        };
-        
-        // Check for duplicates to prevent spam
-        const isDuplicate = this.messageQueue.some(existingMsg => 
-            existingMsg.content === message.content && 
-            existingMsg.terminalId === message.terminalId &&
-            Math.abs(existingMsg.createdAt - message.createdAt) < 1000
-        );
-        
-        if (isDuplicate) {
-            this.logAction(`Skipped duplicate message: "${content}"`, 'warning');
-            return false;
-        }
-        
-        // Add to queue
-        this.messageQueue.push(message);
-        
-        // Update UI and save
-        this.updateMessageList();
-        this.updateStatusDisplay();
-        this.saveMessageQueue();
-        this.updateTrayBadge();
-        
-        this.logAction(`Added message to queue: "${content}" (Terminal ${displayTerminalId})`, 'success');
+        // Call the main addMessageToQueue with the provided content and terminal
+        this.addMessageToQueue(content.trim(), targetTerminalId);
         return true;
     }
 

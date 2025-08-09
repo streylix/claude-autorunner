@@ -955,7 +955,68 @@ function setupIpcHandlers() {
   
   setupClearWatcher();
   
-  // Cleanup both trigger watchers on app quit
+  // Set up file watcher for terminal status requests
+  const terminalStatusTriggerPath = '/tmp/claude-code-terminal-status-trigger';
+  const terminalStatusResponsePath = '/tmp/claude-code-terminal-status-response';
+  let terminalStatusWatcher = null;
+  
+  const setupTerminalStatusWatcher = () => {
+    try {
+      const fs_sync = require('fs');
+      
+      // Watch for terminal status request trigger
+      if (fs_sync.existsSync(terminalStatusTriggerPath)) {
+        fs_sync.unlinkSync(terminalStatusTriggerPath);
+      }
+      
+      // Create a watcher for the directory instead of the file
+      const triggerDir = path.dirname(terminalStatusTriggerPath);
+      terminalStatusWatcher = fs_sync.watch(triggerDir, (eventType, filename) => {
+        if (filename === 'claude-code-terminal-status-trigger' && mainWindow && !mainWindow.isDestroyed()) {
+          console.log('[Main] Terminal status request detected');
+          
+          // Request terminal status from renderer
+          mainWindow.webContents.send('request-terminal-status');
+          
+          // Set up a one-time listener for the response
+          ipcMain.once('terminal-status-response', (event, terminalData) => {
+            console.log('[Main] Received terminal status from renderer:', terminalData);
+            
+            // Add process information to each terminal
+            if (terminalData.terminals) {
+              for (const [termId, termInfo] of Object.entries(terminalData.terminals)) {
+                const ptyProc = ptyProcesses.get(parseInt(termId));
+                if (ptyProc) {
+                  termInfo.has_process = true;
+                  termInfo.pid = ptyProc.pid || null;
+                } else {
+                  termInfo.has_process = false;
+                  termInfo.pid = null;
+                }
+              }
+            }
+            
+            // Write response to file for backend to read
+            try {
+              fs_sync.writeFileSync(terminalStatusResponsePath, JSON.stringify(terminalData));
+              console.log('[Main] Wrote terminal status response to file');
+            } catch (error) {
+              console.error('[Main] Error writing terminal status response:', error);
+            }
+          });
+        }
+      });
+      
+      console.log('[Main] Terminal status watcher started');
+    } catch (error) {
+      console.log('[Main] Could not start terminal status watcher:', error.message);
+      setTimeout(setupTerminalStatusWatcher, 5000);
+    }
+  };
+  
+  setupTerminalStatusWatcher();
+  
+  // Cleanup all trigger watchers on app quit
   app.on('before-quit', () => {
     if (syncTriggerWatcher) {
       syncTriggerWatcher.close();
@@ -964,6 +1025,10 @@ function setupIpcHandlers() {
     if (clearTriggerWatcher) {
       clearTriggerWatcher.close();
       clearTriggerWatcher = null;
+    }
+    if (terminalStatusWatcher) {
+      terminalStatusWatcher.close();
+      terminalStatusWatcher = null;
     }
   });
 

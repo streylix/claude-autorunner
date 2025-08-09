@@ -20,13 +20,15 @@ from django.conf import settings
 from django.conf.urls.static import static
 
 urlpatterns = [
-    # CORE FUNCTIONALITY ONLY - Simplified backend for 3 essential features:
+    # CORE FUNCTIONALITY - Simplified backend for essential features:
     # 1. ccusage (pricing) - credit card usage tracking
     # 2. addmsg (message_queue) - add messages to terminal queue  
     # 3. audio transcription (voice_transcription) - Whisper audio processing
+    # 4. frontend control - timer, terminal, and other frontend controls
     path("", include("pricing.urls")),                    # ccusage functionality
     path("api/queue/", include("message_queue.urls")),    # addmsg functionality  
     path("api/voice/", include("voice_transcription.urls")), # audio transcribing
+    path("api/", include("frontend_control.urls")),       # frontend control API
     
     # REMOVED: admin, terminal sessions, settings, todos - all moved to frontend-only
     # This eliminates the problematic terminal state persistence and database bloat

@@ -11,6 +11,9 @@ cleanup() {
     if [ -n "$BACKEND_PID" ]; then
         kill $BACKEND_PID 2>/dev/null
     fi
+    if [ -n "$BOT_PID" ]; then
+        kill $BOT_PID 2>/dev/null
+    fi
     exit 0
 }
 
@@ -64,6 +67,46 @@ echo "✅ Django backend is running on http://127.0.0.1:8001"
 echo ""
 echo "📝 Note: If you see errors above, the backend may still work."
 echo "   The frontend will run with or without the backend."
+echo ""
+
+# Load bot configuration if it exists
+if [ -f ".bot-config" ]; then
+    source .bot-config
+fi
+
+# Start Discord Bot if configured and directory exists
+if [ -n "$BOT_DIR" ] && [ -d "$BOT_DIR" ] && [ -f "$BOT_DIR/run_bot.sh" ]; then
+    # Check if Discord bot is already running
+    EXISTING_BOT=$(ps aux | grep "python discord_bot.py" | grep -v grep | head -1)
+    if [ -n "$EXISTING_BOT" ]; then
+        echo "⚠️  Discord Bot is already running"
+        echo "   $EXISTING_BOT"
+        BOT_PID=$(echo "$EXISTING_BOT" | awk '{print $2}')
+    else
+        echo "🤖 Starting Discord Bot..."
+        cd "$BOT_DIR"
+        ./run_bot.sh > /tmp/discord-bot.log 2>&1 &
+        BOT_PID=$!
+        cd - > /dev/null
+    fi
+    
+    # Give bot time to start
+    sleep 2
+    
+    if ps -p $BOT_PID > /dev/null 2>&1; then
+        echo "✅ Discord Bot started (PID: $BOT_PID)"
+        echo "   Discord bot should appear online shortly"
+        echo "   Use: !addmsg \"command\" [terminal_number] in Discord"
+    else
+        echo "⚠️  Discord Bot process started but may have exited"
+        echo "   Check /tmp/discord-bot.log for details"
+    fi
+elif [ -z "$BOT_DIR" ]; then
+    echo "ℹ️  Discord Bot not configured (create .bot-config with BOT_DIR path to enable)"
+else
+    echo "⚠️  Discord Bot directory not found or run_bot.sh missing"
+    echo "   Expected at: $BOT_DIR/run_bot.sh"
+fi
 echo ""
 
 # Start Auto-Injector app
