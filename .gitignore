@@ -353,3 +353,4 @@ claudebot_internal/
 .mcp.json
 memory/
 data/
+*.md
