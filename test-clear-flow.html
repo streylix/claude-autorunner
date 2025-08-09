@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Clear Queue Flow</title>
+</head>
+<body>
+    <h1>Test Clear Queue IPC Flow</h1>
+    <p>This tests the complete flow: Backend API → Trigger File → Main.js → Renderer.js → UI Clear</p>
+    
+    <button id="test-backend-clear">Test Backend Clear Queue</button>
+    <button id="test-frontend-clear">Test Frontend Clear Queue</button>
+    <div id="results"></div>
+
+    <script>
+        // Load the API client (assuming this runs in the Electron renderer context)
+        const apiClient = new BackendAPIClient();
+        
+        document.getElementById('test-backend-clear').addEventListener('click', async () => {
+            const results = document.getElementById('results');
+            results.innerHTML = '<p>Testing backend clear queue flow...</p>';
+            
+            try {
+                // Call the backend clearQueue method which should trigger the file watcher
+                const response = await apiClient.clearQueue('test-session');
+                results.innerHTML += '<p>✅ Backend API call successful: ' + JSON.stringify(response) + '</p>';
+                results.innerHTML += '<p>The file watcher should now trigger the frontend clear.</p>';
+            } catch (error) {
+                results.innerHTML += '<p>❌ Backend API call failed: ' + error.message + '</p>';
+            }
+        });
+
+        document.getElementById('test-frontend-clear').addEventListener('click', () => {
+            const results = document.getElementById('results');
+            results.innerHTML = '<p>Testing direct frontend clear...</p>';
+            
+            // Directly call the clearQueue method if available
+            if (window.terminalGUI && window.terminalGUI.clearQueue) {
+                window.terminalGUI.clearQueue();
+                results.innerHTML += '<p>✅ Frontend clear queue called directly</p>';
+            } else {
+                results.innerHTML += '<p>❌ Frontend clearQueue method not available</p>';
+            }
+        });
+    </script>
+</body>
+</html>

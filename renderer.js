@@ -4774,28 +4774,39 @@ class TerminalGUI {
         this.updateTerminalStatusIndicator();
     }
     updateTerminalStatusIndicator() {
+        console.log('🔍 DEBUG: updateTerminalStatusIndicator() called');
+        console.log('🔍 DEBUG: this.terminals:', this.terminals);
+        console.log('🔍 DEBUG: terminals size:', this.terminals?.size);
         // Update status for all terminals
         this.terminals.forEach((terminalData, terminalId) => {
+            console.log(`🔍 DEBUG: Processing terminal ${terminalId}`);
             // When waiting for usage limit reset, always show default "..." status
             if (this.usageLimitWaiting) {
                 this.setTerminalStatusDisplay('', terminalId);
                 return;
             }
+            
             // Check if this terminal is currently injecting
             const isInjectingToThisTerminal = Array.from(this.currentlyInjectingMessages).some(messageId => {
                 const message = this.messageQueue.find(m => m.id === messageId);
                 return message && (message.terminalId != null ? message.terminalId : this.activeTerminalId) === terminalId;
             });
+            
             if (isInjectingToThisTerminal) {
                 this.setTerminalStatusDisplay('injecting', terminalId);
             } else {
                 // Use per-terminal status instead of just active terminal
                 const terminalStatus = this.terminalStatuses.get(terminalId);
+                
+                console.log(`🔍 DEBUG: Terminal ${terminalId} status:`, terminalStatus);
                 if (terminalStatus && terminalStatus.isRunning) {
+                    console.log(`🔍 DEBUG: Setting RUNNING for terminal ${terminalId}`);
                     this.setTerminalStatusDisplay('running', terminalId);
                 } else if (terminalStatus && terminalStatus.isPrompting) {
-                    this.setTerminalStatusDisplay('', terminalId);
+                    console.log(`🔍 DEBUG: Setting PROMPTED for terminal ${terminalId}`);
+                    this.setTerminalStatusDisplay('prompted', terminalId);
                 } else {
+                    console.log(`🔍 DEBUG: Setting DEFAULT for terminal ${terminalId}`);
                     this.setTerminalStatusDisplay('', terminalId);
                 }
             }
@@ -6495,8 +6506,11 @@ class TerminalGUI {
         const terminalData = this.terminals.get(terminalId);
         if (!terminalData) return;
         
+        console.log(`🔍 DEBUG: Status update for terminal ${terminalId}: ${previousStatus} → ${newStatus}`);
+        
         terminalData.status = newStatus;
         const statusElement = document.querySelector(`[data-terminal-status="${terminalId}"]`);
+        console.log(`🔍 ACTUAL DEBUG: Looking for terminal ${terminalId}, found:`, statusElement);
         if (statusElement) {
             // Clear all classes
             statusElement.className = 'terminal-status';
@@ -6505,14 +6519,17 @@ class TerminalGUI {
                 case 'running':
                     statusElement.className = 'terminal-status visible running';
                     statusElement.textContent = 'Running';
+                    console.log(`🔍 DEBUG: Set RUNNING status - className: "${statusElement.className}", textContent: "${statusElement.textContent}"`);
                     break;
                 case 'prompted':
                     statusElement.className = 'terminal-status visible prompted';
                     statusElement.textContent = 'Prompted';
+                    console.log(`🔍 DEBUG: Set PROMPTED status - className: "${statusElement.className}", textContent: "${statusElement.textContent}"`);
                     break;
                 case 'injecting':
                     statusElement.className = 'terminal-status visible injecting';
                     statusElement.textContent = 'Injecting';
+                    console.log(`🔍 DEBUG: Set INJECTING status - className: "${statusElement.className}", textContent: "${statusElement.textContent}"`);
                     break;
                 default:
                     statusElement.className = 'terminal-status visible';
@@ -6729,7 +6746,7 @@ class TerminalGUI {
             
             // Set debounced update
             const timeoutId = setTimeout(() => {
-                this.performStatusUpdate(terminalId, outputContent);
+                this.performStatusUpdateFromOutput(terminalId, outputContent);
                 this.lastStatusUpdateTime.set(terminalId, Date.now());
                 this.statusUpdateTimeouts.delete(terminalId);
             }, debounceDelay);
@@ -6739,13 +6756,13 @@ class TerminalGUI {
         }
         
         // Immediate update if not debounced
-        this.performStatusUpdate(terminalId, outputContent);
+        this.performStatusUpdateFromOutput(terminalId, outputContent);
         if (!this.lastStatusUpdateTime) this.lastStatusUpdateTime = new Map();
         this.lastStatusUpdateTime.set(terminalId, now);
     }
     
     // Perform the actual status update with change detection
-    performStatusUpdate(terminalId, outputContent) {
+    performStatusUpdateFromOutput(terminalId, outputContent) {
         const terminalData = this.terminals.get(terminalId);
         if (!terminalData) return;
         
@@ -7756,6 +7773,19 @@ class TerminalGUI {
             } catch (error) {
                 console.log('[EVENT-SYNC] Failed to add message:', error.message);
                 this.logAction(`Failed to add message: ${error.message}`, 'error');
+            }
+        });
+
+        // Clear queue IPC listener - triggered when backend clears the queue
+        ipcRenderer.on('clear-queue', (event, data) => {
+            console.log('[CLEAR-QUEUE] Received clear queue trigger via IPC:', data);
+            try {
+                const previousCount = this.messageQueue.length;
+                this.clearQueue();
+                this.logAction(`🗑️ Backend triggered queue clear (${previousCount} messages removed)`, 'warning');
+            } catch (error) {
+                console.log('[CLEAR-QUEUE] Failed to clear queue:', error.message);
+                this.logAction(`Failed to clear queue: ${error.message}`, 'error');
             }
         });
 

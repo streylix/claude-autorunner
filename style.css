@@ -297,10 +297,6 @@ body {
     transition: opacity 0.2s ease;
 }
 
-.terminal-status.visible {
-    opacity: 1;
-}
-
 .terminal-status.running {
     color: var(--accent-warning);
 }

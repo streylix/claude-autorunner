@@ -852,6 +852,10 @@ function setupIpcHandlers() {
   const syncTriggerPath = '/tmp/claude-code-addmsg-trigger';
   let syncTriggerWatcher = null;
   
+  // Set up file watcher for clear queue triggers
+  const clearTriggerPath = '/tmp/claude-code-clear-trigger';
+  let clearTriggerWatcher = null;
+  
   const setupSyncWatcher = () => {
     try {
       // Create the trigger file if it doesn't exist
@@ -906,11 +910,60 @@ function setupIpcHandlers() {
   
   setupSyncWatcher();
   
-  // Cleanup sync trigger watcher on app quit
+  // Set up clear queue trigger watcher
+  const setupClearWatcher = () => {
+    try {
+      // Create the clear trigger file if it doesn't exist
+      const fs_sync = require('fs');
+      if (!fs_sync.existsSync(clearTriggerPath)) {
+        fs_sync.writeFileSync(clearTriggerPath, 'init');
+      }
+      
+      // Watch for changes to the clear trigger file
+      clearTriggerWatcher = fs_sync.watch(clearTriggerPath, (eventType, filename) => {
+        console.log('[Main] Clear trigger watcher activated - Event:', eventType, 'File:', filename);
+        if ((eventType === 'change' || eventType === 'rename') && mainWindow && !mainWindow.isDestroyed()) {
+          try {
+            // Read the trigger file to get any additional context
+            const triggerContent = fs_sync.readFileSync(clearTriggerPath, 'utf8').trim();
+            console.log('[Main] Clear trigger content:', triggerContent);
+            
+            // Send clear-queue IPC event to renderer
+            console.log('[Main] Sending clear-queue event to frontend');
+            mainWindow.webContents.send('clear-queue', { source: 'backend' });
+          } catch (error) {
+            console.log('[Main] Error reading clear trigger file:', error.message);
+            // Still send the clear event even if reading fails
+            mainWindow.webContents.send('clear-queue', { source: 'backend' });
+          }
+        }
+      });
+      
+      clearTriggerWatcher.on('error', (error) => {
+        console.log('[Main] Clear trigger watcher error:', error.message);
+        // Try to recreate the watcher after a short delay
+        setTimeout(setupClearWatcher, 1000);
+      });
+      
+      console.log('[Main] Clear queue trigger watcher started');
+    } catch (error) {
+      console.log('[Main] Could not start clear trigger watcher:', error.message);
+      // Try again after a delay
+      setTimeout(setupClearWatcher, 5000);
+    }
+  };
+  
+  setupClearWatcher();
+  
+  // Cleanup both trigger watchers on app quit
   app.on('before-quit', () => {
     if (syncTriggerWatcher) {
       syncTriggerWatcher.close();
       syncTriggerWatcher = null;
+    }
+    if (clearTriggerWatcher) {
+      clearTriggerWatcher.close();
+      clearTriggerWatcher = null;
     }
   });
 

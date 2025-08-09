@@ -71,7 +71,7 @@ class BackendAPIClient {
     }
 
     async clearQueue(terminalSessionId) {
-        return await this._fetch('/queue/queue/clear_queue/', {
+        return await this._fetch('/queue/clear/', {
             method: 'POST',
             body: JSON.stringify({
                 terminal_session: terminalSessionId
