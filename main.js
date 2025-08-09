@@ -1016,21 +1016,7 @@ function setupIpcHandlers() {
   
   setupTerminalStatusWatcher();
   
-  // Cleanup all trigger watchers on app quit
-  app.on('before-quit', () => {
-    if (syncTriggerWatcher) {
-      syncTriggerWatcher.close();
-      syncTriggerWatcher = null;
-    }
-    if (clearTriggerWatcher) {
-      clearTriggerWatcher.close();
-      clearTriggerWatcher = null;
-    }
-    if (terminalStatusWatcher) {
-      terminalStatusWatcher.close();
-      terminalStatusWatcher = null;
-    }
-  });
+  // Note: Trigger watchers cleanup moved to main before-quit handler
 
   // Get file information
   ipcMain.handle('get-file-info', async (event, filePath) => {
@@ -1489,12 +1475,32 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async (event) => {
+  // Check if we're already in the process of cleaning up to prevent infinite loop
+  if (isQuitting) {
+    // Already handled, let the app quit normally
+    return;
+  }
+  
   isQuitting = true;
   
   // Prevent immediate quit to allow proper cleanup
   event.preventDefault();
   
   try {
+    // Clean up file watchers first
+    if (syncTriggerWatcher) {
+      syncTriggerWatcher.close();
+      syncTriggerWatcher = null;
+    }
+    if (clearTriggerWatcher) {
+      clearTriggerWatcher.close();
+      clearTriggerWatcher = null;
+    }
+    if (terminalStatusWatcher) {
+      terminalStatusWatcher.close();
+      terminalStatusWatcher = null;
+    }
+    
     // Proper cleanup of all terminal processes
     await cleanupPtyProcesses();
     
@@ -1512,7 +1518,10 @@ app.on('before-quit', async (event) => {
   } catch (error) {
     console.error('[Main] Error during cleanup:', error);
   } finally {
-    // Quit the app after cleanup is complete
-    app.quit();
+    // Use setImmediate to break out of the event handler before quitting
+    // This prevents the before-quit event from being triggered again immediately
+    setImmediate(() => {
+      app.exit(0); // Use exit instead of quit to avoid triggering before-quit again
+    });
   }
 });

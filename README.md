@@ -19,32 +19,33 @@ Now introducing *Advanced Plan Mode* which intuitively utilizes Claude Flow for 
 
 ### Installation
 
-#### Option 1: Standalone Only (Basic)
+#### Quick Start (Recommended)
+```bash
+# Clone the repository
+git clone https://github.com/streylix/claude-autorunner.git
+cd claude-autorunner
+
+# Start with automatic setup (first time only)
+./start.sh --setup
+
+# Start the application
+./start.sh
+```
+
+The `--setup` flag automatically:
+- ✅ Installs npm dependencies
+- ✅ Creates Python virtual environment
+- ✅ Installs backend requirements
+- ✅ Runs database migrations
+- ✅ Creates .env file from template
+
+##### Frontend Only (Optional):
 ```bash
 # Install dependencies
 npm install
 
 # Start the application
 npm start
-```
-
-#### Option 2: With Django Backend (Advanced)
-For enhanced functionality including persistent memory, voice processing, and advanced features:
-
-```bash
-# Install dependencies
-npm install
-
-# Set up Django backend
-cd backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python manage.py migrate
-
-# Start both backend and frontend (with waiting for backend)
-cd ..
-./start_with_backend.sh
 ```
 
 ## 📄 License
