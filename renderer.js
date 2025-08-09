@@ -5,7 +5,7 @@ const { SearchAddon } = require('@xterm/addon-search');
 // Removed WebLinksAddon to prevent opening links in new Electron windows
 // Links are now handled by click event listener to open in default browser
 const InjectionManager = require('./src/messaging/injection-manager');
-const { getAllTextIn, getLastTextIn, cleanTerminalText } = require('./getAllTextIn');
+const { getAllTextIn, getLastTextIn, cleanTerminalText } = require('./utils/textExtraction');
 // Import new modular components
 const PlatformUtils = require('./src/utils/platform-utils');
 const DomUtils = require('./src/utils/dom-utils');

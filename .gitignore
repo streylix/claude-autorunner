@@ -338,7 +338,6 @@ plan-mode-config.js
 # Additional development files
 # *.gif  # Commented out to allow README demo GIFs
 completion-*.js
-injectortest.*
 
 # Claude-related files and directories
 .claude/
@@ -351,3 +350,5 @@ claude-todo/
 claudebot*
 claudebot_internal/
 .serena/
+.mcp.json
+memory/
