@@ -339,3 +339,15 @@ plan-mode-config.js
 # *.gif  # Commented out to allow README demo GIFs
 completion-*.js
 injectortest.*
+
+# Claude-related files and directories
+.claude/
+.claude-flow/
+.roo/
+.roomodes
+claude-flow*
+CLAUDE*
+claude-todo/
+claudebot*
+claudebot_internal/
+.serena/
