@@ -336,6 +336,6 @@ memory/
 plan-mode-config.js
 
 # Additional development files
-*.gif
+# *.gif  # Commented out to allow README demo GIFs
 completion-*.js
 injectortest.*
