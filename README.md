@@ -37,7 +37,6 @@ The `--setup` flag automatically:
 - ✅ Creates Python virtual environment
 - ✅ Installs backend requirements
 - ✅ Runs database migrations
-- ✅ Creates .env file from template
 
 ##### Frontend Only (Optional):
 ```bash
