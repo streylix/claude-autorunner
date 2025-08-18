@@ -1068,7 +1068,12 @@ class TerminalGUI {
                 return;
             }
             if (terminalData) {
-                terminalData.lastOutput = data.content;
+                // Accumulate terminal output instead of replacing it
+                terminalData.lastOutput += data.content;
+                // Keep only the last 5000 characters to prevent memory issues
+                if (terminalData.lastOutput.length > 5000) {
+                    terminalData.lastOutput = terminalData.lastOutput.slice(-5000);
+                }
                 // Run detection functions for ALL terminals, not just active one
                 this.detectAutoContinuePrompt(data.content, terminalId);
                 
@@ -4787,6 +4792,7 @@ class TerminalGUI {
                            recentOutput.includes('[y/N]') ||
                            recentOutput.includes('Yes, continue as planned') ||
                            recentOutput.includes('No, keep planning');
+        
         // Get current status for this terminal
         const currentStatus = this.terminalStatuses.get(terminalId) || {
             isRunning: false,
@@ -4836,15 +4842,11 @@ class TerminalGUI {
                 // Use per-terminal status instead of just active terminal
                 const terminalStatus = this.terminalStatuses.get(terminalId);
                 
-                console.log(`🔍 DEBUG: Terminal ${terminalId} status:`, terminalStatus);
                 if (terminalStatus && terminalStatus.isRunning) {
-                    console.log(`🔍 DEBUG: Setting RUNNING for terminal ${terminalId}`);
                     this.setTerminalStatusDisplay('running', terminalId);
                 } else if (terminalStatus && terminalStatus.isPrompting) {
-                    console.log(`🔍 DEBUG: Setting PROMPTED for terminal ${terminalId}`);
                     this.setTerminalStatusDisplay('prompted', terminalId);
                 } else {
-                    console.log(`🔍 DEBUG: Setting DEFAULT for terminal ${terminalId}`);
                     this.setTerminalStatusDisplay('', terminalId);
                 }
             }
@@ -5480,14 +5482,12 @@ class TerminalGUI {
         this.injectionBlocked = hasEscToInterrupt || allTerminalsKeywordResult.blocked;
         // Log when blocking status changes
         if (previouslyBlocked && !this.injectionBlocked) {
-            this.logAction('Message injection unblocked - conditions cleared', 'success');
             // Resume injection scheduling if we have queued messages
             if (this.messageQueue.length > 0) {
                 this.scheduleNextInjection();
             }
         } else if (!previouslyBlocked && this.injectionBlocked) {
             let reason = hasEscToInterrupt ? `running process detected in Terminal ${terminalId}` : `keyword "${allTerminalsKeywordResult.keyword}" detected`;
-            this.logAction(`Message injection blocked - ${reason}`, 'warning');
             // Cancel any pending injection
             if (this.injectionTimer) {
                 clearTimeout(this.injectionTimer);
@@ -6500,39 +6500,44 @@ class TerminalGUI {
         if (terminalId) {
             const terminalData = this.terminals.get(terminalId);
             if (terminalData) {
-                const previousStatus = terminalData.status;
                 const newStatus = status || '...';
                 
-                // Initialize status transition timers if not exists
-                if (!this.statusTransitionTimers) {
-                    this.statusTransitionTimers = new Map();
-                }
+                // Get the previous status before updating
+                const previousStatus = terminalData.status || '...';
                 
-                // Cancel any existing timer for this terminal if transitioning to a different state
-                if (this.statusTransitionTimers.has(terminalId)) {
-                    clearTimeout(this.statusTransitionTimers.get(terminalId));
-                    this.statusTransitionTimers.delete(terminalId);
-                }
-                
-                // Check if this is a transition from 'running' to '...' (idle)
+                // For running->idle transitions, apply 2-second delay
                 if (previousStatus === 'running' && newStatus === '...') {
+                    // Don't update status yet for delayed transitions
+                    // Initialize status transition timers if not exists
+                    if (!this.statusTransitionTimers) {
+                        this.statusTransitionTimers = new Map();
+                    }
+                    
+                    // Cancel any existing timer for this terminal
+                    if (this.statusTransitionTimers.has(terminalId)) {
+                        clearTimeout(this.statusTransitionTimers.get(terminalId));
+                        this.statusTransitionTimers.delete(terminalId);
+                    }
+                    
                     // Set a 2-second delay before changing from 'running' to '...'
                     const timerId = setTimeout(() => {
-                        // Double-check that we should still transition (status might have changed)
+                        // Double-check that we should still transition
                         const currentTerminalData = this.terminals.get(terminalId);
                         if (currentTerminalData && currentTerminalData.status === 'running') {
-                            this.performStatusUpdate(terminalId, '...', previousStatus);
+                            // Now update the status and DOM
+                            currentTerminalData.status = '...';
+                            this.updateTerminalStatusDOM(terminalId, '...', 'running');
                         }
                         this.statusTransitionTimers.delete(terminalId);
-                    }, 2000); // 2-second delay
+                    }, 2000);
                     
                     this.statusTransitionTimers.set(terminalId, timerId);
-                    // Don't perform the status update immediately, wait for timer
-                    return;
-                } else {
-                    // For all other status changes, update immediately
-                    this.performStatusUpdate(terminalId, newStatus, previousStatus);
+                    return; // Don't update status or DOM immediately for this transition
                 }
+                
+                // For all other transitions, update status and DOM immediately
+                terminalData.status = newStatus;
+                this.updateTerminalStatusDOM(terminalId, newStatus, previousStatus);
             }
         } else {
             // Legacy support - update active terminal
@@ -6540,15 +6545,9 @@ class TerminalGUI {
         }
     }
     
-    performStatusUpdate(terminalId, newStatus, previousStatus) {
-        const terminalData = this.terminals.get(terminalId);
-        if (!terminalData) return;
-        
-        console.log(`🔍 DEBUG: Status update for terminal ${terminalId}: ${previousStatus} → ${newStatus}`);
-        
-        terminalData.status = newStatus;
+    // Direct DOM update without complex transition logic
+    updateTerminalStatusDOM(terminalId, newStatus, previousStatus) {
         const statusElement = document.querySelector(`[data-terminal-status="${terminalId}"]`);
-        console.log(`🔍 ACTUAL DEBUG: Looking for terminal ${terminalId}, found:`, statusElement);
         if (statusElement) {
             // Clear all classes
             statusElement.className = 'terminal-status';
@@ -6557,28 +6556,27 @@ class TerminalGUI {
                 case 'running':
                     statusElement.className = 'terminal-status visible running';
                     statusElement.textContent = 'Running';
-                    console.log(`🔍 DEBUG: Set RUNNING status - className: "${statusElement.className}", textContent: "${statusElement.textContent}"`);
                     break;
                 case 'prompted':
                     statusElement.className = 'terminal-status visible prompted';
                     statusElement.textContent = 'Prompted';
-                    console.log(`🔍 DEBUG: Set PROMPTED status - className: "${statusElement.className}", textContent: "${statusElement.textContent}"`);
                     break;
                 case 'injecting':
                     statusElement.className = 'terminal-status visible injecting';
                     statusElement.textContent = 'Injecting';
-                    console.log(`🔍 DEBUG: Set INJECTING status - className: "${statusElement.className}", textContent: "${statusElement.textContent}"`);
                     break;
                 default:
                     statusElement.className = 'terminal-status visible';
                     statusElement.textContent = '...';
             }
         }
+        
         // Check for completion sound trigger for this terminal
         this.checkCompletionSoundTrigger(previousStatus, newStatus, terminalId);
         // Check for injection and prompted sound triggers
         this.checkStatusChangeSounds(previousStatus, newStatus, terminalId);
     }
+    
 
     getTerminalDisplayStatus(terminalId) {
         // Get the current terminal display status for pricing manager integration
@@ -6762,65 +6760,12 @@ class TerminalGUI {
         }
     }
     
-    // Event-driven status update system
+    // Simplified event-driven status update system
     updateTerminalStatusFromOutput(terminalId, outputContent) {
         const terminalData = this.terminals.get(terminalId);
         if (!terminalData) return;
         
-        // Debounce rapid updates to prevent excessive processing
-        const now = Date.now();
-        const lastUpdate = this.lastStatusUpdateTime?.get(terminalId) || 0;
-        const debounceDelay = 50; // 50ms debounce
-        
-        if (now - lastUpdate < debounceDelay) {
-            // Clear existing timeout and set new one
-            if (this.statusUpdateTimeouts?.has(terminalId)) {
-                clearTimeout(this.statusUpdateTimeouts.get(terminalId));
-            }
-            
-            // Initialize maps if needed
-            if (!this.statusUpdateTimeouts) this.statusUpdateTimeouts = new Map();
-            if (!this.lastStatusUpdateTime) this.lastStatusUpdateTime = new Map();
-            
-            // Set debounced update
-            const timeoutId = setTimeout(() => {
-                this.performStatusUpdateFromOutput(terminalId, outputContent);
-                this.lastStatusUpdateTime.set(terminalId, Date.now());
-                this.statusUpdateTimeouts.delete(terminalId);
-            }, debounceDelay);
-            
-            this.statusUpdateTimeouts.set(terminalId, timeoutId);
-            return;
-        }
-        
-        // Immediate update if not debounced
-        this.performStatusUpdateFromOutput(terminalId, outputContent);
-        if (!this.lastStatusUpdateTime) this.lastStatusUpdateTime = new Map();
-        this.lastStatusUpdateTime.set(terminalId, now);
-    }
-    
-    // Perform the actual status update with change detection
-    performStatusUpdateFromOutput(terminalId, outputContent) {
-        const terminalData = this.terminals.get(terminalId);
-        if (!terminalData) return;
-        
-        // Simple change detection - only update if content actually changed
-        if (!this.lastProcessedOutput) this.lastProcessedOutput = new Map();
-        const lastProcessed = this.lastProcessedOutput.get(terminalId) || '';
-        
-        // Get last 500 characters for comparison (more efficient than full content)
-        const currentSnippet = outputContent.slice(-500);
-        const lastSnippet = lastProcessed.slice(-500);
-        
-        if (currentSnippet === lastSnippet) {
-            // No change in recent output, skip status update
-            return;
-        }
-        
-        // Store processed output for next comparison
-        this.lastProcessedOutput.set(terminalId, outputContent);
-        
-        // Perform the actual status scan for this terminal only
+        // Perform the status scan for this terminal
         this.scanSingleTerminalStatus(terminalId, terminalData);
         
         // Update global status if this is the active terminal
@@ -6830,25 +6775,17 @@ class TerminalGUI {
             this.currentTerminalStatus.isPrompting = activeStatus.isPrompting;
             this.currentTerminalStatus.lastUpdate = activeStatus.lastUpdate;
         }
+        
+        // Update the visual status indicator
+        this.updateTerminalStatusIndicator();
     }
     
-    // Cleanup function for event-driven status update system
+    // Cleanup function for terminal status tracking
     cleanupTerminalStatusTracking(terminalId) {
-        // Clear any pending debounced updates
-        if (this.statusUpdateTimeouts && this.statusUpdateTimeouts.has(terminalId)) {
-            clearTimeout(this.statusUpdateTimeouts.get(terminalId));
-            this.statusUpdateTimeouts.delete(terminalId);
-        }
-        
         // Clear status transition timer for this terminal
         if (this.statusTransitionTimers && this.statusTransitionTimers.has(terminalId)) {
             clearTimeout(this.statusTransitionTimers.get(terminalId));
             this.statusTransitionTimers.delete(terminalId);
-        }
-        
-        // Remove terminal from tracking maps
-        if (this.lastStatusUpdateTime) {
-            this.lastStatusUpdateTime.delete(terminalId);
         }
         
         // Clean up completion-related tracking for this terminal
@@ -9532,12 +9469,12 @@ class TerminalGUI {
         const sidebar = document.getElementById('right-sidebar');
         
         if (!selectorBtn || !leftControls || !inputActions) {
-            return { width: 120, text: terminalName }; // Default width if elements not ready
+            return { width: 150, text: terminalName }; // Increased default width if elements not ready
         }
         
         // Check if elements have been laid out yet
         if (inputActions.offsetWidth === 0) {
-            return { width: 120, text: terminalName }; // Default width if not laid out yet
+            return { width: 150, text: terminalName }; // Increased default width if not laid out yet
         }
         
         // Calculate available space more accurately
@@ -9591,7 +9528,7 @@ class TerminalGUI {
         // });
         
         // Minimum and maximum widths - allow more space when available
-        const minWidth = 70; // Minimum width for very constrained spaces
+        const minWidth = 120; // Increased minimum width to show more text
         const maxWidth = Math.max(minWidth, Math.min(800, availableWidth)); // Allow up to 800px if space is available
         
         // Calculate how much text can fit at this width
@@ -9602,7 +9539,7 @@ class TerminalGUI {
         
         const dotWidth = 8;
         const chevronWidth = 18;
-        const padding = 10; // Further reduced padding for more compact sizing
+        const padding = 16; // Account for the actual padding (8px on each side)
         const availableTextWidth = maxWidth - dotWidth - chevronWidth - padding;
         
         // Check if the full text fits
@@ -11551,7 +11488,12 @@ class TerminalGUI {
                     // Apply smart scroll behavior for queued data too
                     this.handleTerminalScroll(terminalData.terminal, wasAtBottom);
                     
-                    terminalData.lastOutput = data.content;
+                    // Accumulate terminal output instead of replacing it
+                    terminalData.lastOutput += data.content;
+                    // Keep only the last 5000 characters to prevent memory issues
+                    if (terminalData.lastOutput.length > 5000) {
+                        terminalData.lastOutput = terminalData.lastOutput.slice(-5000);
+                    }
                     this.detectAutoContinuePrompt(data.content, terminalId);
                     this.extractAndTrackCompletionText(data.content, terminalId);
                     this.detectUsageLimit(data.content, terminalId);

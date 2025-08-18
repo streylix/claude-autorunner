@@ -1581,12 +1581,12 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
 
 .terminal-selector-btn {
     width: auto; /* Will be set dynamically by JS */
-    min-width: 70px; /* Further reduced minimum width */
+    min-width: 120px; /* Increased minimum width to show more text */
     max-width: calc(100vw - 400px); /* Allow more space for terminal selector */
     display: flex;
     align-items: center;
     gap: 3px; /* Reduced gap for more compact spacing */
-    padding: 0 5px; /* Further reduced padding for more compact sizing */
+    padding: 0 8px; /* Slightly increased padding for better appearance */
     height: 30px;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border-primary);
