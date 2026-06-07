@@ -21,9 +21,10 @@ Runs multiple Claude Code sessions in a single window and queues messages for ea
 ```bash
 git clone https://github.com/streylix/claude-autorunner.git
 cd claude-autorunner
-./start.sh --setup   # first run: installs deps, creates venv, runs migrations
-./start.sh           # every run after that
+./start.sh   # starts Django + Postgres in Docker (port 8123, migrations applied), then the app
 ```
+
+Docker Desktop is the default backend. No Docker? It falls back to a local venv automatically — or force that mode with `./start.sh --venv` (run `./start.sh --setup` once first to create the venv and install deps).
 
 Frontend only (no voice/pricing features):
 
@@ -32,13 +33,7 @@ npm install
 npm start
 ```
 
-Run the backend in Docker instead of a local venv (needs Docker Desktop). This starts Django + Postgres on port 8123 with migrations applied, then launches the app:
-
-```bash
-./start.sh --docker
-```
-
-Requires Node.js 16+ and Python 3.10+ for the backend. macOS 10.15+, Windows 10+, or Linux with X11.
+Requires Node.js 16+; Python 3.10+ only for the venv backend mode. macOS 10.15+, Windows 10+, or Linux with X11.
 
 ## License
 

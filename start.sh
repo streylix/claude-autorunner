@@ -2,8 +2,11 @@
 
 # Start both Django backend and Auto-Injector app
 # This script starts the Django backend first, then the Auto-Injector app
-# Usage: ./start.sh [--setup]
-#   --setup: Run initial setup checks and install dependencies
+# Usage: ./start.sh [--setup|--venv]
+#   default: backend runs in Docker (docker compose up); falls back to the
+#            local venv automatically when docker compose is unavailable
+#   --venv:  force the local venv backend (also: VENV=1)
+#   --setup: run initial setup checks and install dependencies (venv flow)
 
 # Colors for output
 RED='[0;31m'
@@ -32,19 +35,18 @@ if [ "$1" == "--setup" ]; then
     echo ""
 fi
 
-# Check for --docker flag (or DOCKER=1 env): run the backend in containers
-# instead of the local venv. The default flow below is unchanged.
-USE_DOCKER=false
-if [ "$1" == "--docker" ] || [ "$DOCKER" == "1" ]; then
-    USE_DOCKER=true
+# Backend mode: Docker is the DEFAULT. --venv (or VENV=1) forces the local
+# venv flow; --setup implies venv; missing docker compose falls back to venv.
+# (--docker is still accepted as a no-op for compatibility.)
+USE_DOCKER=true
+if [ "$1" == "--venv" ] || [ "$VENV" == "1" ] || [ "$RUN_SETUP" == "true" ]; then
+    USE_DOCKER=false
+elif ! docker compose version &> /dev/null; then
+    print_warning "docker compose not available - falling back to the local venv backend"
+    USE_DOCKER=false
 fi
 
 if [ "$USE_DOCKER" == "true" ]; then
-    if ! docker compose version &> /dev/null; then
-        echo "❌ 'docker compose' is not available. Install Docker Desktop, or run ./start.sh without --docker to use the local venv."
-        exit 1
-    fi
-
     echo "🐳 Starting Django backend + Postgres via docker compose..."
     docker compose up -d --wait
     if [ $? -ne 0 ]; then
