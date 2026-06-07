@@ -1,61 +1,46 @@
-# Auto-Injector: Advanced Terminal Automation Suite
+# Auto-Injector
 
-This is a tool that enhances the Claude Code terminal experience. Queue messages, convert speech to prompts, smart auto-continue with keyword detection, completion sounds and more!
-
-Now introducing *Advanced Plan Mode* which intuitively utilizes Claude Flow for better propmt execution.
+Runs multiple Claude Code sessions in a single window and queues messages for each terminal, injecting them automatically when that terminal is free.
 
 ![Auto-Injector Demo](./docs/injectortest.gif)
 
-## 🌟 Revolutionary Features
+## Features
+
+- Terminal grid for running Claude Code across many projects at once
+- Per-terminal message queue — write prompts now, they inject when the terminal goes idle
+- State detection via Claude Code hooks (running / prompted / idle), not output scraping. The hooks install automatically and only activate inside app-spawned terminals
+- Injection timer that backs off when Claude hits a usage limit and resumes when it lifts
+- Per-terminal sound notifications for completions and permission prompts
+- Voice-to-prompt: record, transcribe with local Whisper, append to the message input (requires the backend; experimental)
+- Token usage and cost tracking via the bundled Django backend
 
 ![Settings view](./docs/images/sound-settings.png)
 
-## 🚀 Quick Start Guide
+## Install
 
-### Prerequisites
-- **Node.js** v16+ and npm
-- **macOS** 10.15+, **Windows** 10+, or **Linux** with X11
-- **Microphone access** for voice features (optional)
-
-### Installation
-
-#### Quick Start (Recommended)
 ```bash
-# Clone the repository
 git clone https://github.com/streylix/claude-autorunner.git
 cd claude-autorunner
-
-# Start with automatic setup (first time only)
-./start.sh --setup
-
-# Start the application
-./start.sh
+./start.sh --setup   # first run: installs deps, creates venv, runs migrations
+./start.sh           # every run after that
 ```
 
-The `--setup` flag automatically:
-- ✅ Installs npm dependencies
-- ✅ Creates Python virtual environment
-- ✅ Installs backend requirements
-- ✅ Runs database migrations
+Frontend only (no voice/pricing features):
 
-##### Frontend Only (Optional):
 ```bash
-# Install dependencies
 npm install
-
-# Start the application
 npm start
 ```
 
-## 📄 License
+Requires Node.js 16+ and Python 3.10+ for the backend. macOS 10.15+, Windows 10+, or Linux with X11.
 
-MIT License - Free for personal and commercial use.
+## License
 
-## 🙏 Acknowledgments
+MIT
 
-- Terminal emulation powered by [xterm.js](https://xtermjs.org/)
+## Acknowledgments
+
+- Terminal emulation by [xterm.js](https://xtermjs.org/)
 - Voice transcription via [OpenAI Whisper](https://openai.com/whisper)
 - Icons by [Lucide](https://lucide.dev/)
 - Sound effects from Half-Life 2
-
----
