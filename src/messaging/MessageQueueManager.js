@@ -114,6 +114,9 @@ class MessageQueueManager {
                 this.maybeAutoInject(terminalId);
             }
         });
+
+        // Keep the visible queue list in sync with every queue mutation.
+        this.eventBus.on('message:queue-updated', () => this.updateQueueDisplay());
         
         // Listen for message events
         this.eventBus.on('message:add', (data) => {
@@ -371,42 +374,46 @@ class MessageQueueManager {
      * Update the queue display in the DOM
      */
     updateQueueDisplay() {
-        const queueList = document.getElementById('messageQueueList');
+        // The mount is a <div id="message-list"> in index.html (kebab-case).
+        const queueList = document.getElementById('message-list');
         if (!queueList) return;
-        
+
         queueList.innerHTML = '';
-        
+
         this.messageQueue.forEach(message => {
-            const li = document.createElement('li');
-            li.className = 'message-item';
-            li.dataset.messageId = message.id;
-            
+            const item = document.createElement('div');
+            item.className = 'message-item';
+            item.dataset.messageId = message.id;
+
+            const dot = document.createElement('span');
+            dot.className = 'message-terminal-dot';
+            dot.title = `Terminal ${message.terminalId}`;
+
             const messageText = document.createElement('span');
             messageText.className = 'message-text';
             messageText.textContent = message.content;
-            
+
             const injectBtn = document.createElement('button');
-            injectBtn.className = 'inject-btn';
-            injectBtn.textContent = 'Inject';
-            injectBtn.onclick = () => {
-                this.injectSpecificMessage(message.id);
-            };
-            
+            injectBtn.className = 'message-inject-btn';
+            injectBtn.title = 'Inject now';
+            injectBtn.textContent = '⤓';
+            injectBtn.onclick = () => this.injectSpecificMessage(message.id);
+
             const deleteBtn = document.createElement('button');
-            deleteBtn.className = 'delete-btn';
+            deleteBtn.className = 'message-delete-btn';
+            deleteBtn.title = 'Remove from queue';
             deleteBtn.textContent = '×';
-            deleteBtn.onclick = () => {
-                this.deleteMessage(message.id);
-            };
-            
-            li.appendChild(messageText);
-            li.appendChild(injectBtn);
-            li.appendChild(deleteBtn);
-            queueList.appendChild(li);
+            deleteBtn.onclick = () => this.deleteMessage(message.id);
+
+            item.appendChild(dot);
+            item.appendChild(messageText);
+            item.appendChild(injectBtn);
+            item.appendChild(deleteBtn);
+            queueList.appendChild(item);
         });
-        
-        // Update queue counter
-        const queueCounter = document.getElementById('queueCounter');
+
+        // Queue counter in the status panel (#queue-count)
+        const queueCounter = document.getElementById('queue-count');
         if (queueCounter) {
             queueCounter.textContent = this.messageQueue.length;
         }

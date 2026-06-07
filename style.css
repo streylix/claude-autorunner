@@ -5760,3 +5760,31 @@ button:focus-visible, input:focus-visible, select:focus-visible {
    in both states; action buttons keep the far right */
 .timer-controls-row { display: flex; align-items: center; gap: 6px; }
 .timer-controls-row .collapse-toggle { margin-right: auto; }
+
+/* Message queue items */
+.message-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+}
+.message-item .message-terminal-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent-primary); flex-shrink: 0;
+}
+.message-item .message-text {
+    flex: 1; min-width: 0;
+    color: var(--text-secondary); font-size: 13px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.message-item button {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-tertiary); font-size: 14px;
+    padding: 2px 4px; border-radius: 4px; flex-shrink: 0;
+}
+.message-item button:hover { background: var(--bg-quaternary); color: var(--text-primary); }
+.message-item .message-delete-btn:hover { color: var(--accent-error); }
