@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import re
 import datetime
@@ -290,7 +291,18 @@ class PricingViewSet(viewsets.ModelViewSet):
 @csrf_exempt
 @require_http_methods(["POST"])
 def execute_ccusage_simple(request):
-    """Simple endpoint for executing ccusage command"""
+    """Simple endpoint for executing ccusage command.
+
+    ccusage runs via `npx`, which is not present in the Docker image (it ships
+    no Node). When npx is missing we return a clear 503 instead of letting the
+    subprocess raise a FileNotFoundError into a generic 500.
+    """
+    if shutil.which('npx') is None:
+        return JsonResponse({
+            'success': False,
+            'error': 'ccusage unavailable'
+        }, status=503)
+
     try:
         # Execute ccusage command to get real usage data
         result = subprocess.run(

@@ -3,8 +3,8 @@ Django==5.0.1
 djangorestframework==3.14.0
 django-cors-headers==4.3.1
 
-# ASGI / WebSocket support (channels websockets are served via daphne)
-channels==4.0.0
+# ASGI HTTP server. daphne serves the HTTP-only ASGI app (no WebSocket
+# consumers remain, so the channels package is no longer required).
 daphne==4.0.0
 
 # Required Django runtime deps (pinned for reproducibility)

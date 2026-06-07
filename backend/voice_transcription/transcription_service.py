@@ -3,6 +3,7 @@ import time
 import os
 import tempfile
 import logging
+import threading
 from typing import Dict, Any, Optional
 from django.conf import settings
 import torch
@@ -17,12 +18,24 @@ class WhisperTranscriptionService:
     
     def __init__(self):
         self.models = {}
+        # Guards the check-and-load in _get_model so concurrent requests don't
+        # trigger duplicate (expensive) model loads or race on self.models.
+        self._model_lock = threading.Lock()
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Whisper service initialized on device: {self.device}")
-        
+
     def _get_model(self, model_name: str):
-        """Load and cache Whisper models"""
-        if model_name not in self.models:
+        """Load and cache Whisper models (thread-safe)."""
+        # Fast path: already cached, no lock needed.
+        if model_name in self.models:
+            return self.models[model_name]
+
+        with self._model_lock:
+            # Re-check inside the lock in case another thread loaded it while
+            # we were waiting.
+            if model_name in self.models:
+                return self.models[model_name]
+
             logger.info(f"Loading Whisper model: {model_name}")
             try:
                 self.models[model_name] = whisper.load_model(model_name, device=self.device)

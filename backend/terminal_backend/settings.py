@@ -41,15 +41,15 @@ INSTALLED_APPS = [
     # Third party apps
     "rest_framework",
     "corsheaders",
-    "channels",
     # CORE FUNCTIONALITY ONLY - 4 essential apps:
-    "pricing",              # ccusage functionality
-    "message_queue",        # addmsg functionality 
+    "pricing",              # ccusage pricing model (no live endpoint in Docker)
+    "message_queue",        # health check pass-through
     "voice_transcription",  # audio transcribing
-    "frontend_control",     # timer and frontend control API
-    
+    "frontend_control",     # frontend log shipping API
+
     # REMOVED: admin, channels, terminal, settings, todos, user_settings
-    # This eliminates database bloat and session persistence issues
+    # No WebSocket consumers remain, so channels/CHANNEL_LAYERS are gone.
+    # daphne (Dockerfile CMD) serves the HTTP-only ASGI app directly.
 ]
 
 MIDDLEWARE = [
@@ -207,13 +207,6 @@ REST_FRAMEWORK = {
 # Force synchronous execution for compatibility
 import os
 os.environ.setdefault('DJANGO_ALLOW_ASYNC_UNSAFE', 'true')
-
-# Channels configuration - use in-memory backend for development
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
-    },
-}
 
 # Media files configuration for voice recordings
 MEDIA_URL = '/media/'

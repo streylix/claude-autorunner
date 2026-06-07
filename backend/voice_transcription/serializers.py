@@ -22,4 +22,8 @@ class AudioUploadSerializer(serializers.Serializer):
         ],
         default='base'
     )
-    language = serializers.CharField(max_length=10, default='en', required=False)
+    # Default to None so Whisper auto-detects the language. A specific code
+    # (e.g. 'en') is only used when the caller explicitly passes one.
+    language = serializers.CharField(
+        max_length=10, required=False, allow_null=True, default=None
+    )

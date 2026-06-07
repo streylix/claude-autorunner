@@ -16,6 +16,29 @@ from .models import VoiceTranscription
 
 logger = logging.getLogger(__name__)
 
+# Reject audio uploads larger than this to avoid OOM / abuse.
+MAX_AUDIO_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+# Keep only the newest N transcription rows to bound unbounded table growth.
+MAX_TRANSCRIPTION_ROWS = 500
+
+
+def _prune_transcriptions():
+    """Delete transcription rows beyond the newest MAX_TRANSCRIPTION_ROWS.
+
+    The model orders by -created_at, so the kept set is the first N pks. Any row
+    not in that set is deleted. Best-effort: failures here must not break the
+    transcription response.
+    """
+    try:
+        keep_ids = list(
+            VoiceTranscription.objects.values_list('id', flat=True)[:MAX_TRANSCRIPTION_ROWS]
+        )
+        deleted, _ = VoiceTranscription.objects.exclude(id__in=keep_ids).delete()
+        if deleted:
+            logger.info(f"Pruned {deleted} old transcription rows (cap={MAX_TRANSCRIPTION_ROWS})")
+    except Exception as e:
+        logger.warning(f"Failed to prune transcriptions: {e}")
+
 
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FileUploadParser])
@@ -31,10 +54,20 @@ def transcribe_audio(request):
                 'error': 'Invalid input data',
                 'details': serializer.errors
             }, status=status.HTTP_400_BAD_REQUEST)
-        
+
         audio_file = serializer.validated_data['audio_file']
         model_name = serializer.validated_data.get('model', 'base')
         language = serializer.validated_data.get('language')
+
+        # Reject oversized uploads before reading them into memory.
+        if audio_file.size is not None and audio_file.size > MAX_AUDIO_UPLOAD_BYTES:
+            return Response({
+                'success': False,
+                'error': (
+                    f'Audio file too large ({audio_file.size} bytes). '
+                    f'Maximum allowed is {MAX_AUDIO_UPLOAD_BYTES} bytes (50 MB).'
+                )
+            }, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         
         # Save uploaded file temporarily
         temp_file_path = None
@@ -64,7 +97,10 @@ def transcribe_audio(request):
                     model_used=result['model_used'],
                     processing_time=result['processing_time']
                 )
-                
+
+                # Cap table growth: keep only the newest MAX_TRANSCRIPTION_ROWS.
+                _prune_transcriptions()
+
                 response_data = {
                     'success': True,
                     'transcription_id': str(transcription.id),
