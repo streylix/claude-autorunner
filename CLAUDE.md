@@ -68,6 +68,8 @@ Terminal state comes from Claude Code itself pushing events, **not** from parsin
 
 A real `claude` CLI session in a hidden PTY that monitors and steers the interface. Configured via the `managerDirectory` setting (persistent store); boots on app start with `claude --continue` when `~/.claude/projects/<munged-dir>/` has session files, else `claude`. Its role comes from the CLAUDE.md in its directory (auto-written by `src/main/manager-session.js` if absent); its credentials are the `CCBOT_*` env vars. It uses the HookServer control API: `GET /state` (terminals + status + sessionId + transcriptPath) and `POST /queue/add` (queue a message to a terminal — still subject to the usage-limit/status injection gate). Manager id is **999, not 0** — id 0 trips `options.terminalId || 1` falsy-default landmines in main.js. Never let it target itself.
 
+Recurring optimization passes: on start the manager arms a self-contained interval (`ManagerInstance.startPassLoop`) that dispatches a standing "run a pass" instruction to its own queue every `managerPassIntervalMinutes` (setting, default 60). Settings: `managerAutoPassEnabled` (default on), `managerPassIntervalMinutes`. This loop is deliberately **independent of the user-facing auto-inject TimerManager** — arming that timer sets the injection gate's `isRunning()` true and would block all injection. A no-stack guard skips a tick if a prior pass is still queued for 999. The pass instruction is interpreted against the routines in the manager's own directory (e.g. `routines/lyra-music-optimization.md`).
+
 ### Product decisions (do not re-add)
 
 - **No custom auto-continue/keyword auto-responder** — Claude Code's native auto mode replaced it; AutoContinueManager was deleted deliberately.

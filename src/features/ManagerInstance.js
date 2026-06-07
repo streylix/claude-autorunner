@@ -12,6 +12,14 @@
  */
 const MANAGER_TERMINAL_ID = 999;
 const CLAUDE_BOOT_DELAY_MS = 1500; // let the shell prompt settle before typing
+const DEFAULT_PASS_INTERVAL_MIN = 60;
+// The standing instruction dispatched on each scheduled pass. The manager
+// interprets it against the routines in its own directory (CLAUDE.md).
+const PASS_INSTRUCTION =
+    "Scheduled optimization pass. Run one pass of each standing routine in your " +
+    "routines/ directory (per your CLAUDE.md). Check /state first and skip any " +
+    "terminal that is running or prompted; never target yourself (999). Log each " +
+    "pass to the affected project's OPTIMIZATIONS.md.";
 
 class ManagerInstance {
     constructor(eventBus, appStateStore, ipcHandler, gui) {
@@ -22,6 +30,57 @@ class ManagerInstance {
         this.running = false;
         this.directory = null;
         this.tabVisible = false;
+        this.passTimer = null; // recurring optimization-pass interval
+    }
+
+    // ======= RECURRING OPTIMIZATION PASSES =======
+    /**
+     * Start the recurring pass loop. Independent of the user-facing auto-inject
+     * timer ON PURPOSE: arming that timer sets the injection gate's
+     * isRunning()=true and would block all injection. This loop just dispatches
+     * the standing pass instruction to the manager's queue every interval; the
+     * queue + gate handle idle-waiting, so passes never pile up or interrupt
+     * running work.
+     * @param {number} [intervalMs] - override (tests); defaults to the setting
+     */
+    async startPassLoop(intervalMs) {
+        this.stopPassLoop();
+        let ms = intervalMs;
+        if (ms == null) {
+            let mins = this.appStateStore.getState('managerPassIntervalMinutes');
+            if (mins == null) {
+                try { mins = await this.ipc.invoke('db-get-setting', 'managerPassIntervalMinutes'); } catch { /* default below */ }
+            }
+            ms = (Number(mins) > 0 ? Number(mins) : DEFAULT_PASS_INTERVAL_MIN) * 60 * 1000;
+        }
+        this.passTimer = setInterval(() => this.dispatchPass(), ms);
+        this.eventBus.emit('log:action', {
+            message: `Manager auto-pass loop armed (every ${Math.round(ms / 60000)} min)`,
+            type: 'info'
+        });
+    }
+
+    stopPassLoop() {
+        if (this.passTimer) {
+            clearInterval(this.passTimer);
+            this.passTimer = null;
+        }
+    }
+
+    /** Queue one optimization pass for the manager (gated like any dispatch). */
+    dispatchPass() {
+        if (!this.running) return false;
+        // Don't stack passes: skip if a prior pass is still queued for 999
+        const alreadyQueued = this.gui.messageQueueManager.messageQueue
+            .some((m) => m.terminalId === MANAGER_TERMINAL_ID);
+        if (alreadyQueued) {
+            this.eventBus.emit('log:action', {
+                message: 'Manager pass skipped - previous instruction still queued',
+                type: 'info'
+            });
+            return false;
+        }
+        return this.dispatch(PASS_INSTRUCTION);
     }
 
     // ======= UI: grid tab toggle + setup overlay =======
@@ -170,6 +229,15 @@ class ManagerInstance {
             message: `Manager instance ${prep.resumable ? 'resumed' : 'started'} in ${managerDir}`,
             type: 'success'
         });
+
+        // Arm the recurring optimization-pass loop unless explicitly disabled.
+        let autoPass = this.appStateStore.getState('managerAutoPassEnabled');
+        if (autoPass == null) {
+            try { autoPass = await this.ipc.invoke('db-get-setting', 'managerAutoPassEnabled'); } catch { /* default on */ }
+        }
+        if (autoPass !== false && autoPass !== 'false') {
+            this.startPassLoop();
+        }
         return true;
     }
 
@@ -189,6 +257,7 @@ class ManagerInstance {
 
     stop() {
         if (!this.running) return;
+        this.stopPassLoop();
         this.gui.closeTerminal(MANAGER_TERMINAL_ID);
         this.running = false;
         this.eventBus.emit('manager:stopped', {});
