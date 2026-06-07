@@ -5755,3 +5755,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     min-height: 0;
 }
 .terminals-container > .terminal-wrapper.manager-hidden { display: none !important; }
+
+/* Timer chevron sits directly right of the AUTO-INJECT AT label, identical
+   in both states; action buttons keep the far right */
+.timer-controls-row { display: flex; align-items: center; gap: 6px; }
+.timer-controls-row .collapse-toggle { margin-right: auto; }
