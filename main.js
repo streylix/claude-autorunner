@@ -547,7 +547,7 @@ function setupIpcHandlers() {
   // Manager instance support: resume detection + role bootstrap for the
   // hidden Claude session that monitors/steers the interface (terminal 0)
   ipcMain.handle('manager-prepare', async (event, managerDir) => {
-    const { hasResumableSession, ensureManagerClaudeMd } = require('./src/main/manager-session');
+    const { hasResumableSession, ensureManagerClaudeMd, ensureManagerSettings } = require('./src/main/manager-session');
     try {
       const stat = require('fs').statSync(managerDir);
       if (!stat.isDirectory()) return { ok: false, error: 'not a directory' };
@@ -557,7 +557,8 @@ function setupIpcHandlers() {
     return {
       ok: true,
       resumable: hasResumableSession(managerDir),
-      claudeMd: ensureManagerClaudeMd(managerDir)
+      claudeMd: ensureManagerClaudeMd(managerDir),
+      settings: ensureManagerSettings(managerDir)
     };
   });
 

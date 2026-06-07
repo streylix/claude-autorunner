@@ -201,8 +201,15 @@ class ManagerInstance {
             color: 'var(--accent-warning)'
         });
 
-        // Boot claude once the shell settles - resume if a session exists
-        const bootCommand = prep.resumable ? 'claude --continue\n' : 'claude\n';
+        // Boot claude once the shell settles - resume if a session exists.
+        // --dangerously-skip-permissions: the manager runs unattended, so
+        // permission prompts would hang it ("tried but couldn't"). A deny-list
+        // in its .claude/settings.local.json still fences off catastrophic ops
+        // (those are honored even under bypass), and the HookServer token gates
+        // the control API. Written by manager-prepare before this boots.
+        const bootCommand = prep.resumable
+            ? 'claude --continue --dangerously-skip-permissions\n'
+            : 'claude --dangerously-skip-permissions\n';
         setTimeout(() => {
             this.ipc.send('terminal-input', {
                 terminalId: MANAGER_TERMINAL_ID,

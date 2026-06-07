@@ -85,4 +85,41 @@ function ensureManagerClaudeMd(managerDir) {
     }
 }
 
-module.exports = { hasResumableSession, ensureManagerClaudeMd, mungeProjectPath };
+// The manager boots with --dangerously-skip-permissions (unattended; prompts
+// would hang it). deny rules are still enforced under bypass, so this fences
+// off the genuinely catastrophic / secret-exfil cases. additionalDirectories
+// keeps it working if the bypass flag is ever dropped. Rewritten each prepare
+// so policy updates ship with the app.
+const MANAGER_SETTINGS = {
+    permissions: {
+        deny: [
+            'Bash(rm -rf /*)',
+            'Bash(sudo *)',
+            'Bash(git push *)',
+            'Read(.env)',
+            'Read(./**/.env)',
+            'Read(~/.ssh/**)',
+            'Read(~/.aws/**)'
+        ],
+        additionalDirectories: ['~']
+    }
+};
+
+/** Ensure the manager's .claude/settings.local.json deny-list exists. */
+function ensureManagerSettings(managerDir) {
+    try {
+        const dir = path.join(managerDir, '.claude');
+        fs.mkdirSync(dir, { recursive: true });
+        const target = path.join(dir, 'settings.local.json');
+        const desired = JSON.stringify(MANAGER_SETTINGS, null, 2) + '\n';
+        if (!fs.existsSync(target) || fs.readFileSync(target, 'utf8') !== desired) {
+            fs.writeFileSync(target, desired, 'utf8');
+            return 'written';
+        }
+        return 'current';
+    } catch (error) {
+        return `error: ${error.message}`;
+    }
+}
+
+module.exports = { hasResumableSession, ensureManagerClaudeMd, ensureManagerSettings, mungeProjectPath };
