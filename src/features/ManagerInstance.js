@@ -15,11 +15,15 @@ const CLAUDE_BOOT_DELAY_MS = 1500; // let the shell prompt settle before typing
 const DEFAULT_PASS_INTERVAL_MIN = 60;
 // The standing instruction dispatched on each scheduled pass. The manager
 // interprets it against the routines in its own directory (CLAUDE.md).
+// Reinforces the orchestration model: the manager dispatches to other
+// terminals, it does not do the project work itself.
 const PASS_INSTRUCTION =
-    "Scheduled optimization pass. Run one pass of each standing routine in your " +
-    "routines/ directory (per your CLAUDE.md). Check /state first and skip any " +
-    "terminal that is running or prompted; never target yourself (999). Log each " +
-    "pass to the affected project's OPTIMIZATIONS.md.";
+    "Scheduled optimization pass. You are the orchestrator - do NOT edit any " +
+    "project yourself. For each standing routine in your routines/ directory " +
+    "(per your CLAUDE.md): check /state, and for the routine's target terminal " +
+    "(create/start it if needed), queue the next instruction to THAT terminal's " +
+    "Claude and read its transcript to decide follow-ups. Skip terminals that " +
+    "are running or prompted; never target yourself (999); one issue per pass.";
 
 class ManagerInstance {
     constructor(eventBus, appStateStore, ipcHandler, gui) {
