@@ -184,7 +184,7 @@ class VoiceManager {
             formData.append('audio', audioBlob, 'recording.wav');
             
             // Call backend transcription endpoint
-            const response = await fetch('http://localhost:8123/api/transcribe/', {
+            const response = await fetch('http://localhost:8123/api/voice/transcribe/', {
                 method: 'POST',
                 body: formData
             });
@@ -270,7 +270,7 @@ class VoiceManager {
     
     async checkBackendHealth() {
         try {
-            const response = await fetch('http://localhost:8123/api/health/', {
+            const response = await fetch('http://localhost:8123/api/voice/health/', {
                 method: 'GET',
                 signal: AbortSignal.timeout(3000)
             });

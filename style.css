@@ -6,38 +6,41 @@
 
 /* Theme Variables */
 :root {
-    /* Dark theme (default) */
-    --bg-primary: #2d2d2d;
-    --bg-secondary: #1e1e1e;
-    --bg-tertiary: #3d3d3d;
-    --bg-quaternary: #555555;
-    --text-primary: #ffffff;
-    --text-secondary: #cccccc;
-    --text-tertiary: #888888;
-    --text-quaternary: #666666;
-    --border-primary: #3d3d3d;
-    --border-secondary: #555555;
-    --accent-primary: #007acc;
-    --accent-secondary: #005a9e;
-    --accent-success: #28ca42;
-    --accent-warning: #ffbe2e;
-    --accent-error: #ff5f57;
-    --accent-info: #007acc;
+    /* Dark theme (default) — cool graphite.
+       Depth from lightness steps, not shadows:
+       bg-secondary (deepest chrome) < bg-primary (panels) < bg-tertiary (cards) < bg-quaternary (hover).
+       Terminal content sits darkest of all so the work, not the chrome, holds the eye. */
+    --bg-primary: #1a1a1e;
+    --bg-secondary: #121214;
+    --bg-tertiary: #222228;
+    --bg-quaternary: #2a2a32;
+    --text-primary: #e8e8ed;
+    --text-secondary: #c2c2c9;
+    --text-tertiary: #a0a0ab;
+    --text-quaternary: #6b6b76;
+    --border-primary: #33333c;
+    --border-secondary: #44444f;
+    --accent-primary: #4f8ff7;
+    --accent-secondary: #3a6fd0;
+    --accent-success: #34d399;
+    --accent-warning: #fbbf24;
+    --accent-error: #f87171;
+    --accent-info: #4f8ff7;
     --accent-magenta: #ff69b4;
     --accent-purple: #A7B0ED;
-    --terminal-bg: #1e1e1e;
-    --terminal-fg: #ffffff;
-    --terminal-cursor: #ffffff;
-    --terminal-selection: #3d3d3d;
+    --terminal-bg: #0f0f11;
+    --terminal-fg: #dcdce3;
+    --terminal-cursor: #4f8ff7;
+    --terminal-selection: #28344e;
     --terminal-black: #000000;
     --terminal-red: #ff5f57;
     --terminal-green: #28ca42;
     --terminal-yellow: #ffbe2e;
-    --terminal-blue: #007acc;
+    --terminal-blue: var(--accent-primary);
     --terminal-magenta: #af52de;
     --terminal-cyan: #5ac8fa;
     --terminal-white: #ffffff;
-    --terminal-bright-black: #666666;
+    --terminal-bright-black: var(--text-quaternary);
     --terminal-bright-red: #ff6e67;
     --terminal-bright-green: #32d74b;
     --terminal-bright-yellow: #ffcc02;
@@ -47,7 +50,7 @@
     --terminal-bright-white: #ffffff;
     
     /* Terminal specific colors for todos and messages */
-    --terminal-1: #007acc;
+    --terminal-1: var(--accent-primary);
     --terminal-2: #28ca42;
     --terminal-3: #ff5f57;
     --terminal-4: #ffbe2e;
@@ -698,34 +701,34 @@ body {
 .terminal-container .xterm {
     height: 100% !important;
     width: 100% !important;
-    background-color: var(--terminal-bg, #1e1e1e) !important;
+    background-color: var(--terminal-bg, var(--bg-secondary)) !important;
 }
 
 .terminal-container .xterm-viewport {
     width: 100% !important;
-    background-color: var(--terminal-bg, #1e1e1e) !important;
+    background-color: var(--terminal-bg, var(--bg-secondary)) !important;
 }
 
 .terminal-container .xterm-screen {
-    background-color: var(--terminal-bg, #1e1e1e) !important;
+    background-color: var(--terminal-bg, var(--bg-secondary)) !important;
 }
 
 .terminal-container .xterm-helpers {
-    background-color: var(--terminal-bg, #1e1e1e) !important;
+    background-color: var(--terminal-bg, var(--bg-secondary)) !important;
 }
 
 /* Fallback styling for when CSS variables don't load */
 body:not([data-theme]) {
-    background-color: #2d2d2d;
+    background-color: var(--bg-primary);
     color: #ffffff;
 }
 
 body:not([data-theme]) .terminal-container .xterm {
-    background-color: #1e1e1e !important;
+    background-color: var(--bg-secondary) !important;
 }
 
 body:not([data-theme]) .terminal-container .xterm-viewport {
-    background-color: #1e1e1e !important;
+    background-color: var(--bg-secondary) !important;
 }
 
 /* Force proper styling for packaged versions */
@@ -1380,7 +1383,7 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
 }
 
 .image-preview-item:hover {
-    border-color: #007acc;
+    border-color: var(--accent-primary);
     transform: scale(1.05);
 }
 
@@ -1463,7 +1466,7 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
 }
 
 .message-image-preview-item:hover {
-    border-color: #007acc;
+    border-color: var(--accent-primary);
     transform: scale(1.1);
 }
 
@@ -1495,8 +1498,8 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
 
 .message-image-more-btn:hover,
 .message-image-less-btn:hover {
-    border-color: #007acc;
-    background: #007acc;
+    border-color: var(--accent-primary);
+    background: var(--accent-primary);
     color: white;
     transform: scale(1.05);
 }
@@ -1824,9 +1827,9 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
 [data-voice-state="recording"], 
 #voice-btn[data-voice-state="recording"],
 button#voice-btn[data-voice-state="recording"] {
-    background-color: #ff0000 !important;
+    background-color: var(--accent-error) !important;
     color: #ffffff !important;
-    border: 2px solid #ff0000 !important;
+    border: 2px solid var(--accent-error) !important;
     animation: recording-pulse 1.2s infinite !important;
     cursor: pointer !important;
     box-shadow: 0 0 15px rgba(255, 0, 0, 0.8) !important;
@@ -1838,9 +1841,9 @@ button#voice-btn[data-voice-state="recording"] {
 [data-voice-state="processing"],
 #voice-btn[data-voice-state="processing"],
 button#voice-btn[data-voice-state="processing"] {
-    background-color: #007acc !important;
+    background-color: var(--accent-primary) !important;
     color: #ffffff !important;
-    border: 2px solid #007acc !important;
+    border: 2px solid var(--accent-primary) !important;
     animation: processing-spin 1s linear infinite !important;
     cursor: not-allowed !important;
     box-shadow: 0 0 15px rgba(0, 122, 204, 0.8) !important;
@@ -1852,9 +1855,9 @@ button#voice-btn[data-voice-state="processing"] {
 /* Recording State - Red with pulse - Enhanced with higher specificity */
 button#voice-btn.voice-button.recording,
 #voice-btn.voice-button.recording {
-    background-color: #ff0000 !important;
+    background-color: var(--accent-error) !important;
     color: #ffffff !important;
-    border: 2px solid #ff0000 !important;
+    border: 2px solid var(--accent-error) !important;
     animation: recording-pulse 1.2s infinite !important;
     cursor: pointer !important;
     box-shadow: 0 0 12px rgba(255, 0, 0, 0.5) !important;
@@ -1865,9 +1868,9 @@ button#voice-btn.voice-button.recording,
 /* Recording State Hover - Maintain recording appearance */
 button#voice-btn.voice-button.recording:hover,
 #voice-btn.voice-button.recording:hover {
-    background-color: #ff0000 !important;
+    background-color: var(--accent-error) !important;
     color: #ffffff !important;
-    border: 2px solid #ff0000 !important;
+    border: 2px solid var(--accent-error) !important;
     box-shadow: 0 0 18px rgba(255, 0, 0, 0.7) !important;
     transform: scale(1.02) !important;
 }
@@ -1875,9 +1878,9 @@ button#voice-btn.voice-button.recording:hover,
 /* Processing State - Blue spinning - Enhanced with higher specificity */
 button#voice-btn.voice-button.processing,
 #voice-btn.voice-button.processing {
-    background-color: #007acc !important;
+    background-color: var(--accent-primary) !important;
     color: #ffffff !important;
-    border: 2px solid #007acc !important;
+    border: 2px solid var(--accent-primary) !important;
     animation: processing-spin 1s linear infinite !important;
     cursor: not-allowed !important;
     box-shadow: 0 0 12px rgba(0, 122, 204, 0.5) !important;
@@ -1888,9 +1891,9 @@ button#voice-btn.voice-button.processing,
 /* Processing State Hover - Maintain processing appearance */
 button#voice-btn.voice-button.processing:hover,
 #voice-btn.voice-button.processing:hover {
-    background-color: #007acc !important;
+    background-color: var(--accent-primary) !important;
     color: #ffffff !important;
-    border: 2px solid #007acc !important;
+    border: 2px solid var(--accent-primary) !important;
     box-shadow: 0 0 18px rgba(0, 122, 204, 0.7) !important;
 }
 
@@ -1930,7 +1933,7 @@ button#voice-btn.voice-button.processing:hover,
     0% { 
         transform: scale(1);
         box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.6), 0 0 8px rgba(255, 0, 0, 0.4);
-        background-color: #ff0000;
+        background-color: var(--accent-error);
     }
     25% {
         transform: scale(1.05);
@@ -1940,7 +1943,7 @@ button#voice-btn.voice-button.processing:hover,
     50% { 
         transform: scale(1.1);
         box-shadow: 0 0 0 6px rgba(255, 0, 0, 0.2), 0 0 16px rgba(255, 0, 0, 0.6);
-        background-color: #ff0000;
+        background-color: var(--accent-error);
     }
     75% {
         transform: scale(1.05);
@@ -1950,7 +1953,7 @@ button#voice-btn.voice-button.processing:hover,
     100% { 
         transform: scale(1);
         box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.6), 0 0 8px rgba(255, 0, 0, 0.4);
-        background-color: #ff0000;
+        background-color: var(--accent-error);
     }
 }
 
@@ -1969,7 +1972,7 @@ button#voice-btn.voice-button.processing:hover,
     0% { 
         transform: rotate(0deg) scale(1);
         box-shadow: 0 0 8px rgba(0, 122, 204, 0.4);
-        background-color: #007acc;
+        background-color: var(--accent-primary);
     }
     25% { 
         transform: rotate(90deg) scale(1.02);
@@ -1979,7 +1982,7 @@ button#voice-btn.voice-button.processing:hover,
     50% { 
         transform: rotate(180deg) scale(1);
         box-shadow: 0 0 8px rgba(0, 122, 204, 0.4);
-        background-color: #007acc;
+        background-color: var(--accent-primary);
     }
     75% { 
         transform: rotate(270deg) scale(1.02);
@@ -1989,7 +1992,7 @@ button#voice-btn.voice-button.processing:hover,
     100% { 
         transform: rotate(360deg) scale(1);
         box-shadow: 0 0 8px rgba(0, 122, 204, 0.4);
-        background-color: #007acc;
+        background-color: var(--accent-primary);
     }
 }
 
@@ -3763,14 +3766,14 @@ button#voice-btn.voice-button.processing:hover,
 
 /* Status Icon Colors */
 .completed-icon {
-    color: #888888; /* Grey for dark mode visibility */
-    fill: #888888; /* SVG fill color */
+    color: var(--text-tertiary); /* Grey for dark mode visibility */
+    fill: var(--text-tertiary); /* SVG fill color */
 }
 
 .progress-icon {
-    color: #888888; /* Grey for dark mode visibility */
+    color: var(--text-tertiary); /* Grey for dark mode visibility */
     fill: none; /* No fill to show only stroke */
-    stroke: #888888; /* SVG stroke color */
+    stroke: var(--text-tertiary); /* SVG stroke color */
     animation: spin 2s linear infinite; /* Proper rotation animation */
     stroke-dasharray: 18.85; /* Circumference for dashed effect */
     stroke-dashoffset: 4.71; /* Quarter circle offset */
@@ -3784,12 +3787,12 @@ button#voice-btn.voice-button.processing:hover,
 /* Light theme adjustments */
 [data-theme="light"] .completed-icon,
 [data-theme="light"] .progress-icon {
-    color: #666666; /* Darker grey for light mode */
-    fill: #666666; /* SVG fill color */
+    color: var(--text-quaternary); /* Darker grey for light mode */
+    fill: var(--text-quaternary); /* SVG fill color */
 }
 
 [data-theme="light"] .progress-icon {
-    stroke: #666666; /* SVG stroke color for light mode */
+    stroke: var(--text-quaternary); /* SVG stroke color for light mode */
     fill: none; /* Ensure no fill in light mode */
 }
 
@@ -5517,3 +5520,64 @@ button#voice-btn.voice-button.processing:hover,
     100% { transform: rotate(360deg); }
 }
 
+
+/* ===== Graphite design layer ===== */
+/* Section headers: quiet, uppercase, instrument-panel labels */
+.status-title, .queue-title, .action-log-title, .timer-controls-row label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+}
+
+/* Breathing status dot while a terminal is running */
+@keyframes ccbot-breathe {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(79, 143, 247, 0.45); }
+    50% { opacity: 0.75; box-shadow: 0 0 0 4px rgba(79, 143, 247, 0); }
+}
+.terminal-color-dot.running, .terminal-status-dot.running {
+    animation: ccbot-breathe 2s ease-in-out infinite;
+}
+
+/* Collapsible right-sidebar panels */
+.collapsible-body {
+    overflow: hidden;
+    max-height: 400px;
+    opacity: 1;
+    transition: max-height 0.25s ease, opacity 0.25s ease, margin 0.25s ease;
+}
+.collapsed .collapsible-body {
+    max-height: 0 !important;
+    opacity: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+.collapse-toggle {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 2px;
+    display: inline-flex;
+    align-items: center;
+    transition: transform 0.25s ease, color 0.15s ease;
+}
+.collapse-toggle:hover { color: var(--text-primary); }
+.collapsed .collapse-toggle { transform: rotate(-90deg); }
+
+/* Quiet scrollbars that match the elevation system */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+    background: var(--bg-quaternary);
+    border-radius: 5px;
+    border: 2px solid var(--bg-primary);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--border-secondary); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* Keyboard focus: one accent, consistently */
+button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+}

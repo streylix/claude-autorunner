@@ -12,6 +12,7 @@ const MigrationHelper = require('./src/storage/migration-helper');
 // Claude Code hook-based terminal state detection
 const HookServer = require('./src/main/HookServer');
 const { ensureClaudeHooks } = require('./src/main/claude-hooks-setup');
+const { readLastAssistantText } = require('./src/main/transcript-reader');
 
 let mainWindow;
 let hookServer = null;
@@ -339,7 +340,7 @@ function createWindow() {
       backgroundThrottling: false
     },
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#2d2d2d',
+    backgroundColor: '#121214',
     show: false,
     icon: getIcon(),
   });
@@ -430,10 +431,31 @@ app.whenReady().then(async () => {
 
   // Start hook event listener for Claude Code terminal state detection
   try {
-    hookServer = new HookServer((payload) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('claude-hook-event', payload);
-      }
+    // Renderer mirrors its terminal state here so GET /state can answer
+    // without a round trip (consumed by external controllers, e.g. the
+    // manager Claude instance reading "what terminals exist + their sessions").
+    let rendererStateCache = null;
+    ipcMain.on('ccbot-state-snapshot', (event, snapshot) => {
+      rendererStateCache = snapshot;
+    });
+
+    hookServer = new HookServer({
+      onEvent: (payload) => {
+        // Stop events: enrich with Claude's last message from the session
+        // transcript (authoritative source for "what was done" completions).
+        if (payload.event === 'stop' && payload.hook && payload.hook.transcript_path) {
+          payload.lastAssistantText = readLastAssistantText(payload.hook.transcript_path);
+        }
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('claude-hook-event', payload);
+        }
+      },
+      onQueueAdd: (payload) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('queue-add-request', payload);
+        }
+      },
+      getState: () => rendererStateCache
     });
     const port = await hookServer.start();
     safeLog('[Main] Hook server listening on 127.0.0.1:' + port);
@@ -495,6 +517,27 @@ let clearTriggerWatcher = null;
 let terminalStatusWatcher = null;
 
 function setupIpcHandlers() {
+  // Summarize a completion's text via a headless Claude instance (opt-in
+  // "plain English" mode for completions; costs quota, so renderer gates it
+  // behind a preference). Returns null on any failure - caller falls back to
+  // the raw last-message text.
+  ipcMain.handle('summarize-completion', async (event, text) => {
+    if (!text || typeof text !== 'string') return null;
+    const { execFile } = require('child_process');
+    const prompt = 'Summarize what was accomplished in 1-2 plain sentences, past tense, no preamble:\n\n' + text.slice(0, 6000);
+    return new Promise((resolve) => {
+      execFile('claude', ['-p', prompt, '--model', 'haiku'], { timeout: 60000 }, (error, stdout) => {
+        if (error) {
+          safeLog('[Main] summarize-completion failed:', error.message);
+          resolve(null);
+          return;
+        }
+        const summary = (stdout || '').trim();
+        resolve(summary.length > 0 && summary.length < 2000 ? summary : null);
+      });
+    });
+  });
+
   // Terminal handling
   ipcMain.on('terminal-start', (event, options = {}) => {
     const terminalId = options.terminalId || 1;

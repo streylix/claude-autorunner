@@ -151,7 +151,7 @@
                                 <button class="icon-btn close-terminal-btn hotkey-enabled" style="display: none;" title="Close terminal" data-terminal-id="1" data-hotkey="Cmd+Shift+W" data-test-id="close-terminal-btn">
                                     <i data-lucide="x"></i>
                                 </button>
-                                <span class="terminal-color-dot" style="background-color: #007acc;"></span>
+                                <span class="terminal-color-dot" style="background-color: var(--accent-primary);"></span>
                                 <span class="terminal-title editable" contenteditable="false">Terminal 1</span>
                                 <button class="icon-btn add-terminal-btn hotkey-enabled" id="add-terminal-btn" title="Add new terminal" data-hotkey="Cmd+T" data-test-id="add-terminal-btn">
                                     <i data-lucide="plus"></i>
@@ -186,20 +186,23 @@
             
             <div class="sidebar" id="right-sidebar">
                 <div class="resize-handle resize-handle-right" id="resize-handle-right" data-test-id="resize-handle-right"></div>
-                <div class="important-details">
+                <div class="important-details collapsible-section" id="status-section">
                     <div class="section-header">
                         <span class="status-title">Status</span>
                         <div class="status-actions">
+                            <button class="collapse-toggle" data-collapse-target="status" title="Collapse panel" data-test-id="status-collapse-btn">
+                                <i data-lucide="chevron-down"></i>
+                            </button>
                             <span class="settings-cog hotkey-enabled" id="settings-btn" title="Open Settings" data-hotkey="Cmd+S" data-test-id="settings-btn">
                                 <i data-lucide="settings"></i>
                             </span>
                         </div>
                     </div>
-                    <div class="status-info">
+                    <div class="status-info collapsible-body">
                         <div class="status-item">
                             <span class="status-label">Terminal Selected:</span>
                             <span class="status-value clickable" id="current-terminal" title="Click to scroll to terminal">
-                                <span class="terminal-color-dot" id="status-terminal-dot" style="background-color: #007acc;"></span>
+                                <span class="terminal-color-dot" id="status-terminal-dot" style="background-color: var(--accent-primary);"></span>
                                 <span id="status-terminal-name">Terminal 1</span>
                             </span>
                         </div>
@@ -224,11 +227,14 @@
                     </div>
                 </div>
 
-                <div class="timer-section">
+                <div class="timer-section collapsible-section" id="timer-section">
                     <div class="timing-wrapper">
                         <div class="timer-controls-row">
                             <label>Auto-inject at</label>
                             <div class="timer-buttons">
+                                <button class="collapse-toggle" data-collapse-target="timer" title="Collapse panel" data-test-id="timer-collapse-btn">
+                                    <i data-lucide="chevron-down"></i>
+                                </button>
                                 <button type="button" id="timer-stop-btn" class="timer-btn timer-stop hotkey-enabled" title="Stop timer" style="display: none;" data-hotkey="Cmd+Shift+S" data-test-id="timer-stop-btn">
                                     <i data-lucide="square"></i>
                                 </button>
@@ -237,7 +243,7 @@
                                 </button>
                             </div>
                         </div>
-                        <div class="timer-display-row">
+                        <div class="timer-display-row collapsible-body">
                             <div class="timer-display" id="timer-display" data-test-id="timer-display">00:00:00</div>
                             <button type="button" id="timer-edit-btn" class="timer-edit-btn hotkey-enabled" title="Edit timer" data-hotkey="Cmd+B" data-test-id="timer-edit-btn">
                                 <i data-lucide="edit-3"></i>
@@ -284,7 +290,7 @@
                                 <div class="left-controls">
                                     <div class="terminal-selector">
                                         <button class="terminal-selector-btn hotkey-enabled" id="terminal-selector-btn" data-hotkey="Cmd+K" data-test-id="terminal-selector-btn">
-                                            <span class="terminal-selector-dot" style="background-color: #007acc;"></span>
+                                            <span class="terminal-selector-dot" style="background-color: var(--accent-primary);"></span>
                                             <span class="terminal-selector-text">Terminal 1</span>
                                             <i data-lucide="chevron-up"></i>
                                         </button>

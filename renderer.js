@@ -256,6 +256,15 @@ class TerminalGUI {
                 }
             }
 
+            // Persist session identity so external controllers (manager
+            // instance) can map terminal -> conversation -> transcript on disk.
+            if (payload.hook && (payload.hook.session_id || payload.hook.transcript_path)) {
+                this.terminalStateManager.updateTerminal(payload.terminalId, {
+                    sessionId: payload.hook.session_id || null,
+                    transcriptPath: payload.hook.transcript_path || null
+                });
+            }
+
             // Usage-limit detection (R1): the Notification hook's stdin JSON
             // carries a human-readable `message`. Parsing that one structured
             // string is far more reliable than scraping raw terminal output.
@@ -267,6 +276,33 @@ class TerminalGUI {
                         resetTime: parsed.resetTime,
                         source: 'notification-hook'
                     });
+                }
+            }
+
+            // Stop events arrive enriched with Claude's last message (read
+            // from the session transcript in main) - record it as a completion
+            if (payload.event === 'stop' && payload.lastAssistantText) {
+                const completionData = {
+                    terminalId: payload.terminalId,
+                    text: payload.lastAssistantText,
+                    directory: cwd || null,
+                    sessionId: (payload.hook && payload.hook.session_id) || null
+                };
+                this.eventBus.emit('completion:recorded', completionData);
+
+                // Opt-in plain-English mode: headless Claude compresses the
+                // message to 1-2 sentences (costs quota - off by default)
+                if (this.appStateStore.getState('summarizeCompletions') && completionData.sessionId) {
+                    this.ipcHandler.invoke('summarize-completion', payload.lastAssistantText)
+                        .then((summary) => {
+                            if (summary) {
+                                this.eventBus.emit('completion:summarized', {
+                                    sessionId: completionData.sessionId,
+                                    summary
+                                });
+                            }
+                        })
+                        .catch(() => { /* summarizer is best-effort */ });
                 }
             }
 
@@ -303,7 +339,42 @@ class TerminalGUI {
             this.terminalStateManager.updateTerminal(terminalId, { directory });
             this.eventBus.emit('terminal:directory', { terminalId, directory });
         });
-        
+
+        // External queue-add requests arriving via the HookServer API
+        // (POST /queue/add - e.g. the manager instance steering a terminal)
+        ipcRenderer.on('queue-add-request', (event, { terminalId, content }) => {
+            this.messageQueueManager.addMessage({ content, terminalId });
+            this.eventBus.emit('log:action', {
+                message: `Queued message for Terminal ${terminalId} via control API`,
+                type: 'info'
+            });
+        });
+
+        // Mirror terminal state to main so the HookServer's GET /state can
+        // answer external controllers without a renderer round trip.
+        const sendStateSnapshot = () => {
+            const terminals = [];
+            this.terminalStateManager.getAllTerminals().forEach((data, id) => {
+                terminals.push({
+                    id,
+                    status: data.status || '...',
+                    directory: data.directory || null,
+                    sessionId: data.sessionId || null,
+                    transcriptPath: data.transcriptPath || null,
+                    title: data.title || `Terminal ${id}`
+                });
+            });
+            ipcRenderer.send('ccbot-state-snapshot', {
+                activeTerminalId: this.activeTerminalId,
+                queuedMessages: this.messageQueueManager.messageQueue.length,
+                terminals,
+                updatedAt: Date.now()
+            });
+        };
+        ['terminal:status:changed', 'terminal:directory', 'terminal:created', 'terminal:closed', 'queue:updated']
+            .forEach((evt) => this.eventBus.on(evt, sendStateSnapshot));
+        setTimeout(sendStateSnapshot, 1000); // initial snapshot after init settles
+
         console.log('📡 IPC handlers established');
     }
     
@@ -368,6 +439,20 @@ class TerminalGUI {
                 this.timerManager.stopTimer();
             });
         }
+
+        // Collapsible right-sidebar panels (Status, Timer) with persistence
+        document.querySelectorAll('.collapse-toggle[data-collapse-target]').forEach((btn) => {
+            const section = btn.closest('.collapsible-section');
+            if (!section) return;
+            const key = `panelCollapsed:${btn.dataset.collapseTarget}`;
+            if (localStorage.getItem(key) === '1') {
+                section.classList.add('collapsed');
+            }
+            btn.addEventListener('click', () => {
+                const collapsed = section.classList.toggle('collapsed');
+                localStorage.setItem(key, collapsed ? '1' : '0');
+            });
+        });
 
         // Settings button
         const settingsBtn = document.getElementById('settings-btn');

@@ -36,6 +36,76 @@ class CompletionManager {
         this.eventBus.on('terminal:removed', ({ terminalId }) => {
             this.cleanupTerminalCompletions(terminalId);
         });
+
+        // Hook-driven completions: Claude's last message read from the session
+        // transcript (authoritative), forwarded by main on every Stop event.
+        this.eventBus.on('completion:recorded', (data) => {
+            this.recordHookCompletion(data);
+        });
+        this.eventBus.on('completion:summarized', ({ sessionId, summary }) => {
+            this.applyCompletionSummary(sessionId, summary);
+        });
+    }
+
+    /**
+     * Record a completed Claude turn captured via the Stop hook transcript.
+     * Unlike createCompletionItem (which monitors an in-progress prompt), this
+     * arrives already finished - render it directly as a completed entry.
+     */
+    recordHookCompletion({ terminalId, text, directory, sessionId }) {
+        if (!text) return;
+
+        const completionId = this.completionIdCounter++;
+        const now = Date.now();
+
+        let terminalData = null;
+        this.eventBus.emit('completion:request:terminalData', {
+            terminalId,
+            callback: (data) => { terminalData = data; }
+        });
+
+        const projectName = directory ? directory.split('/').pop() : null;
+        const completionItem = {
+            id: completionId,
+            terminalId,
+            status: 'completed',
+            startTime: now,
+            endTime: now,
+            duration: null,
+            message: text,
+            fullText: text,
+            sessionId: sessionId || null,
+            terminalColor: terminalData?.color || '#4CAF50',
+            terminalName: projectName || terminalData?.name || `Terminal ${terminalId}`,
+            promptNumber: terminalData?.promptCount || 0
+        };
+
+        this.completionItems.set(completionId, completionItem);
+        if (sessionId) {
+            if (!this.sessionCompletionIds) this.sessionCompletionIds = new Map();
+            this.sessionCompletionIds.set(sessionId, completionId);
+        }
+
+        this.eventBus.emit('completion:created', completionItem);
+        this.renderCompletionItem(completionItem);
+    }
+
+    /**
+     * Replace a hook completion's display text with the plain-English summary
+     * produced by the opt-in headless Claude summarizer.
+     */
+    applyCompletionSummary(sessionId, summary) {
+        if (!sessionId || !summary || !this.sessionCompletionIds) return;
+        const completionId = this.sessionCompletionIds.get(sessionId);
+        const item = this.completionItems.get(completionId);
+        if (!item) return;
+
+        item.message = summary; // keep item.fullText as the raw transcript text
+
+        const element = document.querySelector(`[data-completion-id="${completionId}"] .completion-prompt`);
+        if (element) {
+            element.textContent = summary;
+        }
     }
     
     // Core creation and management

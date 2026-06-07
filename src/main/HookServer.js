@@ -18,11 +18,20 @@ const MAX_BODY_BYTES = 256 * 1024;
 
 class HookServer {
     /**
-     * @param {Function} onEvent - Callback invoked with validated hook payloads:
-     *                             { terminalId, event, hook, receivedAt }
+     * @param {Function|Object} handlers - Either the onEvent callback alone, or
+     *   { onEvent, onQueueAdd, getState }:
+     *   - onEvent({terminalId, event, hook, receivedAt}) - hook state events
+     *   - onQueueAdd({terminalId, content}) - external queue-add requests
+     *     (e.g. a manager Claude instance steering other terminals)
+     *   - getState() - snapshot of interface state for GET /state
      */
-    constructor(onEvent) {
-        this.onEvent = onEvent;
+    constructor(handlers) {
+        if (typeof handlers === 'function') {
+            handlers = { onEvent: handlers };
+        }
+        this.onEvent = handlers.onEvent;
+        this.onQueueAdd = handlers.onQueueAdd || null;
+        this.getState = handlers.getState || null;
         this.server = null;
         this.port = null;
         this.token = crypto.randomBytes(16).toString('hex');
@@ -44,16 +53,27 @@ class HookServer {
     }
 
     handleRequest(req, res) {
-        if (req.method !== 'POST' || req.url !== '/hook-event') {
+        if (req.headers['x-ccbot-token'] !== this.token) {
             req.resume(); // drain body so the connection closes cleanly, not via RST
-            res.writeHead(404);
+            res.writeHead(403);
             res.end();
             return;
         }
 
-        if (req.headers['x-ccbot-token'] !== this.token) {
+        // GET /state - interface snapshot for external controllers
+        if (req.method === 'GET' && req.url === '/state') {
             req.resume();
-            res.writeHead(403);
+            const state = this.getState ? this.getState() : null;
+            res.writeHead(state ? 200 : 503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(state || { error: 'state unavailable' }));
+            return;
+        }
+
+        const isHookEvent = req.method === 'POST' && req.url === '/hook-event';
+        const isQueueAdd = req.method === 'POST' && req.url === '/queue/add';
+        if (!isHookEvent && !isQueueAdd) {
+            req.resume();
+            res.writeHead(404);
             res.end();
             return;
         }
@@ -70,6 +90,19 @@ class HookServer {
             try {
                 const payload = JSON.parse(body);
                 const terminalId = parseInt(payload.terminalId, 10);
+
+                if (isQueueAdd) {
+                    const content = typeof payload.content === 'string' ? payload.content.trim() : '';
+                    if (!Number.isInteger(terminalId) || !content || !this.onQueueAdd) {
+                        res.writeHead(this.onQueueAdd ? 400 : 503);
+                        res.end();
+                        return;
+                    }
+                    this.onQueueAdd({ terminalId, content });
+                    res.writeHead(202, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ accepted: true, terminalId }));
+                    return;
+                }
 
                 if (!Number.isInteger(terminalId) || !VALID_EVENTS.has(payload.event)) {
                     res.writeHead(400);
