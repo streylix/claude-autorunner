@@ -105,6 +105,15 @@ class MessageQueueManager {
                 this.startSequentialInjection();
             }
         });
+
+        // Core premise: a queued message injects when its target terminal goes
+        // idle. When a terminal transitions out of running/prompted, attempt
+        // injection (the gate enforces timer/usage-limit/status rules).
+        this.eventBus.on('terminal:status:changed', ({ terminalId, status }) => {
+            if (status !== 'running' && status !== 'prompted') {
+                this.maybeAutoInject(terminalId);
+            }
+        });
         
         // Listen for message events
         this.eventBus.on('message:add', (data) => {
@@ -201,12 +210,34 @@ class MessageQueueManager {
      * @param {number} terminalId
      * @returns {{ allowed: boolean, reason: string }}
      */
+    /**
+     * Attempt to inject a queued message now (the terminal just went idle, or a
+     * message was just queued). No-op unless there's an injectable message and
+     * the gate allows it - reuses the gated injection engine. This is what makes
+     * "queue a message, it injects when the terminal is free" actually happen.
+     */
+    maybeAutoInject(terminalId) {
+        if (this.injectionInProgress) return; // engine already running; it will pick this up
+        if (this.currentlyInjectingTerminals.has(terminalId)) return;
+        const hasInjectable = this.messageQueue.some(msg => {
+            const tid = msg.terminalId || this.activeTerminalId;
+            return tid === terminalId && this.canInjectToTerminal(tid).allowed;
+        });
+        if (!hasInjectable) return;
+        this.injectionInProgress = true;
+        this.injectMessageAndContinueQueue();
+    }
+
     canInjectToTerminal(terminalId) {
         // (a) Timer / usage-limit gate.
         if (this.usageLimitWaiting) {
             return { allowed: false, reason: 'usage limit active - waiting for reset' };
         }
-        if (!this.timerExpired) {
+        // Block only while a countdown is ACTIVELY armed (manual auto-inject or
+        // usage-limit deferral). With no timer running, inject when idle - the
+        // old `!timerExpired` check was a one-shot edge flag that stayed false
+        // forever when no timer was ever set, silently blocking all injection.
+        if (this.timerManager && this.timerManager.isRunning()) {
             return { allowed: false, reason: 'timer still counting down' };
         }
         if (this.injectionPaused) {
@@ -499,6 +530,9 @@ class MessageQueueManager {
         }
         
         this.logAction(`Message added to queue for Terminal ${message.terminalId}: "${content.substring(0, 50)}..."`, 'info');
+
+        // If the target terminal is already idle, inject right away (gated).
+        this.maybeAutoInject(message.terminalId || this.activeTerminalId);
     }
     
     async handleSpecialCommands(content, input) {
@@ -848,7 +882,7 @@ class MessageQueueManager {
             // Either all terminals are busy/running/prompted or the timer/usage
             // gate is still closed; retry shortly. If the usage-limit gate is the
             // blocker we stop the loop entirely - it resumes on timer:expired.
-            if (this.usageLimitWaiting || !this.timerExpired) {
+            if (this.usageLimitWaiting || (this.timerManager && this.timerManager.isRunning())) {
                 this.logAction('Injection gated (usage limit / timer) - awaiting release', 'info');
                 return;
             }

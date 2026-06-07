@@ -153,6 +153,10 @@ class TerminalGUI {
         this.managerInstance = new ManagerInstance(this.eventBus, this.appStateStore, this.ipcHandler, this);
         this.managerInstance.initializeUI();
 
+        // The injection gate (R3) blocks while a countdown is armed, so the
+        // queue needs a handle on the timer to call isRunning().
+        this.messageQueueManager.timerManager = this.timerManager;
+
         // Wire the usage-limit manager to the timer + message queue so it can
         // drive the countdown (R2) and hold the injection gate (R3). Without
         // this the manager's timerManager/messageQueueManager stay null.
