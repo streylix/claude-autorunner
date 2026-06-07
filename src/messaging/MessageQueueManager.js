@@ -97,6 +97,14 @@ class MessageQueueManager {
         this.eventBus.on('timer:expired', () => {
             this.handleTimerExpired();
         });
+
+        // The usage-limit gate was just released (limit reset). Re-attempt the
+        // queue now that the (a) timer==0 + (b) no-usage-limit conditions hold.
+        this.eventBus.on('usageLimit:reset', () => {
+            if (this.messageQueue.length > 0 && !this.injectionInProgress) {
+                this.startSequentialInjection();
+            }
+        });
         
         // Listen for message events
         this.eventBus.on('message:add', (data) => {
@@ -168,13 +176,57 @@ class MessageQueueManager {
 
     /**
      * Send raw input to a terminal via the injected ipc wrapper.
+     * The main-process 'terminal-input' handler expects a single object
+     * payload { terminalId, data } (see main.js / ipc-handler.js), NOT
+     * positional args.
      */
     sendTerminalInput(terminalId, data) {
         if (this.ipc && typeof this.ipc.send === 'function') {
-            this.ipc.send('terminal-input', terminalId, data);
+            this.ipc.send('terminal-input', { terminalId, data });
         } else {
             this.logAction(`Cannot send to terminal ${terminalId}: ipc unavailable`, 'error');
         }
+    }
+
+    /**
+     * R3 INJECTION GATE - single source of truth for "may I inject now?".
+     *
+     * Nothing may inject until BOTH:
+     *   (a) the timer has reached 0 (timerExpired) AND no usage-limit wait is active, and
+     *   (b) the target terminal's status is neither 'running' nor 'prompted'.
+     *
+     * The stale/idle status in this codebase is the string '...'; any status
+     * other than 'running'/'prompted' (including '...') passes the terminal gate.
+     *
+     * @param {number} terminalId
+     * @returns {{ allowed: boolean, reason: string }}
+     */
+    canInjectToTerminal(terminalId) {
+        // (a) Timer / usage-limit gate.
+        if (this.usageLimitWaiting) {
+            return { allowed: false, reason: 'usage limit active - waiting for reset' };
+        }
+        if (!this.timerExpired) {
+            return { allowed: false, reason: 'timer still counting down' };
+        }
+        if (this.injectionPaused) {
+            return { allowed: false, reason: 'injection paused' };
+        }
+
+        // (b) Target terminal status gate.
+        const tid = terminalId != null ? terminalId : this.activeTerminalId;
+        if (tid == null) {
+            return { allowed: false, reason: 'no target terminal' };
+        }
+        const terminal = this.terminalStateManager
+            ? this.terminalStateManager.getTerminal(tid)
+            : null;
+        const status = terminal ? terminal.status : null;
+        if (status === 'running' || status === 'prompted') {
+            return { allowed: false, reason: `terminal ${tid} is ${status}` };
+        }
+
+        return { allowed: true, reason: 'ok' };
     }
 
     /**
@@ -259,11 +311,20 @@ class MessageQueueManager {
         const queue = this.messageQueue;
         if (queue.length === 0) return;
 
+        const peek = queue[0];
+        const terminalId = peek.terminalId || this.activeTerminalId;
+
+        // R3 gate (manual path): block + warn rather than inject into a busy
+        // terminal or during a usage-limit/timer wait.
+        const gate = this.canInjectToTerminal(terminalId);
+        if (!gate.allowed) {
+            this.logAction(`Manual injection blocked: ${gate.reason}`, 'warning');
+            return;
+        }
+
         const message = queue.shift();
         this.messageQueue = queue;
 
-        // Send to terminal
-        const terminalId = message.terminalId || this.activeTerminalId;
         if (terminalId) {
             this.sendTerminalInput(terminalId, message.content + '\n');
 
@@ -328,12 +389,19 @@ class MessageQueueManager {
         const messageIndex = queue.findIndex(m => m.id === messageId);
         
         if (messageIndex === -1) return;
-        
+
+        const terminalId = queue[messageIndex].terminalId || this.activeTerminalId;
+
+        // R3 gate (manual path): block + warn.
+        const gate = this.canInjectToTerminal(terminalId);
+        if (!gate.allowed) {
+            this.logAction(`Manual injection blocked: ${gate.reason}`, 'warning');
+            return;
+        }
+
         const [message] = queue.splice(messageIndex, 1);
         this.messageQueue = queue;
-        
-        // Send to terminal
-        const terminalId = message.terminalId || this.activeTerminalId;
+
         if (terminalId) {
             this.sendTerminalInput(terminalId, message.content + '\n');
 
@@ -631,6 +699,13 @@ class MessageQueueManager {
      */
     
     handleTimerExpired() {
+        // The R3 timer gate keys off this flag. It is the canonical "timer has
+        // reached 0" signal for the injection engine.
+        this.timerExpired = true;
+
+        // If a usage-limit wait is still active, the usageLimitWaiting gate keeps
+        // injection blocked even though the timer fired; the UsageLimitManager
+        // clears that flag from its own timer:expired handler.
         if (this.messageQueue.length > 0 && !this.injectionInProgress) {
             this.startSequentialInjection();
         }
@@ -760,13 +835,24 @@ class MessageQueueManager {
             return;
         }
         
+        // R3 gate (auto path): only pick a message whose target terminal is both
+        // free of an in-flight injection AND passes canInjectToTerminal (not
+        // running/prompted, no usage-limit/timer block).
         const messageIndex = this.messageQueue.findIndex(msg => {
             const terminalId = msg.terminalId || this.activeTerminalId;
-            return !this.currentlyInjectingTerminals.has(terminalId);
+            if (this.currentlyInjectingTerminals.has(terminalId)) return false;
+            return this.canInjectToTerminal(terminalId).allowed;
         });
-        
+
         if (messageIndex === -1) {
-            this.logAction('All terminals are busy - waiting...', 'info');
+            // Either all terminals are busy/running/prompted or the timer/usage
+            // gate is still closed; retry shortly. If the usage-limit gate is the
+            // blocker we stop the loop entirely - it resumes on timer:expired.
+            if (this.usageLimitWaiting || !this.timerExpired) {
+                this.logAction('Injection gated (usage limit / timer) - awaiting release', 'info');
+                return;
+            }
+            this.logAction('All target terminals busy or not idle - waiting...', 'info');
             setTimeout(() => this.injectMessageAndContinueQueue(), 1000);
             return;
         }
@@ -936,17 +1022,44 @@ class MessageQueueManager {
         callback();
     }
     
+    /**
+     * Inject a message's content into a terminal. Injection is a single IPC
+     * write of the content plus a trailing newline (which submits the prompt to
+     * Claude). The callback runs once the write has been dispatched.
+     */
     typeMessageToTerminal(content, terminalId, callback) {
-        // Implementation for typing message to terminal
-        callback();
+        const tid = terminalId != null ? terminalId : this.activeTerminalId;
+        if (tid == null) {
+            this.logAction('Cannot inject: no target terminal', 'error');
+            if (typeof callback === 'function') callback();
+            return;
+        }
+        this.sendTerminalInput(tid, content + '\n');
+        this.eventBus.emit('message:injected', { terminalId: tid, content });
+        if (typeof callback === 'function') callback();
     }
-    
+
+    /**
+     * Schedule the next queued injection after a delay, re-checking the R3 gate
+     * at fire time. Used as the fallback when no external injectionManager is set.
+     */
     scheduleNextInjection() {
-        // Implementation for scheduling next injection
+        if (this.injectionTimer) {
+            clearTimeout(this.injectionTimer);
+        }
+        const delayMs = (this.preferences && this.preferences.injectionDelayMs) || 1000;
+        this.injectionTimer = setTimeout(() => {
+            this.injectionTimer = null;
+            this.injectMessageAndContinueQueue();
+        }, delayMs);
     }
-    
+
+    /**
+     * Manually inject the next queued message (toolbar / shortcut). Honors the
+     * R3 gate via injectNextMessage, which warns + blocks when not allowed.
+     */
     manualInjectNextMessage() {
-        // Implementation for manual injection
+        this.injectNextMessage();
     }
     
     pauseInjectionExecution() {

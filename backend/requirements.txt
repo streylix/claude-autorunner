@@ -1,33 +1,29 @@
-# Core Django dependencies - Python 3.13 compatible
+# Core Django dependencies
 Django==5.0.1
 djangorestframework==3.14.0
 django-cors-headers==4.3.1
 
-# WebSocket and async support
+# ASGI / WebSocket support (channels websockets are served via daphne)
 channels==4.0.0
-channels-redis==4.1.0
 daphne==4.0.0
 
-# Utilities
-Pillow==10.4.0  # Python 3.13 compatible version
-websockets==12.0
-redis==5.0.1
-
-# Audio processing
-openai-whisper
-torch>=2.2.0
-torchaudio>=2.2.0
-soundfile==0.12.1
-librosa==0.10.1
-
-# HTTP requests
-requests==2.32.3
-
-# Required Django dependencies
+# Required Django runtime deps (pinned for reproducibility)
 asgiref==3.8.1
 sqlparse==0.5.0
 tzdata==2024.1
 
-# Optional but recommended
-whitenoise==6.6.0  # Static file serving
-gunicorn==22.0.0  # Production server
+# Voice transcription (Whisper). torch is large; the Docker image installs the
+# CPU-only torch wheel (see backend/Dockerfile) to keep the image smaller.
+# Remaining whisper deps (tiktoken, numba, llvmlite, regex, more-itertools)
+# are resolved transitively by openai-whisper. ffmpeg-python shells out to the
+# ffmpeg binary that the Dockerfile installs.
+openai-whisper
+torch>=2.2.0
+ffmpeg-python==0.2.0
+
+# Database
+# Postgres driver, used only when DATABASE_URL / PG* env vars are set.
+# Falls back to the bundled sqlite config when those are absent.
+psycopg[binary]>=3.1
+# Parses DATABASE_URL when present (no-op for the sqlite fallback path).
+dj-database-url>=2.1

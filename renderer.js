@@ -23,10 +23,12 @@ const VoiceManager = require('./src/features/VoiceManager');
 const SoundManager = require('./src/features/SoundManager');
 const PreferenceManager = require('./src/features/PreferenceManager');
 const TimerManager = require('./src/features/TimerManager');
+const ActionLogManager = require('./src/features/ActionLogManager');
 const UIFocusManager = require('./src/ui/UIFocusManager');
 
 // Import utilities
 const { getAllTextIn, getLastTextIn, cleanTerminalText } = require('./utils/textExtraction');
+const { parseUsageLimitMessage } = require('./src/utils/usage-limit-parser');
 
 /**
  * Main application controller that orchestrates all modules
@@ -142,6 +144,16 @@ class TerminalGUI {
         this.timerManager = new TimerManager(this.eventBus, this.appStateStore);
         this.uiFocusManager = new UIFocusManager(this.eventBus, this.appStateStore);
 
+        // Left sidebar: action log feed + view navigation
+        this.actionLogManager = new ActionLogManager(this.eventBus, this.appStateStore);
+        this.actionLogManager.initialize();
+
+        // Wire the usage-limit manager to the timer + message queue so it can
+        // drive the countdown (R2) and hold the injection gate (R3). Without
+        // this the manager's timerManager/messageQueueManager stay null.
+        this.usageLimitManager.setManagers(this.timerManager, this.messageQueueManager);
+        this.usageLimitManager.initialize();
+
         // Wire centralized event processors onto the EventBus (fix 8).
         this.setupEventProcessors();
 
@@ -241,6 +253,20 @@ class TerminalGUI {
                 if (existing && existing.directory !== cwd) {
                     this.terminalStateManager.updateTerminal(payload.terminalId, { directory: cwd });
                     this.eventBus.emit('terminal:directory', { terminalId: payload.terminalId, directory: cwd });
+                }
+            }
+
+            // Usage-limit detection (R1): the Notification hook's stdin JSON
+            // carries a human-readable `message`. Parsing that one structured
+            // string is far more reliable than scraping raw terminal output.
+            if (payload.event === 'notification' && payload.hook && payload.hook.message) {
+                const parsed = parseUsageLimitMessage(payload.hook.message);
+                if (parsed) {
+                    this.eventBus.emit('usageLimit:detected', {
+                        terminalId: payload.terminalId,
+                        resetTime: parsed.resetTime,
+                        source: 'notification-hook'
+                    });
                 }
             }
 

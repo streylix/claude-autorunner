@@ -87,6 +87,10 @@ ASGI_APPLICATION = "terminal_backend.asgi.application"
 
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
+#
+# Defaults to the bundled sqlite file so the non-docker venv flow keeps working
+# unchanged. When DATABASE_URL or the discrete POSTGRES_* env vars are present
+# (as set by docker-compose), Postgres is used instead.
 
 DATABASES = {
     "default": {
@@ -94,6 +98,24 @@ DATABASES = {
         "NAME": BASE_DIR / "db.sqlite3",
     }
 }
+
+_DATABASE_URL = os.environ.get("DATABASE_URL")
+if _DATABASE_URL:
+    import dj_database_url
+
+    DATABASES["default"] = dj_database_url.parse(
+        _DATABASE_URL, conn_max_age=600
+    )
+elif os.environ.get("POSTGRES_DB"):
+    DATABASES["default"] = {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.environ["POSTGRES_DB"],
+        "USER": os.environ.get("POSTGRES_USER", "postgres"),
+        "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
+        "HOST": os.environ.get("POSTGRES_HOST", "db"),
+        "PORT": os.environ.get("POSTGRES_PORT", "5432"),
+        "CONN_MAX_AGE": 600,
+    }
 
 
 # Password validation

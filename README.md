@@ -32,6 +32,12 @@ npm install
 npm start
 ```
 
+Run the backend in Docker instead of a local venv (needs Docker Desktop). This starts Django + Postgres on port 8123 with migrations applied, then launches the app:
+
+```bash
+./start.sh --docker
+```
+
 Requires Node.js 16+ and Python 3.10+ for the backend. macOS 10.15+, Windows 10+, or Linux with X11.
 
 ## License

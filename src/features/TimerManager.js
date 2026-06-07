@@ -364,6 +364,43 @@ class TimerManager {
     }
     
     /**
+     * Start a countdown for an exact number of seconds (used by usage-limit sync).
+     * Sets the H:M:S fields from totalSeconds, then starts a fresh countdown.
+     * Does NOT overwrite originalTimerValues so a later stop() restores the
+     * user's previously configured duration.
+     * @param {number} totalSeconds
+     */
+    startCountdown(totalSeconds) {
+        totalSeconds = Math.max(0, Math.floor(totalSeconds) || 0);
+
+        this.timerHours = Math.floor(totalSeconds / 3600);
+        this.timerMinutes = Math.floor((totalSeconds % 3600) / 60);
+        this.timerSeconds = totalSeconds % 60;
+        this.timerTotalSeconds = totalSeconds;
+
+        // Force a fresh start even if a timer was already running.
+        this.timerPaused = false;
+        this.timerRunning = false;
+        this.startTimer();
+    }
+
+    /**
+     * Whether the timer is actively counting down (running and not paused).
+     * @returns {boolean}
+     */
+    isRunning() {
+        return this.timerRunning && !this.timerPaused;
+    }
+
+    /**
+     * Remaining seconds on the current countdown (0 when stopped/expired).
+     * @returns {number}
+     */
+    getRemainingSeconds() {
+        return this.calculateRemainingSeconds();
+    }
+
+    /**
      * Reset timer to original values
      */
     resetTimer() {

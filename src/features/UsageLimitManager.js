@@ -1,15 +1,32 @@
 /**
- * UsageLimitManager - Handles all usage limit detection, modal management, and timer synchronization
- * Consolidates 44 functions from renderer.js into a focused module
+ * UsageLimitManager - Detects Claude usage limits and drives the countdown timer
+ * to the stated reset time, so the message queue stays paused until the limit
+ * lifts.
+ *
+ * DETECTION (R1): Primary source is the Claude Code *Notification* hook, whose
+ * stdin JSON carries a human-readable `message` field (confirmed in the hooks
+ * docs via `jq -r '.message'`). The renderer forwards that as the canonical
+ * `usageLimit:detected` event. There is NO dedicated usage-limit hook and the
+ * `StopFailure` hook (matcher `rate_limit`) has no documented reset-time field,
+ * so the structured Notification message is the most reliable signal available.
+ * A minimal regex on `terminal:data` is retained as a documented fallback for
+ * Claude builds where the limit text only reaches raw terminal output.
+ *
+ * TIMER (R2): On detection the parsed reset time is pushed into TimerManager via
+ * startCountdown(secondsUntilReset); a 1-minute sync interval keeps it accurate.
+ *
+ * GATE (R3): While waiting, MessageQueueManager.usageLimitWaiting is held true so
+ * the injection gate blocks all injection until the timer reaches 0.
  */
+const { ipcRenderer } = require('electron');
 const { BoundedSet } = require('../utils/bounded-collections');
+const { parseUsageLimitMessage } = require('../utils/usage-limit-parser');
 
 class UsageLimitManager {
     constructor(eventBus, appStateStore) {
         this.eventBus = eventBus;
         this.appStateStore = appStateStore;
-        
-        // Consolidated state management
+
         this.state = {
             modalShowing: false,
             waiting: false,
@@ -22,540 +39,302 @@ class UsageLimitManager {
             resetTime: null,
             autoSyncEnabled: true
         };
-        
+
         // References set during initialization
         this.injectionManager = null;
         this.timerManager = null;
-        
+        this.messageQueueManager = null;
+
         this.setupEventListeners();
     }
-    
-    // Initialize with external managers
-    setManagers(injectionManager, timerManager) {
-        this.injectionManager = injectionManager;
+
+    /**
+     * Wire external managers. MUST be called by the renderer after construction.
+     * @param {Object} timerManager        - TimerManager instance
+     * @param {Object} messageQueueManager - MessageQueueManager instance (owns the injection gate flag)
+     */
+    setManagers(timerManager, messageQueueManager) {
         this.timerManager = timerManager;
+        this.messageQueueManager = messageQueueManager;
     }
-    
+
     setupEventListeners() {
-        // Listen for terminal data to detect usage limits
-        this.eventBus.on('terminal:data', async (data) => {
-            // Canonical terminal:data payload is { terminalId, data }
-            if (data.data && data.terminalId) {
-                await this.detectUsageLimit(data.data, data.terminalId);
+        // FALLBACK detection path: raw terminal output.
+        this.eventBus.on('terminal:data', (data) => {
+            if (data && data.data && data.terminalId != null) {
+                this.detectUsageLimit(data.data, data.terminalId);
             }
         });
-        
-        // Listen for timer expiry
+
+        // PRIMARY detection path: structured Notification-hook message, emitted
+        // canonically by the renderer's claude-hook-event handler.
+        this.eventBus.on('usageLimit:detected', (data) => {
+            if (data && data.resetTime) {
+                this.onUsageLimitDetected(data.resetTime, data.terminalId);
+            }
+        });
+
+        // Timer reached 0 - lift the gate.
         this.eventBus.on('timer:expired', () => {
             if (this.state.waiting) {
                 this.handleUsageLimitTimerExpiry();
             }
         });
-        
-        // Listen for manual timer changes
+
+        // User manually changed the timer - stop auto-sync so we don't fight them.
         this.eventBus.on('timer:manual-change', () => {
             this.stopSync();
         });
+
+        // Slash-command + debug hooks routed from MessageQueueManager.
+        this.eventBus.on('usageLimit:status:request', async () => {
+            const status = await this.getStatus();
+            this.eventBus.emit('log:action', { message: status.message, type: 'info' });
+        });
+        this.eventBus.on('usageLimit:reset:request', () => this.resetTimer());
+        this.eventBus.on('usageLimit:debug:trigger', (data) => {
+            const resetTime = data && data.debugResetTime
+                ? new Date(data.debugResetTime)
+                : new Date(Date.now() + 30000);
+            this.onUsageLimitDetected(resetTime, null, { debug: true });
+        });
     }
-    
-    // ======= DETECTION SYSTEM =======
-    async detectUsageLimit(data, terminalId) {
-        // Check for usage limit message
-        const match = data.match(/Claude usage limit reached\. Your limit will reset at (\d{1,2})(am|pm)/i);
-        if (!match) return;
-        
-        const [, resetHour, ampm] = match;
-        const resetTimeString = `${resetHour}${ampm}`;
-        
-        // Check if we've already processed this
-        if (await this.isDuplicateDetection(resetTimeString)) {
-            return;
-        }
-        
-        // Check if we're in cooldown period
-        if (this.isInCooldownPeriod()) {
-            return;
-        }
-        
-        // Track this terminal
+
+    // ======= DETECTION (R1) =======
+
+    /**
+     * Fallback detector: parse the usage-limit message out of raw terminal text.
+     * @param {string} data       terminal output chunk
+     * @param {number} terminalId
+     */
+    detectUsageLimit(data, terminalId) {
+        const parsed = parseUsageLimitMessage(data);
+        if (!parsed) return;
+
+        if (this.isDuplicateDetection(parsed.resetTime)) return;
+        if (this.isInCooldownPeriod()) return;
+
         this.state.terminals.add(terminalId);
-        
-        // Process the usage limit detection
-        await this.checkAndShowModal(resetTimeString, resetHour, ampm);
+        this.onUsageLimitDetected(parsed.resetTime, terminalId);
     }
-    
-    async isDuplicateDetection(resetTimeString) {
-        // Create unique identifier for this message
-        const sessionId = await ipcRenderer.invoke('db-get-setting', 'sessionId') || 'default';
-        const fullMessage = `${sessionId}_${resetTimeString}_${Date.now()}`;
-        
-        // Check if we've seen this exact message recently
-        if (this.state.processedMessages.has(fullMessage)) {
-            return true;
+
+    /**
+     * Central handler once a reset time is known (from hook or terminal data).
+     * @param {Date}    resetTime  future Date when the limit lifts
+     * @param {number}  [terminalId]
+     * @param {Object}  [opts]
+     */
+    async onUsageLimitDetected(resetTime, terminalId, opts = {}) {
+        if (!(resetTime instanceof Date) || isNaN(resetTime.getTime())) return;
+
+        if (!opts.debug) {
+            if (this.isDuplicateDetection(resetTime)) return;
+            if (this.isInCooldownPeriod()) return;
         }
-        
-        // Check database for recent detection
-        const lastResetTime = await ipcRenderer.invoke('db-get-app-state', 'usageLimitModalLastResetTime');
-        const lastTimestamp = await ipcRenderer.invoke('db-get-app-state', 'usageLimitModalLastResetTimestamp');
-        
-        if (lastResetTime === resetTimeString && lastTimestamp) {
-            const timeSinceLastModal = Date.now() - lastTimestamp;
-            if (timeSinceLastModal < 600000) { // 10 minutes
-                return true;
-            }
-        }
-        
-        // Add to processed messages
-        this.state.processedMessages.add(fullMessage);
+
+        // 2-minute cooldown so repeated identical messages don't re-trigger.
+        this.state.cooldownUntil = Date.now() + 120000;
+
+        if (terminalId != null) this.state.terminals.add(terminalId);
+
+        this.eventBus.emit('log:action', {
+            message: `Usage limit detected - reset at ${resetTime.toLocaleTimeString()}`,
+            type: 'warning'
+        });
+
+        await this.beginWaiting(resetTime);
+    }
+
+    isDuplicateDetection(resetTime) {
+        const key = resetTime.toISOString().slice(0, 16); // minute precision
+        if (this.state.processedMessages.has(key)) return true;
+        this.state.processedMessages.add(key);
         return false;
     }
-    
+
     isInCooldownPeriod() {
         if (!this.state.cooldownUntil) return false;
         return Date.now() < this.state.cooldownUntil;
     }
-    
-    async checkAndShowModal(resetTimeString, resetHour, ampm) {
-        try {
-            // Set 2-minute cooldown
-            this.state.cooldownUntil = Date.now() + 120000;
-            
-            // Check if modal is already showing
-            if (this.state.modalShowing) {
-                this.eventBus.emit('log:action', {
-                    message: 'Usage limit modal already showing, skipping duplicate',
-                    type: 'info'
-                });
-                return;
-            }
-            
-            // Store pending reset info
-            this.state.pendingReset = { resetHour, ampm, resetTimeString };
-            
-            // Save first detection time if not set
-            const firstDetected = await ipcRenderer.invoke('db-get-setting', 'usageLimitFirstDetected');
-            if (!firstDetected) {
-                await ipcRenderer.invoke('db-save-setting', 'usageLimitFirstDetected', new Date().toISOString());
-            }
-            
-            // Show the modal
-            await this.showModal(resetHour, ampm);
-            
-            // Save to database
-            await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTime', resetTimeString);
-            await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTimestamp', Date.now());
-            
-        } catch (error) {
-            console.error('Error in checkAndShowModal:', error);
-            this.eventBus.emit('log:action', {
-                message: `Error showing usage limit modal: ${error.message}`,
-                type: 'error'
-            });
+
+    // ======= TIMER (R2) =======
+
+    /**
+     * Enter the waiting state: hold the injection gate and drive the timer to
+     * the reset time. No modal/user choice required - the gate is automatic so
+     * the queue can never inject during a limit.
+     */
+    async beginWaiting(resetTime) {
+        this.state.resetTime = resetTime;
+        this.state.waiting = true;
+
+        // Persist for restore-after-restart.
+        this.appStateStore.setState('usageLimit.waiting', true);
+        this.appStateStore.setState('usageLimit.resetTime', resetTime.toISOString());
+
+        // Hold the injection gate (R3 enforcement point).
+        if (this.messageQueueManager) {
+            this.messageQueueManager.usageLimitWaiting = true;
         }
-    }
-    
-    // ======= MODAL SYSTEM =======
-    async showModal(resetHour, ampm, exactResetTime = null) {
-        this.eventBus.emit('log:action', {
-            message: `Showing usage limit modal for ${resetHour}${ampm}`,
-            type: 'info'
-        });
-        
-        // Set modal showing flag
-        this.state.modalShowing = true;
-        
-        // Pause injection
-        if (this.injectionManager) {
-            this.injectionManager.pauseInjection('usage-limit');
+
+        // Remember the user's previous timer config so we can restore on expiry.
+        if (this.timerManager && this.timerManager.isRunning()) {
+            this.state.timerOriginalValues = {
+                remainingSeconds: this.timerManager.getRemainingSeconds()
+            };
         }
-        
-        // Calculate reset time
-        const resetTime = exactResetTime || this.calculateResetTime(resetHour, ampm);
-        
-        // Set the reset time for syncing
-        await this.setResetTime(resetTime);
-        
-        // Display the modal
+
+        // Drive the countdown to the reset time.
+        this.syncTimerToReset();
+        this.startSync();
+
+        this.eventBus.emit('usageLimit:waiting', { resetTime });
+
+        // Optional modal (best-effort UI; the gate does not depend on it).
         this.displayModal(resetTime);
     }
-    
-    calculateResetTime(resetHour, ampm) {
-        if (!resetHour || !ampm) return null;
-        
-        const now = new Date();
-        let hour = parseInt(resetHour);
-        
-        // Convert to 24-hour format
-        if (ampm.toLowerCase() === 'pm' && hour !== 12) {
-            hour += 12;
-        } else if (ampm.toLowerCase() === 'am' && hour === 12) {
-            hour = 0;
-        }
-        
-        // Create reset time for today
-        const resetTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, 0, 0);
-        
-        // If reset time has passed today, set for tomorrow
-        if (resetTime <= now) {
-            resetTime.setDate(resetTime.getDate() + 1);
-        }
-        
-        return resetTime;
-    }
-    
-    displayModal(resetTime) {
-        const modal = document.getElementById('usage-limit-modal');
-        if (!modal) return;
-        
-        modal.classList.add('active');
-        
-        // Setup countdown
-        const resetTimeSpan = modal.querySelector('.reset-time');
-        const progressBar = modal.querySelector('.usage-limit-progress-bar');
-        const countdownText = modal.querySelector('.countdown-text');
-        
-        // Update countdown every second
-        const countdownInterval = setInterval(() => {
-            const now = new Date();
-            const diff = resetTime - now;
-            
-            if (diff <= 0) {
-                clearInterval(countdownInterval);
-                this.handleUsageLimitChoice(true);
-                return;
-            }
-            
-            const hours = Math.floor(diff / 3600000);
-            const minutes = Math.floor((diff % 3600000) / 60000);
-            const seconds = Math.floor((diff % 60000) / 1000);
-            
-            if (resetTimeSpan) {
-                resetTimeSpan.textContent = `${hours}h ${minutes}m`;
-            }
-            
-            if (countdownText) {
-                countdownText.textContent = `${seconds}`;
-            }
-            
-            // Update progress bar
-            const totalTime = 30;
-            const elapsed = 30 - seconds;
-            const progress = (elapsed / totalTime) * 100;
-            
-            if (progressBar) {
-                progressBar.style.width = `${progress}%`;
-            }
-        }, 1000);
-        
-        // Setup button handlers
-        const yesBtn = modal.querySelector('.usage-limit-yes');
-        const noBtn = modal.querySelector('.usage-limit-no');
-        
-        if (yesBtn) {
-            yesBtn.onclick = () => this.handleUsageLimitChoice(true);
-        }
-        
-        if (noBtn) {
-            noBtn.onclick = () => this.handleUsageLimitChoice(false);
-        }
-        
-        // Store interval for cleanup
-        modal.dataset.countdownInterval = countdownInterval;
-    }
-    
-    async handleUsageLimitChoice(queue) {
-        this.eventBus.emit('log:action', {
-            message: `User chose to ${queue ? 'queue' : 'not queue'} messages`,
-            type: 'info'
-        });
-        
-        const modal = document.getElementById('usage-limit-modal');
-        if (!modal) return;
-        
-        // Clear countdown interval
-        const interval = modal.dataset.countdownInterval;
-        if (interval) {
-            clearInterval(interval);
-        }
-        
-        // Hide modal
-        modal.classList.remove('active');
-        this.state.modalShowing = false;
-        
-        if (queue) {
-            // User wants to queue messages
-            this.state.waiting = true;
-            
-            // Store original timer values if timer is running
-            if (this.timerManager && this.timerManager.isRunning()) {
-                this.state.timerOriginalValues = {
-                    targetDateTime: this.timerManager.getTargetDateTime(),
-                    duration: this.timerManager.getDuration()
-                };
-            }
-            
-            // Set timer to usage limit reset time
-            if (this.state.resetTime) {
-                const diff = this.state.resetTime - new Date();
-                if (diff > 0) {
-                    this.timerManager.start(Math.floor(diff / 1000));
-                    this.startSync();
-                }
-            }
-            
-            // Update injection state
-            if (this.injectionManager) {
-                this.injectionManager.setUsageLimitWaiting(true);
-            }
-            
-            // Save state
-            await this.appStateStore.set('usageLimitWaiting', true);
-            
-        } else {
-            // User doesn't want to queue
-            this.state.waiting = false;
-            
-            // Resume injection
-            if (this.injectionManager) {
-                this.injectionManager.resumeInjection('usage-limit');
-            }
-            
-            // Clear tracking
-            await this.clearTracking();
-        }
-        
-        // Clear pending reset
-        this.state.pendingReset = null;
-    }
-    
-    // ======= TIMER SYNC SYSTEM =======
+
     startSync() {
-        if (!this.state.resetTime || !this.state.autoSyncEnabled) {
-            return;
-        }
-        
+        if (!this.state.resetTime || !this.state.autoSyncEnabled) return;
         this.stopSync();
-        
-        // Start interval to update every minute
-        this.state.syncInterval = setInterval(() => {
-            this.updateSyncedTimer();
-        }, 60000);
-        
-        // Update immediately
-        this.updateSyncedTimer();
-        
-        this.eventBus.emit('log:action', {
-            message: 'Auto-sync to usage limit enabled',
-            type: 'info'
-        });
+        this.state.syncInterval = setInterval(() => this.syncTimerToReset(), 60000);
     }
-    
+
     stopSync() {
         if (this.state.syncInterval) {
             clearInterval(this.state.syncInterval);
             this.state.syncInterval = null;
         }
-        
-        this.state.autoSyncEnabled = false;
     }
-    
-    async updateSyncedTimer() {
-        if (!this.state.resetTime || !this.state.autoSyncEnabled) {
-            return;
-        }
-        
-        const now = new Date();
-        const diff = this.state.resetTime - now;
-        
-        // If reset time has passed, clear everything
-        if (diff <= 0) {
+
+    /**
+     * Push remaining-time-until-reset into the timer. Called immediately and on
+     * a 1-minute interval to correct drift.
+     */
+    syncTimerToReset() {
+        if (!this.state.resetTime || !this.timerManager) return;
+
+        const diffMs = this.state.resetTime - new Date();
+        if (diffMs <= 0) {
             this.stopSync();
-            await this.handleUsageLimitTimerExpiry();
+            this.handleUsageLimitTimerExpiry();
             return;
         }
-        
-        // Update timer to match remaining time
-        if (this.timerManager && this.state.waiting) {
-            const seconds = Math.floor(diff / 1000);
-            
-            // Only update if timer isn't already at correct value
-            const currentTarget = this.timerManager.getTargetDateTime();
-            const targetDiff = Math.abs(currentTarget - this.state.resetTime);
-            
-            if (targetDiff > 60000) { // More than 1 minute difference
-                this.timerManager.start(seconds);
-                this.eventBus.emit('log:action', {
-                    message: `Synced timer to usage limit: ${Math.floor(seconds / 60)} minutes remaining`,
-                    type: 'info'
-                });
-            }
+
+        const seconds = Math.floor(diffMs / 1000);
+        const currentRemaining = this.timerManager.getRemainingSeconds();
+
+        // Only restart the countdown if it has drifted by >2s to avoid jitter.
+        if (!this.timerManager.isRunning() || Math.abs(currentRemaining - seconds) > 2) {
+            this.timerManager.startCountdown(seconds);
         }
     }
-    
-    async setResetTime(resetTime) {
-        try {
-            this.state.resetTime = resetTime;
-            
-            // Save to database
-            await ipcRenderer.invoke('db-set-app-state', 'usageLimitResetTime', resetTime.toISOString());
-            
-            // Start syncing if auto-sync is enabled
-            if (this.state.autoSyncEnabled && this.state.waiting) {
-                this.startSync();
-            }
-        } catch (error) {
-            console.error('Failed to save usage limit reset time:', error);
+
+    // ======= EXPIRY / CLEANUP =======
+
+    async handleUsageLimitTimerExpiry() {
+        this.eventBus.emit('log:action', {
+            message: 'Usage limit timer expired - injection gate released',
+            type: 'info'
+        });
+
+        this.state.waiting = false;
+        this.stopSync();
+
+        // Release the injection gate (R3).
+        if (this.messageQueueManager) {
+            this.messageQueueManager.usageLimitWaiting = false;
         }
+
+        this.appStateStore.setState('usageLimit.waiting', false);
+        this.appStateStore.setState('usageLimit.resetTime', null);
+
+        await this.clearTracking();
+        this.eventBus.emit('usageLimit:reset');
     }
-    
+
+    async clearTracking() {
+        this.state.terminals.clear();
+        this.state.processedMessages.clear();
+        this.state.cooldownUntil = null;
+        this.state.pendingReset = null;
+        this.state.resetTime = null;
+        this.state.timerOriginalValues = null;
+        this.stopSync();
+    }
+
+    // ======= MODAL (best-effort UI) =======
+
+    displayModal(resetTime) {
+        const modal = document.getElementById('usage-limit-modal');
+        if (!modal) return;
+
+        this.state.modalShowing = true;
+        modal.classList.add('show');
+
+        const resetTimeSpan = document.getElementById('reset-time');
+        if (resetTimeSpan) {
+            resetTimeSpan.textContent = resetTime.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        }
+
+        const yesBtn = document.getElementById('usage-limit-yes');
+        const noBtn = document.getElementById('usage-limit-no');
+        if (yesBtn) yesBtn.onclick = () => this.dismissModal();
+        if (noBtn) noBtn.onclick = () => this.dismissModal();
+    }
+
+    dismissModal() {
+        const modal = document.getElementById('usage-limit-modal');
+        if (modal) modal.classList.remove('show');
+        this.state.modalShowing = false;
+    }
+
+    // ======= PERSISTENCE / RESTORE =======
+
     async loadResetTime() {
         try {
-            const savedTime = await ipcRenderer.invoke('db-get-app-state', 'usageLimitResetTime');
-            if (savedTime) {
-                const resetTime = new Date(savedTime);
-                
-                // Check if reset time is still in the future
-                if (resetTime > new Date()) {
-                    this.state.resetTime = resetTime;
-                    
-                    // Start sync if waiting
-                    if (this.state.waiting && this.state.autoSyncEnabled) {
-                        this.startSync();
-                    }
-                } else {
-                    // Reset time has passed, clear it
-                    await ipcRenderer.invoke('db-set-app-state', 'usageLimitResetTime', '');
-                }
+            const saved = this.appStateStore.getState('usageLimit.resetTime');
+            if (!saved) return;
+            const resetTime = new Date(saved);
+            if (resetTime > new Date()) {
+                await this.beginWaiting(resetTime);
+            } else {
+                this.appStateStore.setState('usageLimit.resetTime', null);
+                this.appStateStore.setState('usageLimit.waiting', false);
             }
         } catch (error) {
             console.error('Failed to load usage limit reset time:', error);
         }
     }
-    
-    // ======= STATE MANAGEMENT =======
-    async handleUsageLimitTimerExpiry() {
-        this.eventBus.emit('log:action', {
-            message: 'Usage limit timer expired - resuming normal operation',
-            type: 'info'
-        });
-        
-        // Clear waiting state
-        this.state.waiting = false;
-        await this.appStateStore.set('usageLimitWaiting', false);
-        
-        // Resume injection
-        if (this.injectionManager) {
-            this.injectionManager.resumeInjection('usage-limit-expired');
-            this.injectionManager.setUsageLimitWaiting(false);
-        }
-        
-        // Restore original timer if saved
-        if (this.state.timerOriginalValues && this.timerManager) {
-            const { targetDateTime, duration } = this.state.timerOriginalValues;
-            if (targetDateTime) {
-                const remaining = targetDateTime - new Date();
-                if (remaining > 0) {
-                    this.timerManager.start(Math.floor(remaining / 1000));
-                }
-            }
-            this.state.timerOriginalValues = null;
-        }
-        
-        // Clear tracking
-        await this.clearTracking();
-        
-        // Emit event
-        this.eventBus.emit('usageLimit:reset');
-    }
-    
-    async clearTracking() {
-        try {
-            // Clear database tracking
-            await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTime', null);
-            await ipcRenderer.invoke('db-set-app-state', 'usageLimitModalLastResetTimestamp', null);
-            await ipcRenderer.invoke('db-set-app-state', 'usageLimitResetTime', '');
-            await ipcRenderer.invoke('db-save-setting', 'lastUsageLimitMessage', null);
-            
-            // Clear local state
-            this.state.terminals.clear();
-            this.state.processedMessages.clear();
-            this.state.cooldownUntil = null;
-            this.state.pendingReset = null;
-            
-            // Stop sync
-            this.stopSync();
-            
-        } catch (error) {
-            console.error('Error clearing usage limit tracking:', error);
-        }
-    }
-    
-    async getStatus() {
-        const firstDetected = await ipcRenderer.invoke('db-get-setting', 'usageLimitFirstDetected');
-        
-        if (!firstDetected) {
-            return {
-                message: 'No usage limit auto-disable timer active',
-                firstDetected: null
-            };
-        }
-        
-        const detectedTime = new Date(firstDetected);
-        const now = new Date();
-        const hoursSince = (now - detectedTime) / 3600000;
-        const hoursRemaining = Math.max(0, 24 - hoursSince);
-        
-        return {
-            message: `Usage limit auto-disable timer: ${hoursRemaining.toFixed(1)} hours remaining`,
-            firstDetected: detectedTime.toLocaleString()
-        };
-    }
-    
-    async resetTimer() {
-        await ipcRenderer.invoke('db-save-setting', 'usageLimitFirstDetected', null);
-        this.eventBus.emit('log:action', {
-            message: 'Usage limit auto-disable timer has been reset',
-            type: 'info'
-        });
-        return true;
-    }
-    
-    // ======= PUBLIC API =======
-    isWaiting() {
-        return this.state.waiting;
-    }
-    
-    isModalShowing() {
-        return this.state.modalShowing;
-    }
-    
-    getResetTime() {
-        return this.state.resetTime;
-    }
-    
-    getTerminals() {
-        return Array.from(this.state.terminals);
-    }
-    
+
     async initialize() {
-        // Load saved state
-        const savedWaiting = await this.appStateStore.get('usageLimitWaiting');
-        if (savedWaiting) {
-            this.state.waiting = true;
-        }
-        
-        // Load reset time
         await this.loadResetTime();
     }
-    
-    // Debug mode support
-    async showDebugModal(resetTimeString, exactResetTime) {
-        this.eventBus.emit('log:action', {
-            message: `DEBUG: Showing usage limit modal for ${resetTimeString}`,
-            type: 'info'
-        });
-        await this.showModal(null, null, exactResetTime);
+
+    // ======= STATUS / DEBUG =======
+
+    async getStatus() {
+        if (!this.state.waiting || !this.state.resetTime) {
+            return { message: 'No usage limit active', resetTime: null };
+        }
+        const minutes = Math.max(0, Math.floor((this.state.resetTime - new Date()) / 60000));
+        return {
+            message: `Usage limit active - resets in ${minutes} minute(s) at ${this.state.resetTime.toLocaleTimeString()}`,
+            resetTime: this.state.resetTime
+        };
     }
+
+    resetTimer() {
+        this.handleUsageLimitTimerExpiry();
+        this.eventBus.emit('log:action', { message: 'Usage limit manually cleared', type: 'info' });
+        return true;
+    }
+
+    // ======= PUBLIC API =======
+    isWaiting() { return this.state.waiting; }
+    isModalShowing() { return this.state.modalShowing; }
+    getResetTime() { return this.state.resetTime; }
+    getTerminals() { return Array.from(this.state.terminals); }
 }
 
 module.exports = UsageLimitManager;

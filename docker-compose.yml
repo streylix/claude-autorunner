@@ -1,0 +1,46 @@
+# Brings up the Django backend (port 8123) + Postgres.
+#   docker compose up -d --wait
+# The Electron app talks to the backend over HTTP/WS; it never runs docker itself.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ccbot
+      POSTGRES_USER: ccbot
+      POSTGRES_PASSWORD: ccbot
+    volumes:
+      - ccbot-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccbot -d ccbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8123:8123"
+    environment:
+      # Discrete PG vars consumed by terminal_backend/settings.py.
+      POSTGRES_DB: ccbot
+      POSTGRES_USER: ccbot
+      POSTGRES_PASSWORD: ccbot
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      DJANGO_SETTINGS_MODULE: terminal_backend.settings
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # /api/queue/health/ is the lightweight JSON health endpoint
+      # (mounted at api/queue/ -> message_queue.urls -> health/).
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8123/api/queue/health/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  ccbot-pgdata:

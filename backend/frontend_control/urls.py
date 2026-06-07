@@ -29,4 +29,7 @@ urlpatterns = [
     
     # Queue status (read-only)
     path('queue/status/', views.queue_status, name='queue_status'),
+
+    # Frontend log shipping (entries echoed to stdout for docker logs)
+    path('logs/frontend/', views.frontend_logs, name='frontend_logs'),
 ]

@@ -32,6 +32,40 @@ if [ "$1" == "--setup" ]; then
     echo ""
 fi
 
+# Check for --docker flag (or DOCKER=1 env): run the backend in containers
+# instead of the local venv. The default flow below is unchanged.
+USE_DOCKER=false
+if [ "$1" == "--docker" ] || [ "$DOCKER" == "1" ]; then
+    USE_DOCKER=true
+fi
+
+if [ "$USE_DOCKER" == "true" ]; then
+    if ! docker compose version &> /dev/null; then
+        echo "❌ 'docker compose' is not available. Install Docker Desktop, or run ./start.sh without --docker to use the local venv."
+        exit 1
+    fi
+
+    echo "🐳 Starting Django backend + Postgres via docker compose..."
+    docker compose up -d --wait
+    if [ $? -ne 0 ]; then
+        echo "❌ docker compose failed to bring up the backend. Check 'docker compose logs'."
+        exit 1
+    fi
+    echo "✅ Backend healthy on http://localhost:8123"
+
+    if [ ! -d "node_modules" ]; then
+        echo "⚠️  Node modules not found. Running npm install..."
+        npm install || { echo "❌ npm install failed."; exit 1; }
+    fi
+
+    echo "🖥️  Starting Auto-Injector app..."
+    npm start
+
+    echo "🧹 Stopping backend containers..."
+    docker compose down
+    exit 0
+fi
+
 # Run setup only if --setup flag is provided
 if [ "$RUN_SETUP" == "true" ]; then
     # Check if npm is installed
@@ -306,18 +340,18 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 # Start Django backend in background
-echo "📡 Starting Django backend on port 8001..."
+echo "📡 Starting Django backend on port 8123..."
 cd backend
 source venv/bin/activate
-python manage.py runserver 127.0.0.1:8001 --noreload &
+python manage.py runserver 127.0.0.1:8123 --noreload &
 BACKEND_PID=$!
 cd ..
 
 # Function to check if backend is ready
 check_backend() {
     # Try multiple endpoints to ensure backend is ready
-    curl -s http://127.0.0.1:8001/admin/ > /dev/null 2>&1 || \
-    curl -s http://127.0.0.1:8001/api/ > /dev/null 2>&1
+    curl -s http://127.0.0.1:8123/admin/ > /dev/null 2>&1 || \
+    curl -s http://127.0.0.1:8123/api/ > /dev/null 2>&1
 }
 
 # Wait for backend to start with timeout
@@ -348,7 +382,7 @@ while ! check_backend; do
     fi
 done
 
-echo "✅ Django backend is running on http://127.0.0.1:8001"
+echo "✅ Django backend is running on http://127.0.0.1:8123"
 echo ""
 echo "📝 Note: If you see errors above, the backend may still work."
 echo "   The frontend will run with or without the backend."
