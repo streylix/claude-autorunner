@@ -5581,3 +5581,39 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     outline: 2px solid var(--accent-primary);
     outline-offset: 1px;
 }
+
+/* Manager instance: a real terminal, just not in the visible grid */
+.terminal-wrapper.manager-hidden { display: none !important; }
+
+/* Icon buttons: unified sizing, modern weight, graphite hover states */
+.icon-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+.icon-btn:hover { background: var(--bg-quaternary); color: var(--text-primary); }
+.icon-btn svg, .collapse-toggle svg, .timer-btn svg, .footer-btn svg, .settings-cog svg {
+    width: 16px;
+    height: 16px;
+    stroke-width: 1.75;
+}
+.sidebar-nav-btn.active {
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+}
+
+/* Timer panel: collapsing dismisses the ENTIRE card body (buttons + display),
+   leaving only the AUTO-INJECT AT label row with its chevron */
+#timer-section.collapsed #timer-play-pause-btn,
+#timer-section.collapsed #timer-stop-btn,
+#timer-section.collapsed .timer-display-row {
+    display: none;
+}

@@ -24,6 +24,7 @@ const SoundManager = require('./src/features/SoundManager');
 const PreferenceManager = require('./src/features/PreferenceManager');
 const TimerManager = require('./src/features/TimerManager');
 const ActionLogManager = require('./src/features/ActionLogManager');
+const ManagerInstance = require('./src/features/ManagerInstance');
 const UIFocusManager = require('./src/ui/UIFocusManager');
 
 // Import utilities
@@ -147,6 +148,9 @@ class TerminalGUI {
         // Left sidebar: action log feed + view navigation
         this.actionLogManager = new ActionLogManager(this.eventBus, this.appStateStore);
         this.actionLogManager.initialize();
+
+        // Hidden manager Claude instance (terminal 0) - steers the interface
+        this.managerInstance = new ManagerInstance(this.eventBus, this.appStateStore, this.ipcHandler, this);
 
         // Wire the usage-limit manager to the timer + message queue so it can
         // drive the countdown (R2) and hold the injection gate (R3). Without
@@ -485,9 +489,15 @@ class TerminalGUI {
         }
     }
     
-    createTerminal() {
-        const terminalId = this.terminalManager.terminalIdCounter++;
-        
+    createTerminal(options = {}) {
+        // options.id: explicit terminal id (e.g. 0 = the hidden manager instance)
+        // options.directory: cwd for the PTY
+        // options.hidden: keep the wrapper out of the visible grid
+        // options.skipActive: don't steal focus/active state
+        const terminalId = options.id !== undefined
+            ? options.id
+            : this.terminalManager.terminalIdCounter++;
+
         // Create xterm instance
         const terminal = new Terminal({
             theme: this.terminalManager.getTerminalTheme(),
@@ -496,26 +506,39 @@ class TerminalGUI {
             cursorBlink: true,
             allowProposedApi: true
         });
-        
+
         // Add addons
         const fitAddon = new FitAddon();
         const searchAddon = new SearchAddon();
         terminal.loadAddon(fitAddon);
         terminal.loadAddon(searchAddon);
-        
-        // Create container
-        const container = document.createElement('div');
-        container.className = 'terminal-wrapper';
-        container.dataset.terminalId = terminalId;
-        
-        const terminalsContainer = document.getElementById('terminals-container');
-        if (terminalsContainer) {
-            terminalsContainer.appendChild(container);
+
+        // Mount point: index.html ships a full wrapper (header chrome + search
+        // overlay + .terminal-container mount) for terminal 1 — reuse it when
+        // present instead of appending a chrome-less duplicate. New/hidden
+        // terminals get a dynamically built wrapper.
+        let container;
+        let mount = document.querySelector(`.terminal-container[data-terminal-container="${terminalId}"]`);
+        if (mount && !options.hidden) {
+            container = mount.closest('.terminal-wrapper') || mount;
+        } else {
+            container = document.createElement('div');
+            container.className = options.hidden ? 'terminal-wrapper manager-hidden' : 'terminal-wrapper';
+            container.dataset.terminalId = terminalId;
+
+            const terminalsContainer = document.getElementById('terminals-container');
+            if (terminalsContainer) {
+                terminalsContainer.appendChild(container);
+            }
+            mount = container;
         }
-        
+
         // Open terminal
-        terminal.open(container);
+        terminal.open(mount);
         fitAddon.fit();
+        if (!options.skipActive) {
+            terminal.focus(); // blinking caret from the first paint
+        }
         
         // Set up data handler (main expects an { terminalId, data } payload)
         terminal.onData((data) => {
@@ -546,19 +569,22 @@ class TerminalGUI {
         this.terminalStateManager.createTerminal({
             id: terminalId,
             terminal,
-            directory: process.cwd()
+            directory: options.directory || process.cwd(),
+            title: options.title
         });
-        
+
         // Spawn the PTY in main (channel + payload shape match main.js's handler)
-        ipcRenderer.send('terminal-start', { terminalId, directory: null });
-        
-        // Set as active
-        this.setActiveTerminal(terminalId);
-        
+        ipcRenderer.send('terminal-start', { terminalId, directory: options.directory || null });
+
+        // Set as active (manager and other background terminals skip this)
+        if (!options.skipActive) {
+            this.setActiveTerminal(terminalId);
+        }
+
         // Emit event
-        this.eventBus.emit('terminal:created', { terminalId });
-        
-        console.log(`✅ Terminal ${terminalId} created`);
+        this.eventBus.emit('terminal:created', { terminalId, hidden: !!options.hidden });
+
+        console.log(`✅ Terminal ${terminalId} created${options.hidden ? ' (hidden)' : ''}`);
         return terminalId;
     }
     
@@ -618,7 +644,10 @@ class TerminalGUI {
     finalizeInitialization() {
         // Create initial terminal
         this.createTerminal();
-        
+
+        // Boot the manager instance if the user configured a directory for it
+        this.managerInstance.startIfConfigured();
+
         // Hide loading screen
         if (this.loadingManager) {
             this.loadingManager.completeStep('finalization');

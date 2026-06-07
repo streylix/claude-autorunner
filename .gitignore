@@ -231,7 +231,6 @@ test_screenshots
 .roomodes
 addmsg
 listmsg
-CLAUDE.md
 claude-flow
 test-results
 
@@ -347,4 +346,3 @@ claudebot_internal/
 .mcp.json
 memory/
 data/
-*.md

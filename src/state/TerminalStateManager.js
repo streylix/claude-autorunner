@@ -24,7 +24,7 @@ class TerminalStateManager {
      * @returns {Object} Terminal data object
      */
     createTerminal(config = {}) {
-        const id = config.id || this.terminalIdCounter++;
+        const id = config.id ?? this.terminalIdCounter++;
         
         const terminalData = {
             id,

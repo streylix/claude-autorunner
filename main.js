@@ -517,6 +517,23 @@ let clearTriggerWatcher = null;
 let terminalStatusWatcher = null;
 
 function setupIpcHandlers() {
+  // Manager instance support: resume detection + role bootstrap for the
+  // hidden Claude session that monitors/steers the interface (terminal 0)
+  ipcMain.handle('manager-prepare', async (event, managerDir) => {
+    const { hasResumableSession, ensureManagerClaudeMd } = require('./src/main/manager-session');
+    try {
+      const stat = require('fs').statSync(managerDir);
+      if (!stat.isDirectory()) return { ok: false, error: 'not a directory' };
+    } catch {
+      return { ok: false, error: 'directory does not exist' };
+    }
+    return {
+      ok: true,
+      resumable: hasResumableSession(managerDir),
+      claudeMd: ensureManagerClaudeMd(managerDir)
+    };
+  });
+
   // Summarize a completion's text via a headless Claude instance (opt-in
   // "plain English" mode for completions; costs quota, so renderer gates it
   // behind a preference). Returns null on any failure - caller falls back to
