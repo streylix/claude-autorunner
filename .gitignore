@@ -340,7 +340,6 @@ memory/
 .roo/
 .roomodes
 claude-flow*
-CLAUDE*
 claude-todo/
 claudebot*
 claudebot_internal/
