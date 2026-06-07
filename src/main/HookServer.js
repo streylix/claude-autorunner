@@ -32,6 +32,9 @@ class HookServer {
         this.onEvent = handlers.onEvent;
         this.onQueueAdd = handlers.onQueueAdd || null;
         this.getState = handlers.getState || null;
+        // onControl(action, payload) -> Promise<result> - round-trip to the
+        // renderer for operations that need a response (create/update/delete)
+        this.onControl = handlers.onControl || null;
         this.server = null;
         this.port = null;
         this.token = crypto.randomBytes(16).toString('hex');
@@ -66,6 +69,40 @@ class HookServer {
             const state = this.getState ? this.getState() : null;
             res.writeHead(state ? 200 : 503, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(state || { error: 'state unavailable' }));
+            return;
+        }
+
+        // Terminal management: round-trip to the renderer and answer with
+        // its result. Actions: create {directory?, title?, color?},
+        // update {terminalId, title?, color?}, delete {terminalId}.
+        const CONTROL_ROUTES = {
+            '/terminal/create': 'terminal-create',
+            '/terminal/update': 'terminal-update',
+            '/terminal/delete': 'terminal-delete'
+        };
+        if (req.method === 'POST' && CONTROL_ROUTES[req.url]) {
+            const action = CONTROL_ROUTES[req.url];
+            let body = '';
+            req.on('data', (chunk) => {
+                body += chunk;
+                if (body.length > MAX_BODY_BYTES) req.destroy();
+            });
+            req.on('end', async () => {
+                if (!this.onControl) {
+                    res.writeHead(503);
+                    res.end();
+                    return;
+                }
+                try {
+                    const payload = body ? JSON.parse(body) : {};
+                    const result = await this.onControl(action, payload);
+                    res.writeHead(result && result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(result || { ok: false, error: 'no result' }));
+                } catch (error) {
+                    res.writeHead(error.message === 'control timeout' ? 504 : 400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: error.message }));
+                }
+            });
             return;
         }
 

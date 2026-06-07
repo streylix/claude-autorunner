@@ -439,6 +439,32 @@ app.whenReady().then(async () => {
       rendererStateCache = snapshot;
     });
 
+    // Control-request round trip: HookServer endpoints that need an answer
+    // (terminal create/update/delete) correlate by requestId.
+    const pendingControlRequests = new Map();
+    let controlRequestCounter = 0;
+    ipcMain.on('control-response', (event, { requestId, result }) => {
+      const resolve = pendingControlRequests.get(requestId);
+      if (resolve) {
+        pendingControlRequests.delete(requestId);
+        resolve(result);
+      }
+    });
+    const sendControlRequest = (action, payload) => new Promise((resolve, reject) => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        reject(new Error('window unavailable'));
+        return;
+      }
+      const requestId = ++controlRequestCounter;
+      pendingControlRequests.set(requestId, resolve);
+      mainWindow.webContents.send('control-request', { requestId, action, payload });
+      setTimeout(() => {
+        if (pendingControlRequests.delete(requestId)) {
+          reject(new Error('control timeout'));
+        }
+      }, 5000);
+    });
+
     hookServer = new HookServer({
       onEvent: (payload) => {
         // Stop events: enrich with Claude's last message from the session
@@ -455,7 +481,8 @@ app.whenReady().then(async () => {
           mainWindow.webContents.send('queue-add-request', payload);
         }
       },
-      getState: () => rendererStateCache
+      getState: () => rendererStateCache,
+      onControl: sendControlRequest
     });
     const port = await hookServer.start();
     safeLog('[Main] Hook server listening on 127.0.0.1:' + port);

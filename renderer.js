@@ -355,6 +355,18 @@ class TerminalGUI {
             });
         });
 
+        // Control requests needing a response (terminal create/update/delete
+        // via the HookServer) - correlated back to main by requestId
+        ipcRenderer.on('control-request', (event, { requestId, action, payload }) => {
+            let result;
+            try {
+                result = this.handleControlRequest(action, payload);
+            } catch (error) {
+                result = { ok: false, error: error.message };
+            }
+            ipcRenderer.send('control-response', { requestId, result });
+        });
+
         // Mirror terminal state to main so the HookServer's GET /state can
         // answer external controllers without a renderer round trip.
         const sendStateSnapshot = () => {
@@ -761,6 +773,82 @@ class TerminalGUI {
 
         // Emit event
         this.eventBus.emit('terminal:active', { terminalId });
+    }
+
+    /**
+     * Update a terminal tab's metadata (title and/or color) and reflect it in
+     * the DOM chrome immediately. Used by the control API and any UI rename.
+     */
+    setTerminalMetadata(terminalId, { title, color } = {}) {
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData) return false;
+
+        const updates = {};
+        if (typeof title === 'string' && title.trim()) updates.title = title.trim();
+        if (typeof color === 'string' && color.trim()) updates.color = color.trim();
+        if (Object.keys(updates).length === 0) return false;
+
+        this.terminalStateManager.updateTerminal(terminalId, updates);
+
+        const wrapper = terminalData.container;
+        if (updates.title) {
+            const titleEl = wrapper.querySelector('.terminal-title');
+            if (titleEl) titleEl.textContent = updates.title;
+        }
+        if (updates.color) {
+            const dot = wrapper.querySelector('.terminal-color-dot');
+            if (dot) dot.style.backgroundColor = updates.color;
+        }
+
+        this.eventBus.emit('terminal:metadata', { terminalId, ...updates });
+        if (terminalId === this.queueTargetTerminalId) this.updateSelectorDisplay(terminalId);
+        return true;
+    }
+
+    /**
+     * Handle a control-API request (terminal create/update/delete) and return
+     * a structured { ok, ... } result for the HookServer to relay.
+     */
+    handleControlRequest(action, payload = {}) {
+        if (action === 'terminal-create') {
+            const id = this.createTerminal({
+                directory: payload.directory || null,
+                title: payload.title || undefined,
+                color: payload.color || undefined
+            });
+            this.eventBus.emit('log:action', {
+                message: `Terminal ${id} created via control API${payload.directory ? ' in ' + payload.directory : ''}`,
+                type: 'success'
+            });
+            return { ok: true, terminalId: id };
+        }
+
+        if (action === 'terminal-update') {
+            const terminalId = parseInt(payload.terminalId, 10);
+            if (terminalId === ManagerInstance.TERMINAL_ID) {
+                return { ok: false, error: 'the manager terminal cannot be renamed' };
+            }
+            const ok = this.setTerminalMetadata(terminalId, { title: payload.title, color: payload.color });
+            return ok ? { ok: true, terminalId } : { ok: false, error: 'terminal not found or nothing to update' };
+        }
+
+        if (action === 'terminal-delete') {
+            const terminalId = parseInt(payload.terminalId, 10);
+            if (terminalId === ManagerInstance.TERMINAL_ID) {
+                return { ok: false, error: 'the manager terminal cannot be deleted via the API' };
+            }
+            if (!this.terminals.has(terminalId)) {
+                return { ok: false, error: 'terminal not found' };
+            }
+            this.closeTerminal(terminalId);
+            this.eventBus.emit('log:action', {
+                message: `Terminal ${terminalId} deleted via control API`,
+                type: 'warning'
+            });
+            return { ok: true, terminalId };
+        }
+
+        return { ok: false, error: `unknown control action: ${action}` };
     }
     
     finalizeInitialization() {
