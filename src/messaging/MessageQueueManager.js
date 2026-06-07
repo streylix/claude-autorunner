@@ -1068,9 +1068,16 @@ class MessageQueueManager {
             if (typeof callback === 'function') callback();
             return;
         }
-        this.sendTerminalInput(tid, content + '\n');
-        this.eventBus.emit('message:injected', { terminalId: tid, content });
-        if (typeof callback === 'function') callback();
+        // PTY Enter is carriage return (\r), NOT \n. TUIs like Claude Code
+        // treat \n as a literal newline in the input box and never submit;
+        // send the text first, then \r as a separate write after a short delay
+        // so the TUI has flushed the pasted content before the submit lands.
+        this.sendTerminalInput(tid, content);
+        setTimeout(() => {
+            this.sendTerminalInput(tid, '\r');
+            this.eventBus.emit('message:injected', { terminalId: tid, content });
+            if (typeof callback === 'function') callback();
+        }, 150);
     }
 
     /**
