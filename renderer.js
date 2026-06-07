@@ -151,6 +151,7 @@ class TerminalGUI {
 
         // Hidden manager Claude instance (terminal 0) - steers the interface
         this.managerInstance = new ManagerInstance(this.eventBus, this.appStateStore, this.ipcHandler, this);
+        this.managerInstance.initializeUI();
 
         // Wire the usage-limit manager to the timer + message queue so it can
         // drive the countdown (R2) and hold the injection gate (R3). Without
@@ -535,7 +536,14 @@ class TerminalGUI {
 
         // Open terminal
         terminal.open(mount);
-        fitAddon.fit();
+        if (options.hidden) {
+            // fit() on a display:none container computes garbage dimensions -
+            // give concealed terminals (the manager) a sane fixed size; the
+            // dispatch tab re-fits when it reveals the terminal.
+            terminal.resize(120, 30);
+        } else {
+            fitAddon.fit();
+        }
         if (!options.skipActive) {
             terminal.focus(); // blinking caret from the first paint
         }

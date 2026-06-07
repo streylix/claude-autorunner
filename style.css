@@ -5617,3 +5617,84 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 #timer-section.collapsed .timer-display-row {
     display: none;
 }
+
+/* ===== Manager dispatch tab ===== */
+.manager-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--terminal-bg);
+}
+.manager-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-primary);
+}
+.manager-title {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent-primary);
+}
+#manager-status-badge {
+    font-size: 11px;
+    font-family: 'SF Mono', Monaco, monospace;
+    padding: 2px 10px;
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    color: var(--text-tertiary);
+}
+#manager-status-badge[data-status="running"] {
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+}
+#manager-status-badge[data-status="prompted"] {
+    color: var(--accent-warning);
+    background: color-mix(in srgb, var(--accent-warning) 14%, transparent);
+}
+.manager-dispatch {
+    display: flex;
+    gap: 6px;
+    flex: 1;
+}
+#manager-dispatch-input {
+    flex: 1;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    color: var(--text-primary);
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 13px;
+}
+#manager-dispatch-input::placeholder { color: var(--text-quaternary); }
+.manager-terminal-mount { flex: 1; min-height: 0; padding: 4px; }
+.manager-terminal-mount .terminal-wrapper { height: 100%; }
+.manager-setup {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-width: 520px;
+    margin: 60px auto;
+    padding: 0 20px;
+}
+.manager-setup-text { color: var(--text-tertiary); font-size: 13px; line-height: 1.5; }
+.manager-setup-row { display: flex; gap: 8px; }
+#manager-directory-input {
+    flex: 1;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    color: var(--text-primary);
+    padding: 7px 10px;
+    font-family: 'SF Mono', Monaco, monospace;
+    font-size: 12px;
+}
+#manager-tab-btn.active {
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+}

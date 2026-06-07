@@ -568,10 +568,14 @@ function setupIpcHandlers() {
     
     if (startDirectory) {
       try {
-        const dirStat = fs.statSync(startDirectory);
+        // NOTE: top-level `fs` is require('fs').promises - sync APIs live on
+        // the base module. (statSync on the promises API silently threw here
+        // for ages, making every directory request fall back to the app cwd.)
+        const fsSync = require('fs');
+        const dirStat = fsSync.statSync(startDirectory);
         if (dirStat.isDirectory()) {
           // Additional check - verify we can access the directory
-          fs.accessSync(startDirectory, fs.constants.R_OK);
+          fsSync.accessSync(startDirectory, fsSync.constants.R_OK);
           validatedCwd = startDirectory;
           directoryValidationResult = 'valid';
           safeLog('Terminal', terminalId, 'validated directory:', startDirectory);

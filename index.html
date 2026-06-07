@@ -144,6 +144,30 @@
             </div>
             
             <div class="terminal-section">
+                <!-- Manager view: swaps in for the terminal grid (terminal 999) -->
+                <div class="manager-view" id="manager-view" style="display: none;">
+                    <div class="manager-header">
+                        <button class="icon-btn" id="manager-back-btn" title="Back to terminals" data-test-id="manager-back-btn">
+                            <i data-lucide="arrow-left"></i>
+                        </button>
+                        <span class="manager-title">Manager</span>
+                        <span id="manager-status-badge" data-status="idle">...</span>
+                        <div class="manager-dispatch">
+                            <input type="text" id="manager-dispatch-input" placeholder="Instruct the manager... (queued; injects when it's idle)" data-test-id="manager-dispatch-input">
+                            <button class="icon-btn" id="manager-dispatch-btn" title="Queue instruction" data-test-id="manager-dispatch-btn">
+                                <i data-lucide="send-horizontal"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="manager-setup" id="manager-setup" style="display: none;">
+                        <p class="manager-setup-text">No manager running. Point it at a home directory — a role CLAUDE.md is written there automatically, and the session resumes across restarts.</p>
+                        <div class="manager-setup-row">
+                            <input type="text" id="manager-directory-input" placeholder="/Users/you/claude-manager" data-test-id="manager-directory-input">
+                            <button class="footer-btn" id="manager-start-btn" data-test-id="manager-start-btn">Start manager</button>
+                        </div>
+                    </div>
+                    <div class="manager-terminal-mount" id="manager-terminal-mount"></div>
+                </div>
                 <div class="terminals-container" id="terminals-container">
                     <div class="terminal-wrapper" data-terminal-id="1">
                         <div class="terminal-header">
@@ -155,6 +179,9 @@
                                 <span class="terminal-title editable" contenteditable="false">Terminal 1</span>
                                 <button class="icon-btn add-terminal-btn hotkey-enabled" id="add-terminal-btn" title="Add new terminal" data-hotkey="Cmd+T" data-test-id="add-terminal-btn">
                                     <i data-lucide="plus"></i>
+                                </button>
+                                <button class="icon-btn hotkey-enabled" id="manager-tab-btn" title="Manager instance" data-hotkey="Cmd+M" data-test-id="manager-tab-btn">
+                                    <i data-lucide="bot"></i>
                                 </button>
                             </div>
                             <span class="terminal-status" data-terminal-status="1"></span>
