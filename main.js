@@ -9,7 +9,12 @@ const fs = require('fs').promises;
 const unifiedStore = require('./src/storage/unified-store');
 const MigrationHelper = require('./src/storage/migration-helper');
 
+// Claude Code hook-based terminal state detection
+const HookServer = require('./src/main/HookServer');
+const { ensureClaudeHooks } = require('./src/main/claude-hooks-setup');
+
 let mainWindow;
+let hookServer = null;
 let ptyProcess; // Legacy single process support
 const ptyProcesses = new Map(); // Map of terminal ID to pty process
 let dataFilePath;
@@ -422,6 +427,27 @@ function showNotification(title, body) {
 
 app.whenReady().then(async () => {
   await initUnifiedStorage();
+
+  // Start hook event listener for Claude Code terminal state detection
+  try {
+    hookServer = new HookServer((payload) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('claude-hook-event', payload);
+      }
+    });
+    const port = await hookServer.start();
+    safeLog('[Main] Hook server listening on 127.0.0.1:' + port);
+
+    // Idempotently install guarded hooks into ~/.claude/settings.json
+    const hookResult = ensureClaudeHooks();
+    safeLog('[Main] Claude hooks setup:', hookResult.status,
+      hookResult.changed.length ? hookResult.changed.join(', ') : '(no changes needed)',
+      hookResult.error || '');
+  } catch (error) {
+    try { console.error('[Main] Hook server failed to start:', error); } catch (e) { /* ignore */ }
+    hookServer = null;
+  }
+
   createTray();
   createWindow();
   
@@ -531,13 +557,22 @@ function setupIpcHandlers() {
     
     safeLog('Starting terminal', terminalId, 'with shell:', shell, 'args:', shellArgs, 'validated cwd:', validatedCwd, 'directory validation:', directoryValidationResult);
     
+    // Tag this PTY's environment so Claude Code hooks inside it can identify
+    // the terminal and reach the app's hook server (no-ops if server is down)
+    const ccbotEnv = {
+      ...process.env,
+      CCBOT_TERMINAL_ID: String(terminalId),
+      CCBOT_PORT: hookServer ? String(hookServer.port) : '',
+      CCBOT_TOKEN: hookServer ? hookServer.token : ''
+    };
+
     try {
       const terminalProcess = pty.spawn(shell, shellArgs, {
         name: 'xterm-color',
         cols: 80,
         rows: 24,
         cwd: validatedCwd,
-        env: process.env,
+        env: ccbotEnv,
         useConpty: os.platform() === 'win32' // Use ConPTY on Windows for better compatibility
       });
       safeLog('Terminal', terminalId, 'process spawned successfully');
@@ -601,6 +636,11 @@ function setupIpcHandlers() {
             USER: process.env.USER
           };
         }
+
+        // Hook detection env vars must survive the fallback path too
+        fallbackEnv.CCBOT_TERMINAL_ID = String(terminalId);
+        fallbackEnv.CCBOT_PORT = hookServer ? String(hookServer.port) : '';
+        fallbackEnv.CCBOT_TOKEN = hookServer ? hookServer.token : '';
         
         const terminalProcess = pty.spawn(fallbackShell, fallbackArgs, {
           name: 'xterm-color',
@@ -1505,7 +1545,13 @@ app.on('before-quit', async (event) => {
     
     // Proper cleanup of all terminal processes
     await cleanupPtyProcesses();
-    
+
+    // Stop the hook event listener
+    if (hookServer) {
+      hookServer.close();
+      hookServer = null;
+    }
+
     // Clean up power save blocker
     if (powerSaveBlockerId !== null) {
       try {
