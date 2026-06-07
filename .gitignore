@@ -236,7 +236,6 @@ test-results
 
 analyze_functions.py
 test_auto_injector.py
-package-lock.json
 
 coordination
 claude-todo
