@@ -449,6 +449,21 @@ class TerminalGUI {
         // Queue-target terminal selector (the dropdown next to the input)
         this.setupTerminalSelector();
 
+        // Re-fit all visible terminals whenever grid membership changes
+        // (terminals share the row; column widths shift on add/remove/toggle)
+        const refitVisibleTerminals = () => {
+            requestAnimationFrame(() => {
+                this.terminals.forEach((data) => {
+                    if (!data.container.classList.contains('manager-hidden')) {
+                        try { data.fitAddon.fit(); } catch { /* not yet laid out */ }
+                    }
+                });
+            });
+        };
+        ['terminal:created', 'terminal:closed', 'manager:visibility']
+            .forEach((evt) => this.eventBus.on(evt, refitVisibleTerminals));
+        window.addEventListener('resize', refitVisibleTerminals);
+
         // Collapsible right-sidebar panels (Status, Timer) with persistence
         document.querySelectorAll('.collapse-toggle[data-collapse-target]').forEach((btn) => {
             const section = btn.closest('.collapsible-section');

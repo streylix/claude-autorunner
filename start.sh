@@ -44,6 +44,9 @@ if [ "$1" == "--venv" ] || [ "$VENV" == "1" ] || [ "$RUN_SETUP" == "true" ]; the
 elif ! docker compose version &> /dev/null; then
     print_warning "docker compose not available - falling back to the local venv backend"
     USE_DOCKER=false
+elif ! docker info &> /dev/null; then
+    print_warning "Docker daemon not running - falling back to the local venv backend (start Docker Desktop to use the default flow)"
+    USE_DOCKER=false
 fi
 
 if [ "$USE_DOCKER" == "true" ]; then

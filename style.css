@@ -5739,3 +5739,19 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     text-align: left;
 }
 .terminal-selector-item:hover { background: var(--bg-quaternary); color: var(--text-primary); }
+
+/* Terminal grid: visible terminals share the row (the legacy chunk system
+   died with src/managers/ - without this, terminal 2+ stacked off-screen) */
+.terminals-container {
+    display: grid !important;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    height: 100%;
+    min-height: 0;
+}
+.terminals-container > .terminal-wrapper {
+    height: 100% !important;
+    min-width: 0;
+    min-height: 0;
+}
+.terminals-container > .terminal-wrapper.manager-hidden { display: none !important; }
