@@ -5698,3 +5698,44 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     color: var(--accent-primary);
     background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
 }
+
+/* Manager as a grid terminal: yellow identity, non-renamable */
+.manager-terminal .terminal-title { color: var(--accent-warning); }
+.manager-terminal .terminal-header { border-bottom: 1px solid color-mix(in srgb, var(--accent-warning) 25%, transparent); }
+
+/* Manager setup overlay (centered over the terminal section) */
+.terminal-section { position: relative; }
+.manager-setup-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, var(--bg-secondary) 80%, transparent);
+}
+.manager-setup-overlay .manager-setup {
+    margin: 0;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 10px;
+    padding: 24px;
+    max-width: 520px;
+}
+
+/* Selector dropdown items */
+.terminal-selector-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+}
+.terminal-selector-item:hover { background: var(--bg-quaternary); color: var(--text-primary); }

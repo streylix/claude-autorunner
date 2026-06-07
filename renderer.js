@@ -149,7 +149,7 @@ class TerminalGUI {
         this.actionLogManager = new ActionLogManager(this.eventBus, this.appStateStore);
         this.actionLogManager.initialize();
 
-        // Hidden manager Claude instance (terminal 0) - steers the interface
+        // Hidden manager Claude instance (terminal 999) - steers the interface
         this.managerInstance = new ManagerInstance(this.eventBus, this.appStateStore, this.ipcHandler, this);
         this.managerInstance.initializeUI();
 
@@ -400,7 +400,8 @@ class TerminalGUI {
                 if (message) {
                     this.messageQueueManager.addMessage({
                         content: message,
-                        terminalId: this.activeTerminalId
+                        // Selector choice wins; falls back to the active terminal
+                        terminalId: this.queueTargetTerminalId ?? this.activeTerminalId
                     });
                     messageInput.value = '';
                 }
@@ -445,6 +446,9 @@ class TerminalGUI {
             });
         }
 
+        // Queue-target terminal selector (the dropdown next to the input)
+        this.setupTerminalSelector();
+
         // Collapsible right-sidebar panels (Status, Timer) with persistence
         document.querySelectorAll('.collapse-toggle[data-collapse-target]').forEach((btn) => {
             const section = btn.closest('.collapsible-section');
@@ -470,6 +474,75 @@ class TerminalGUI {
         console.log('🎮 DOM event handlers configured');
     }
     
+    /**
+     * Terminal selector: picks which terminal queued messages target.
+     * Lists every visible terminal plus the Manager (yellow) when running.
+     */
+    setupTerminalSelector() {
+        this.queueTargetTerminalId = null; // null = follow the active terminal
+        const btn = document.getElementById('terminal-selector-btn');
+        const dropdown = document.getElementById('terminal-selector-dropdown');
+        if (!btn || !dropdown) return;
+
+        const repopulate = () => {
+            dropdown.innerHTML = '';
+            this.terminals.forEach((data, id) => {
+                const isManager = this.managerInstance && id === ManagerInstance.TERMINAL_ID;
+                if (isManager && !this.managerInstance.isRunning()) return;
+
+                const state = this.terminalStateManager.getTerminal(id);
+                const item = document.createElement('button');
+                item.className = 'terminal-selector-item';
+                item.dataset.terminalId = id;
+
+                const dot = document.createElement('span');
+                dot.className = 'terminal-selector-dot';
+                dot.style.backgroundColor = isManager ? 'var(--accent-warning)' : 'var(--accent-primary)';
+
+                const label = document.createElement('span');
+                label.textContent = isManager ? 'Manager' : ((state && state.title) || `Terminal ${id}`);
+
+                item.appendChild(dot);
+                item.appendChild(label);
+                item.addEventListener('click', () => {
+                    this.queueTargetTerminalId = id;
+                    this.updateSelectorDisplay(id);
+                    dropdown.style.display = 'none';
+                });
+                dropdown.appendChild(item);
+            });
+        };
+
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const open = dropdown.style.display !== 'none';
+            if (!open) repopulate();
+            dropdown.style.display = open ? 'none' : '';
+        });
+        document.addEventListener('click', () => {
+            dropdown.style.display = 'none';
+        });
+
+        // Keep the selector honest as terminals come and go
+        ['terminal:created', 'terminal:closed', 'manager:started', 'manager:visibility']
+            .forEach((evt) => this.eventBus.on(evt, repopulate));
+        this.eventBus.on('terminal:closed', ({ terminalId }) => {
+            if (this.queueTargetTerminalId === terminalId) {
+                this.queueTargetTerminalId = null;
+                this.updateSelectorDisplay(this.activeTerminalId);
+            }
+        });
+    }
+
+    updateSelectorDisplay(terminalId) {
+        const text = document.querySelector('.terminal-selector-text');
+        const dot = document.querySelector('.terminal-selector-btn .terminal-selector-dot');
+        const isManager = this.managerInstance && terminalId === ManagerInstance.TERMINAL_ID;
+        const state = this.terminalStateManager.getTerminal(terminalId);
+        if (text) text.textContent = isManager ? 'Manager' : ((state && state.title) || `Terminal ${terminalId}`);
+        if (dot) dot.style.backgroundColor = isManager ? 'var(--accent-warning)' : 'var(--accent-primary)';
+    }
+
     setupTerminalUI() {
         // Terminal tab handlers
         const terminalsContainer = document.getElementById('terminals-container');
@@ -525,13 +598,34 @@ class TerminalGUI {
         } else {
             container = document.createElement('div');
             container.className = options.hidden ? 'terminal-wrapper manager-hidden' : 'terminal-wrapper';
+            if (options.cssClass) container.classList.add(options.cssClass);
             container.dataset.terminalId = terminalId;
+
+            // Dynamic terminals get the same chrome as the static wrapper:
+            // header (dot, title, status) + a .terminal-container mount.
+            // Titles are editable unless locked (the Manager can't be renamed).
+            const titleText = options.title || `Terminal ${terminalId}`;
+            const dotColor = options.color || 'var(--accent-primary)';
+            const header = document.createElement('div');
+            header.className = 'terminal-header';
+            header.innerHTML = `
+                <div class="terminal-title-wrapper">
+                    <span class="terminal-color-dot" style="background-color: ${dotColor};"></span>
+                    <span class="terminal-title${options.lockTitle ? '' : ' editable'}" contenteditable="false"></span>
+                </div>
+                <span class="terminal-status" data-terminal-status="${terminalId}"></span>`;
+            header.querySelector('.terminal-title').textContent = titleText;
+            container.appendChild(header);
+
+            mount = document.createElement('div');
+            mount.className = 'terminal-container';
+            mount.dataset.terminalContainer = terminalId;
+            container.appendChild(mount);
 
             const terminalsContainer = document.getElementById('terminals-container');
             if (terminalsContainer) {
                 terminalsContainer.appendChild(container);
             }
-            mount = container;
         }
 
         // Open terminal
@@ -644,7 +738,12 @@ class TerminalGUI {
         if (terminalData) {
             terminalData.terminal.focus();
         }
-        
+
+        // The queue target follows the active terminal unless the user
+        // explicitly picked one from the selector afterward
+        this.queueTargetTerminalId = terminalId;
+        this.updateSelectorDisplay(terminalId);
+
         // Emit event
         this.eventBus.emit('terminal:active', { terminalId });
     }

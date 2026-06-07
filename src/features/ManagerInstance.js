@@ -24,117 +24,73 @@ class ManagerInstance {
         this.tabVisible = false;
     }
 
-    // ======= DISPATCH TAB UI =======
+    // ======= UI: grid tab toggle + setup overlay =======
     initializeUI() {
-        this.view = document.getElementById('manager-view');
-        this.mount = document.getElementById('manager-terminal-mount');
-        this.setupPanel = document.getElementById('manager-setup');
-        this.badge = document.getElementById('manager-status-badge');
+        this.setupOverlay = document.getElementById('manager-setup');
 
         const toggleBtn = document.getElementById('manager-tab-btn');
-        const backBtn = document.getElementById('manager-back-btn');
-        const dispatchInput = document.getElementById('manager-dispatch-input');
-        const dispatchBtn = document.getElementById('manager-dispatch-btn');
         const startBtn = document.getElementById('manager-start-btn');
+        const cancelBtn = document.getElementById('manager-setup-cancel-btn');
         const dirInput = document.getElementById('manager-directory-input');
 
-        if (toggleBtn) toggleBtn.addEventListener('click', () => this.toggleTab());
-        if (backBtn) backBtn.addEventListener('click', () => this.hideTab());
-
-        const doDispatch = () => {
-            const instruction = dispatchInput ? dispatchInput.value.trim() : '';
-            if (instruction && this.dispatch(instruction)) {
-                dispatchInput.value = '';
-            }
-        };
-        if (dispatchBtn) dispatchBtn.addEventListener('click', doDispatch);
-        if (dispatchInput) {
-            dispatchInput.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    doDispatch();
-                }
+        if (toggleBtn) toggleBtn.addEventListener('click', () => this.toggleVisible());
+        if (cancelBtn) {
+            cancelBtn.addEventListener('click', () => {
+                if (this.setupOverlay) this.setupOverlay.style.display = 'none';
             });
         }
-
         if (startBtn && dirInput) {
             startBtn.addEventListener('click', async () => {
                 const dir = dirInput.value.trim();
                 if (!dir) return;
                 await this.ipc.invoke('db-set-setting', 'managerDirectory', dir);
                 const ok = await this.start(dir);
-                if (ok) this.refreshTabContent();
+                if (ok) {
+                    if (this.setupOverlay) this.setupOverlay.style.display = 'none';
+                    this.setVisible(true);
+                }
             });
         }
-
-        // Status badge follows the manager's canonical status events
-        this.eventBus.on('terminal:status:changed', ({ terminalId, status }) => {
-            if (terminalId === MANAGER_TERMINAL_ID) this.updateBadge(status);
-        });
     }
 
-    updateBadge(status) {
-        if (!this.badge) return;
-        this.badge.textContent = status;
-        this.badge.dataset.status = status === '...' ? 'idle' : status;
-    }
-
-    toggleTab() {
-        if (this.tabVisible) {
-            this.hideTab();
-        } else {
-            this.showTab();
-        }
-    }
-
-    showTab() {
-        if (!this.view) return;
-        const grid = document.getElementById('terminals-container');
-        if (grid) grid.style.display = 'none';
-        this.view.style.display = '';
-        this.tabVisible = true;
-        const btn = document.getElementById('manager-tab-btn');
-        if (btn) btn.classList.add('active');
-        this.refreshTabContent();
-        this.eventBus.emit('ui:manager-tab', { visible: true });
-    }
-
-    hideTab() {
-        if (!this.view) return;
-        const terminalData = this.gui.terminals.get(MANAGER_TERMINAL_ID);
-        if (terminalData) terminalData.container.classList.add('manager-hidden');
-        this.view.style.display = 'none';
-        const grid = document.getElementById('terminals-container');
-        if (grid) grid.style.display = '';
-        this.tabVisible = false;
-        const btn = document.getElementById('manager-tab-btn');
-        if (btn) btn.classList.remove('active');
-        this.eventBus.emit('ui:manager-tab', { visible: false });
-    }
-
-    /** Show either the live manager terminal or the setup panel. */
-    refreshTabContent() {
-        const terminalData = this.gui.terminals.get(MANAGER_TERMINAL_ID);
-        if (this.running && terminalData) {
-            if (this.setupPanel) this.setupPanel.style.display = 'none';
-            if (this.mount) {
-                this.mount.style.display = '';
-                // Reparent the (hidden) manager wrapper into the tab's mount
-                if (terminalData.container.parentElement !== this.mount) {
-                    this.mount.appendChild(terminalData.container);
+    /** Bot button: reveal/conceal the Manager tab in the terminal grid. */
+    toggleVisible() {
+        if (!this.running) {
+            // Not running: offer setup (or boot from saved config if present)
+            this.startIfConfigured().then((started) => {
+                if (started) {
+                    this.setVisible(true);
+                } else if (this.setupOverlay) {
+                    this.setupOverlay.style.display = '';
                 }
-                terminalData.container.classList.remove('manager-hidden');
-                requestAnimationFrame(() => {
-                    terminalData.fitAddon.fit();
-                    terminalData.terminal.focus();
-                });
-            }
-            const state = this.gui.terminalStateManager.getTerminal(MANAGER_TERMINAL_ID);
-            this.updateBadge((state && state.status) || '...');
-        } else {
-            if (this.mount) this.mount.style.display = 'none';
-            if (this.setupPanel) this.setupPanel.style.display = '';
+            });
+            return;
         }
+        const terminalData = this.gui.terminals.get(MANAGER_TERMINAL_ID);
+        if (!terminalData) return;
+        this.setVisible(terminalData.container.classList.contains('manager-hidden'));
+    }
+
+    setVisible(visible) {
+        const terminalData = this.gui.terminals.get(MANAGER_TERMINAL_ID);
+        if (!terminalData) return;
+
+        terminalData.container.classList.toggle('manager-hidden', !visible);
+        const btn = document.getElementById('manager-tab-btn');
+        if (btn) btn.classList.toggle('active', visible);
+
+        if (visible) {
+            requestAnimationFrame(() => {
+                terminalData.fitAddon.fit();
+                this.gui.setActiveTerminal(MANAGER_TERMINAL_ID);
+            });
+        } else if (this.gui.activeTerminalId === MANAGER_TERMINAL_ID) {
+            // Hand focus back to the first visible terminal
+            const next = Array.from(this.gui.terminals.keys()).find((id) => id !== MANAGER_TERMINAL_ID);
+            if (next !== undefined) this.gui.setActiveTerminal(next);
+        }
+
+        this.eventBus.emit('manager:visibility', { visible });
     }
 
     isConfigured() {
@@ -180,7 +136,10 @@ class ManagerInstance {
             directory: managerDir,
             hidden: true,
             skipActive: true,
-            title: 'Manager'
+            title: 'Manager',
+            lockTitle: true,
+            cssClass: 'manager-terminal',
+            color: 'var(--accent-warning)'
         });
 
         // Boot claude once the shell settles - resume if a session exists
