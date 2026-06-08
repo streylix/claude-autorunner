@@ -291,89 +291,92 @@ class PricingViewSet(viewsets.ModelViewSet):
 @csrf_exempt
 @require_http_methods(["POST"])
 def execute_ccusage_simple(request):
-    """Simple endpoint for executing ccusage command.
+    """Return Claude Code usage/cost via `ccusage daily --json`.
 
-    ccusage runs via `npx`, which is not present in the Docker image (it ships
-    no Node). When npx is missing we return a clear 503 instead of letting the
-    subprocess raise a FileNotFoundError into a generic 500.
+    We ask ccusage for STRUCTURED output and read its stable JSON contract
+    instead of scraping the pretty ANSI table — that table's layout (columns,
+    box characters, colors) is a display format that shifts between releases and
+    silently broke the old regex scraper.
+
+    Caveat surfaced to the UI: ccusage *estimates* cost from local session logs
+    (~/.claude/projects) × model pricing. It is NOT official Anthropic billing,
+    and for a Claude Pro/Max subscription the dollar figure is notional ("what
+    this would cost on the pay-as-you-go API") — the plan itself is a flat fee.
+    `npx`/Node may be absent (e.g. the Docker image ships no Node) → 503.
     """
     if shutil.which('npx') is None:
         return JsonResponse({
             'success': False,
-            'error': 'ccusage unavailable'
+            'error': 'ccusage unavailable (npx/Node not found on PATH)'
         }, status=503)
 
     try:
-        # Execute ccusage command to get real usage data
+        # `-y` skips the first-run install prompt; bare `ccusage` (no @latest)
+        # uses the cached package and avoids a network round-trip each call.
         result = subprocess.run(
-            ['npx', 'ccusage'],
+            ['npx', '-y', 'ccusage', 'daily', '--json'],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=60
         )
-        
-        if result.returncode == 0:
-            # Parse the output using existing parser
-            from .ccusage_simple_parser import create_mock_pricing_data
-            
-            # Try to parse real ccusage output, fall back to mock if parsing fails
-            try:
-                # Clean ANSI codes before parsing - comprehensive cleaning
-                import re
-                clean_output = result.stdout
-                # Remove all ANSI escape sequences
-                clean_output = re.sub(r'\x1b\[[0-9;]*m', '', clean_output)
-                clean_output = re.sub(r'\x1b\[[0-9;]*[mGKHJ]', '', clean_output)
-                clean_output = re.sub(r'\x1b\[[0-9]+[ABCD]', '', clean_output)
-                clean_output = re.sub(r'\x1b\[2J', '', clean_output)
-                clean_output = re.sub(r'\x1b\[3J', '', clean_output)
-                clean_output = re.sub(r'\x1b\[H', '', clean_output)
-                clean_output = re.sub(r'\x1b\[2K', '', clean_output)
-                clean_output = re.sub(r'\x1b\[1A', '', clean_output)
-                clean_output = re.sub(r'\x1b\[G', '', clean_output)
-                # Remove any remaining control characters
-                clean_output = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', clean_output)
-                # Normalize whitespace
-                clean_output = re.sub(r'\s+', ' ', clean_output)
-                
-                # Use the main parser from views.py
-                pricing_view = PricingViewSet()
-                parsed_data = pricing_view._parse_ccusage_output(clean_output)
-                
-                return JsonResponse({
-                    'success': True,
-                    'data': parsed_data,
-                    'cached': False,
-                    'timestamp': timezone.now().isoformat()
-                })
-            except Exception as parse_error:
-                # If parsing fails, return the raw output for debugging
-                return JsonResponse({
-                    'success': True,
-                    'raw_output': result.stdout,
-                    'parse_error': str(parse_error),
-                    'timestamp': timezone.now().isoformat()
-                })
-        else:
-            # If ccusage command fails, try to provide more details
-            error_msg = result.stderr or 'Unknown error executing ccusage'
-            
-            # Check if it's an authentication error
-            if 'Invalid API key' in error_msg or 'authentication' in error_msg.lower():
-                return JsonResponse({
-                    'success': False,
-                    'error': 'Authentication error: Please ensure Claude Code is properly authenticated. Run `claude auth status` to check.',
-                    'details': error_msg
-                }, status=500)
-            
-            return JsonResponse({
-                'success': False,
-                'error': f'ccusage command failed: {error_msg}',
-                'returncode': result.returncode
-            }, status=500)
-            
+    except subprocess.TimeoutExpired:
+        return JsonResponse({'success': False, 'error': 'ccusage timed out'}, status=504)
     except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+    if result.returncode != 0:
+        error_msg = (result.stderr or 'Unknown error executing ccusage').strip()
+        if 'Invalid API key' in error_msg or 'authentication' in error_msg.lower():
+            error_msg = ('Authentication error — run `claude auth status` to '
+                         'verify Claude Code is logged in.')
         return JsonResponse({
             'success': False,
-            'error': str(e)
-        }, status=500)
+            'error': f'ccusage failed: {error_msg}',
+            'returncode': result.returncode,
+        }, status=502)
+
+    try:
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError) as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Could not parse ccusage JSON: {e}',
+            'raw_output': result.stdout[:500],
+        }, status=502)
+
+    daily_entries = payload.get('daily', []) or []
+    totals = payload.get('totals', {}) or {}
+
+    # ccusage `period` is an ISO "YYYY-MM-DD" string, so lexicographic
+    # comparison is also chronological — no date parsing needed.
+    today = datetime.date.today().isoformat()
+    week_start = (datetime.date.today() - datetime.timedelta(days=6)).isoformat()
+
+    today_cost = 0.0
+    week_cost = 0.0
+    for entry in daily_entries:
+        period = entry.get('period') or ''
+        cost = float(entry.get('totalCost') or 0)
+        if period == today:
+            today_cost += cost
+        if period >= week_start:
+            week_cost += cost
+
+    return JsonResponse({
+        'success': True,
+        'estimate': True,           # the frontend renders a disclaimer when true
+        'source': 'ccusage',
+        # Notional USD estimates (see docstring).
+        'daily': round(today_cost, 2),
+        'weekly': round(week_cost, 2),
+        'total': round(float(totals.get('totalCost') or 0), 2),
+        'tokens': {
+            'total': int(totals.get('totalTokens') or 0),
+            'input': int(totals.get('inputTokens') or 0),
+            'output': int(totals.get('outputTokens') or 0),
+            'cacheRead': int(totals.get('cacheReadTokens') or 0),
+            'cacheCreation': int(totals.get('cacheCreationTokens') or 0),
+        },
+        'days': len(daily_entries),
+        'timestamp': timezone.now().isoformat(),
+    })

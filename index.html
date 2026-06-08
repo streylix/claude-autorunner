@@ -195,9 +195,24 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Shown only when every visible terminal has been closed.
+                         Absolutely positioned so it never becomes a grid/flex
+                         item and disturbs the live terminal layout. -->
+                    <div class="terminals-empty" id="terminals-empty" style="display: none;">
+                        <div class="terminals-empty-inner">
+                            <i class="terminals-empty-icon" data-lucide="terminal"></i>
+                            <p class="terminals-empty-title">No terminals open</p>
+                            <p class="terminals-empty-text">Spin up a Claude Code session to get started.</p>
+                            <button class="footer-btn terminals-empty-btn" id="terminals-empty-new-btn" data-test-id="terminals-empty-new-btn">
+                                <i data-lucide="plus"></i>
+                                New terminal
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
-            
+
             <div class="sidebar" id="right-sidebar">
                 <div class="resize-handle resize-handle-right" id="resize-handle-right" data-test-id="resize-handle-right"></div>
                 <div class="important-details collapsible-section" id="status-section">
@@ -516,14 +531,14 @@
                     <div class="setting-header">
                         <span class="setting-title">Todo Generation</span>
                     </div>
-                    <p class="setting-description">Configure how todos are generated from terminal output.</p>
-                    
+                    <p class="setting-description">Keep a per-terminal record of what Claude did, built from the hook events Claude fires when it finishes a turn.</p>
+
                     <div class="setting-row">
                         <label class="setting-label">
                             <input type="checkbox" id="automatic-todo-generation">
                             <span class="setting-text">Automatic todo generation</span>
                         </label>
-                        <p class="setting-help">Automatically generate todos when Claude provides planning or task lists. Disable to generate todos manually only.</p>
+                        <p class="setting-help">When on, each completed Claude turn is logged to the Completions list. Turn off to stop recording new entries.</p>
                     </div>
                 </div>
 

@@ -2,6 +2,7 @@ const { ipcRenderer } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { SearchAddon } = require('@xterm/addon-search');
+const { WebglAddon } = require('@xterm/addon-webgl');
 
 // Import core modules
 const EventBus = require('./src/core/EventBus');
@@ -111,7 +112,14 @@ class TerminalGUI {
         // Map for xterm instances (for backward compatibility)
         this.terminals = new Map();
         this.activeTerminalId = null;
-        
+
+        // Stable per-terminal color palette. A terminal's color tints its header
+        // dot AND its queued messages; the manager (999) is always yellow.
+        this.terminalColorPalette = [
+            '#007acc', '#28ca42', '#ff5f57', '#ffbe2e',
+            '#af52de', '#5ac8fa', '#ff8c00', '#00c2a8'
+        ];
+
         console.log('💻 Terminal system initialized');
     }
     
@@ -165,6 +173,12 @@ class TerminalGUI {
         // this the manager's timerManager/messageQueueManager stay null.
         this.usageLimitManager.setManagers(this.timerManager, this.messageQueueManager);
         this.usageLimitManager.initialize();
+
+        // Load persisted settings from the DB and apply them. Without this,
+        // PreferenceManager runs on constructor defaults forever — saved
+        // settings never load and toggles don't survive a restart. (Async;
+        // applyLoadedPreferences reflects values onto controls once loaded.)
+        this.preferenceManager.initialize();
 
         // Wire centralized event processors onto the EventBus (fix 8).
         this.setupEventProcessors();
@@ -412,6 +426,25 @@ class TerminalGUI {
             addTerminalBtn.addEventListener('click', () => this.createTerminal());
         }
 
+        // Empty-state "New terminal" button (shown when no visible terminals remain)
+        const emptyNewBtn = document.getElementById('terminals-empty-new-btn');
+        if (emptyNewBtn) {
+            emptyNewBtn.addEventListener('click', () => this.createTerminal());
+        }
+
+        // Todo Generation toggle: gates the hook-driven per-terminal completion
+        // record (CompletionManager.recordHookCompletion). DOM id differs from
+        // the preference key (generateTodoOnCompletion) — the binding maps them.
+        const todoGenCheckbox = document.getElementById('automatic-todo-generation');
+        if (todoGenCheckbox) {
+            todoGenCheckbox.addEventListener('change', (e) => {
+                this.eventBus.emit('preference:update', {
+                    key: 'generateTodoOnCompletion',
+                    value: e.target.checked
+                });
+            });
+        }
+
         // Message queue controls
         const messageInput = document.getElementById('message-input');
         const sendButton = document.getElementById('send-btn');
@@ -530,9 +563,15 @@ class TerminalGUI {
                 });
             });
         };
-        ['terminal:created', 'terminal:closed', 'manager:visibility']
-            .forEach((evt) => this.eventBus.on(evt, refitVisibleTerminals));
         window.addEventListener('resize', refitVisibleTerminals);
+        // Showing/hiding the manager changes the visible set → re-chunk the grid.
+        // (create/close already relayout inline.)
+        this.eventBus.on('manager:visibility', () => this.relayoutTerminals());
+
+        // Persist terminal metadata (name/dir/color) whenever it changes so the
+        // workspace survives a restart. directory updates come from Claude hooks.
+        ['terminal:created', 'terminal:closed', 'terminal:metadata', 'terminal:directory']
+            .forEach((evt) => this.eventBus.on(evt, () => this.persistTerminalMetadata()));
 
         // Collapsible right-sidebar panels (Status, Timer) with persistence
         document.querySelectorAll('.collapse-toggle[data-collapse-target]').forEach((btn) => {
@@ -556,6 +595,31 @@ class TerminalGUI {
             });
         }
 
+        // Global keyboard shortcuts. The old EventBus.setupKeyboardShortcuts()
+        // was never called, so every data-hotkey button (Cmd+T, Cmd+I, …) was
+        // dead. Map the modifier combos to actions here. (Cmd+F / Cmd+K stay
+        // with UIFocusManager, which owns search + the terminal selector.)
+        document.addEventListener('keydown', (e) => {
+            if (!(e.metaKey || e.ctrlKey)) return;
+            const key = e.key.toLowerCase();
+            const shift = e.shiftKey;
+            const click = (id) => { const el = document.getElementById(id); if (el) el.click(); };
+
+            if (key === 't' && !shift) { e.preventDefault(); this.createTerminal(); }
+            else if (key === 'w' && shift) {
+                e.preventDefault();
+                if (this.activeTerminalId != null && this.activeTerminalId !== ManagerInstance.TERMINAL_ID) {
+                    this.closeTerminal(this.activeTerminalId);
+                }
+            }
+            else if (key === 'i' && !shift) { e.preventDefault(); this.messageQueueManager.injectNextMessage(); }
+            else if (key === 'p' && !shift) { e.preventDefault(); this.timerManager.toggleTimer(); }
+            else if (key === 's' && !shift) { e.preventDefault(); click('settings-btn'); }
+            else if (key === 'm' && !shift) { e.preventDefault(); click('manager-tab-btn'); }
+            else if (key === 'h' && shift) { e.preventDefault(); click('message-history-btn'); }
+            else if (key === 'l' && shift) { e.preventDefault(); click('clear-log-btn'); }
+        });
+
         console.log('🎮 DOM event handlers configured');
     }
     
@@ -575,17 +639,16 @@ class TerminalGUI {
                 const isManager = this.managerInstance && id === ManagerInstance.TERMINAL_ID;
                 if (isManager && !this.managerInstance.isRunning()) return;
 
-                const state = this.terminalStateManager.getTerminal(id);
                 const item = document.createElement('button');
                 item.className = 'terminal-selector-item';
                 item.dataset.terminalId = id;
 
                 const dot = document.createElement('span');
                 dot.className = 'terminal-selector-dot';
-                dot.style.backgroundColor = isManager ? 'var(--accent-warning)' : 'var(--accent-primary)';
+                dot.style.backgroundColor = this.terminalColorFor(id);
 
                 const label = document.createElement('span');
-                label.textContent = isManager ? 'Manager' : ((state && state.title) || `Terminal ${id}`);
+                label.textContent = this.terminalNameFor(id);
 
                 item.appendChild(dot);
                 item.appendChild(label);
@@ -622,10 +685,8 @@ class TerminalGUI {
     updateSelectorDisplay(terminalId) {
         const text = document.querySelector('.terminal-selector-text');
         const dot = document.querySelector('.terminal-selector-btn .terminal-selector-dot');
-        const isManager = this.managerInstance && terminalId === ManagerInstance.TERMINAL_ID;
-        const state = this.terminalStateManager.getTerminal(terminalId);
-        if (text) text.textContent = isManager ? 'Manager' : ((state && state.title) || `Terminal ${terminalId}`);
-        if (dot) dot.style.backgroundColor = isManager ? 'var(--accent-warning)' : 'var(--accent-primary)';
+        if (text) text.textContent = this.terminalNameFor(terminalId);
+        if (dot) dot.style.backgroundColor = this.terminalColorFor(terminalId);
     }
 
     setupTerminalUI() {
@@ -733,14 +794,27 @@ class TerminalGUI {
         const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
         show('pricing-loading', true); show('pricing-error', false); show('pricing-data', false);
         try {
-            const res = await fetch('http://localhost:8123/api/ccusage/', { method: 'POST', signal: AbortSignal.timeout(8000) });
+            // 60s: a cold ccusage run can download the package + fetch pricing.
+            const res = await fetch('http://localhost:8123/api/ccusage/', { method: 'POST', signal: AbortSignal.timeout(60000) });
             const data = await res.json();
             if (!res.ok || data.success === false) throw new Error(data.error || 'pricing unavailable');
+            const num = (v) => (typeof v === 'number' ? v : 0);
             const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-            set('daily-cost', `$${(data.daily ?? 0).toFixed(2)}`);
-            set('weekly-cost', `$${(data.weekly ?? 0).toFixed(2)}`);
-            set('total-cost', `$${(data.total ?? 0).toFixed(2)}`);
-            set('receipt-total-cost', `$${(data.total ?? 0).toFixed(2)}`);
+            set('daily-cost', `$${num(data.daily).toFixed(2)}`);
+            set('weekly-cost', `$${num(data.weekly).toFixed(2)}`);
+            set('total-cost', `$${num(data.total).toFixed(2)}`);
+            set('receipt-total-cost', `$${num(data.total).toFixed(2)}`);
+
+            // ccusage is a local-log ESTIMATE, not Anthropic billing. On a Pro/Max
+            // plan the real charge is the flat subscription fee, so spell out that
+            // these dollars are a notional "API-equivalent" cost.
+            const dataEl = document.getElementById('pricing-data');
+            if (dataEl && data.estimate && !dataEl.querySelector('.pricing-disclaimer')) {
+                const note = document.createElement('p');
+                note.className = 'pricing-disclaimer';
+                note.textContent = 'Estimated from local Claude Code logs (ccusage). On a Pro/Max plan your real charge is the flat subscription fee — these figures are a notional API-equivalent cost.';
+                dataEl.appendChild(note);
+            }
             show('pricing-loading', false); show('pricing-data', true);
         } catch (err) {
             show('pricing-loading', false); show('pricing-error', true);
@@ -754,9 +828,19 @@ class TerminalGUI {
         // options.directory: cwd for the PTY
         // options.hidden: keep the wrapper out of the visible grid
         // options.skipActive: don't steal focus/active state
-        const terminalId = options.id !== undefined
-            ? options.id
-            : this.terminalManager.terminalIdCounter++;
+        // Allocate the LOWEST free id so that closing Terminal 2 and adding
+        // another reuses "2" rather than ever-incrementing. Explicit ids
+        // (the manager 999, restored sessions) bypass this.
+        let terminalId;
+        if (options.id !== undefined) {
+            terminalId = options.id;
+        } else {
+            terminalId = 1;
+            while (this.terminals.has(terminalId)) terminalId++;
+        }
+
+        // Stable per-terminal color (manager → yellow): header dot + queue tint.
+        const terminalColor = options.color || this.getTerminalColor(terminalId);
 
         // Create xterm instance
         const terminal = new Terminal({
@@ -781,6 +865,10 @@ class TerminalGUI {
         let mount = document.querySelector(`.terminal-container[data-terminal-container="${terminalId}"]`);
         if (mount && !options.hidden) {
             container = mount.closest('.terminal-wrapper') || mount;
+            // The static terminal-1 wrapper hardcodes its dot to --accent-primary;
+            // sync it to the palette so it matches its queued-message tint.
+            const staticDot = container.querySelector && container.querySelector('.terminal-color-dot');
+            if (staticDot) staticDot.style.backgroundColor = terminalColor;
         } else {
             container = document.createElement('div');
             container.className = options.hidden ? 'terminal-wrapper manager-hidden' : 'terminal-wrapper';
@@ -791,7 +879,7 @@ class TerminalGUI {
             // header (dot, title, status) + a .terminal-container mount.
             // Titles are editable unless locked (the Manager can't be renamed).
             const titleText = options.title || `Terminal ${terminalId}`;
-            const dotColor = options.color || 'var(--accent-primary)';
+            const dotColor = terminalColor;
             const header = document.createElement('div');
             header.className = 'terminal-header';
             // Manager (locked) gets no close button - it's managed by the app.
@@ -808,7 +896,6 @@ class TerminalGUI {
                 </div>`;
             header.querySelector('.terminal-title').textContent = titleText;
             container.appendChild(header);
-            if (window.lucide) window.lucide.createIcons({ nameAttr: 'data-lucide', root: header });
 
             mount = document.createElement('div');
             mount.className = 'terminal-container';
@@ -819,10 +906,40 @@ class TerminalGUI {
             if (terminalsContainer) {
                 terminalsContainer.appendChild(container);
             }
+            // Render icons AFTER the wrapper is in the document. lucide.createIcons
+            // scans the live document, so rendering while still detached left the
+            // close (x) icon blank until the NEXT terminal was added (which ran a
+            // later scan that finally caught this one).
+            if (window.lucide) window.lucide.createIcons({ nameAttr: 'data-lucide', root: container });
         }
 
         // Open terminal
         terminal.open(mount);
+
+        // GPU-accelerated rendering. xterm's default DOM renderer is the single
+        // biggest per-terminal memory/CPU cost; the WebGL renderer draws to a
+        // canvas via the GPU and is dramatically lighter when several terminals
+        // are open at once. Must load AFTER open() (it needs an attached canvas)
+        // and only for VISIBLE terminals — a display:none/zero-size canvas (the
+        // hidden manager) would burn one of the browser's ~16 scarce WebGL
+        // contexts for nothing and can throw. On context loss (GPU sleep/wake,
+        // too many contexts) dispose the addon so xterm reverts to DOM rendering
+        // instead of going blank.
+        let webglAddon = null;
+        if (!options.hidden) {
+            try {
+                webglAddon = new WebglAddon();
+                webglAddon.onContextLoss(() => {
+                    webglAddon.dispose();
+                    webglAddon = null;
+                });
+                terminal.loadAddon(webglAddon);
+            } catch (err) {
+                console.warn(`WebGL renderer unavailable for terminal ${terminalId}, using DOM renderer:`, err && err.message);
+                webglAddon = null;
+            }
+        }
+
         if (options.hidden) {
             // fit() on a display:none container computes garbage dimensions -
             // give concealed terminals (the manager) a sane fixed size; the
@@ -848,6 +965,13 @@ class TerminalGUI {
         terminal.onResize(({ cols, rows }) => {
             ipcRenderer.send('terminal-resize', { terminalId, cols, rows });
         });
+
+        // Clicking/focusing a terminal makes it the active one (focusin bubbles
+        // from xterm's hidden textarea), so the Status panel + queue target track
+        // the terminal the user is actually working in.
+        container.addEventListener('focusin', () => {
+            if (this.activeTerminalId !== terminalId) this.setActiveTerminal(terminalId);
+        });
         
         // Store terminal
         const terminalData = {
@@ -855,17 +979,19 @@ class TerminalGUI {
             terminal,
             fitAddon,
             searchAddon,
+            webglAddon,
             container
         };
         
         this.terminals.set(terminalId, terminalData);
         
-        // Update state
+        // Update state (color is read back by the message queue to tint dots)
         this.terminalStateManager.createTerminal({
             id: terminalId,
             terminal,
             directory: options.directory || process.cwd(),
-            title: options.title
+            title: options.title,
+            color: terminalColor
         });
 
         // Spawn the PTY in main (channel + payload shape match main.js's handler)
@@ -879,10 +1005,26 @@ class TerminalGUI {
         // Emit event
         this.eventBus.emit('terminal:created', { terminalId, hidden: !!options.hidden });
 
+        this.updateEmptyState();
+        // Re-chunk the grid so the new terminal lands in the right cell/page.
+        this.relayoutTerminals();
+
         console.log(`✅ Terminal ${terminalId} created${options.hidden ? ' (hidden)' : ''}`);
         return terminalId;
     }
-    
+
+    // Toggle the "No terminals open" empty state. The hidden manager (id 999)
+    // carries .manager-hidden, so count only visible wrappers — terminals.size
+    // would always be ≥1 once the manager boots.
+    updateEmptyState() {
+        const emptyEl = document.getElementById('terminals-empty');
+        if (!emptyEl) return;
+        const visibleCount = document.querySelectorAll(
+            '.terminal-wrapper:not(.manager-hidden)'
+        ).length;
+        emptyEl.style.display = visibleCount === 0 ? 'flex' : 'none';
+    }
+
     closeTerminal(terminalId) {
         const terminalData = this.terminals.get(terminalId);
         if (!terminalData) return;
@@ -910,8 +1052,172 @@ class TerminalGUI {
         
         // Emit event
         this.eventBus.emit('terminal:closed', { terminalId });
-        
+
+        this.updateEmptyState();
+        // Re-chunk the grid so survivors reflow into the correct layout.
+        this.relayoutTerminals();
+
         console.log(`✅ Terminal ${terminalId} closed`);
+    }
+
+    /**
+     * Stable color for a terminal id (manager 999 → yellow). Used for the header
+     * dot and to tint that terminal's queued messages.
+     */
+    getTerminalColor(id) {
+        if (this.managerInstance && id === ManagerInstance.TERMINAL_ID) {
+            return 'var(--accent-warning)';
+        }
+        const palette = this.terminalColorPalette;
+        const idx = ((Number(id) || 1) - 1) % palette.length;
+        return palette[idx];
+    }
+
+    /**
+     * Effective color/name for a terminal in chrome (selector, status bar):
+     * a custom color set via the control API wins over the palette default, and
+     * the manager is always yellow / "Manager".
+     */
+    terminalColorFor(id) {
+        if (id === ManagerInstance.TERMINAL_ID) return 'var(--accent-warning)';
+        const state = this.terminalStateManager.getTerminal(id) || {};
+        return state.color || this.getTerminalColor(id);
+    }
+
+    terminalNameFor(id) {
+        if (id === ManagerInstance.TERMINAL_ID) return 'Manager';
+        const state = this.terminalStateManager.getTerminal(id) || {};
+        return state.title || `Terminal ${id}`;
+    }
+
+    /** Reflect the active/focused terminal in the Status panel ("Terminal Selected"). */
+    updateStatusBar(terminalId) {
+        const name = document.getElementById('status-terminal-name');
+        const dot = document.getElementById('status-terminal-dot');
+        if (name) name.textContent = this.terminalNameFor(terminalId);
+        if (dot) dot.style.backgroundColor = this.terminalColorFor(terminalId);
+    }
+
+    /**
+     * Persist visible terminals' METADATA (id, name, directory, color) to the
+     * store so the workspace can be rebuilt next launch. The live PTY/xterm
+     * runtime is intentionally NOT saved — only the lightweight descriptors.
+     * The manager (999) is excluded; it boots from its own configuration.
+     */
+    persistTerminalMetadata() {
+        if (this._restoringTerminals) return; // don't clobber mid-restore
+        const meta = [];
+        this.terminals.forEach((data, id) => {
+            if (id === ManagerInstance.TERMINAL_ID) return;
+            const state = this.terminalStateManager.getTerminal(id) || {};
+            meta.push({
+                id,
+                title: state.title || `Terminal ${id}`,
+                color: state.color || this.getTerminalColor(id),
+                directory: state.directory || null
+            });
+        });
+        this.persistSetting('terminalMetadata', meta);
+    }
+
+    /**
+     * Rebuild last session's terminals from saved metadata (then restore the
+     * queued messages, after terminals exist so message dots resolve their
+     * terminal color). Falls back to a single fresh terminal on first run.
+     */
+    async restoreTerminalsAndQueue() {
+        let saved = await this.getPersistedSetting('terminalMetadata', []);
+        if (!Array.isArray(saved)) saved = [];
+        const valid = saved.filter(t => t && t.id != null && t.id !== ManagerInstance.TERMINAL_ID);
+
+        if (valid.length > 0) {
+            this._restoringTerminals = true;
+            const ids = new Set(valid.map(t => t.id));
+            // index.html ships a static Terminal-1 shell; if id 1 wasn't saved,
+            // drop it so it doesn't render as an empty pane in the grid.
+            if (!ids.has(1)) {
+                const staticWrapper = document.querySelector('#terminals-container .terminal-wrapper[data-terminal-id="1"]');
+                if (staticWrapper) staticWrapper.remove();
+            }
+            valid.sort((a, b) => (a.id || 0) - (b.id || 0));
+            valid.forEach((t, i) => {
+                this.createTerminal({
+                    id: t.id,
+                    title: t.title || undefined,
+                    color: t.color || undefined,
+                    directory: t.directory || undefined,
+                    skipActive: i !== valid.length - 1 // focus the last restored terminal
+                });
+            });
+            this._restoringTerminals = false;
+            this.persistTerminalMetadata(); // single authoritative write
+        } else {
+            this.createTerminal();
+        }
+
+        await this.messageQueueManager.restoreQueue();
+    }
+
+    /** How many terminals share one on-screen "page" (the chunk size setting). */
+    getMaxVisibleTerminals() {
+        const n = parseInt(this.appStateStore.getState('settings.terminalsPerChunk'), 10);
+        if (isNaN(n)) return 4;
+        return Math.min(8, Math.max(1, n));
+    }
+
+    /**
+     * Arrange visible terminals into the grid the user asked for:
+     *   1 → full view, 2 → side by side, 3 → top-left + tall-right + bottom-left,
+     *   4 → quadrants. Beyond the chunk size, terminals page into additional
+     *   horizontally- (or vertically-) scrolling "chunks" in the same order.
+     *
+     * Implementation: group the .terminal-wrapper elements into .terminal-chunk
+     * containers of `chunkSize`; each chunk's .chunk-N CSS lays out its members.
+     * The hidden manager wrapper and the absolutely-positioned empty state are
+     * left untouched.
+     */
+    relayoutTerminals() {
+        const container = document.getElementById('terminals-container');
+        if (!container) return;
+
+        const chunkSize = this.getMaxVisibleTerminals();
+        const vertical = this.appStateStore.getState('settings.chunkOrientation') === 'vertical';
+
+        // Lift any existing chunk children back up, then drop the empty chunks.
+        container.querySelectorAll('.terminal-chunk').forEach(chunk => {
+            while (chunk.firstChild) container.insertBefore(chunk.firstChild, chunk);
+            chunk.remove();
+        });
+
+        // Visible terminal wrappers, in ascending id order.
+        const wrappers = Array.from(container.querySelectorAll('.terminal-wrapper'))
+            .filter(w => !w.classList.contains('manager-hidden'));
+        wrappers.sort((a, b) =>
+            (parseInt(a.dataset.terminalId, 10) || 0) - (parseInt(b.dataset.terminalId, 10) || 0));
+
+        container.classList.remove(
+            'layout-single', 'layout-dual', 'layout-triple', 'layout-quad',
+            'layout-scroll', 'layout-scroll-vertical'
+        );
+        container.classList.add(vertical ? 'layout-scroll-vertical' : 'layout-scroll');
+
+        const emptyEl = document.getElementById('terminals-empty');
+        for (let start = 0; start < wrappers.length; start += chunkSize) {
+            const group = wrappers.slice(start, start + chunkSize);
+            const chunk = document.createElement('div');
+            chunk.className = `terminal-chunk chunk-${group.length}`;
+            group.forEach(w => chunk.appendChild(w));
+            container.insertBefore(chunk, emptyEl || null);
+        }
+
+        // Re-fit every visible terminal to its new cell.
+        requestAnimationFrame(() => {
+            this.terminals.forEach(data => {
+                if (!data.container.classList.contains('manager-hidden')) {
+                    try { data.fitAddon.fit(); } catch { /* not laid out yet */ }
+                }
+            });
+        });
     }
     
     setActiveTerminal(terminalId) {
@@ -936,6 +1242,9 @@ class TerminalGUI {
         // explicitly picked one from the selector afterward
         this.queueTargetTerminalId = terminalId;
         this.updateSelectorDisplay(terminalId);
+
+        // Reflect the focused terminal in the Status panel.
+        this.updateStatusBar(terminalId);
 
         // Emit event
         this.eventBus.emit('terminal:active', { terminalId });
@@ -1007,6 +1316,7 @@ class TerminalGUI {
 
         this.eventBus.emit('terminal:metadata', { terminalId, ...updates });
         if (terminalId === this.queueTargetTerminalId) this.updateSelectorDisplay(terminalId);
+        if (terminalId === this.activeTerminalId) this.updateStatusBar(terminalId);
         return true;
     }
 
@@ -1056,9 +1366,158 @@ class TerminalGUI {
         return { ok: false, error: `unknown control action: ${action}` };
     }
     
+    /** Read a persisted setting from the SQLite store (JSON-decoded). */
+    async getPersistedSetting(key, fallback) {
+        try {
+            const raw = await this.ipcHandler.invoke('db-get-setting', key);
+            if (raw == null) return fallback;
+            try { return JSON.parse(raw); } catch { return raw; }
+        } catch { return fallback; }
+    }
+
+    /** Persist a setting to the SQLite store (JSON-encoded). */
+    persistSetting(key, value) {
+        try { this.ipcHandler.invoke('db-set-setting', key, JSON.stringify(value)); } catch { /* best effort */ }
+    }
+
+    /**
+     * Load persisted settings, apply them, and wire the settings-modal controls.
+     * The refactor created SoundManager/PreferenceManager but never initialized
+     * them and never bound the modal inputs — so sound effects, the chunk-size
+     * (max-visible) setting, theme, etc. all silently did nothing.
+     */
+    async setupSettings() {
+        // ---- Load persisted values ----
+        const soundEnabled = await this.getPersistedSetting('soundEffectsEnabled', false);
+        const completionSound = await this.getPersistedSetting('completionSound', 'completion.mp3');
+        const injectionSound = await this.getPersistedSetting('injectionSound', 'injection.mp3');
+        const promptedSound = await this.getPersistedSetting('promptedSound', 'prompted.mp3');
+        const terminalsPerChunk = await this.getPersistedSetting('terminalsPerChunk', 4);
+        const chunkOrientation = await this.getPersistedSetting('chunkOrientation', 'horizontal');
+        const theme = await this.getPersistedSetting('theme', 'dark');
+
+        // ---- Mirror into the app state store (SoundManager reads settings.sound.*) ----
+        this.appStateStore.setState('settings.sound.enabled', !!soundEnabled);
+        this.appStateStore.setState('settings.sound.completion', completionSound);
+        this.appStateStore.setState('settings.sound.injection', injectionSound);
+        this.appStateStore.setState('settings.sound.prompted', promptedSound);
+        this.appStateStore.setState('settings.terminalsPerChunk', terminalsPerChunk);
+        this.appStateStore.setState('settings.chunkOrientation', chunkOrientation);
+
+        // ---- Init sound manager (loads available files + the above) ----
+        await this.soundManager.initialize();
+
+        // ---- Apply theme + relayout with the loaded chunk size ----
+        document.documentElement.setAttribute('data-theme', theme);
+        this.applyThemeToTerminals(theme);
+        this.relayoutTerminals();
+
+        // ---- Wire the controls ----
+        this.wireSettingsControls({
+            soundEnabled, completionSound, injectionSound, promptedSound,
+            terminalsPerChunk, chunkOrientation, theme
+        });
+    }
+
+    /** Push a theme to the data-theme attribute and live xterm instances. */
+    applyThemeToTerminals(theme) {
+        this.terminalManager.preferences.theme = theme;
+        const xtermTheme = this.terminalManager.getTerminalTheme();
+        this.terminals.forEach(data => {
+            try { data.terminal.options.theme = xtermTheme; } catch { /* ignore */ }
+        });
+    }
+
+    wireSettingsControls(current) {
+        const byId = (id) => document.getElementById(id);
+
+        // ---- Theme ----
+        const themeSelect = byId('theme-select');
+        if (themeSelect) {
+            themeSelect.value = current.theme;
+            themeSelect.addEventListener('change', () => {
+                const v = themeSelect.value;
+                document.documentElement.setAttribute('data-theme', v);
+                this.applyThemeToTerminals(v);
+                this.persistSetting('theme', v);
+            });
+        }
+
+        // ---- Sound effects ----
+        const soundToggle = byId('sound-effects-enabled');
+        const soundGroup = byId('sound-selection-group');
+        const reflectSoundGroup = (on) => { if (soundGroup) soundGroup.style.opacity = on ? '1' : '0.5'; };
+        if (soundToggle) {
+            soundToggle.checked = !!current.soundEnabled;
+            reflectSoundGroup(soundToggle.checked);
+            soundToggle.addEventListener('change', () => {
+                this.soundManager.setSoundEnabled(soundToggle.checked);
+                this.persistSetting('soundEffectsEnabled', soundToggle.checked);
+                reflectSoundGroup(soundToggle.checked);
+            });
+        }
+
+        // Populate the three sound <select>s from the available files.
+        const sounds = (this.soundManager.getAvailableSounds && this.soundManager.getAvailableSounds()) || [];
+        const fill = (selectId, value, onChange) => {
+            const sel = byId(selectId);
+            if (!sel) return;
+            const opts = (sounds.length ? sounds.slice() : ['none', 'completion.mp3', 'injection.mp3', 'prompted.mp3']);
+            if (!opts.includes('none')) opts.unshift('none');
+            sel.innerHTML = '';
+            opts.forEach(f => { const o = document.createElement('option'); o.value = f; o.textContent = f; sel.appendChild(o); });
+            sel.value = value;
+            sel.addEventListener('change', () => onChange(sel.value));
+        };
+        fill('completion-sound-select', current.completionSound, (v) => {
+            this.soundManager.setCompletionSound(v); this.persistSetting('completionSound', v);
+        });
+        fill('injection-sound-select', current.injectionSound, (v) => {
+            this.soundManager.setInjectionSound(v); this.persistSetting('injectionSound', v);
+        });
+        fill('prompted-sound-select', current.promptedSound, (v) => {
+            this.soundManager.setPromptedSound(v); this.persistSetting('promptedSound', v);
+        });
+
+        const wireTest = (id, fn) => { const b = byId(id); if (b) b.addEventListener('click', () => this.soundManager[fn]()); };
+        wireTest('test-completion-sound-btn', 'testCompletionSound');
+        wireTest('test-injection-sound-btn', 'testInjectionSound');
+        wireTest('test-prompted-sound-btn', 'testPromptedSound');
+
+        // ---- Terminal chunk layout (max visible per page) ----
+        const chunkRange = byId('terminals-per-chunk');
+        const chunkValue = byId('terminals-per-chunk-value');
+        if (chunkRange) {
+            chunkRange.value = current.terminalsPerChunk;
+            if (chunkValue) chunkValue.textContent = current.terminalsPerChunk;
+            chunkRange.addEventListener('input', () => { if (chunkValue) chunkValue.textContent = chunkRange.value; });
+            chunkRange.addEventListener('change', () => {
+                const n = parseInt(chunkRange.value, 10);
+                this.appStateStore.setState('settings.terminalsPerChunk', n);
+                this.persistSetting('terminalsPerChunk', n);
+                this.relayoutTerminals();
+            });
+        }
+
+        const orientation = byId('chunk-orientation');
+        if (orientation) {
+            orientation.value = current.chunkOrientation;
+            orientation.addEventListener('change', () => {
+                this.appStateStore.setState('settings.chunkOrientation', orientation.value);
+                this.persistSetting('chunkOrientation', orientation.value);
+                this.relayoutTerminals();
+            });
+        }
+    }
+
     finalizeInitialization() {
-        // Create initial terminal
-        this.createTerminal();
+        // Restore last session's terminals (metadata) + queued messages from the
+        // store; falls back to one fresh terminal on first run.
+        this.restoreTerminalsAndQueue();
+
+        // Load + wire the settings modal (sounds, chunk size, theme). Async;
+        // self-sequences (loads persisted values, inits sound, relayouts).
+        this.setupSettings();
 
         // Boot the manager instance if the user configured a directory for it
         this.managerInstance.startIfConfigured();

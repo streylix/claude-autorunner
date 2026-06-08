@@ -108,9 +108,9 @@
     }
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
     "electron": "^27.0.0",
     "electron-builder": "^24.6.4",
-    "@electron/rebuild": "^4.0.4",
     "playwright": "^1.55.0",
     "yargs": "^18.0.0"
   },
@@ -118,6 +118,7 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.15.0",
     "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^5.3.0",
     "lucide": "^0.460.0",
     "node-pty": "^1.0.0"

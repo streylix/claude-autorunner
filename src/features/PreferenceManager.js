@@ -32,7 +32,7 @@ class PreferenceManager {
             timerPreset2: 180,
             timerPreset3: 300,
             autoCompleteTodoEnabled: false,
-            generateTodoOnCompletion: false,
+            generateTodoOnCompletion: true,
             typewriterEffectEnabled: true,
             typewriterSpeed: 80,
             microwaveModeEnabled: false,
@@ -406,7 +406,13 @@ class PreferenceManager {
         
         // Apply sound settings
         this.eventBus.emit('sound:toggle', this.preferences.soundEffectsEnabled);
-        
+
+        // Reflect checkbox-backed settings onto their controls (DOM id ≠ pref key)
+        const todoGenCheckbox = document.getElementById('automatic-todo-generation');
+        if (todoGenCheckbox) {
+            todoGenCheckbox.checked = !!this.preferences.generateTodoOnCompletion;
+        }
+
         // Apply other UI preferences
         this.eventBus.emit('preferences:applied', this.preferences);
     }

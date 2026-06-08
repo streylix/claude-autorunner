@@ -54,7 +54,9 @@ class TerminalManager {
      */
     getDarkTerminalTheme() {
         return {
-            background: '#1e1e1e',
+            // Must match CSS --terminal-bg (#0f0f11); a different value here made
+            // the WebGL canvas paint a lighter rectangle than its frame ("tint").
+            background: '#0f0f11',
             foreground: '#ffffff',
             cursor: '#ffffff',
             cursorAccent: '#000000',
@@ -84,7 +86,8 @@ class TerminalManager {
      */
     getLightTerminalTheme() {
         return {
-            background: '#ffffff',
+            // Match CSS --terminal-bg (light) so the canvas blends with its frame.
+            background: '#e6e9ef',
             foreground: '#000000',
             cursor: '#000000',
             cursorAccent: '#ffffff',

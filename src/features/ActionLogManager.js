@@ -123,6 +123,13 @@ class ActionLogManager {
         // Append just the new node when it passes the active filter
         if (this.logContainer && this.matchesSearch(entry)) {
             this.logContainer.appendChild(this.buildEntryNode(entry));
+            // Keep the DOM node count in lockstep with the capped `entries`
+            // array. Without this the container grows unbounded over a long
+            // session — `entries` is trimmed but the nodes for shifted-out
+            // entries linger, and this is the busiest event sink in the app.
+            while (this.logContainer.childElementCount > MAX_LOG_ENTRIES) {
+                this.logContainer.removeChild(this.logContainer.firstChild);
+            }
             this.logContainer.scrollTop = this.logContainer.scrollHeight;
         }
     }

@@ -219,16 +219,106 @@ class MessageQueueManager {
      * the gate allows it - reuses the gated injection engine. This is what makes
      * "queue a message, it injects when the terminal is free" actually happen.
      */
+    /**
+     * Per-terminal PARALLEL auto-injection. When a terminal goes idle (or a
+     * message is queued for it), inject that terminal's earliest queued message
+     * — independently of every other terminal. Two idle terminals with one
+     * message each therefore fire at the same time instead of serially.
+     *
+     * The old engine used one global `injectionInProgress` lock and a broken
+     * `injectionManager.scheduleNextInjection()` call that threw and wedged the
+     * lock on, which is why the 2nd queued message never went out.
+     */
     maybeAutoInject(terminalId) {
-        if (this.injectionInProgress) return; // engine already running; it will pick this up
-        if (this.currentlyInjectingTerminals.has(terminalId)) return;
-        const hasInjectable = this.messageQueue.some(msg => {
-            const tid = msg.terminalId || this.activeTerminalId;
-            return tid === terminalId && this.canInjectToTerminal(tid).allowed;
+        const tid = terminalId != null ? terminalId : this.activeTerminalId;
+        if (tid == null) return;
+        if (this.currentlyInjectingTerminals.has(tid)) return; // already busy on this terminal
+
+        const message = this.messageQueue.find(
+            msg => (msg.terminalId || this.activeTerminalId) === tid
+        );
+        if (!message) return;
+
+        if (!this.canInjectToTerminal(tid).allowed) return;
+        this._injectToTerminal(message, tid);
+    }
+
+    /**
+     * Fan out: attempt an injection for every terminal that currently has a
+     * queued message. Each terminal is gated independently, so all eligible
+     * terminals inject in parallel. Used by the timer/usage-limit release paths.
+     */
+    flushAllTerminals() {
+        const ids = new Set(
+            this.messageQueue.map(msg => msg.terminalId || this.activeTerminalId)
+        );
+        ids.forEach(id => this.maybeAutoInject(id));
+    }
+
+    /**
+     * Inject a single message into a single terminal, marking that terminal busy
+     * for the duration so a second message can't pile in on top of it.
+     */
+    _injectToTerminal(message, terminalId) {
+        this.currentlyInjectingTerminals.add(terminalId);
+        this.currentlyInjectingMessages.add(message.id);
+        this.eventBus.emit('message:injection-started', { messageId: message.id, terminalId });
+
+        this.typeMessageToTerminal(message.content, terminalId, () => {
+            this._finishInjection(message, terminalId);
         });
-        if (!hasInjectable) return;
-        this.injectionInProgress = true;
-        this.injectMessageAndContinueQueue();
+    }
+
+    /**
+     * Post-injection bookkeeping: drop the message from the queue, release the
+     * terminal, persist, then try to drain the next message for THAT terminal.
+     */
+    _finishInjection(message, terminalId) {
+        const queue = [...this.messageQueue];
+        const idx = queue.findIndex(m => m.id === message.id);
+        if (idx !== -1) queue.splice(idx, 1);
+        this.messageQueue = queue;
+
+        this.currentlyInjectingTerminals.delete(terminalId);
+        this.currentlyInjectingMessages.delete(message.id);
+        if (this.currentlyInjectingMessageId === message.id) {
+            this.currentlyInjectingMessageId = null;
+        }
+
+        this.injectionCount++;
+        this.saveToMessageHistory(message, terminalId, this.injectionCount);
+        this.markMessageAsInjectedInBackend(message);
+        this.saveMessageQueue();
+
+        this.eventBus.emit('message:queue-updated', { queue: this.messageQueue });
+        this.eventBus.emit('message:injection-completed', { messageId: message.id, terminalId });
+        this.eventBus.emit('ui:update-status');
+
+        // Drain the next message for this same terminal once it settles. If the
+        // terminal goes 'running' (Claude is working), the gate blocks here and
+        // terminal:status:changed re-triggers maybeAutoInject when it idles.
+        setTimeout(() => this.maybeAutoInject(terminalId), 400);
+    }
+
+    /**
+     * Inject a specific queued message immediately (the "Send immediately" menu
+     * action and the toolbar inject button). Honors the R3 gate and the
+     * carriage-return submit convention.
+     */
+    injectMessageNow(messageId) {
+        const message = this.messageQueue.find(m => m.id === messageId);
+        if (!message) return;
+        const tid = message.terminalId || this.activeTerminalId;
+        if (tid == null) {
+            this.logAction('Cannot send: no target terminal', 'error');
+            return;
+        }
+        // Explicit manual override — "Send immediately" must fire even when the
+        // master send toggle is paused (or a timer/usage-limit wait is active);
+        // bypassing that gate is the whole point. Only refuse to race an
+        // in-flight injection already running on this same terminal.
+        if (this.currentlyInjectingTerminals.has(tid)) return;
+        this._injectToTerminal(message, tid);
     }
 
     canInjectToTerminal(terminalId) {
@@ -328,6 +418,28 @@ class MessageQueueManager {
     }
 
     /**
+     * Restore the persisted queue from the store on startup. The queue is SAVED
+     * on every mutation but was never read back, so messages survived on disk
+     * yet looked lost. Populates state + the visible list WITHOUT auto-injecting
+     * — restored messages inject normally once a target terminal next goes idle.
+     */
+    async restoreQueue() {
+        try {
+            const raw = await this.loadPreference('messageQueue'); // db-get-setting
+            if (!raw) return;
+            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (Array.isArray(parsed) && parsed.length) {
+                this.messageQueue = parsed;
+                this.eventBus.emit('message:queue-updated', { queue: this.messageQueue });
+                this.updateQueueDisplay();
+                this.logAction(`Restored ${parsed.length} queued message(s) from last session`, 'info');
+            }
+        } catch (error) {
+            console.error('Failed to restore message queue:', error);
+        }
+    }
+
+    /**
      * Public entrypoint used by the renderer to add a message.
      * Accepts either an object { content, terminalId } or positional args.
      */
@@ -344,30 +456,8 @@ class MessageQueueManager {
     injectNextMessage() {
         const queue = this.messageQueue;
         if (queue.length === 0) return;
-
-        const peek = queue[0];
-        const terminalId = peek.terminalId || this.activeTerminalId;
-
-        // R3 gate (manual path): block + warn rather than inject into a busy
-        // terminal or during a usage-limit/timer wait.
-        const gate = this.canInjectToTerminal(terminalId);
-        if (!gate.allowed) {
-            this.logAction(`Manual injection blocked: ${gate.reason}`, 'warning');
-            return;
-        }
-
-        const message = queue.shift();
-        this.messageQueue = queue;
-
-        if (terminalId) {
-            this.sendTerminalInput(terminalId, message.content + '\n');
-
-            // Update state
-            this.injectionCount++;
-            this.eventBus.emit('message:injected', { message, terminalId });
-        }
-
-        this.updateQueueDisplay();
+        // Route through the gated, carriage-return-correct injection path.
+        this.injectMessageNow(queue[0].id);
     }
 
     /**
@@ -378,45 +468,158 @@ class MessageQueueManager {
         const queueList = document.getElementById('message-list');
         if (!queueList) return;
 
+        // One document-level closer for the option popovers (bound once).
+        if (!this._queueMenuCloserBound) {
+            document.addEventListener('click', () => {
+                document.querySelectorAll('.message-menu.open').forEach(m => m.classList.remove('open'));
+            });
+            this._queueMenuCloserBound = true;
+        }
+
         queueList.innerHTML = '';
 
         this.messageQueue.forEach(message => {
+            const color = this._terminalColor(message.terminalId);
+
             const item = document.createElement('div');
             item.className = 'message-item';
             item.dataset.messageId = message.id;
+            item.draggable = true;
+            // Tint the left border + dot with the destination terminal's color.
+            item.style.borderLeft = `3px solid ${color}`;
 
             const dot = document.createElement('span');
             dot.className = 'message-terminal-dot';
-            dot.title = `Terminal ${message.terminalId}`;
+            dot.style.backgroundColor = color;
+            dot.title = message.terminalId === 999 ? 'Manager' : `Terminal ${message.terminalId}`;
 
             const messageText = document.createElement('span');
             messageText.className = 'message-text';
             messageText.textContent = message.content;
 
-            const injectBtn = document.createElement('button');
-            injectBtn.className = 'message-inject-btn';
-            injectBtn.title = 'Inject now';
-            injectBtn.textContent = '⤓';
-            injectBtn.onclick = () => this.injectSpecificMessage(message.id);
+            // Single "⋯" button → options popover (send / edit / delete).
+            const menuWrap = document.createElement('div');
+            menuWrap.className = 'message-menu-wrap';
 
-            const deleteBtn = document.createElement('button');
-            deleteBtn.className = 'message-delete-btn';
-            deleteBtn.title = 'Remove from queue';
-            deleteBtn.textContent = '×';
-            deleteBtn.onclick = () => this.deleteMessage(message.id);
+            const menuBtn = document.createElement('button');
+            menuBtn.className = 'message-menu-btn';
+            menuBtn.textContent = '⋯';
+            menuBtn.title = 'Options';
+
+            const menu = document.createElement('div');
+            menu.className = 'message-menu';
+
+            const addOption = (label, icon, handler, variant) => {
+                const opt = document.createElement('button');
+                opt.className = 'message-menu-item' + (variant ? ` ${variant}` : '');
+                opt.title = label;
+                opt.innerHTML = `<i data-lucide="${icon}"></i><span>${label}</span>`;
+                opt.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    menu.classList.remove('open');
+                    handler();
+                });
+                menu.appendChild(opt);
+            };
+            addOption('Send immediately', 'send', () => this.injectMessageNow(message.id));
+            addOption('Edit', 'pencil', () => this.beginInlineEdit(item, message.id));
+            addOption('Delete', 'trash-2', () => this.deleteMessage(message.id), 'danger');
+
+            menuBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const isOpen = menu.classList.contains('open');
+                document.querySelectorAll('.message-menu.open').forEach(m => m.classList.remove('open'));
+                if (!isOpen) menu.classList.add('open');
+            });
+
+            menuWrap.appendChild(menuBtn);
+            menuWrap.appendChild(menu);
 
             item.appendChild(dot);
             item.appendChild(messageText);
-            item.appendChild(injectBtn);
-            item.appendChild(deleteBtn);
+            item.appendChild(menuWrap);
+
+            // Drag-to-reorder within the queue.
+            item.addEventListener('dragstart', (e) => {
+                this._dragMessageId = message.id;
+                item.classList.add('dragging');
+                if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+            });
+            item.addEventListener('dragend', () => {
+                item.classList.remove('dragging');
+                this._dragMessageId = null;
+                queueList.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+            });
+            item.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                if (this._dragMessageId && this._dragMessageId !== message.id) {
+                    item.classList.add('drag-over');
+                }
+            });
+            item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+            item.addEventListener('drop', (e) => {
+                e.preventDefault();
+                item.classList.remove('drag-over');
+                this.handleMessageDrop(message.id);
+            });
+
             queueList.appendChild(item);
         });
+
+        // Render the lucide icons inside the freshly-built option menus.
+        if (window.lucide) window.lucide.createIcons({ nameAttr: 'data-lucide', root: queueList });
 
         // Queue counter in the status panel (#queue-count)
         const queueCounter = document.getElementById('queue-count');
         if (queueCounter) {
             queueCounter.textContent = this.messageQueue.length;
         }
+    }
+
+    /** Resolve a terminal's dot color (manager → yellow) for the queue UI. */
+    _terminalColor(terminalId) {
+        if (terminalId === 999) return 'var(--accent-warning)';
+        const term = this.terminalStateManager && this.terminalStateManager.getTerminal(terminalId);
+        return (term && term.color) || 'var(--accent-primary)';
+    }
+
+    /** Turn a queued message's text into an inline editor (Enter saves, Esc cancels). */
+    beginInlineEdit(item, messageId) {
+        const message = this.messageQueue.find(m => m.id === messageId);
+        if (!message) return;
+        const textEl = item.querySelector('.message-text');
+        if (!textEl) return;
+
+        item.draggable = false; // don't start a drag while editing
+        const editor = document.createElement('textarea');
+        editor.className = 'message-edit-input';
+        editor.value = message.content;
+        textEl.replaceWith(editor);
+        editor.focus();
+        editor.select();
+
+        const commit = () => {
+            const value = editor.value.trim();
+            if (value && value !== message.content) {
+                this.updateMessage(messageId, value); // re-renders via queue-updated
+            } else {
+                this.updateQueueDisplay(); // restore unchanged
+            }
+        };
+        editor.addEventListener('blur', commit);
+        editor.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); editor.blur(); }
+            if (e.key === 'Escape') { editor.value = message.content; this.updateQueueDisplay(); }
+        });
+    }
+
+    /** Reorder the dragged message to the dropped-on message's position. */
+    handleMessageDrop(targetMessageId) {
+        const fromIndex = this.messageQueue.findIndex(m => m.id === this._dragMessageId);
+        const toIndex = this.messageQueue.findIndex(m => m.id === targetMessageId);
+        this._dragMessageId = null;
+        if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return;
+        this.reorderMessage(fromIndex, toIndex);
     }
     
     /**
@@ -752,51 +955,26 @@ class MessageQueueManager {
         }
     }
     
+    /**
+     * Release the queue across all terminals. Named "sequential" for historical
+     * callers (timer:expired, usageLimit:reset, injection:start), but injection
+     * is now per-terminal parallel via flushAllTerminals() — each terminal is
+     * gated independently so eligible ones fire together.
+     */
     async startSequentialInjection() {
         if (this.messageQueue.length === 0) {
-            this.logAction('Timer expired but no messages to inject', 'warning');
+            this.logAction('Injection requested but no messages to inject', 'warning');
             return;
         }
-        
-        // Enhanced state recovery: detect and fix various stuck state combinations
-        if (this.injectionInProgress && !this.isInjecting) {
-            this.logAction('Detected stuck injection state (injectionInProgress without isInjecting) - recovering', 'warning');
-            this.injectionInProgress = false;
-            this.isInjecting = false;
-            this.safetyCheckCount = 0;
-        }
-        
-        // Additional recovery: if isInjecting is stuck true when starting new injection sequence
-        if (this.isInjecting && this.timerExpired && !this.usageLimitWaiting) {
-            this.logAction('Detected stuck isInjecting state - clearing for timer sequence', 'warning');
-            this.isInjecting = false;
-            this.currentlyInjectingMessageId = null;
-            this.safetyCheckCount = 0;
-        }
-        
-        // Additional recovery: if we're not in an injection state but timer expired, we should be injecting
-        if (!this.injectionInProgress && this.timerExpired && !this.usageLimitWaiting) {
-            this.logAction('Timer expired but injection not in progress - forcing start', 'warning');
-        }
-        
-        // Validate state BEFORE making any changes
-        this.validateInjectionState('startSequentialInjection-before');
-        
+
         // Start power save blocker if enabled
         if (this.preferences.keepScreenAwake) {
             await this.startPowerSaveBlocker();
         }
-        
-        this.injectionInProgress = true;
+
+        this.logAction(`Flushing message queue (${this.messageQueue.length} queued) across idle terminals`, 'info');
+        this.flushAllTerminals();
         this.eventBus.emit('ui:update-timer');
-        this.showSystemNotification('Injection Started', `Sequential injection of ${this.messageQueue.length} messages has begun.`);
-        this.logAction(`Timer expired - starting sequential injection of ${this.messageQueue.length} messages (timerExpired=${this.timerExpired}, usageLimitWaiting=${this.usageLimitWaiting})`, 'success');
-        
-        // Validate state after setting injection progress
-        this.validateInjectionState('startSequentialInjection-after');
-        
-        // Start with first message (no 30-second delay for first message)
-        this.processNextQueuedMessage(true);
     }
     
     validateInjectionState(context) {

@@ -55,6 +55,16 @@ class CompletionManager {
     recordHookCompletion({ terminalId, text, directory, sessionId }) {
         if (!text) return;
 
+        // Gated by the "Automatic todo generation" setting. Todos are a
+        // per-terminal record of what Claude did, captured from the Stop hook;
+        // default on (read synchronously via the preference bus, fail open).
+        let enabled = true;
+        this.eventBus.emit('preference:get', {
+            key: 'generateTodoOnCompletion',
+            callback: (v) => { if (typeof v === 'boolean') enabled = v; }
+        });
+        if (!enabled) return;
+
         const completionId = this.completionIdCounter++;
         const now = Date.now();
 

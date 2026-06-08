@@ -506,8 +506,17 @@ body {
     grid-template-rows: 1fr 1fr;
 }
 
-.terminals-container.layout-scroll .terminal-chunk.chunk-3 .terminal-wrapper:first-child {
+/* 3 terminals: top-left (1), tall right (2), bottom-left (3). */
+.terminals-container.layout-scroll .terminal-chunk.chunk-3 .terminal-wrapper:nth-child(1) {
+    grid-row: 1;
+    grid-column: 1;
+}
+.terminals-container.layout-scroll .terminal-chunk.chunk-3 .terminal-wrapper:nth-child(2) {
     grid-row: 1 / 3;
+    grid-column: 2;
+}
+.terminals-container.layout-scroll .terminal-chunk.chunk-3 .terminal-wrapper:nth-child(3) {
+    grid-row: 2;
     grid-column: 1;
 }
 
@@ -580,8 +589,16 @@ body {
     grid-template-rows: 1fr 1fr;
 }
 
-.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-3 .terminal-wrapper:first-child {
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-3 .terminal-wrapper:nth-child(1) {
+    grid-row: 1;
+    grid-column: 1;
+}
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-3 .terminal-wrapper:nth-child(2) {
     grid-row: 1 / 3;
+    grid-column: 2;
+}
+.terminals-container.layout-scroll-vertical .terminal-chunk.chunk-3 .terminal-wrapper:nth-child(3) {
+    grid-row: 2;
     grid-column: 1;
 }
 
@@ -695,6 +712,8 @@ body {
     position: relative;
     min-height: 0; /* Allow flex shrinking */
     min-width: 0; /* Allow flex shrinking */
+    /* Match the xterm canvas bg so the 10px padding frame doesn't show a seam. */
+    background-color: var(--terminal-bg);
 }
 
 /* Ensure xterm.js properly fits container */
@@ -5695,6 +5714,50 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     max-width: 520px;
 }
 
+/* Empty state: shown over the terminals container when no visible terminals
+   remain. Overlays the grid (container is position: relative) so it stays out
+   of the layout flow. */
+.terminals-empty {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-secondary);
+}
+.terminals-empty-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 6px;
+    padding: 0 24px;
+}
+.terminals-empty-icon {
+    width: 40px;
+    height: 40px;
+    color: var(--text-tertiary);
+    opacity: 0.6;
+    margin-bottom: 8px;
+}
+.terminals-empty-title {
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+}
+.terminals-empty-text {
+    color: var(--text-tertiary);
+    font-size: 13px;
+    margin: 0;
+}
+.terminals-empty-btn {
+    margin-top: 12px;
+    padding: 8px 16px;
+    font-size: 12px;
+}
+
 /* Selector dropdown items */
 .terminal-selector-item {
     display: flex;
@@ -5712,20 +5775,16 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 .terminal-selector-item:hover { background: var(--bg-quaternary); color: var(--text-primary); }
 
-/* Terminal grid: visible terminals share the row (the legacy chunk system
-   died with src/managers/ - without this, terminal 2+ stacked off-screen) */
-.terminals-container {
-    display: grid !important;
-    grid-auto-flow: column;
-    grid-auto-columns: 1fr;
-    height: 100%;
-    min-height: 0;
-}
-.terminals-container > .terminal-wrapper {
-    height: 100% !important;
-    min-width: 0;
-    min-height: 0;
-}
+/* Terminal grid is driven by renderer.relayoutTerminals(): the container is a
+   horizontal/vertical strip of full-screen "chunks" (one page each), and each
+   .terminal-chunk grids its 1-N members via the .chunk-N rules far above. Each
+   chunk snaps into view so paging past the chunk size lands cleanly. */
+.terminals-container { height: 100%; min-height: 0; }
+.terminals-container.layout-scroll { scroll-snap-type: x mandatory; }
+.terminals-container.layout-scroll-vertical { scroll-snap-type: y mandatory; }
+.terminals-container.layout-scroll > .terminal-chunk,
+.terminals-container.layout-scroll-vertical > .terminal-chunk { scroll-snap-align: start; }
+.terminals-container .terminal-wrapper { min-width: 0; min-height: 0; }
 .terminals-container > .terminal-wrapper.manager-hidden { display: none !important; }
 
 /* Timer chevron sits directly right of the AUTO-INJECT AT label, identical
@@ -5760,6 +5819,55 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 .message-item button:hover { background: var(--bg-quaternary); color: var(--text-primary); }
 .message-item .message-delete-btn:hover { color: var(--accent-error); }
+
+/* Queue item: drag-to-reorder + "⋯" options menu + inline edit */
+.message-item { cursor: grab; }
+.message-item.dragging { opacity: 0.45; cursor: grabbing; }
+.message-item.drag-over { box-shadow: inset 0 2px 0 0 var(--accent-primary); }
+
+.message-menu-wrap { position: relative; flex-shrink: 0; }
+.message-menu-btn { font-size: 18px; line-height: 1; padding: 2px 6px; }
+.message-menu {
+    display: none; /* shown via .open so the inline toggle can't clobber flex */
+    position: absolute; right: 0; top: 100%; margin-top: 4px;
+    z-index: 60; padding: 6px; min-width: 184px;
+    flex-direction: column; gap: 4px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.message-menu.open { display: flex; }
+/* Vertical list: icon + label per row, roomy, consistent (even) spacing. */
+.message-menu-item {
+    display: flex; flex-direction: row; align-items: center; gap: 12px;
+    width: 100%; text-align: left;
+    padding: 12px 16px; border-radius: 6px;
+    font-size: 13px; color: var(--text-secondary); white-space: nowrap;
+}
+.message-menu-item i,
+.message-menu-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+.message-menu-item:hover { background: var(--bg-quaternary); color: var(--text-primary); }
+.message-menu-item.danger:hover {
+    background: color-mix(in srgb, var(--accent-error) 18%, transparent);
+    color: var(--accent-error);
+}
+
+.message-edit-input {
+    flex: 1; min-width: 0;
+    background: var(--bg-secondary); color: var(--text-primary);
+    border: 1px solid var(--accent-primary); border-radius: 6px;
+    font: inherit; font-size: 13px; line-height: 1.4;
+    padding: 6px 8px; resize: vertical; min-height: 32px;
+}
+
+/* Pricing view: estimate disclaimer under the ccusage figures */
+.pricing-disclaimer {
+    margin: 12px 0 0;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-tertiary);
+    font-style: italic;
+}
 
 /* ============================================================
    Chatbot-style input bar (redesign) — one rounded container
