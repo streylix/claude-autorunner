@@ -646,8 +646,109 @@ class TerminalGUI {
                 }
             });
         }
+
+        // Wire the secondary UI the thin refactor left unconnected.
+        this.setupSecondaryUI();
     }
-    
+
+    /**
+     * Wire secondary controls whose DOM exists in index.html but were never
+     * connected by the refactored renderer: settings modal, voice recording,
+     * hotkey dropdown, and pricing.
+     */
+    setupSecondaryUI() {
+        // ---- Settings modal ----
+        const settingsBtn = document.getElementById('settings-btn');
+        const settingsModal = document.getElementById('settings-modal');
+        const settingsClose = document.getElementById('settings-close');
+        const openSettings = () => { if (settingsModal) settingsModal.classList.add('show'); };
+        const closeSettings = () => { if (settingsModal) settingsModal.classList.remove('show'); };
+        if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
+        if (settingsClose) settingsClose.addEventListener('click', closeSettings);
+        if (settingsModal) settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) closeSettings(); });
+
+        // ---- Voice recording ----
+        const voiceBtn = document.getElementById('voice-btn');
+        if (voiceBtn) {
+            // VoiceManager fetches the transcribe URL directly; give it a
+            // truthy client so its internal guard passes, and activate it.
+            this.voiceManager.setBackendClient({ baseUrl: 'http://localhost:8123' });
+            this.voiceManager.initialize();
+            voiceBtn.addEventListener('click', () => this.eventBus.emit('voice:toggle'));
+            // Reflect recording/processing state on the button
+            this.eventBus.on('voice:button-state', (state) => {
+                voiceBtn.classList.toggle('recording', state === 'recording');
+                voiceBtn.classList.toggle('processing', state === 'processing');
+            });
+            // Drop transcribed text into the message input
+            this.eventBus.on('voice:insert-text', (text) => {
+                const input = document.getElementById('message-input');
+                if (input && text) {
+                    input.value = (input.value ? input.value + ' ' : '') + text;
+                    input.focus();
+                }
+            });
+        }
+
+        // ---- Hotkey dropdown (keyboard button) ----
+        const hotkeyBtn = document.getElementById('hotkey-btn');
+        const hotkeyDropdown = document.getElementById('hotkey-dropdown');
+        if (hotkeyBtn && hotkeyDropdown) {
+            hotkeyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                hotkeyDropdown.classList.toggle('show');
+            });
+            hotkeyDropdown.addEventListener('click', (e) => {
+                const item = e.target.closest('.hotkey-item');
+                if (!item) return;
+                // data-command holds the raw control sequence (^C, \r, \x1b...)
+                let cmd = item.dataset.command || '';
+                cmd = cmd.replace(/\^([A-Z])/g, (_, c) => String.fromCharCode(c.charCodeAt(0) - 64))
+                         .replace(/\\r/g, '\r').replace(/\\t/g, '\t')
+                         .replace(/\\x1b/g, '\x1b').replace(/\\x([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
+                const target = this.queueTargetTerminalId ?? this.activeTerminalId;
+                if (target != null) ipcRenderer.send('terminal-input', { terminalId: target, data: cmd });
+                hotkeyDropdown.classList.remove('show');
+            });
+            document.addEventListener('click', () => hotkeyDropdown.classList.remove('show'));
+        }
+
+        // ---- Pricing / token usage ----
+        const pricingRefresh = document.getElementById('pricing-refresh-btn');
+        const pricingRetry = document.getElementById('pricing-retry-btn');
+        const loadPricing = () => this.loadPricingData();
+        if (pricingRefresh) pricingRefresh.addEventListener('click', loadPricing);
+        if (pricingRetry) pricingRetry.addEventListener('click', loadPricing);
+        // Load when the pricing view is first shown
+        this.eventBus.on('ui:sidebar-view-changed', ({ viewId }) => {
+            if (viewId === 'pricing-view' && !this._pricingLoaded) {
+                this._pricingLoaded = true;
+                loadPricing();
+            }
+        });
+    }
+
+    /** Fetch token usage/cost from the backend and populate the pricing view. */
+    async loadPricingData() {
+        const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+        show('pricing-loading', true); show('pricing-error', false); show('pricing-data', false);
+        try {
+            const res = await fetch('http://localhost:8123/api/ccusage/', { method: 'POST', signal: AbortSignal.timeout(8000) });
+            const data = await res.json();
+            if (!res.ok || data.success === false) throw new Error(data.error || 'pricing unavailable');
+            const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+            set('daily-cost', `$${(data.daily ?? 0).toFixed(2)}`);
+            set('weekly-cost', `$${(data.weekly ?? 0).toFixed(2)}`);
+            set('total-cost', `$${(data.total ?? 0).toFixed(2)}`);
+            set('receipt-total-cost', `$${(data.total ?? 0).toFixed(2)}`);
+            show('pricing-loading', false); show('pricing-data', true);
+        } catch (err) {
+            show('pricing-loading', false); show('pricing-error', true);
+            const errText = document.querySelector('#pricing-error .error-text');
+            if (errText) errText.textContent = `Pricing unavailable: ${err.message}. Needs the backend + ccusage CLI.`;
+        }
+    }
+
     createTerminal(options = {}) {
         // options.id: explicit terminal id (e.g. 0 = the hidden manager instance)
         // options.directory: cwd for the PTY

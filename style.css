@@ -2412,34 +2412,6 @@ button#voice-btn.voice-button.processing:hover,
     align-items: center;
 }
 
-.hotkey-btn {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    background-color: var(--bg-tertiary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 50%;
-    width: 24px;
-    height: 24px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s;
-    color: var(--text-secondary);
-    z-index: 10;
-}
-
-.hotkey-btn:hover {
-    background-color: var(--bg-quaternary);
-    color: var(--text-primary);
-    transform: scale(1.05);
-}
-
-.hotkey-btn:active {
-    transform: scale(0.95);
-}
-
 .hotkey-btn i {
     width: 12px;
     height: 12px;
