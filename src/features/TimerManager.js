@@ -299,17 +299,14 @@ class TimerManager {
         const playPauseButton = document.getElementById('timer-play-pause-btn');
 
         if (playPauseButton) {
-            const icon = playPauseButton.querySelector('i');
-            if (icon) {
-                if (this.timerRunning && !this.timerPaused) {
-                    icon.setAttribute('data-lucide', 'pause');
-                } else {
-                    icon.setAttribute('data-lucide', 'play');
-                }
-                // Re-initialize lucide icons
-                if (window.lucide) {
-                    window.lucide.createIcons();
-                }
+            // lucide replaces the <i> with an <svg> on first render, so we
+            // can't re-set the <i>'s attribute - replace the icon content
+            // wholesale and re-run createIcons. This is why pausing didn't
+            // visually update the button before.
+            const iconName = (this.timerRunning && !this.timerPaused) ? 'pause' : 'play';
+            playPauseButton.innerHTML = `<i data-lucide="${iconName}"></i>`;
+            if (window.lucide) {
+                window.lucide.createIcons({ nameAttr: 'data-lucide', root: playPauseButton });
             }
         }
 
@@ -507,12 +504,9 @@ class TimerManager {
         const h = String(hours).padStart(2, '0');
         const m = String(minutes).padStart(2, '0');
         const s = String(seconds).padStart(2, '0');
-        
-        if (hours > 0) {
-            return `${h}:${m}:${s}`;
-        } else {
-            return `${m}:${s}`;
-        }
+        // Always HH:MM:SS so the display matches the inline-edit format
+        // (editing parses HH:MM:SS; a bare MM:SS would break the next edit).
+        return `${h}:${m}:${s}`;
     }
     
     /**

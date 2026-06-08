@@ -5788,3 +5788,140 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 .message-item button:hover { background: var(--bg-quaternary); color: var(--text-primary); }
 .message-item .message-delete-btn:hover { color: var(--accent-error); }
+
+/* ============================================================
+   Chatbot-style input bar (redesign) — one rounded container
+   with the textarea on top and all controls in a toolbar inside
+   ============================================================ */
+.input-section { padding: 12px 14px 14px; }
+
+.chat-input {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 16px;
+    padding: 10px 10px 8px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.chat-input:focus-within {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-primary) 15%, transparent);
+}
+
+/* Textarea sits flush inside the container — no own border/bg */
+.chat-input #message-input {
+    width: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
+    resize: none;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 4px 6px;
+    min-height: 24px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+.chat-input #message-input::placeholder { color: var(--text-quaternary); }
+
+/* Toolbar row inside the container */
+.chat-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.chat-toolbar-left, .chat-toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+/* Uniform toolbar icon buttons */
+.chat-btn {
+    width: 32px; height: 32px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+.chat-btn:hover { background: var(--bg-quaternary); color: var(--text-primary); }
+.chat-btn svg { width: 18px; height: 18px; stroke-width: 2; }
+.chat-btn.active { color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 14%, transparent); }
+
+/* Send button — accent circle, clean arrow */
+.chat-input .send-button {
+    width: 32px; height: 32px; min-width: 32px;
+    border-radius: 50%;
+    border: none;
+    background: var(--accent-primary);
+    color: #fff;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; flex-shrink: 0;
+    transition: background 0.12s ease, transform 0.08s ease;
+}
+.chat-input .send-button:hover { background: var(--accent-secondary); }
+.chat-input .send-button:active { transform: scale(0.92); }
+.chat-input .send-button svg { width: 18px; height: 18px; stroke-width: 2.5; }
+
+/* Voice button recording state stays accentible */
+.chat-input #voice-btn.recording { color: var(--accent-error); background: color-mix(in srgb, var(--accent-error) 16%, transparent); }
+
+/* Terminal selector — compact pill that fits the toolbar */
+.chat-toolbar .terminal-selector { position: relative; margin: 0; }
+.chat-toolbar .terminal-selector-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 32px; padding: 0 10px;
+    background: var(--bg-quaternary);
+    border: 1px solid var(--border-primary);
+    border-radius: 16px;
+    color: var(--text-secondary);
+    font-size: 12px; font-weight: 500;
+    cursor: pointer; max-width: 180px;
+    transition: background 0.12s ease, border-color 0.12s ease;
+}
+.chat-toolbar .terminal-selector-btn:hover { background: var(--bg-tertiary); border-color: var(--border-secondary); }
+.chat-toolbar .terminal-selector-btn .terminal-selector-text {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chat-toolbar .terminal-selector-btn .terminal-selector-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.chat-toolbar .terminal-selector-btn svg { width: 14px; height: 14px; opacity: 0.6; flex-shrink: 0; }
+.terminal-selector-dropdown {
+    position: absolute; bottom: calc(100% + 6px); left: 0;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    z-index: 1000; overflow: hidden;
+    min-width: 180px; padding: 4px;
+}
+
+/* Send toggle (queue header) paused state */
+.send-toggle-btn.paused { color: var(--accent-warning); }
+
+/* Terminal header: close button on the right */
+.terminal-header-right { display: flex; align-items: center; gap: 6px; }
+.close-terminal-btn { opacity: 0.5; transition: opacity 0.12s ease, color 0.12s ease; }
+.terminal-wrapper:hover .close-terminal-btn { opacity: 1; }
+.close-terminal-btn:hover { color: var(--accent-error); }
+
+/* Timer display inline-edit state */
+#timer-display { cursor: pointer; border-radius: 4px; padding: 0 4px; }
+#timer-display:hover { background: var(--bg-quaternary); }
+#timer-display.editing {
+    outline: 2px solid var(--accent-primary);
+    background: var(--bg-secondary);
+    cursor: text;
+}

@@ -157,6 +157,9 @@ class TerminalGUI {
         // queue needs a handle on the timer to call isRunning().
         this.messageQueueManager.timerManager = this.timerManager;
 
+        // Restore the master send toggle state (default: sending enabled).
+        this.messageQueueManager.injectionPaused = this.appStateStore.getState('injectionPaused') === true;
+
         // Wire the usage-limit manager to the timer + message queue so it can
         // drive the countdown (R2) and hold the injection gate (R3). Without
         // this the manager's timerManager/messageQueueManager stay null.
@@ -240,6 +243,9 @@ class TerminalGUI {
         });
 
         ipcRenderer.on('terminal-exit', (event, { terminalId, exitCode, signal }) => {
+            // A terminal closed by the user kills its PTY, which emits exit
+            // AFTER we removed the terminal - ignore exits for gone terminals.
+            if (!this.terminals.has(terminalId)) return;
             this.terminalStateManager.updateTerminal(terminalId, { isReady: false, isBusy: false });
             this.eventBus.emit('terminal:exit', { terminalId, exitCode, signal });
         });
@@ -462,6 +468,54 @@ class TerminalGUI {
             });
         }
 
+        // Timer edit: inline-edit the HH:MM:SS display (Electron disables
+        // window.prompt, which is why the old edit silently did nothing).
+        const timerEditBtn = document.getElementById('timer-edit-btn');
+        const timerDisplay = document.getElementById('timer-display');
+        const commitTimerEdit = () => {
+            const m = timerDisplay.textContent.trim().match(/^(\d{1,2}):(\d{1,2}):(\d{1,2})$/);
+            timerDisplay.removeAttribute('contenteditable');
+            timerDisplay.classList.remove('editing');
+            if (!m) {
+                this.timerManager.updateTimerDisplay(); // restore last good value
+                this.eventBus.emit('log:action', { message: 'Invalid time (use HH:MM:SS)', type: 'error' });
+                return;
+            }
+            const h = Math.min(99, parseInt(m[1], 10));
+            const min = Math.min(59, parseInt(m[2], 10));
+            const s = Math.min(59, parseInt(m[3], 10));
+            this.timerManager.setTimer(h, min, s, true);
+        };
+        const beginTimerEdit = () => {
+            if (!timerDisplay || timerDisplay.getAttribute('contenteditable') === 'true') return;
+            timerDisplay.setAttribute('contenteditable', 'true');
+            timerDisplay.classList.add('editing');
+            timerDisplay.focus();
+            // Select all the text for quick overwrite
+            const range = document.createRange();
+            range.selectNodeContents(timerDisplay);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+        };
+        if (timerEditBtn) timerEditBtn.addEventListener('click', beginTimerEdit);
+        if (timerDisplay) {
+            timerDisplay.addEventListener('click', beginTimerEdit);
+            timerDisplay.addEventListener('blur', commitTimerEdit);
+            timerDisplay.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') { e.preventDefault(); timerDisplay.blur(); }
+                if (e.key === 'Escape') { timerDisplay.removeAttribute('contenteditable'); timerDisplay.classList.remove('editing'); this.timerManager.updateTimerDisplay(); }
+            });
+        }
+
+        // Master send toggle (queue header): pauses/resumes injection entirely.
+        // The timer is now purely a suppressor; this is the on/off switch.
+        const sendToggleBtn = document.getElementById('send-toggle-btn');
+        if (sendToggleBtn) {
+            sendToggleBtn.addEventListener('click', () => this.toggleSending());
+            this.syncSendToggleButton();
+        }
+
         // Queue-target terminal selector (the dropdown next to the input)
         this.setupTerminalSelector();
 
@@ -639,14 +693,21 @@ class TerminalGUI {
             const dotColor = options.color || 'var(--accent-primary)';
             const header = document.createElement('div');
             header.className = 'terminal-header';
+            // Manager (locked) gets no close button - it's managed by the app.
+            const closeBtnHtml = options.lockTitle ? '' :
+                `<button class="icon-btn close-terminal-btn hotkey-enabled" title="Close terminal" data-terminal-id="${terminalId}" data-test-id="close-terminal-btn"><i data-lucide="x"></i></button>`;
             header.innerHTML = `
                 <div class="terminal-title-wrapper">
                     <span class="terminal-color-dot" style="background-color: ${dotColor};"></span>
                     <span class="terminal-title${options.lockTitle ? '' : ' editable'}" contenteditable="false"></span>
                 </div>
-                <span class="terminal-status" data-terminal-status="${terminalId}"></span>`;
+                <div class="terminal-header-right">
+                    <span class="terminal-status" data-terminal-status="${terminalId}"></span>
+                    ${closeBtnHtml}
+                </div>`;
             header.querySelector('.terminal-title').textContent = titleText;
             container.appendChild(header);
+            if (window.lucide) window.lucide.createIcons({ nameAttr: 'data-lucide', root: header });
 
             mount = document.createElement('div');
             mount.className = 'terminal-container';
@@ -777,6 +838,45 @@ class TerminalGUI {
 
         // Emit event
         this.eventBus.emit('terminal:active', { terminalId });
+    }
+
+    /**
+     * Swap a lucide icon inside a button reliably. lucide replaces the
+     * <i data-lucide> with an <svg> on render, so you can't re-set the <i>'s
+     * attribute afterward - you must replace the button's icon content and
+     * re-run createIcons. Shared helper for all dynamic icon state.
+     */
+    setButtonIcon(btnOrId, iconName) {
+        const btn = typeof btnOrId === 'string' ? document.getElementById(btnOrId) : btnOrId;
+        if (!btn) return;
+        btn.innerHTML = `<i data-lucide="${iconName}"></i>`;
+        if (window.lucide) window.lucide.createIcons({ nameAttr: 'data-lucide', root: btn });
+    }
+
+    /** Toggle the master send switch (injectionPaused) and reflect it. */
+    toggleSending() {
+        const mqm = this.messageQueueManager;
+        mqm.injectionPaused = !mqm.injectionPaused;
+        this.appStateStore.setState('injectionPaused', mqm.injectionPaused);
+        this.syncSendToggleButton();
+        this.eventBus.emit('log:action', {
+            message: mqm.injectionPaused ? 'Sending paused — messages will hold in the queue' : 'Sending resumed',
+            type: mqm.injectionPaused ? 'warning' : 'success'
+        });
+        // On resume, flush anything that became eligible while paused
+        if (!mqm.injectionPaused) {
+            this.terminals.forEach((_, id) => mqm.maybeAutoInject(id));
+        }
+    }
+
+    syncSendToggleButton() {
+        const paused = this.messageQueueManager.injectionPaused;
+        const btn = document.getElementById('send-toggle-btn');
+        if (!btn) return;
+        // Sending active -> show pause (click to pause); paused -> show play.
+        this.setButtonIcon(btn, paused ? 'play' : 'pause');
+        btn.classList.toggle('paused', paused);
+        btn.title = paused ? 'Sending paused — click to resume' : 'Sending enabled — click to pause';
     }
 
     /**
