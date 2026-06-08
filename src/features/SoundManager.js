@@ -7,11 +7,12 @@ class SoundManager {
         this.eventBus = eventBus;
         this.appStateStore = appStateStore;
         
-        // Sound preferences
+        // Sound preferences. Defaults must be REAL files in assets/soundeffects
+        // (all .wav) — the dir ships no .mp3, so .mp3 defaults play nothing.
         this.soundEnabled = false;
-        this.completionSound = 'completion.mp3';
-        this.injectionSound = 'injection.mp3';
-        this.promptedSound = 'prompted.mp3';
+        this.completionSound = 'confirm.wav';
+        this.injectionSound = 'click.wav';
+        this.promptedSound = 'warning.wav';
         this.promptedSoundKeywordsOnly = false;
         
         // Available sound files cache
@@ -285,23 +286,26 @@ class SoundManager {
         try {
             // Request available sound files from backend
             const { ipcRenderer } = require('electron');
-            const response = await ipcRenderer.invoke('get-sound-files');
+            // Channel must match main.js's ipcMain.handle('get-sound-effects').
+            const response = await ipcRenderer.invoke('get-sound-effects');
 
-            if (response && response.files) {
-                this.availableSounds = response.files;
+            if (response && response.files && response.files.length) {
+                // 'none' first so a sound can be disabled per type.
+                this.availableSounds = ['none', ...response.files];
                 this.eventBus.emit('sound:files-loaded', this.availableSounds);
+                return;
             }
+            throw new Error('no sound files returned');
         } catch (error) {
             console.error('Failed to load sound files:', error);
-            // Use default list as fallback
+            // Fallback to real shipped files (all .wav) so playback still works.
             this.availableSounds = [
                 'none',
-                'completion.mp3',
-                'injection.mp3',
-                'prompted.mp3',
-                'bell.mp3',
-                'chime.mp3',
-                'notification.mp3'
+                'confirm.wav',
+                'click.wav',
+                'warning.wav',
+                'beep.wav',
+                'medic.wav'
             ];
         }
     }
@@ -394,9 +398,9 @@ class SoundManager {
     async initialize() {
         // Load preferences from the unified app state store
         this.soundEnabled = this.appStateStore.getState('settings.sound.enabled') || false;
-        this.completionSound = this.appStateStore.getState('settings.sound.completion') || 'completion.mp3';
-        this.injectionSound = this.appStateStore.getState('settings.sound.injection') || 'injection.mp3';
-        this.promptedSound = this.appStateStore.getState('settings.sound.prompted') || 'prompted.mp3';
+        this.completionSound = this.appStateStore.getState('settings.sound.completion') || 'confirm.wav';
+        this.injectionSound = this.appStateStore.getState('settings.sound.injection') || 'click.wav';
+        this.promptedSound = this.appStateStore.getState('settings.sound.prompted') || 'warning.wav';
         this.promptedSoundKeywordsOnly = this.appStateStore.getState('settings.sound.promptedKeywordsOnly') || false;
 
         // Load per-terminal sound overrides
@@ -404,6 +408,15 @@ class SoundManager {
 
         // Load available sound files
         await this.loadAvailableSounds();
+
+        // Heal stale prefs: earlier builds defaulted to .mp3 files that don't
+        // exist, so any persisted value not in the available list would play
+        // nothing. Reset such values to a real default.
+        const heal = (value, fallback) =>
+            (value === 'none' || this.availableSounds.includes(value)) ? value : fallback;
+        this.completionSound = heal(this.completionSound, 'confirm.wav');
+        this.injectionSound = heal(this.injectionSound, 'click.wav');
+        this.promptedSound = heal(this.promptedSound, 'warning.wav');
 
         // Update UI
         this.updateSoundSettingsVisibility();

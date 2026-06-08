@@ -72,13 +72,26 @@ class HookServer {
             return;
         }
 
+        // GET /queue - full pending queue (id, terminalId, content, type) so a
+        // controller can inspect and (via POST /queue/update) reorder/edit it.
+        // Served from the same cached snapshot as /state.
+        if (req.method === 'GET' && req.url === '/queue') {
+            req.resume();
+            const state = this.getState ? this.getState() : null;
+            res.writeHead(state ? 200 : 503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(state ? { queue: state.queue || [] } : { error: 'state unavailable' }));
+            return;
+        }
+
         // Terminal management: round-trip to the renderer and answer with
         // its result. Actions: create {directory?, title?, color?},
         // update {terminalId, title?, color?}, delete {terminalId}.
         const CONTROL_ROUTES = {
             '/terminal/create': 'terminal-create',
             '/terminal/update': 'terminal-update',
-            '/terminal/delete': 'terminal-delete'
+            '/terminal/delete': 'terminal-delete',
+            '/terminal/screen': 'terminal-screen',
+            '/queue/update': 'queue-update'
         };
         if (req.method === 'POST' && CONTROL_ROUTES[req.url]) {
             const action = CONTROL_ROUTES[req.url];

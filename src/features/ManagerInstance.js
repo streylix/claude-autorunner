@@ -35,6 +35,38 @@ class ManagerInstance {
         this.directory = null;
         this.tabVisible = false;
         this.passTimer = null; // recurring optimization-pass interval
+        // Completion watching: push every other terminal's finish (with its
+        // last message) into the manager's own queue so it can chain follow-up
+        // work autonomously. Set from the managerCompletionWatchEnabled setting
+        // in start(); the subscription is wired once here and gated at fire time.
+        this.completionWatchEnabled = true;
+        this.eventBus.on('completion:recorded', (data) => this.onTerminalCompletion(data));
+    }
+
+    /**
+     * React to another terminal finishing a Claude turn. The Stop hook's
+     * last-assistant text (captured in main, emitted as completion:recorded)
+     * is pushed into the manager's queue so it can decide whether the work is
+     * done or needs a follow-up. By design there is NO mechanical loop cap -
+     * the manager's own judgment ("this terminal's work is complete, do
+     * nothing") is the only brake. Self-exclusion (999) prevents the manager
+     * reacting to its own turns, which would loop forever.
+     */
+    onTerminalCompletion(data) {
+        if (!this.running || !this.completionWatchEnabled) return;
+        if (!data || data.terminalId == null) return;
+        if (data.terminalId === MANAGER_TERMINAL_ID) return; // never react to self
+        const terminal = this.gui.terminalStateManager.getTerminal(data.terminalId);
+        const title = (terminal && terminal.title) || `Terminal ${data.terminalId}`;
+        const dir = data.directory ? ` in ${data.directory}` : '';
+        const text = (data.text || '').trim() || '(no message text)';
+        const note =
+            `Terminal ${data.terminalId} ("${title}")${dir} just finished. Its last message:\n\n` +
+            `${text}\n\n` +
+            `Decide whether this work is complete or needs a follow-up. If it needs a next ` +
+            `step, queue it to terminal ${data.terminalId} via the control API. If it is done, ` +
+            `or this was user-driven work you should not steer, do nothing.`;
+        this.dispatch(note);
     }
 
     // ======= RECURRING OPTIMIZATION PASSES =======
@@ -87,73 +119,51 @@ class ManagerInstance {
         return this.dispatch(PASS_INSTRUCTION);
     }
 
-    // ======= UI: grid tab toggle + setup overlay =======
+    // ======= UI: left-sidebar Manager tab =======
+    // The manager is no longer a hidden grid terminal toggled in/out of the
+    // main view. It lives in its own left-sidebar tab (#manager-view) alongside
+    // Action Log / Completions / Pricing: a setup form until a directory is
+    // configured, then the manager terminal mounted in #manager-terminal-mount.
     initializeUI() {
-        this.setupOverlay = document.getElementById('manager-setup');
+        this.setupForm = document.getElementById('manager-setup');
+        this.terminalMount = document.getElementById('manager-terminal-mount');
 
-        const toggleBtn = document.getElementById('manager-tab-btn');
+        const navBtn = document.getElementById('manager-nav-btn');   // sidebar tab button
         const startBtn = document.getElementById('manager-start-btn');
-        const cancelBtn = document.getElementById('manager-setup-cancel-btn');
         const dirInput = document.getElementById('manager-directory-input');
 
-        if (toggleBtn) toggleBtn.addEventListener('click', () => this.toggleVisible());
-        if (cancelBtn) {
-            cancelBtn.addEventListener('click', () => {
-                if (this.setupOverlay) this.setupOverlay.style.display = 'none';
-            });
-        }
         if (startBtn && dirInput) {
             startBtn.addEventListener('click', async () => {
                 const dir = dirInput.value.trim();
                 if (!dir) return;
                 await this.ipc.invoke('db-set-setting', 'managerDirectory', dir);
-                const ok = await this.start(dir);
-                if (ok) {
-                    if (this.setupOverlay) this.setupOverlay.style.display = 'none';
-                    this.setVisible(true);
-                }
+                await this.start(dir);
             });
         }
+
+        // When the Manager tab is revealed: boot it if configured, then re-fit +
+        // focus the terminal (fit() on a hidden tab computes garbage dimensions).
+        this.eventBus.on('ui:sidebar-view-changed', ({ viewId }) => {
+            const active = viewId === 'manager-view';
+            if (navBtn) navBtn.classList.toggle('active', active);
+            if (!active) return;
+            if (!this.running) this.startIfConfigured();
+            this.updateView();
+            const td = this.gui.terminals.get(MANAGER_TERMINAL_ID);
+            if (td) requestAnimationFrame(() => {
+                try { td.fitAddon.fit(); } catch { /* not laid out */ }
+                td.terminal.focus();
+            });
+        });
+
+        this.updateView();
     }
 
-    /** Bot button: reveal/conceal the Manager tab in the terminal grid. */
-    toggleVisible() {
-        if (!this.running) {
-            // Not running: offer setup (or boot from saved config if present)
-            this.startIfConfigured().then((started) => {
-                if (started) {
-                    this.setVisible(true);
-                } else if (this.setupOverlay) {
-                    this.setupOverlay.style.display = '';
-                }
-            });
-            return;
-        }
-        const terminalData = this.gui.terminals.get(MANAGER_TERMINAL_ID);
-        if (!terminalData) return;
-        this.setVisible(terminalData.container.classList.contains('manager-hidden'));
-    }
-
-    setVisible(visible) {
-        const terminalData = this.gui.terminals.get(MANAGER_TERMINAL_ID);
-        if (!terminalData) return;
-
-        terminalData.container.classList.toggle('manager-hidden', !visible);
-        const btn = document.getElementById('manager-tab-btn');
-        if (btn) btn.classList.toggle('active', visible);
-
-        if (visible) {
-            requestAnimationFrame(() => {
-                terminalData.fitAddon.fit();
-                this.gui.setActiveTerminal(MANAGER_TERMINAL_ID);
-            });
-        } else if (this.gui.activeTerminalId === MANAGER_TERMINAL_ID) {
-            // Hand focus back to the first visible terminal
-            const next = Array.from(this.gui.terminals.keys()).find((id) => id !== MANAGER_TERMINAL_ID);
-            if (next !== undefined) this.gui.setActiveTerminal(next);
-        }
-
-        this.eventBus.emit('manager:visibility', { visible });
+    /** Setup form vs. mounted terminal, driven by whether the manager runs. */
+    updateView() {
+        const running = this.running;
+        if (this.setupForm) this.setupForm.style.display = running ? 'none' : '';
+        if (this.terminalMount) this.terminalMount.style.display = running ? '' : 'none';
     }
 
     isConfigured() {
@@ -197,7 +207,9 @@ class ManagerInstance {
         this.gui.createTerminal({
             id: MANAGER_TERMINAL_ID,
             directory: managerDir,
-            hidden: true,
+            // Mount into the left-sidebar Manager tab, not the main grid.
+            mountTarget: document.getElementById('manager-terminal-mount'),
+            noWebgl: true, // tab is hidden until selected; don't burn a WebGL context
             skipActive: true,
             title: 'Manager',
             lockTitle: true,
@@ -235,6 +247,7 @@ class ManagerInstance {
         }
 
         this.running = true;
+        this.updateView(); // swap the setup form for the dispatch input + terminal
         this.eventBus.emit('manager:started', { directory: managerDir, resumed: prep.resumable });
         this.eventBus.emit('log:action', {
             message: `Manager instance ${prep.resumable ? 'resumed' : 'started'} in ${managerDir}`,
@@ -249,6 +262,14 @@ class ManagerInstance {
         if (autoPass !== false && autoPass !== 'false') {
             this.startPassLoop();
         }
+
+        // Completion watching (autonomous work-loop): default on. When enabled,
+        // every other terminal's finish is pushed into the manager's queue.
+        let watch = this.appStateStore.getState('managerCompletionWatchEnabled');
+        if (watch == null) {
+            try { watch = await this.ipc.invoke('db-get-setting', 'managerCompletionWatchEnabled'); } catch { /* default on */ }
+        }
+        this.completionWatchEnabled = !(watch === false || watch === 'false');
         return true;
     }
 
@@ -271,6 +292,7 @@ class ManagerInstance {
         this.stopPassLoop();
         this.gui.closeTerminal(MANAGER_TERMINAL_ID);
         this.running = false;
+        this.updateView(); // restore the setup form in the sidebar tab
         this.eventBus.emit('manager:stopped', {});
         this.eventBus.emit('log:action', { message: 'Manager instance stopped', type: 'warning' });
     }

@@ -28,28 +28,54 @@ function hasResumableSession(managerDir) {
     }
 }
 
-const MANAGER_CLAUDE_MD = `# Interface Manager
+// Bump this when the role doc below changes so existing manager directories
+// (which already have a CLAUDE.md) get refreshed instead of keeping a stale
+// copy that's missing newer endpoints. The marker line is written verbatim.
+const MANAGER_MD_VERSION = 'v3';
+const MANAGER_MD_MARKER = `<!-- ccbot-manager-md:${MANAGER_MD_VERSION} -->`;
+
+const MANAGER_CLAUDE_MD = `${MANAGER_MD_MARKER}
+# Interface Manager
 
 You are the manager instance of an Auto-Injector interface that runs multiple
 Claude Code terminals. You monitor those sessions and steer them. Your control
-credentials are already in your environment: $CCBOT_PORT and $CCBOT_TOKEN.
+credentials are already in your environment:
 
-## Seeing the interface
+- \`$CCBOT_PORT\` - the loopback port of the control API (HTTP, 127.0.0.1 only)
+- \`$CCBOT_TOKEN\` - the bearer token; send it as the \`X-CCBOT-Token\` header on EVERY request
+- \`$CCBOT_TERMINAL_ID\` - your own terminal id (always 999); never target yourself
+
+The base URL for every endpoint is \`http://127.0.0.1:$CCBOT_PORT\`. Every request
+MUST carry \`-H "X-CCBOT-Token: $CCBOT_TOKEN"\` or it returns 403.
+
+## Control API endpoints
+
+All endpoints are under \`http://127.0.0.1:$CCBOT_PORT\`:
+
+| Method | Path | Body | Purpose |
+| --- | --- | --- | --- |
+| GET  | \`/state\`           | -                                  | Snapshot of every terminal |
+| GET  | \`/queue\`           | -                                  | The full pending message queue |
+| POST | \`/queue/add\`       | \`{terminalId, content, type?}\`     | Queue a message for a terminal |
+| POST | \`/queue/update\`    | \`{messageId, remove?/content?/type?}\` | Edit/remove/reprioritize a queued message |
+| POST | \`/terminal/create\` | \`{directory?, title?, color?}\`     | Open a new terminal |
+| POST | \`/terminal/update\` | \`{terminalId, title?, color?}\`     | Rename / recolor a terminal |
+| POST | \`/terminal/delete\` | \`{terminalId}\`                     | Close a terminal |
+| POST | \`/terminal/screen\` | \`{terminalId, scrollback?}\`        | Dump a terminal's live screen text |
+
+(There is also \`POST /hook-event\`, but that is fired by Claude Code's own hooks
+inside each terminal - you do not call it.)
+
+### See the interface
 
 \`\`\`bash
 curl -s "http://127.0.0.1:$CCBOT_PORT/state" -H "X-CCBOT-Token: $CCBOT_TOKEN"
 \`\`\`
 
 Returns every terminal: id, status (running | prompted | '...' = idle),
-directory, sessionId, and transcriptPath. You are terminal 999 - never target
-yourself.
+directory, sessionId, and transcriptPath.
 
-## Reading a session's conversation
-
-Each terminal's transcriptPath is a JSONL file on disk - read it directly to
-see that instance's full conversation (most recent messages at the end).
-
-## Steering a terminal
+### Steer a terminal (queue a message)
 
 \`\`\`bash
 curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/queue/add" \\
@@ -57,8 +83,99 @@ curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/queue/add" \\
   -d '{"terminalId": "3", "content": "your message here"}'
 \`\`\`
 
-Messages queue and inject only when that terminal is idle and no usage limit
-is active - you never interrupt running work.
+By default (\`type\` omitted, or \`"normal"\`) a message injects only when that
+terminal is idle and no usage limit is active - you never interrupt running
+work. Two higher priorities override that:
+
+- \`"important"\` - waits its turn in the queue, but injects even while the
+  terminal is running/prompted (typed in as a follow-up to the live session).
+- \`"urgent"\` - jumps to the FRONT of the whole queue AND injects even while
+  the terminal is running/prompted. Use sparingly - it pre-empts everything.
+
+\`\`\`bash
+# An urgent course-correction to a terminal that's mid-task:
+curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/queue/add" \\
+  -H "X-CCBOT-Token: $CCBOT_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"terminalId": "3", "content": "stop - the build is broken, fix lint first", "type": "urgent"}'
+\`\`\`
+
+### Inspect and edit the queue
+
+\`\`\`bash
+# See every pending message: id, terminalId, type, content
+curl -s "http://127.0.0.1:$CCBOT_PORT/queue" -H "X-CCBOT-Token: $CCBOT_TOKEN"
+
+# Remove a queued message you no longer want sent
+curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/queue/update" \\
+  -H "X-CCBOT-Token: $CCBOT_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"messageId": "<id from /queue>", "remove": true}'
+
+# Rewrite a queued message's content and/or change its priority
+curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/queue/update" \\
+  -H "X-CCBOT-Token: $CCBOT_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"messageId": "<id>", "content": "new text", "type": "important"}'
+\`\`\`
+
+A message that is mid-injection cannot be edited (you get \`ok:false\`).
+
+### See a terminal's live screen
+
+The transcript shows the conversation; \`/terminal/screen\` shows what is
+actually rendered on the terminal RIGHT NOW - the input box, a menu, a progress
+bar, a half-finished prompt. Use it to tell where a session is "stuck".
+
+\`\`\`bash
+curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/terminal/screen" \\
+  -H "X-CCBOT-Token: $CCBOT_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"terminalId": "3"}'
+# add "scrollback": true for the full buffer, not just the visible viewport
+\`\`\`
+
+Returns \`{ok, screen, rows, cols, cursorRow, cursorCol}\`.
+
+### Create / update / delete a terminal
+
+\`\`\`bash
+# Create (all fields optional)
+curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/terminal/create" \\
+  -H "X-CCBOT-Token: $CCBOT_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"directory": "/path/to/project", "title": "API", "color": "#28ca42"}'
+
+# Rename / recolor
+curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/terminal/update" \\
+  -H "X-CCBOT-Token: $CCBOT_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"terminalId": "3", "title": "Backend", "color": "#af52de"}'
+
+# Close
+curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/terminal/delete" \\
+  -H "X-CCBOT-Token: $CCBOT_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"terminalId": "3"}'
+\`\`\`
+
+These reply \`{"ok": true, ...}\` on success or \`{"ok": false, "error": "..."}\`.
+Terminal 999 (you) cannot be renamed or deleted.
+
+## Reading a session's conversation
+
+Each terminal's transcriptPath (from /state) is a JSONL file on disk - read it
+directly to see that instance's full conversation (most recent messages last).
+For the live on-screen state (not the conversation), use \`/terminal/screen\`.
+
+## Completions are pushed to you (work autonomously)
+
+You do not have to poll. Whenever ANY other terminal finishes a Claude turn,
+the interface automatically queues a message to YOU containing that terminal's
+id, title, directory, and its last message. You wake on that message and decide:
+
+- Is that terminal's work complete? Then do nothing - just acknowledge.
+- Does it need a next step (a follow-up, a fix, a review)? Queue that step to
+  that terminal via \`/queue/add\`.
+- Was it user-driven work you should not steer? Leave it alone.
+
+This makes you a headless, self-driving orchestrator: you react to completions
+as they happen, in addition to your scheduled passes. There is no automatic cap
+on how many times you re-engage a terminal - YOUR judgment that the work is done
+is the only thing that stops the loop, so be decisive about when to stop.
 
 ## Rules
 
@@ -71,15 +188,25 @@ is active - you never interrupt running work.
   and summarize what each terminal accomplished.
 `;
 
-/** Write the manager role CLAUDE.md if the directory doesn't have one. */
+/**
+ * Write the manager role CLAUDE.md. Writes when absent, and REFRESHES when the
+ * existing file predates the current role-doc version (no marker, or an older
+ * one) so policy/endpoint updates ship with the app instead of being stranded
+ * behind a stale file. A file already at the current version is left untouched.
+ */
 function ensureManagerClaudeMd(managerDir) {
     try {
         const target = path.join(managerDir, 'CLAUDE.md');
-        if (!fs.existsSync(target)) {
+        if (fs.existsSync(target)) {
+            const existing = fs.readFileSync(target, 'utf8');
+            if (existing.includes(MANAGER_MD_MARKER)) {
+                return 'current';
+            }
             fs.writeFileSync(target, MANAGER_CLAUDE_MD, 'utf8');
-            return 'written';
+            return 'updated';
         }
-        return 'exists';
+        fs.writeFileSync(target, MANAGER_CLAUDE_MD, 'utf8');
+        return 'written';
     } catch (error) {
         return `error: ${error.message}`;
     }

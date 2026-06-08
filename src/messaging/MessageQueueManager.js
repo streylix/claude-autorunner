@@ -33,6 +33,9 @@ class MessageQueueManager {
         this.backendAPIClient = null; // set by renderer if/when available
         this.injectionManager = null; // set by renderer if/when available
         this.preferences = {};
+        // Default priority applied to user-entered messages; set by the input-bar
+        // type selector (renderer). Programmatic adds pass their own type.
+        this.selectedMessageType = 'normal';
 
         // Utils and validation
         this.validationUtils = new ValidationUtils();
@@ -239,7 +242,7 @@ class MessageQueueManager {
         );
         if (!message) return;
 
-        if (!this.canInjectToTerminal(tid).allowed) return;
+        if (!this.canInjectToTerminal(tid, message.type).allowed) return;
         this._injectToTerminal(message, tid);
     }
 
@@ -321,7 +324,7 @@ class MessageQueueManager {
         this._injectToTerminal(message, tid);
     }
 
-    canInjectToTerminal(terminalId) {
+    canInjectToTerminal(terminalId, messageType = 'normal') {
         // (a) Timer / usage-limit gate.
         if (this.usageLimitWaiting) {
             return { allowed: false, reason: 'usage limit active - waiting for reset' };
@@ -346,7 +349,11 @@ class MessageQueueManager {
             ? this.terminalStateManager.getTerminal(tid)
             : null;
         const status = terminal ? terminal.status : null;
-        if (status === 'running' || status === 'prompted') {
+        // 'urgent' and 'important' bypass the terminal-state gate: they inject
+        // even while Claude is running/prompted (typed into its input as a
+        // follow-up). 'normal' waits for the terminal to be idle.
+        const bypassesStateGate = messageType === 'urgent' || messageType === 'important';
+        if (!bypassesStateGate && (status === 'running' || status === 'prompted')) {
             return { allowed: false, reason: `terminal ${tid} is ${status}` };
         }
 
@@ -445,7 +452,7 @@ class MessageQueueManager {
      */
     addMessage(data) {
         if (data && typeof data === 'object' && !Array.isArray(data)) {
-            return this.addMessageToQueue(data.content, data.terminalId);
+            return this.addMessageToQueue(data.content, data.terminalId, data.type);
         }
         return this.addMessageToQueue(data);
     }
@@ -493,6 +500,21 @@ class MessageQueueManager {
             dot.style.backgroundColor = color;
             dot.title = message.terminalId === 999 ? 'Manager' : `Terminal ${message.terminalId}`;
 
+            // Priority badge (only for non-normal, to keep the list quiet).
+            const type = message.type || 'normal';
+            let badge = null;
+            if (type !== 'normal') {
+                badge = document.createElement('span');
+                badge.className = `message-priority-badge priority-${type}`;
+                badge.textContent = type === 'urgent' ? 'URGENT' : 'IMPORTANT';
+                badge.style.color = type === 'urgent'
+                    ? 'var(--accent-danger, #ff5f57)' : 'var(--accent-warning)';
+                badge.style.fontSize = '9px';
+                badge.style.fontWeight = '700';
+                badge.style.marginRight = '4px';
+                badge.style.letterSpacing = '0.5px';
+            }
+
             const messageText = document.createElement('span');
             messageText.className = 'message-text';
             messageText.textContent = message.content;
@@ -523,6 +545,11 @@ class MessageQueueManager {
             };
             addOption('Send immediately', 'send', () => this.injectMessageNow(message.id));
             addOption('Edit', 'pencil', () => this.beginInlineEdit(item, message.id));
+            // Priority changes (skip the current one). Re-uses applyControlUpdate
+            // so urgent re-positions to the front, same as the control API.
+            if (type !== 'urgent') addOption('Mark urgent', 'flag', () => this.applyControlUpdate({ messageId: message.id, type: 'urgent' }));
+            if (type !== 'important') addOption('Mark important', 'flag', () => this.applyControlUpdate({ messageId: message.id, type: 'important' }));
+            if (type !== 'normal') addOption('Mark normal', 'flag', () => this.applyControlUpdate({ messageId: message.id, type: 'normal' }));
             addOption('Delete', 'trash-2', () => this.deleteMessage(message.id), 'danger');
 
             menuBtn.addEventListener('click', (e) => {
@@ -536,6 +563,7 @@ class MessageQueueManager {
             menuWrap.appendChild(menu);
 
             item.appendChild(dot);
+            if (badge) item.appendChild(badge);
             item.appendChild(messageText);
             item.appendChild(menuWrap);
 
@@ -693,26 +721,31 @@ class MessageQueueManager {
         this.logAction('Auto-queued "continue" message to resume conversation flow when usage limit resets', 'info');
     }
     
-    async addMessageToQueue(providedContent = null, providedTerminalId = null) {
+    async addMessageToQueue(providedContent = null, providedTerminalId = null, providedType = null) {
         const input = document.getElementById('message-input');
         const content = providedContent !== null ? providedContent.trim() : input.value.trim();
-        
+
         // Validate content is not empty or just whitespace
         if (!this.isValidMessageContent(content)) {
             return;
         }
-        
+
         // Handle special commands first
         if (await this.handleSpecialCommands(content, input)) {
             return;
         }
-        
+
         // Create message object
-        const message = await this.createMessageObject(content, providedTerminalId);
-        
-        // Add to queue
+        const message = await this.createMessageObject(content, providedTerminalId, providedType);
+
+        // Add to queue. 'urgent' jumps to the front of the whole queue so it is
+        // the next thing injected anywhere; everything else waits its turn.
         const queue = [...this.messageQueue];
-        queue.push(message);
+        if (message.type === 'urgent') {
+            queue.unshift(message);
+        } else {
+            queue.push(message);
+        }
         this.messageQueue = queue;
         
         // Clear input and update UI
@@ -785,13 +818,18 @@ class MessageQueueManager {
         return typeof content === 'string' && content.trim().length > 0;
     }
     
-    async createMessageObject(content, providedTerminalId) {
+    async createMessageObject(content, providedTerminalId, providedType) {
         const terminalId = providedTerminalId || this.activeTerminalId || 'terminal_1';
-        
+
         return {
             id: this.generateMessageId(),
             content: content,
             terminalId: terminalId,
+            // Priority: 'normal' (default - waits for an idle terminal),
+            // 'important' (waits its turn in queue but injects even while the
+            // terminal is running/prompted), 'urgent' (jumps to the front AND
+            // bypasses the terminal-state gate). See canInjectToTerminal.
+            type: MessageQueueManager.normalizeType(providedType != null ? providedType : this.selectedMessageType),
             timestamp: Date.now(),
             wrapWithPlan: this.planModeEnabled
         };
@@ -1253,11 +1291,14 @@ class MessageQueueManager {
             if (typeof callback === 'function') callback();
             return;
         }
+        // Translate any `[[Ctrl+C]]`-style terminal-command tokens (composed via
+        // the keyboard menu) into the real control bytes before typing.
+        const data = MessageQueueManager.translateTerminalTokens(content);
         // PTY Enter is carriage return (\r), NOT \n. TUIs like Claude Code
         // treat \n as a literal newline in the input box and never submit;
         // send the text first, then \r as a separate write after a short delay
         // so the TUI has flushed the pasted content before the submit lands.
-        this.sendTerminalInput(tid, content);
+        this.sendTerminalInput(tid, data);
         setTimeout(() => {
             this.sendTerminalInput(tid, '\r');
             this.eventBus.emit('message:injected', { terminalId: tid, content });
@@ -1325,6 +1366,111 @@ class MessageQueueManager {
         this.eventBus.emit('ui:update-timer');
         this.logAction('Sequential injection cancelled', 'warning');
     }
+
+    /**
+     * Set the default priority for user-entered messages (input-bar selector).
+     */
+    setSelectedMessageType(type) {
+        this.selectedMessageType = MessageQueueManager.normalizeType(type);
+        return this.selectedMessageType;
+    }
+
+    /**
+     * Apply a control-API edit to a queued message (POST /queue/update). One of:
+     *  - { messageId, remove: true }       → drop the message
+     *  - { messageId, content }            → replace its text
+     *  - { messageId, type }               → change priority (re-positions to the
+     *                                        front if it becomes 'urgent')
+     * content/type may be combined. Returns { ok, ... } for the HookServer.
+     */
+    applyControlUpdate(payload = {}) {
+        const id = payload.messageId;
+        if (id == null) return { ok: false, error: 'messageId required' };
+        const queue = [...this.messageQueue];
+        const idx = queue.findIndex(m => String(m.id) === String(id));
+        if (idx === -1) return { ok: false, error: 'message not found in queue' };
+
+        // Refuse to mutate a message that is mid-injection (PTY type in flight).
+        if (this.currentlyInjectingMessages.has(queue[idx].id)) {
+            return { ok: false, error: 'message is currently injecting' };
+        }
+
+        if (payload.remove === true) {
+            const [removed] = queue.splice(idx, 1);
+            this.messageQueue = queue;
+            this._afterControlMutation();
+            return { ok: true, removed: removed.id };
+        }
+
+        const message = { ...queue[idx] };
+        let changed = false;
+        if (typeof payload.content === 'string' && payload.content.trim()) {
+            message.content = payload.content.trim();
+            changed = true;
+        }
+        if (payload.type != null) {
+            message.type = MessageQueueManager.normalizeType(payload.type);
+            changed = true;
+        }
+        if (!changed) return { ok: false, error: 'nothing to update (content or type)' };
+
+        queue.splice(idx, 1);
+        // Re-promoting to 'urgent' moves it to the front; otherwise keep position.
+        if (message.type === 'urgent') {
+            queue.unshift(message);
+        } else {
+            queue.splice(idx, 0, message);
+        }
+        this.messageQueue = queue;
+        this._afterControlMutation();
+        // A newly-urgent/important message may now be injectable.
+        this.maybeAutoInject(message.terminalId || this.activeTerminalId);
+        return { ok: true, messageId: message.id, type: message.type };
+    }
+
+    /** Persist + refresh UI/snapshot after a control-API queue mutation. */
+    _afterControlMutation() {
+        this.saveMessageQueue();
+        this.eventBus.emit('message:queue-updated', { queue: this.messageQueue });
+        this.eventBus.emit('ui:update-status');
+    }
+
+    /** Coerce any value to one of the three valid priorities (default normal). */
+    static normalizeType(type) {
+        return MessageQueueManager.VALID_TYPES.includes(type) ? type : 'normal';
+    }
+
+    /**
+     * Replace `[[Label]]` terminal-command tokens with their raw control bytes.
+     * Only the curated, delimited tokens below are translated, so ordinary prose
+     * (even text containing "^C") is never affected. Unknown `[[...]]` is left
+     * verbatim. Keys MUST match the keyboard menu's .hotkey-label text.
+     */
+    static translateTerminalTokens(content) {
+        if (typeof content !== 'string' || content.indexOf('[[') === -1) return content;
+        return content.replace(/\[\[([^\]]+)\]\]/g, (whole, name) => {
+            const bytes = MessageQueueManager.TERMINAL_TOKENS[name.trim()];
+            return bytes != null ? bytes : whole;
+        });
+    }
 }
+
+MessageQueueManager.VALID_TYPES = ['normal', 'important', 'urgent'];
+
+// label (matches index.html .hotkey-label) -> raw control sequence
+MessageQueueManager.TERMINAL_TOKENS = {
+    'Ctrl+C': '\x03',
+    'Ctrl+C Ctrl+C': '\x03\x03',
+    'Ctrl+Z': '\x1a',
+    'Ctrl+D': '\x04',
+    'Esc': '\x1b',
+    'Enter': '\r',
+    'Tab': '\t',
+    'Shift+Tab': '\x1b[Z',
+    'Shift+Up': '\x1b[1;2A',
+    'Shift+Down': '\x1b[1;2B',
+    'Shift+Right': '\x1b[1;2C',
+    'Shift+Left': '\x1b[1;2D'
+};
 
 module.exports = MessageQueueManager;

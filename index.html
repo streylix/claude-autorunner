@@ -44,6 +44,9 @@
                         <button class="icon-btn sidebar-nav-btn" id="pricing-nav-btn" title="Pricing" data-test-id="pricing-nav-btn">
                             <i data-lucide="dollar-sign"></i>
                         </button>
+                        <button class="icon-btn sidebar-nav-btn" id="manager-nav-btn" title="Manager" data-test-id="manager-nav-btn">
+                            <i data-lucide="bot"></i>
+                        </button>
                     </div>
                 </div>
                 
@@ -141,21 +144,24 @@
                         </div>
                     </div>
                 </div>
-            </div>
-            
-            <div class="terminal-section">
-                <!-- Manager setup overlay: shown when the bot button is hit
-                     before a manager directory is configured -->
-                <div class="manager-setup-overlay" id="manager-setup" style="display: none;">
-                    <div class="manager-setup">
+
+                <!-- Manager View: the hidden orchestrator Claude (terminal 999)
+                     now lives here as a sidebar tab, separate from the main grid. -->
+                <div class="sidebar-view manager-view" id="manager-view" style="display: none;">
+                    <!-- Setup form: shown until a manager directory is configured -->
+                    <div class="manager-setup" id="manager-setup" style="display: none;">
                         <p class="manager-setup-text">No manager running. Point it at a home directory — a role CLAUDE.md is written there automatically, and the session resumes across restarts.</p>
                         <div class="manager-setup-row">
                             <input type="text" id="manager-directory-input" placeholder="/Users/you/claude-manager" data-test-id="manager-directory-input">
                             <button class="footer-btn" id="manager-start-btn" data-test-id="manager-start-btn">Start manager</button>
                         </div>
-                        <button class="footer-btn" id="manager-setup-cancel-btn" data-test-id="manager-setup-cancel-btn">Cancel</button>
                     </div>
+                    <!-- The manager terminal's xterm wrapper is mounted here -->
+                    <div class="manager-terminal-mount" id="manager-terminal-mount"></div>
                 </div>
+            </div>
+
+            <div class="terminal-section">
                 <div class="terminals-container" id="terminals-container">
                     <div class="terminal-wrapper" data-terminal-id="1">
                         <div class="terminal-header">
@@ -237,8 +243,7 @@
                         </div>
                         <div class="status-item">
                             <span class="status-label">Directory:</span>
-                            <span class="status-value directory-path tooltip" id="current-directory" title="Click to change directory">/Users/ethan/claude code bot
-                                <span class="tooltip-text" id="directory-tooltip">/Users/ethan/claude code bot</span>
+                            <span class="status-value directory-path tooltip" id="current-directory" title="Directory of the selected terminal">—<span class="tooltip-text" id="directory-tooltip">—</span>
                             </span>
                         </div>
                         <div class="status-item">
@@ -248,10 +253,6 @@
                         <div class="status-item">
                             <span class="status-label">Queued:</span>
                             <span class="status-value" id="queue-count">0</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-label">Keywords:</span>
-                            <span class="status-value" id="keyword-count">0</span>
                         </div>
                     </div>
                 </div>
@@ -311,6 +312,10 @@
                         <div class="image-preview-list" id="image-preview-list"></div>
                     </div>
                     <div class="chat-input" id="drop-zone">
+                        <!-- Keyboard/hotkeys button: top-right corner of the input container -->
+                        <button type="button" class="chat-btn hotkey-corner-btn hotkey-enabled" id="hotkey-btn" title="Insert hotkeys/commands" data-test-id="hotkey-btn">
+                            <i data-lucide="keyboard"></i>
+                        </button>
                         <textarea id="message-input" placeholder="Message a terminal…" rows="1" title="Enter command to add to message queue" data-test-id="message-input"></textarea>
                         <div class="chat-toolbar">
                             <div class="chat-toolbar-left">
@@ -324,12 +329,16 @@
                                         <!-- Dropdown items will be dynamically generated -->
                                     </div>
                                 </div>
-                                <button type="button" id="manager-tab-btn" class="chat-btn hotkey-enabled" title="Toggle Manager terminal (Cmd+M)" data-hotkey="Cmd+M" data-test-id="manager-tab-btn">
-                                    <i data-lucide="bot"></i>
-                                </button>
-                                <button type="button" class="chat-btn hotkey-enabled" id="hotkey-btn" title="Insert hotkeys/commands" data-test-id="hotkey-btn">
-                                    <i data-lucide="keyboard"></i>
-                                </button>
+                                <div class="priority-selector" id="priority-selector">
+                                    <button type="button" class="chat-btn priority-btn hotkey-enabled" id="message-priority-btn" title="Message priority" data-priority="normal" data-test-id="message-priority-btn">
+                                        <i data-lucide="flag"></i>
+                                    </button>
+                                    <div class="priority-menu" id="priority-menu">
+                                        <button type="button" class="priority-option" data-priority="normal" data-test-id="priority-normal"><i data-lucide="circle"></i><span>Normal</span></button>
+                                        <button type="button" class="priority-option" data-priority="important" data-test-id="priority-important"><i data-lucide="chevrons-up"></i><span>Important</span></button>
+                                        <button type="button" class="priority-option" data-priority="urgent" data-test-id="priority-urgent"><i data-lucide="zap"></i><span>Urgent</span></button>
+                                    </div>
+                                </div>
                             </div>
                             <div class="chat-toolbar-right">
                                 <button type="button" id="voice-btn" class="chat-btn voice-button hotkey-enabled" title="Voice transcription (Cmd+Shift+V)" data-hotkey="Cmd+Shift+V" data-test-id="voice-btn">
@@ -462,70 +471,6 @@
                         </div>
                     </div>
                 </div>
-                <div class="setting-group">
-                    <label class="setting-label">
-                        <span class="setting-title">Claude Prompt Keyword Blocking</span>
-                    </label>
-                    <p class="setting-description">Keyword rules for prompt detection — match specific Claude prompts to custom responses and sounds.</p>
-                    <div class="keyword-blocking-table">
-                        <div class="keyword-table-header">
-                            <div class="keyword-col">Keyword</div>
-                            <div class="response-col">Response</div>
-                            <div class="actions-col">Actions</div>
-                        </div>
-                        <div id="keyword-rules-list" class="keyword-rules-list">
-                            <!-- Keyword rules will be dynamically added here -->
-                        </div>
-                        <div class="keyword-add-row">
-                            <input type="text" id="new-keyword" placeholder="Enter keyword..." class="keyword-input">
-                            <input type="text" id="new-response" placeholder="Enter response..." class="response-input">
-                            <button id="add-keyword-btn" class="add-keyword-btn" title="Add keyword rule" data-test-id="add-keyword-btn">
-                                <i data-lucide="plus"></i>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Background Service Settings -->
-                <div class="setting-group">
-                    <div class="setting-header">
-                        <span class="setting-title">Background Service</span>
-                    </div>
-                    <p class="setting-description">Configure background operation and system integration features.</p>
-                    
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <input type="checkbox" id="keep-screen-awake">
-                            <span class="setting-text">Keep screen awake during injection</span>
-                        </label>
-                        <p class="setting-help">Prevents the system from sleeping while messages are being injected.</p>
-                    </div>
-                    
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <input type="checkbox" id="show-system-notifications">
-                            <span class="setting-text">Show system notifications</span>
-                        </label>
-                        <p class="setting-help">Display notifications for injection events and timer alerts.</p>
-                    </div>
-                    
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <input type="checkbox" id="minimize-to-tray">
-                            <span class="setting-text">Minimize to system tray</span>
-                        </label>
-                        <p class="setting-help">Keep the app running in the background when window is closed.</p>
-                    </div>
-                    
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <input type="checkbox" id="start-minimized">
-                            <span class="setting-text">Start minimized</span>
-                        </label>
-                        <p class="setting-help">Launch the app minimized to system tray on startup.</p>
-                    </div>
-                </div>
-
                 <!-- Todo Generation Settings -->
                 <div class="setting-group">
                     <div class="setting-header">
@@ -630,6 +575,10 @@
                 <button type="button" class="hotkey-item" data-command="^C" data-test-id="hotkey-ctrl-c">
                     <span class="hotkey-label">Ctrl+C</span>
                     <span class="hotkey-desc">Interrupt</span>
+                </button>
+                <button type="button" class="hotkey-item" data-command="^C^C" data-test-id="hotkey-ctrl-c-ctrl-c">
+                    <span class="hotkey-label">Ctrl+C Ctrl+C</span>
+                    <span class="hotkey-desc">Exit / force interrupt</span>
                 </button>
                 <button type="button" class="hotkey-item" data-command="^Z" data-test-id="hotkey-ctrl-z">
                     <span class="hotkey-label">Ctrl+Z</span>

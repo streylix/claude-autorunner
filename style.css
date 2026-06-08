@@ -245,7 +245,7 @@ body {
 .action-log-sidebar {
     width: 300px;
     min-width: 200px;
-    max-width: 500px;
+    max-width: 700px;
     background-color: var(--bg-primary);
     border-right: 1px solid var(--border-primary);
     position: relative;
@@ -766,7 +766,7 @@ body:not([data-theme]) .terminal-container .xterm-viewport {
 .sidebar {
     width: 400px;
     min-width: 300px;
-    max-width: min(600px, 40vw); /* Responsive max width based on viewport */
+    max-width: min(700px, 50vw); /* Responsive max width based on viewport */
     flex-shrink: 0;
     background-color: var(--bg-primary);
     position: relative;
@@ -2740,23 +2740,67 @@ button#voice-btn.voice-button.processing:hover,
 }
 
 /* Color picker modal styles */
-.color-picker-modal {
-    background: none !important; /* Remove backdrop */
-    backdrop-filter: none !important;
-}
-
 .color-picker-modal .modal-content {
     width: auto;
-    min-width: 180px;
-    max-width: 180px;
-    position: absolute;
+    min-width: 220px;
+    max-width: 260px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
     border-radius: 8px;
-    z-index: 10000;
 }
 
 .color-picker-modal .modal-body {
-    padding: 0; /* Remove padding for compact look */
+    padding: 16px;
+}
+
+.color-picker-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+}
+
+.color-swatch-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+}
+
+.color-swatch {
+    width: 100%;
+    aspect-ratio: 1;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    padding: 0;
+    transition: transform 0.1s ease, border-color 0.1s ease;
+}
+
+.color-swatch:hover {
+    transform: scale(1.1);
+}
+
+.color-swatch.selected {
+    border-color: var(--text-primary);
+}
+
+.color-custom-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 14px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.color-custom-row input[type="color"] {
+    width: 40px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    background: none;
+    cursor: pointer;
 }
 
 /* Color picker list styles (like terminal dropdown) */
@@ -5938,6 +5982,56 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .chat-btn:hover { background: var(--bg-quaternary); color: var(--text-primary); }
 .chat-btn svg { width: 18px; height: 18px; stroke-width: 2; }
 .chat-btn.active { color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 14%, transparent); }
+
+/* Keyboard/hotkeys button pinned to the top-right corner of the input box */
+.hotkey-corner-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 2;
+}
+/* Reserve room so typed text doesn't slide under the corner button */
+.chat-input #message-input { padding-right: 40px; }
+
+/* Message-priority selector: icon button + popover panel of options */
+.priority-selector { position: relative; }
+.priority-menu {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 6px);  /* open upward — the input bar sits at the bottom */
+    left: 0;
+    z-index: 1002;
+    min-width: 150px;
+    padding: 4px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.priority-menu.open { display: block; }
+.priority-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+}
+.priority-option:hover { background: var(--bg-quaternary); color: var(--text-primary); }
+.priority-option svg { width: 15px; height: 15px; flex-shrink: 0; }
+.priority-option.active { color: var(--text-primary); background: var(--bg-tertiary); }
+.priority-option[data-priority="important"] svg { color: var(--accent-warning); }
+.priority-option[data-priority="urgent"] svg { color: var(--accent-danger, #ff5f57); }
+
+/* The Manager's mounted terminal: hide its redundant header (yellow dot +
+   "Manager") — the sidebar title row already labels the tab "Manager". */
+.manager-terminal-mount .terminal-header { display: none; }
 
 /* Send button — accent circle, clean arrow */
 .chat-input .send-button {

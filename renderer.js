@@ -216,11 +216,90 @@ class TerminalGUI {
     initializeUI() {
         // Set up DOM event handlers
         this.setupDOMEventHandlers();
-        
+
         // Set up terminal-specific UI
         this.setupTerminalUI();
-        
+
+        // Wire drag-to-resize on the left/right sidebars
+        this.setupSidebarResizing();
+
         console.log('🖼️ UI initialized');
+    }
+
+    /**
+     * Drag-to-resize for the left (action-log) and right sidebars. The
+     * resize-handle divs existed in index.html but were never wired to any
+     * drag logic, and the PreferenceManager's `sidebar:resize` event (carrying
+     * persisted widths) had no listener - so resizing silently did nothing.
+     * This binds both: live drag updates the element width + persists via
+     * PreferenceManager.updateSidebarWidth, and `sidebar:resize` applies the
+     * stored widths on load.
+     */
+    setupSidebarResizing() {
+        // Range matches the sidebars' CSS min/max-width; per-side CSS min-width
+        // (left 200, right 300) still enforces sensible floors.
+        const MIN = 200, MAX = 700;
+        const clamp = (w) => Math.max(MIN, Math.min(MAX, w));
+
+        const leftSidebar = document.getElementById('action-log-sidebar');
+        const rightSidebar = document.getElementById('right-sidebar');
+
+        // Apply persisted widths when PreferenceManager loads them.
+        this.eventBus.on('sidebar:resize', ({ left, right }) => {
+            if (left && leftSidebar) leftSidebar.style.width = `${clamp(left)}px`;
+            if (right && rightSidebar) rightSidebar.style.width = `${clamp(right)}px`;
+        });
+
+        // The Manager terminal lives in the LEFT sidebar tab, so widening that
+        // sidebar must refit it (the grid refit path deliberately skips 999).
+        const fitManager = () => {
+            const mgr = this.terminals.get(ManagerInstance.TERMINAL_ID);
+            const view = document.getElementById('manager-view');
+            if (mgr && view && view.style.display !== 'none') {
+                try { mgr.fitAddon.fit(); } catch { /* not laid out */ }
+            }
+        };
+
+        const wireHandle = (handleId, sidebar, side) => {
+            const handle = document.getElementById(handleId);
+            if (!handle || !sidebar) return;
+            handle.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                // The left sidebar grows rightward from its left edge; the right
+                // sidebar grows leftward from its right edge. Compute width from
+                // the fixed edge so the cursor tracks the handle exactly.
+                const rect = sidebar.getBoundingClientRect();
+                const fixedEdge = side === 'left' ? rect.left : rect.right;
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+
+                const onMove = (ev) => {
+                    const width = clamp(side === 'left'
+                        ? ev.clientX - fixedEdge
+                        : fixedEdge - ev.clientX);
+                    sidebar.style.width = `${width}px`;
+                    if (side === 'left') fitManager(); // live-refit the manager terminal
+                };
+                const onUp = (ev) => {
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                    document.body.style.cursor = '';
+                    document.body.style.userSelect = '';
+                    const width = clamp(side === 'left'
+                        ? ev.clientX - fixedEdge
+                        : fixedEdge - ev.clientX);
+                    if (this.preferenceManager) this.preferenceManager.updateSidebarWidth(side, width);
+                    // Terminals reflow when the grid area changes size.
+                    this.eventBus.emit('terminals:refit');
+                    if (side === 'left') fitManager();
+                };
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            });
+        };
+
+        wireHandle('resize-handle-left', leftSidebar, 'left');
+        wireHandle('resize-handle-right', rightSidebar, 'right');
     }
     
     setupIPC() {
@@ -405,14 +484,25 @@ class TerminalGUI {
                     title: data.title || `Terminal ${id}`
                 });
             });
+            // Full queue detail for GET /queue and the manager's edit endpoint.
+            // Content is capped so the snapshot stays small on long messages.
+            const queue = this.messageQueueManager.messageQueue.map((m) => ({
+                id: m.id,
+                terminalId: m.terminalId,
+                type: m.type || 'normal',
+                content: typeof m.content === 'string' && m.content.length > 2000
+                    ? m.content.slice(0, 2000) + '…[truncated]'
+                    : m.content
+            }));
             ipcRenderer.send('ccbot-state-snapshot', {
                 activeTerminalId: this.activeTerminalId,
-                queuedMessages: this.messageQueueManager.messageQueue.length,
+                queuedMessages: queue.length,
+                queue,
                 terminals,
                 updatedAt: Date.now()
             });
         };
-        ['terminal:status:changed', 'terminal:directory', 'terminal:created', 'terminal:closed', 'queue:updated']
+        ['terminal:status:changed', 'terminal:directory', 'terminal:created', 'terminal:closed', 'message:queue-updated']
             .forEach((evt) => this.eventBus.on(evt, sendStateSnapshot));
         setTimeout(sendStateSnapshot, 1000); // initial snapshot after init settles
 
@@ -557,6 +647,7 @@ class TerminalGUI {
         const refitVisibleTerminals = () => {
             requestAnimationFrame(() => {
                 this.terminals.forEach((data) => {
+                    if (data.id === ManagerInstance.TERMINAL_ID) return; // fits via its sidebar tab
                     if (!data.container.classList.contains('manager-hidden')) {
                         try { data.fitAddon.fit(); } catch { /* not yet laid out */ }
                     }
@@ -564,6 +655,9 @@ class TerminalGUI {
             });
         };
         window.addEventListener('resize', refitVisibleTerminals);
+        // Explicit refit requests (e.g. after a sidebar drag-resize) reflow the
+        // grid too — previously this event was emitted but never listened to.
+        this.eventBus.on('terminals:refit', refitVisibleTerminals);
         // Showing/hiding the manager changes the visible set → re-chunk the grid.
         // (create/close already relayout inline.)
         this.eventBus.on('manager:visibility', () => this.relayoutTerminals());
@@ -572,6 +666,12 @@ class TerminalGUI {
         // workspace survives a restart. directory updates come from Claude hooks.
         ['terminal:created', 'terminal:closed', 'terminal:metadata', 'terminal:directory']
             .forEach((evt) => this.eventBus.on(evt, () => this.persistTerminalMetadata()));
+
+        // Keep the Status panel's Directory live when the selected terminal's
+        // cwd changes (cwd hook → terminal:directory).
+        this.eventBus.on('terminal:directory', ({ terminalId }) => {
+            if (terminalId === this.activeTerminalId) this.updateStatusBar(terminalId);
+        });
 
         // Collapsible right-sidebar panels (Status, Timer) with persistence
         document.querySelectorAll('.collapse-toggle[data-collapse-target]').forEach((btn) => {
@@ -615,7 +715,7 @@ class TerminalGUI {
             else if (key === 'i' && !shift) { e.preventDefault(); this.messageQueueManager.injectNextMessage(); }
             else if (key === 'p' && !shift) { e.preventDefault(); this.timerManager.toggleTimer(); }
             else if (key === 's' && !shift) { e.preventDefault(); click('settings-btn'); }
-            else if (key === 'm' && !shift) { e.preventDefault(); click('manager-tab-btn'); }
+            else if (key === 'm' && !shift) { e.preventDefault(); click('manager-nav-btn'); }
             else if (key === 'h' && shift) { e.preventDefault(); click('message-history-btn'); }
             else if (key === 'l' && shift) { e.preventDefault(); click('clear-log-btn'); }
         });
@@ -692,6 +792,11 @@ class TerminalGUI {
     setupTerminalUI() {
         // Terminal tab handlers
         const terminalsContainer = document.getElementById('terminals-container');
+        const idFromHeader = (el) => {
+            const wrapper = el.closest('.terminal-wrapper');
+            const id = wrapper && parseInt(wrapper.dataset.terminalId, 10);
+            return Number.isFinite(id) ? id : null;
+        };
         if (terminalsContainer) {
             terminalsContainer.addEventListener('click', (e) => {
                 const tab = e.target.closest('.terminal-tab');
@@ -699,12 +804,27 @@ class TerminalGUI {
                     const terminalId = parseInt(tab.dataset.terminalId);
                     this.setActiveTerminal(terminalId);
                 }
-                
+
                 const closeBtn = e.target.closest('.close-terminal-btn');
                 if (closeBtn) {
                     const terminalId = parseInt(closeBtn.dataset.terminalId);
                     this.closeTerminal(terminalId);
                 }
+
+                // Click the header color dot to recolor the terminal.
+                const dot = e.target.closest('.terminal-color-dot');
+                if (dot) {
+                    const terminalId = idFromHeader(dot);
+                    if (terminalId != null) this.openColorPicker(terminalId);
+                }
+            });
+
+            // Double-click an editable title to rename the terminal.
+            terminalsContainer.addEventListener('dblclick', (e) => {
+                const titleEl = e.target.closest('.terminal-title.editable');
+                if (!titleEl) return;
+                const terminalId = idFromHeader(titleEl);
+                if (terminalId != null) this.beginTitleEdit(titleEl, terminalId);
             });
         }
 
@@ -757,21 +877,79 @@ class TerminalGUI {
         if (hotkeyBtn && hotkeyDropdown) {
             hotkeyBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                hotkeyDropdown.classList.toggle('show');
+                const willShow = !hotkeyDropdown.classList.contains('show');
+                hotkeyDropdown.classList.toggle('show', willShow);
+                // The dropdown is position:fixed at body level with no anchor, so
+                // without this it opened in a random corner. Pin it just above
+                // the button (the input bar lives at the bottom), right-aligned.
+                if (willShow) {
+                    const r = hotkeyBtn.getBoundingClientRect();
+                    hotkeyDropdown.style.left = 'auto';
+                    hotkeyDropdown.style.top = 'auto';
+                    hotkeyDropdown.style.right = `${Math.round(window.innerWidth - r.right)}px`;
+                    hotkeyDropdown.style.bottom = `${Math.round(window.innerHeight - r.top + 6)}px`;
+                }
             });
             hotkeyDropdown.addEventListener('click', (e) => {
                 const item = e.target.closest('.hotkey-item');
                 if (!item) return;
-                // data-command holds the raw control sequence (^C, \r, \x1b...)
-                let cmd = item.dataset.command || '';
-                cmd = cmd.replace(/\^([A-Z])/g, (_, c) => String.fromCharCode(c.charCodeAt(0) - 64))
-                         .replace(/\\r/g, '\r').replace(/\\t/g, '\t')
-                         .replace(/\\x1b/g, '\x1b').replace(/\\x([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
-                const target = this.queueTargetTerminalId ?? this.activeTerminalId;
-                if (target != null) ipcRenderer.send('terminal-input', { terminalId: target, data: cmd });
+                // Don't fire at the PTY — compose the command INTO the message as
+                // a readable `[[Label]]` token. It's translated to the real control
+                // bytes when the message is injected (MessageQueueManager). The
+                // user sends when ready; nothing is auto-sent.
+                const label = (item.querySelector('.hotkey-label')?.textContent || '').trim();
+                const input = document.getElementById('message-input');
+                if (label && input) {
+                    const token = `[[${label}]]`;
+                    const start = input.selectionStart ?? input.value.length;
+                    const end = input.selectionEnd ?? input.value.length;
+                    input.value = input.value.slice(0, start) + token + input.value.slice(end);
+                    const caret = start + token.length;
+                    input.setSelectionRange(caret, caret);
+                    input.focus();
+                    input.dispatchEvent(new Event('input', { bubbles: true })); // resize/observers
+                }
                 hotkeyDropdown.classList.remove('show');
             });
             document.addEventListener('click', () => hotkeyDropdown.classList.remove('show'));
+        }
+
+        // ---- Message priority selector ----
+        // An icon button that opens a small panel of priorities (each with its
+        // own icon). Picking one stores it on the queue manager; user-entered
+        // messages fall back to it (createMessageObject). Default: normal.
+        const priorityBtn = document.getElementById('message-priority-btn');
+        const priorityMenu = document.getElementById('priority-menu');
+        if (priorityBtn && priorityMenu) {
+            const COLORS = {
+                normal: 'var(--text-tertiary)',
+                important: 'var(--accent-warning)',
+                urgent: 'var(--accent-danger, #ff5f57)'
+            };
+            const LABELS = { normal: 'Normal', important: 'Important', urgent: 'Urgent' };
+            const applyPriority = (type) => {
+                const t = COLORS[type] ? type : 'normal';
+                this.messageQueueManager.setSelectedMessageType(t);
+                priorityBtn.dataset.priority = t;
+                priorityBtn.style.color = COLORS[t];
+                priorityBtn.title = `Message priority: ${LABELS[t]}`;
+                priorityMenu.querySelectorAll('.priority-option').forEach((opt) => {
+                    opt.classList.toggle('active', opt.dataset.priority === t);
+                });
+            };
+            priorityBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                priorityMenu.classList.toggle('open');
+            });
+            priorityMenu.addEventListener('click', (e) => {
+                const opt = e.target.closest('.priority-option');
+                if (!opt) return;
+                e.stopPropagation();
+                applyPriority(opt.dataset.priority);
+                priorityMenu.classList.remove('open');
+            });
+            document.addEventListener('click', () => priorityMenu.classList.remove('open'));
+            applyPriority('normal');
         }
 
         // ---- Pricing / token usage ----
@@ -863,7 +1041,9 @@ class TerminalGUI {
         // terminals get a dynamically built wrapper.
         let container;
         let mount = document.querySelector(`.terminal-container[data-terminal-container="${terminalId}"]`);
-        if (mount && !options.hidden) {
+        // mountTarget (e.g. the Manager sidebar tab) always builds a fresh wrapper
+        // in that target rather than reusing/creating a grid wrapper.
+        if (mount && !options.hidden && !options.mountTarget) {
             container = mount.closest('.terminal-wrapper') || mount;
             // The static terminal-1 wrapper hardcodes its dot to --accent-primary;
             // sync it to the palette so it matches its queued-message tint.
@@ -902,9 +1082,10 @@ class TerminalGUI {
             mount.dataset.terminalContainer = terminalId;
             container.appendChild(mount);
 
-            const terminalsContainer = document.getElementById('terminals-container');
-            if (terminalsContainer) {
-                terminalsContainer.appendChild(container);
+            // Mount into a custom target (Manager sidebar tab) or the grid.
+            const mountParent = options.mountTarget || document.getElementById('terminals-container');
+            if (mountParent) {
+                mountParent.appendChild(container);
             }
             // Render icons AFTER the wrapper is in the document. lucide.createIcons
             // scans the live document, so rendering while still detached left the
@@ -926,7 +1107,7 @@ class TerminalGUI {
         // too many contexts) dispose the addon so xterm reverts to DOM rendering
         // instead of going blank.
         let webglAddon = null;
-        if (!options.hidden) {
+        if (!options.hidden && !options.noWebgl) {
             try {
                 webglAddon = new WebglAddon();
                 webglAddon.onContextLoss(() => {
@@ -940,10 +1121,10 @@ class TerminalGUI {
             }
         }
 
-        if (options.hidden) {
+        if (options.hidden || options.mountTarget) {
             // fit() on a display:none container computes garbage dimensions -
-            // give concealed terminals (the manager) a sane fixed size; the
-            // dispatch tab re-fits when it reveals the terminal.
+            // the manager mounts into its sidebar tab which is hidden until
+            // selected, so give it a sane fixed size; its tab re-fits on reveal.
             terminal.resize(120, 30);
         } else {
             fitAddon.fit();
@@ -1019,8 +1200,10 @@ class TerminalGUI {
     updateEmptyState() {
         const emptyEl = document.getElementById('terminals-empty');
         if (!emptyEl) return;
+        // Scope to the grid container — the Manager wrapper now lives in the
+        // left sidebar tab and must not count toward the grid's empty state.
         const visibleCount = document.querySelectorAll(
-            '.terminal-wrapper:not(.manager-hidden)'
+            '#terminals-container .terminal-wrapper:not(.manager-hidden)'
         ).length;
         emptyEl.style.display = visibleCount === 0 ? 'flex' : 'none';
     }
@@ -1096,6 +1279,24 @@ class TerminalGUI {
         const dot = document.getElementById('status-terminal-dot');
         if (name) name.textContent = this.terminalNameFor(terminalId);
         if (dot) dot.style.backgroundColor = this.terminalColorFor(terminalId);
+
+        // Directory follows the selected terminal — pulled from its tracked cwd
+        // (kept current by the hook cwd events). Was previously a hardcoded path.
+        const dirEl = document.getElementById('current-directory');
+        const tipEl = document.getElementById('directory-tooltip');
+        if (dirEl) {
+            const state = this.terminalStateManager.getTerminal(terminalId);
+            const dir = (state && state.directory) || '—';
+            // The tooltip span is a child of #current-directory; set only the
+            // leading text node so we don't clobber it.
+            if (dirEl.firstChild && dirEl.firstChild.nodeType === Node.TEXT_NODE) {
+                dirEl.firstChild.textContent = dir;
+            } else {
+                dirEl.insertBefore(document.createTextNode(dir), dirEl.firstChild);
+            }
+            dirEl.setAttribute('title', dir);
+            if (tipEl) tipEl.textContent = dir;
+        }
     }
 
     /**
@@ -1213,13 +1414,14 @@ class TerminalGUI {
         // Re-fit every visible terminal to its new cell.
         requestAnimationFrame(() => {
             this.terminals.forEach(data => {
+                if (data.id === ManagerInstance.TERMINAL_ID) return; // fits via its sidebar tab
                 if (!data.container.classList.contains('manager-hidden')) {
                     try { data.fitAddon.fit(); } catch { /* not laid out yet */ }
                 }
             });
         });
     }
-    
+
     setActiveTerminal(terminalId) {
         if (!this.terminals.has(terminalId)) return;
         
@@ -1321,6 +1523,98 @@ class TerminalGUI {
     }
 
     /**
+     * Turn a terminal's title span into an inline editor. Commit on Enter/blur,
+     * cancel on Escape. Commits flow through setTerminalMetadata (state + DOM +
+     * persistence). The manager title is locked (no `.editable` class), so it
+     * never reaches here.
+     */
+    beginTitleEdit(titleEl, terminalId) {
+        if (titleEl.getAttribute('contenteditable') === 'true') return;
+        const original = titleEl.textContent;
+
+        titleEl.setAttribute('contenteditable', 'true');
+        titleEl.focus();
+        const range = document.createRange();
+        range.selectNodeContents(titleEl);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+
+        const finish = (commit) => {
+            titleEl.removeEventListener('keydown', onKey);
+            titleEl.removeEventListener('blur', onBlur);
+            titleEl.setAttribute('contenteditable', 'false');
+            const next = titleEl.textContent.trim();
+            if (commit && next && next !== original) {
+                this.setTerminalMetadata(terminalId, { title: next });
+            } else {
+                titleEl.textContent = original; // revert empty/unchanged/cancelled
+            }
+        };
+        const onKey = (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); titleEl.blur(); }
+            else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+        };
+        const onBlur = () => finish(true);
+        titleEl.addEventListener('keydown', onKey);
+        titleEl.addEventListener('blur', onBlur);
+    }
+
+    /**
+     * Open the color-picker modal for a terminal: palette swatches plus a custom
+     * picker. Selecting a color commits via setTerminalMetadata.
+     */
+    openColorPicker(terminalId) {
+        if (terminalId === ManagerInstance.TERMINAL_ID) return; // manager is always yellow
+        const modal = document.getElementById('terminal-color-picker-modal');
+        const body = document.getElementById('color-picker-modal-body');
+        if (!modal || !body) return;
+
+        const close = () => { modal.classList.remove('show'); };
+        const current = String(this.terminalColorFor(terminalId) || '').toLowerCase();
+
+        body.innerHTML = '';
+        const title = document.createElement('div');
+        title.className = 'color-picker-title';
+        title.textContent = `Color · ${this.terminalNameFor(terminalId)}`;
+        body.appendChild(title);
+
+        const grid = document.createElement('div');
+        grid.className = 'color-swatch-grid';
+        this.terminalColorPalette.forEach((c) => {
+            const sw = document.createElement('button');
+            sw.type = 'button';
+            sw.className = 'color-swatch';
+            sw.style.backgroundColor = c;
+            if (c.toLowerCase() === current) sw.classList.add('selected');
+            sw.addEventListener('click', () => {
+                this.setTerminalMetadata(terminalId, { color: c });
+                close();
+            });
+            grid.appendChild(sw);
+        });
+        body.appendChild(grid);
+
+        const customRow = document.createElement('label');
+        customRow.className = 'color-custom-row';
+        const customLabel = document.createElement('span');
+        customLabel.textContent = 'Custom';
+        const input = document.createElement('input');
+        input.type = 'color';
+        input.value = /^#[0-9a-f]{6}$/i.test(current) ? current : '#007acc';
+        input.addEventListener('change', () => {
+            this.setTerminalMetadata(terminalId, { color: input.value });
+            close();
+        });
+        customRow.appendChild(customLabel);
+        customRow.appendChild(input);
+        body.appendChild(customRow);
+
+        modal.classList.add('show');
+        modal.onclick = (e) => { if (e.target === modal) close(); };
+    }
+
+    /**
      * Handle a control-API request (terminal create/update/delete) and return
      * a structured { ok, ... } result for the HookServer to relay.
      */
@@ -1361,6 +1655,44 @@ class TerminalGUI {
                 type: 'warning'
             });
             return { ok: true, terminalId };
+        }
+
+        if (action === 'terminal-screen') {
+            // Dump a terminal's rendered xterm buffer so the manager can "see"
+            // the live screen (input box, menus, progress) - which the transcript
+            // JSONL does not contain. Defaults to the visible viewport; pass
+            // scrollback:true for the full buffer.
+            const terminalId = parseInt(payload.terminalId, 10);
+            const td = this.terminals.get(terminalId);
+            if (!td || !td.terminal) return { ok: false, error: 'terminal not found' };
+            const term = td.terminal;
+            const buf = term.buffer.active;
+            const includeScrollback = payload.scrollback === true || payload.scrollback === 'true';
+            const start = includeScrollback ? 0 : buf.baseY;
+            const end = buf.baseY + term.rows; // through the bottom of the visible screen
+            const lines = [];
+            for (let i = start; i < end; i++) {
+                const line = buf.getLine(i);
+                lines.push(line ? line.translateToString(true) : '');
+            }
+            // Trim trailing blank lines so the dump ends at the last real output.
+            while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+            let screen = lines.join('\n');
+            const MAX = 50000;
+            if (screen.length > MAX) screen = '…[truncated]\n' + screen.slice(screen.length - MAX);
+            return {
+                ok: true,
+                terminalId,
+                rows: term.rows,
+                cols: term.cols,
+                cursorRow: buf.cursorY,
+                cursorCol: buf.cursorX,
+                screen
+            };
+        }
+
+        if (action === 'queue-update') {
+            return this.messageQueueManager.applyControlUpdate(payload);
         }
 
         return { ok: false, error: `unknown control action: ${action}` };
@@ -1469,13 +1801,15 @@ class TerminalGUI {
             sel.value = value;
             sel.addEventListener('change', () => onChange(sel.value));
         };
-        fill('completion-sound-select', current.completionSound, (v) => {
+        // Read selected values from the SoundManager (it heals stale .mp3 prefs
+        // on init) so the <select> reflects a file that actually exists.
+        fill('completion-sound-select', this.soundManager.getCompletionSound(), (v) => {
             this.soundManager.setCompletionSound(v); this.persistSetting('completionSound', v);
         });
-        fill('injection-sound-select', current.injectionSound, (v) => {
+        fill('injection-sound-select', this.soundManager.getInjectionSound(), (v) => {
             this.soundManager.setInjectionSound(v); this.persistSetting('injectionSound', v);
         });
-        fill('prompted-sound-select', current.promptedSound, (v) => {
+        fill('prompted-sound-select', this.soundManager.getPromptedSound(), (v) => {
             this.soundManager.setPromptedSound(v); this.persistSetting('promptedSound', v);
         });
 

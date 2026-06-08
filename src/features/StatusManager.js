@@ -32,14 +32,13 @@ class StatusManager {
     }
 
     setupEventListeners() {
-        // Listen for raw terminal output (canonical: terminal:data with { terminalId, data })
-        this.eventBus.on('terminal:data', (data) => {
-            this.updateTerminalStatusFromOutput(data.terminalId, data.data);
-        });
-
-        // Listen for canonical terminal status changes
+        // Status is driven by Claude Code hooks (the canonical
+        // terminal:status:changed event), NOT by scraping terminal output —
+        // output parsing is deprecated and caused cross-terminal status bleed.
+        // Each event carries its own terminalId, so we paint exactly one
+        // terminal's header and never touch the others.
         this.eventBus.on('terminal:status:changed', (data) => {
-            this.handleTerminalStateChange(data.terminalId, data.status);
+            this.applyCanonicalStatus(data.terminalId, data.status, data.previousStatus);
         });
 
         // Listen for injection events
@@ -289,27 +288,56 @@ class StatusManager {
         }
     }
 
-    // Direct DOM update without complex transition logic
+    /**
+     * Apply a canonical status (from the hook-driven terminal:status:changed
+     * event) to a SINGLE terminal. Status state is stored per-id and the DOM
+     * write is scoped to that terminal's header span, so terminals — including
+     * the manager (999) — never share status. Canonical status values:
+     * 'running' | 'prompted' | 'injecting' | '...' | 'idle' | 'error' | ''.
+     */
+    applyCanonicalStatus(terminalId, status, previousStatus) {
+        if (terminalId === null || terminalId === undefined) return;
+
+        this.terminalStatuses.set(terminalId, {
+            isRunning: status === 'running',
+            isPrompting: status === 'prompted',
+            isInjecting: status === 'injecting',
+            lastUpdate: Date.now(),
+            status: status || '...'
+        });
+
+        // Paint ONLY this terminal's header — keyed strictly by terminalId.
+        this.updateTerminalStatusDOM(terminalId, status, previousStatus);
+
+        // The global cache (used by the sidebar status panel) tracks the
+        // ACTIVE terminal only; it must not be overwritten by background tabs.
+        const activeTerminalId = this.stateStore.getState('terminals.activeId');
+        if (terminalId === activeTerminalId) {
+            this.currentTerminalStatus.isRunning = status === 'running';
+            this.currentTerminalStatus.isPrompting = status === 'prompted';
+        }
+    }
+
+    // Direct DOM update without complex transition logic. Scoped to one
+    // terminal via the [data-terminal-status="<id>"] selector.
     updateTerminalStatusDOM(terminalId, newStatus, previousStatus) {
         const statusElement = document.querySelector(`[data-terminal-status="${terminalId}"]`);
-        if (statusElement) {
-            // Update the status icon/text
-            const statusIcon = newStatus === 'running' ? 'Running' : 
-                              newStatus === 'prompted' ? 'Prompted' :
-                              newStatus === 'injecting' ? 'Injecting' : '...';
-            
-            statusElement.textContent = statusIcon;
-            
-            // Update classes for styling
-            statusElement.className = `terminal-status visible ${newStatus}`;
-            
-            // Add transition classes for animation
-            if (previousStatus !== newStatus) {
-                statusElement.classList.add('status-transition');
-                setTimeout(() => {
-                    statusElement.classList.remove('status-transition');
-                }, 300);
-            }
+        if (!statusElement) return;
+
+        const LABELS = { running: 'Running', prompted: 'Prompted', injecting: 'Injecting' };
+        // Anything that isn't an active state ('...', 'idle', 'error', '') is idle.
+        const label = LABELS[newStatus] || '...';
+        const modifier = LABELS[newStatus] ? newStatus : 'idle';
+
+        statusElement.textContent = label;
+        statusElement.className = `terminal-status visible ${modifier}`;
+
+        // Add transition classes for animation
+        if (previousStatus !== newStatus) {
+            statusElement.classList.add('status-transition');
+            setTimeout(() => {
+                statusElement.classList.remove('status-transition');
+            }, 300);
         }
     }
 

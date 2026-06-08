@@ -6,29 +6,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Auto-Injector ("claude code bot") is an Electron app for running many Claude Code instances side-by-side: a grid of PTY terminals, a message queue that injects prompts into specific terminals when they're free, per-terminal state tracking (running / prompted / idle), sound notifications, voice-to-prompt transcription via Whisper, and token/cost tracking. A Django backend (port 8123) handles transcription, pricing, and queue persistence APIs.
 
-Note: the repo path contains a space (`claude code bot`) — always quote paths in shell commands.
+Nickname in code/comments: "claude code bot". The checkout lives at a normal path (`claude-autorunner`).
 
 ## Commands
 
 ```bash
-./start.sh              # Start Django backend + Electron app together
-./start.sh --setup      # First run: installs npm deps, creates backend venv, runs migrations
+./start.sh              # Backend (Docker by default) + Electron app together
+./start.sh --venv       # Force the local venv backend instead of Docker (also: VENV=1)
+./start.sh --setup      # First run for the venv flow: installs npm deps, creates the venv, runs migrations
 npm start               # Electron app only (voice/pricing features need the backend)
 npm run dev             # Electron app with DevTools open
 npm run rebuild         # Rebuild native modules (node-pty) after Node/Electron upgrades
 npm run build:mac       # Package with electron-builder (also :win, :linux, :all)
 
-# Backend alone (always use the venv — backend/venv)
-cd backend && source venv/bin/activate && python manage.py runserver 8123
+# Backend in Docker — the DEFAULT (Postgres + Django on :8123). Per global instructions, work in Docker.
+docker compose up -d --wait        # health-gated on /api/queue/health/
+docker compose ps                  # confirm container status before doing anything
+docker compose logs -f backend     # tail backend — also carries [frontend] logs (see Debugging)
+docker compose down
 
-# UI smoke test: launches the app via Playwright, screenshots before/after
-node tests/app-startup-test.js                          # screenshots only
-node tests/app-startup-test.js --action full-test -v    # all interaction tests
-# actions: default | create-terminal | test-buttons | test-sidebar | test-message | full-test
-# Screenshots land in tests/screenshots/; compare before-/after- pairs with the Read tool.
+# Backend in the venv — fallback only, used when docker compose is unavailable
+cd backend && source venv/bin/activate && python manage.py runserver 8123
 ```
 
-There is no lint step and no fast unit-test runner; `node --check <file>` is the cheapest sanity check after edits. `tests/run-automated-tests.js` runs the integration framework in `tests/integration/`.
+No lint step and no fast unit-test runner; `node --check <file>` is the cheapest sanity check after edits. The `tests/` directory is **gitignored and absent from a fresh checkout** — do not assume `tests/app-startup-test.js`, `tests/unit/*`, or `tests/integration/*` exist before checking. `playwright` is a dependency, so live-probing the running app (see Debugging) is the reliable way to exercise the UI.
 
 ## Architecture
 
@@ -44,7 +45,7 @@ Three processes:
    - `src/ui/` — focus/DOM helpers
    - Modules communicate via EventBus events and the state stores — never by reaching into each other or into renderer.js internals.
 
-3. **Django backend (`backend/`)** — apps for `voice_transcription` (Whisper), `pricing`, `message_queue`, `terminal`, `frontend_control`. Python venv lives at `backend/venv` — always activate it for any Python work.
+3. **Django backend (`backend/`)** — apps for `voice_transcription` (Whisper), `pricing`, `message_queue`, `frontend_control`; `terminal_backend` is the Django project (settings/urls). Runs in Docker by default (Postgres-backed via `docker-compose.yml` + `backend/Dockerfile`); the `backend/venv` flow is the fallback. For any Python work, prefer running inside the backend container; use the venv only when Docker is unavailable.
 
 ### Canonical EventBus events
 
@@ -90,8 +91,7 @@ Recurring optimization passes: on start the manager arms a self-contained interv
   Capture `page.on('console', ...)` for renderer errors and `app.process().stdout` for main-process logs.
 - **One log stream for everything**: every `log:action` event renders in the sidebar Action Log AND ships to the backend, which prints it to stdout tagged `[frontend]`. So `docker compose logs -f backend` (or the venv server's stdout) interleaves frontend activity with Django's logs in one timeline. Endpoint: `POST /api/logs/frontend/`.
 - **Injection gate**: `messageQueueManager.canInjectToTerminal(id)` returns `{ allowed, reason }` — the `reason` string tells you exactly which gate blocked (usage limit, timer, paused, terminal status).
-- **Unit tests**: `node tests/unit/usage-limit-and-gate.test.js` (reset-time parsing, injection gate). `node --check <file>` after every edit.
-- **UI smoke + screenshots**: `node tests/app-startup-test.js` — compare before/after PNGs in tests/screenshots/ with the Read tool.
+- **Tests are gitignored** (see Commands): scripts like `tests/unit/usage-limit-and-gate.test.js` or `tests/app-startup-test.js` may exist locally but are not in the repo — check before relying on them. `node --check <file>` after every edit; live-probe (above) for UI behavior.
 - **Hook server**: main logs `[Main] Hook server listening on 127.0.0.1:<port>` at startup; inside any app terminal, `echo $CCBOT_TERMINAL_ID $CCBOT_PORT` confirms env tagging, and `curl -X POST http://127.0.0.1:$CCBOT_PORT/hook-event -H "X-CCBOT-Token: $CCBOT_TOKEN" -d '{"terminalId":"'$CCBOT_TERMINAL_ID'","event":"stop"}'` simulates a hook firing.
 
 ## Conventions & Pitfalls
