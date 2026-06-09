@@ -518,6 +518,25 @@ app.whenReady().then(async () => {
     safeLog('[Main] Claude hooks setup:', hookResult.status,
       hookResult.changed.length ? hookResult.changed.join(', ') : '(no changes needed)',
       hookResult.error || '');
+
+    // Runtime watcher (P4 leak-guard): poll each PTY's /proc runtime and push
+    // changes to the renderer so the injection gate can refuse to leak a prompt
+    // into a bare shell. Cheap (a few /proc reads per terminal), pushes only on
+    // change. Detection lives in main because the PTYs and /proc are here.
+    const lastRuntimeByTerminal = new Map();
+    setInterval(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      for (const [id, p] of ptyProcesses) {
+        const rt = detectRuntime(p ? p.pid : undefined);
+        if (lastRuntimeByTerminal.get(id) !== rt) {
+          lastRuntimeByTerminal.set(id, rt);
+          mainWindow.webContents.send('terminal-runtime', { terminalId: id, runtime: rt });
+        }
+      }
+      for (const id of lastRuntimeByTerminal.keys()) {
+        if (!ptyProcesses.has(id)) lastRuntimeByTerminal.delete(id);
+      }
+    }, 2500);
   } catch (error) {
     try { console.error('[Main] Hook server failed to start:', error); } catch (e) { /* ignore */ }
     hookServer = null;

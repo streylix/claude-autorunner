@@ -150,3 +150,45 @@ carriage return.
   round-trips to the renderer.
 
 **Requires the same restart.** Routes and the main-side handler are loaded at startup.
+
+---
+
+## 2026-06-08 — P4: Injection leak-guard (don't inject prompts into a bare shell)
+
+**The problem.** A bare shell shows status `...` (idle), which passed the injection
+gate — so a queued prompt was written into bash and each line ran as a command
+("command not found"). The gate had no way to know the terminal wasn't running Claude.
+
+**What changed.** The injection gate now refuses to inject into a terminal whose
+ground-truth runtime is a bare shell. A blocked message is **not lost** — it stays
+queued (dequeue only happens after a successful write) and injects once Claude is
+running. The guard sits above the status gate, so even `urgent`/`important` cannot
+push a prompt into bash. It triggers only on a definitive `shell`; `claude`,
+`unknown`, and not-yet-known all fail open, so injection is never broken when the
+runtime is undetermined.
+
+**How the renderer learns the runtime.** A lightweight watcher in main polls each
+PTY's `/proc` runtime (~2.5s, pushes only on change) and sends it to the renderer,
+which stores it on the terminal. The gate reads it synchronously — no blocking IPC in
+the gate, and the leak-critical claude→shell transition is caught within one poll.
+
+**Coherent story across P1/P1.5/P2/P4.** P4 *blocks* the leak; P2 gives the *fix*
+(`POST /terminal/claude start`); P1 + P1.5 give the *visibility* (the `runtime` field
+and the awaiting-input notification). A prompt queued to a bare shell now waits
+safely until Claude is started, instead of running as shell commands.
+
+**Behavior change to note.** Previously a `normal` message to an idle bare-shell
+terminal would inject (and leak). Now it is held in the queue with the reason
+`terminal N is a bare shell (no Claude session)` until that terminal runs Claude.
+
+**Where the code lives.**
+- New `src/messaging/injection-gate.js` — pure `evaluateInjectionGate(state)` holding
+  the full gate precedence including the shell guard (8 tests). The existing
+  `canInjectToTerminal` was refactored to gather state and delegate to it (every
+  prior reason preserved; the shell guard added).
+- `main.js` — the `/proc` runtime watcher (`setInterval`, push-on-change).
+- `renderer.js` — stores pushed `runtime` on the terminal via a `terminal-runtime`
+  IPC handler.
+
+**Requires the same restart.** The watcher (main) and the IPC handler (renderer) load
+at startup.

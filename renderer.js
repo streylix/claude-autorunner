@@ -434,7 +434,15 @@ class TerminalGUI {
                 });
             }
         });
-        
+
+        // Ground-truth PTY runtime (claude | shell | unknown), pushed from main's
+        // /proc watcher. Stored on the terminal so the injection gate can refuse
+        // to leak a prompt into a bare shell (P4 leak-guard).
+        ipcRenderer.on('terminal-runtime', (event, { terminalId, runtime }) => {
+            if (!this.terminals.has(terminalId)) return;
+            this.terminalStateManager.updateTerminal(terminalId, { runtime });
+        });
+
         // Terminal status updates (canonical: terminal:status:changed)
         ipcRenderer.on('terminal-status', (event, terminalId, status) => {
             const previousStatus = this.terminalStateManager.setTerminalStatus(terminalId, status);
