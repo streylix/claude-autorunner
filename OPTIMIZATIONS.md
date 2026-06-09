@@ -573,3 +573,45 @@ gone from both the store and the list. Test data cleared afterward.
 
 **Restart needed?** Yes — renderer wiring + the startup history load take effect on
 relaunch. After that, history persists continuously.
+
+---
+
+## 2026-06-09 — BUGFIX: Shift+wheel didn't scroll the terminal grid horizontally
+
+**Symptom.** Holding Shift and scrolling the mouse wheel over the terminal grid did
+nothing — there was no way to page horizontally through terminal chunks with the
+wheel.
+
+**Two root causes (both had to be fixed):**
+
+**1 — xterm swallowed the wheel event.** The grid (`#terminals-container`, the
+`layout-scroll` flex container with `overflow-x: auto`) is horizontally scrollable
+when there's more than one chunk, but a wheel event over a terminal is consumed by
+xterm's own scrollback handler and never bubbles to the container. **Fix:** a
+**capture-phase** `wheel` listener on the container (registered once in
+`setupEventListeners`) with `{ passive: false, capture: true }`. Capture runs the
+container's handler before xterm's (which sits on a descendant), and `stopPropagation`
++ `preventDefault` keep the gesture from reaching the terminal. Guarded on
+`e.shiftKey` and on the grid actually being horizontally scrollable
+(`scrollWidth > clientWidth`), so it's a no-op otherwise and plain wheels are
+untouched.
+
+**2 — `scroll-snap` ate sub-page nudges.** First attempt did
+`scrollLeft += e.deltaY`. That visibly fired (preventDefault ran) but the grid never
+moved, because the container has `scroll-snap-type: x mandatory` with each chunk a
+full-width (100%) snap point — any scrollLeft that isn't on a snap boundary snaps
+straight back to the nearest one (verified live: `scrollLeft = 200` → reads back `0`;
+`scrollLeft = clientWidth` → sticks). **Fix:** advance a whole **page** per gesture —
+`scrollBy({ left: sign(delta) * clientWidth, behavior: 'smooth' })` — which lands
+exactly on the adjacent chunk's snap point. Throttled to one page per 350ms
+(via `e.timeStamp`) so a single wheel gesture's momentum doesn't skip several pages.
+
+**How verified (live, TRUSTED wheel via Playwright mouse/keyboard).** Spawned 6
+terminals (chunk size 4 → multiple chunks → `scrollWidth 2249 > clientWidth 749`),
+moved the pointer over a terminal, held Shift: wheel forward paged `scrollLeft` 0 →
+750 (one snap-aligned page); wheel back returned it to 0; a plain (no-Shift) wheel
+left the grid scroll at its snap point unchanged. Note: synthetic
+`new WheelEvent({deltaY})` does **not** carry usable deltas here — a real
+`page.mouse.wheel` was required to exercise this honestly.
+
+**Restart needed?** Yes — the listener is wired once at renderer startup.

@@ -853,6 +853,30 @@ class TerminalGUI {
                 const terminalId = idFromHeader(titleEl);
                 if (terminalId != null) this.beginTitleEdit(titleEl, terminalId);
             });
+
+            // Shift + mouse wheel pages the terminal grid horizontally. Without
+            // this, a wheel event over a terminal is swallowed by xterm's own
+            // scrollback handler and never reaches the container. Capture phase +
+            // stopPropagation run before xterm so the gesture moves the grid.
+            //
+            // The grid uses `scroll-snap-type: x mandatory` with each chunk a
+            // full-width (100%) snap point, so a sub-page scrollLeft nudge just
+            // snaps straight back — we must advance a whole page (clientWidth) to
+            // land on the next chunk. Throttled so one wheel gesture's momentum
+            // doesn't skip several pages. No-op when the grid isn't horizontally
+            // scrollable (e.g. a single chunk), letting normal behaviour through.
+            let lastGridPageScroll = 0;
+            terminalsContainer.addEventListener('wheel', (e) => {
+                if (!e.shiftKey) return;
+                if (terminalsContainer.scrollWidth <= terminalsContainer.clientWidth) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const dir = Math.sign(e.deltaY || e.deltaX);
+                if (!dir) return;
+                if (e.timeStamp - lastGridPageScroll < 350) return; // ignore momentum after the first notch
+                lastGridPageScroll = e.timeStamp;
+                terminalsContainer.scrollBy({ left: dir * terminalsContainer.clientWidth, behavior: 'smooth' });
+            }, { passive: false, capture: true });
         }
 
         // Wire the secondary UI the thin refactor left unconnected.
