@@ -246,6 +246,16 @@ class UsageLimitManager {
             this.messageQueueManager.usageLimitWaiting = false;
         }
 
+        // Release the TIMER half of the gate too. The countdown was commandeered
+        // for the cooldown, and TimerManager leaves timerRunning=true after a
+        // countdown expires (the interval is only cleared on error/explicit
+        // stop). So canInjectToTerminal would keep returning "timer still
+        // counting down" and the queue would stay frozen even though the limit
+        // has lifted. Stop it here so isRunning() is false before the re-drain.
+        if (this.timerManager && typeof this.timerManager.stopTimer === 'function') {
+            this.timerManager.stopTimer();
+        }
+
         this.appStateStore.setState('usageLimit.waiting', false);
         this.appStateStore.setState('usageLimit.resetTime', null);
 

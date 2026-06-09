@@ -192,3 +192,46 @@ terminal would inject (and leak). Now it is held in the queue with the reason
 
 **Requires the same restart.** The watcher (main) and the IPC handler (renderer) load
 at startup.
+
+---
+
+## 2026-06-08 — BUGFIX: queue didn't auto-resume when a usage limit lapsed
+
+**The bug.** When a terminal was paused by a usage/session limit, the interface ran a
+countdown to the reset time. When that countdown hit 0, the queued messages should
+have injected automatically — but the queue stayed frozen until something else (e.g.
+enqueuing a new message) kicked it. Observed live with 4 messages stuck after a reset.
+
+**Root cause (traced, not guessed).** The injection gate refuses to inject while
+`timerManager.isRunning()` is true. `TimerManager` only clears its countdown interval
+on an error or an explicit `stopTimer()` — when a countdown reaches 0 it sets
+`timerExpired = true` but **leaves `timerRunning = true`**, so `isRunning()` stays
+true indefinitely. The usage-limit "limit cleared" handler
+(`UsageLimitManager.handleUsageLimitTimerExpiry`) released the *usage-limit* half of
+the gate (`usageLimitWaiting = false`) and emitted `usageLimit:reset`, but never
+released the *timer* half. So when `MessageQueueManager` re-drained on
+`usageLimit:reset`, `canInjectToTerminal` still returned "timer still counting down"
+and nothing injected. The enqueue path (`maybeAutoInject`) worked later only because
+by then the gate happened to be open — matching the observed "drains the instant a
+new message is enqueued."
+
+**The fix.** `handleUsageLimitTimerExpiry` now stops the commandeered timer
+(`timerManager.stopTimer()`) right after clearing `usageLimitWaiting`, before emitting
+`usageLimit:reset`. With both halves of the gate released, the existing re-drain
+injects the pending messages automatically — no new enqueue needed.
+
+**Regression test.** `src/features/usage-limit-resume.test.js` drives the **real**
+`UsageLimitManager.handleUsageLimitTimerExpiry` against the **real**
+`evaluateInjectionGate`: a message queued, usage-limit waiting, timer "running";
+firing expiry must release both gate halves and inject the message with no new
+enqueue. (Loads the real ULM in plain node via an `electron` require shim.) Plus a
+test asserting the `timer:expired` event drives the same resume, and one pinning the
+root cause (a still-"running" timer blocks the gate).
+
+**Related latent issue (NOT fixed — out of scope).** The same root cause means a
+*manual* auto-inject timer expiring would also leave `isRunning()` true and block
+injection. Only the usage-limit path is fixed here; the general timer-expiry case is a
+separate decision.
+
+**Requires the same restart.** The fix is in `UsageLimitManager.js` (renderer), loaded
+at startup, so it takes effect on the same relaunch as the rest.
