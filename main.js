@@ -13,6 +13,7 @@ const MigrationHelper = require('./src/storage/migration-helper');
 const HookServer = require('./src/main/HookServer');
 const { ensureClaudeHooks } = require('./src/main/claude-hooks-setup');
 const { readLastAssistantText } = require('./src/main/transcript-reader');
+const { enrichSnapshot } = require('./src/main/terminal-runtime');
 
 let mainWindow;
 let hookServer = null;
@@ -481,7 +482,17 @@ app.whenReady().then(async () => {
           mainWindow.webContents.send('queue-add-request', payload);
         }
       },
-      getState: () => rendererStateCache,
+      // Enrich the renderer's cached snapshot with a ground-truth `runtime`
+      // (claude | shell | unknown) and live `directory` per terminal, derived
+      // from each PTY's process tree in /proc. Computed fresh on every /state
+      // GET, in main (where the PTYs live), so it is never stale.
+      getState: () => enrichSnapshot(
+        rendererStateCache,
+        (id) => {
+          const p = ptyProcesses.get(id);
+          return p ? p.pid : undefined;
+        }
+      ),
       onControl: sendControlRequest
     });
     const port = await hookServer.start();
