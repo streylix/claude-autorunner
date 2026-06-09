@@ -681,3 +681,34 @@ for a non-1 terminal (id 7), and read the badge → **"#7"**, matching the item'
 `dataset.terminal`, instead of "#0". Test data cleared.
 
 **Restart needed?** Yes — renderer code loads once at startup.
+
+---
+
+## 2026-06-09 — BUGFIX: todo "set X ago" timer was frozen at "0m 0s"
+
+**Symptom.** Every todo's elapsed timer read "0m 0s" and never advanced.
+
+**Root cause.** `renderCompletionItem` hardcodes `<span class="completion-timer">0m 0s
+</span>`, and the only code that updated it was the per-item interval in
+`startCompletionMonitoring`, which (a) is started **only** by `createCompletionItem`
+(the in-progress path) and (b) ticks **only while `status === 'in-progress'`**.
+Hook-driven todos are created by `recordHookCompletion` with `status: 'completed'` and
+never call `startCompletionMonitoring`, and restored todos aren't monitored either —
+so nothing ever wrote their timer and it stayed at the literal "0m 0s". (The separate
+`completion-timer.js` / `CompletionTimerManager` is dead code — the global
+`completionTimerManager` it guards on is never instantiated.)
+
+**Fix (`CompletionManager`).** Added one shared 1-second ticker (`startElapsedTicker`
+in the constructor → `updateElapsedTimers`) that drives **every** rendered todo from
+its own `startTime`: it writes `now − startTime` as "Xm Ys" to each item's
+`.completion-timer`, so completed hook items and restored items all count up live
+("set X ago"). `renderCompletionItem` also seeds the value immediately on render
+(restored items have a past `startTime`, so the hardcoded "0m 0s" would otherwise be
+wrong until the next tick). `startTime` is already persisted by `_serializeCompletion`,
+so restored items show the correct age.
+
+**How verified (live, Playwright).** Fresh hook todo: "0m 0s" → after ~3.2s → "0m 3s"
+(advancing). Backdated an item's `startTime` by 125s and forced a tick → seeded
+**"2m 5s"** immediately, then advanced to "2m 6s" after ~2.5s. Test data cleared.
+
+**Restart needed?** Yes — renderer code loads once at startup.

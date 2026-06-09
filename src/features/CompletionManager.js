@@ -17,8 +17,40 @@ class CompletionManager {
         this.previousCompletionStrings = new Map(); // Track previous completion strings per terminal
         this.completionStabilityTimers = new Map(); // Track completion stability timers per terminal
         this.previousTerminalStatuses = new Map(); // Track previous terminal statuses for completion detection
+        this._elapsedTicker = null;
 
         this.setupEventListeners();
+        this.startElapsedTicker();
+    }
+
+    // ======= "set X ago" elapsed timer (live, for every todo) =======
+    /** Format elapsed seconds as "Xm Ys" (the format the header timer uses). */
+    _formatElapsed(totalSeconds) {
+        const s = Math.max(0, Math.floor(totalSeconds));
+        return `${Math.floor(s / 60)}m ${s % 60}s`;
+    }
+
+    /** One shared 1s interval that shows each todo's time-since-set, counting up
+     *  live. Hook completions render as 'completed' and restored items aren't
+     *  monitored, so the old in-progress-only timer never ticked them — they were
+     *  stuck at the hardcoded "0m 0s". This drives every rendered item from its
+     *  startTime, so all of them advance. */
+    startElapsedTicker() {
+        if (this._elapsedTicker) return;
+        this._elapsedTicker = setInterval(() => this.updateElapsedTimers(), 1000);
+    }
+
+    updateElapsedTimers() {
+        const list = document.getElementById('todo-list');
+        if (!list) return;
+        const now = Date.now();
+        list.querySelectorAll('.completion-item').forEach(el => {
+            const id = parseInt(el.dataset.completionId, 10);
+            const item = this.completionItems.get(id);
+            if (!item || !item.startTime) return;
+            const timerEl = el.querySelector('.completion-timer');
+            if (timerEl) timerEl.textContent = this._formatElapsed((now - item.startTime) / 1000);
+        });
     }
 
     // ======= PERSISTENCE ("to-dos" survive reload/restart) =======
@@ -732,7 +764,15 @@ class CompletionManager {
         
         // Prepend to list (newest first)
         todoList.insertBefore(itemElement, todoList.firstChild);
-        
+
+        // Show the correct "set X ago" immediately — restored items have a
+        // startTime in the past, so the hardcoded "0m 0s" above would be wrong
+        // until the shared ticker's next tick. Seed it now; the ticker advances it.
+        const timerEl = itemElement.querySelector('.completion-timer');
+        if (timerEl && completionItem.startTime) {
+            timerEl.textContent = this._formatElapsed((Date.now() - completionItem.startTime) / 1000);
+        }
+
         // Set up click handler for modal
         itemElement.addEventListener('click', () => {
             this.openCompletionModal(itemElement, 0);
