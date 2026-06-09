@@ -21,7 +21,11 @@ class CompletionManager {
         // Listen for terminal status changes
         this.eventBus.on('terminal:status:changed', ({ terminalId, status, previousStatus }) => {
             this.checkTerminalCompletionStatus(terminalId);
-            this.checkCompletionSoundTrigger(previousStatus, status, terminalId);
+            // NOTE: completion SOUND is owned by SoundManager (it subscribes to
+            // the same event via checkStatusChangeSounds). The old duplicate
+            // path here used the wrong asset dir ('sounds/…' instead of
+            // 'assets/soundeffects/…') and a setting key that is never set, so it
+            // silently failed on every completion — removed.
         });
         
         // Listen for terminal data
@@ -789,58 +793,12 @@ class CompletionManager {
             });
         });
     }
-    
-    // Sound handling
-    checkCompletionSoundTrigger(previousStatus, currentStatus, terminalId) {
-        // Trigger completion sound when transitioning from 'running' to idle
-        if (previousStatus === 'running' && (currentStatus === '...' || currentStatus === '')) {
-            // Delay to ensure completion is real
-            setTimeout(() => {
-                const stillIdle = this.appStateStore.getTerminalStatus(terminalId);
-                const isStillIdle = stillIdle === '...' || stillIdle === '';
-                
-                if (isStillIdle) {
-                    this.playCompletionSound();
-                    
-                    // Emit sound trigger event
-                    this.eventBus.emit('completion:sound:triggered', { terminalId });
-                }
-            }, 1000);
-        }
-    }
-    
-    playCompletionSound(filename = null) {
-        const preferences = this.appStateStore.getPreferences();
-        if (!preferences?.completionSoundEnabled) {
-            return;
-        }
-        
-        const soundFile = filename || preferences.completionSoundFile;
-        if (!soundFile) {
-            return;
-        }
-        
-        try {
-            const audio = new Audio(`sounds/${soundFile}`);
-            audio.volume = 0.5;
-            audio.play().catch(error => {
-                console.error('Error playing completion sound:', error);
-            });
-        } catch (error) {
-            console.error('Error creating completion audio:', error);
-        }
-    }
-    
-    testCompletionSound() {
-        const soundFile = document.getElementById('completion-sound-select')?.value;
-        if (!soundFile) {
-            console.log('No completion sound selected');
-            return;
-        }
-        this.playCompletionSound(soundFile);
-        console.log(`Testing sound: ${soundFile}`);
-    }
-    
+
+    // Sound handling: intentionally none here. Completion/prompted/injection
+    // sounds are centralized in SoundManager (assets/soundeffects/, settings.sound.*).
+    // The former checkCompletionSoundTrigger/playCompletionSound/testCompletionSound
+    // duplicated that with a broken asset path + dead setting key and were removed.
+
     // Cleanup
     cleanupTerminalCompletions(terminalId) {
         // Cancel any stability timers

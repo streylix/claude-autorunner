@@ -374,3 +374,60 @@ shrinks back to one row ✓.
 
 **Restart needed?** Yes — renderer change, loaded at startup; relaunch the app onto
 this branch.
+
+---
+
+## 2026-06-09 — Sound effects: close the cold-start gap + delete a broken duplicate path
+
+**Status going in.** Reported "still broken" across multiple prior attempts. Live
+investigation on this branch (Playwright, real button clicks) showed the core path
+already FUNCTIONS: `new Audio('./assets/soundeffects/confirm.wav').play()` resolves
+and plays, `cloneNode()` plays too (the earlier "cloneNode is the bug" theory was
+wrong), the toggle flips `soundManager.soundEnabled`, and the three test buttons
+each call `playSound` with the audio loaded (`readyState 4`). So there was no
+single dead switch — but there WERE two real defects worth fixing.
+
+**Defect 1 — cold-start window.** `setupSettings()` wired the sound toggle and
+test buttons only AFTER `await soundManager.initialize()` (an IPC dir-read), and it
+first did 7 *sequential* `getPersistedSetting` IPC awaits. So for ~1-2s after
+launch the sound controls were unbound — toggling did nothing. **Fix:** load the 7
+persisted settings in parallel (`Promise.all`) and wire the controls BEFORE the
+async sound-file load. The sound `<select>`s repopulate when files arrive — keyed
+on `sound:update-ui` (emitted at the END of `initialize()`, after stale-pref
+healing) rather than `sound:files-loaded` (mid-init, pre-heal, which would leave
+the dropdown on a non-existent `.mp3` → blank). Repopulation is idempotent
+(`sel.onchange`, not `addEventListener`). Measured: toggle now wired within ~1s of
+launch; dropdowns show all 20 real `.wav` files with a valid healed selection
+(`confirm.wav`) by ~2s.
+
+**Defect 2 — broken duplicate sound path.** `CompletionManager` had its OWN
+`checkCompletionSoundTrigger`/`playCompletionSound`/`testCompletionSound` that ran
+on every completion in parallel with SoundManager's. It used the wrong asset dir
+(`new Audio('sounds/…')` — the files live in `assets/soundeffects/`) and a setting
+key (`completionSoundEnabled`) that is never set, so it silently failed every time.
+**Fix:** removed it; completion/prompted/injection sound is owned solely by
+`SoundManager`. Verified a `running→'...'` status change still plays via SoundManager
+with no error and the removed methods are gone.
+
+**How verified (live).** Steady-state sampling 1-9s after launch: toggle wired,
+20-file dropdown, valid selection; test buttons fire `playSound` with audio loaded;
+completion event plays through SoundManager; removed CM methods are `undefined`.
+
+**⚠ Restart REQUIRED — this is the crux of "still broken".** All sound logic is in
+the renderer, loaded once at startup. A running instance from before this branch
+keeps the old (unwired / mid-init-gated) behavior no matter what you toggle. **You
+must quit and relaunch the app onto this branch (rebuild if packaged).**
+
+**If it is STILL silent after a clean relaunch of this branch, check, in order:**
+1. **You're actually on this branch / freshly rebuilt** — not a stale Electron
+   process. Confirm the dropdowns list real `.wav` files (beep/click/confirm/…); if
+   they show `.mp3` names, you're on old code.
+2. **System audio output device** — Electron plays to the OS default sink. Verify
+   the machine's output device/volume isn't muted or routed to a dead device
+   (other app audio audible?). `play()` resolving (it does here) means the app did
+   its part; silence after that is an output-routing/hardware issue, not the app.
+3. **The ~1-2s cold-start window is now fixed** — toggling immediately on launch
+   works; you no longer need to wait. If you toggled during that old gap before,
+   that symptom is gone.
+4. The "sound effects" master toggle is ON (it defaults OFF), and the per-sound
+   `<select>` is not set to `none`.

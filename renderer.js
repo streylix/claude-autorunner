@@ -1758,14 +1758,22 @@ class TerminalGUI {
      * (max-visible) setting, theme, etc. all silently did nothing.
      */
     async setupSettings() {
-        // ---- Load persisted values ----
-        const soundEnabled = await this.getPersistedSetting('soundEffectsEnabled', false);
-        const completionSound = await this.getPersistedSetting('completionSound', 'completion.mp3');
-        const injectionSound = await this.getPersistedSetting('injectionSound', 'injection.mp3');
-        const promptedSound = await this.getPersistedSetting('promptedSound', 'prompted.mp3');
-        const terminalsPerChunk = await this.getPersistedSetting('terminalsPerChunk', 4);
-        const chunkOrientation = await this.getPersistedSetting('chunkOrientation', 'horizontal');
-        const theme = await this.getPersistedSetting('theme', 'dark');
+        // ---- Load persisted values (in PARALLEL) ----
+        // These were 7 sequential IPC awaits, which at cold start delayed wiring
+        // the sound toggle/test buttons by up to a second or two. They're
+        // independent reads, so batch them.
+        const [
+            soundEnabled, completionSound, injectionSound, promptedSound,
+            terminalsPerChunk, chunkOrientation, theme,
+        ] = await Promise.all([
+            this.getPersistedSetting('soundEffectsEnabled', false),
+            this.getPersistedSetting('completionSound', 'completion.mp3'),
+            this.getPersistedSetting('injectionSound', 'injection.mp3'),
+            this.getPersistedSetting('promptedSound', 'prompted.mp3'),
+            this.getPersistedSetting('terminalsPerChunk', 4),
+            this.getPersistedSetting('chunkOrientation', 'horizontal'),
+            this.getPersistedSetting('theme', 'dark'),
+        ]);
 
         // ---- Mirror into the app state store (SoundManager reads settings.sound.*) ----
         this.appStateStore.setState('settings.sound.enabled', !!soundEnabled);
@@ -1775,19 +1783,24 @@ class TerminalGUI {
         this.appStateStore.setState('settings.terminalsPerChunk', terminalsPerChunk);
         this.appStateStore.setState('settings.chunkOrientation', chunkOrientation);
 
-        // ---- Init sound manager (loads available files + the above) ----
-        await this.soundManager.initialize();
-
         // ---- Apply theme + relayout with the loaded chunk size ----
         document.documentElement.setAttribute('data-theme', theme);
         this.applyThemeToTerminals(theme);
         this.relayoutTerminals();
 
-        // ---- Wire the controls ----
+        // ---- Wire the controls BEFORE the (async) sound-file load ----
+        // Wiring used to sit behind `await soundManager.initialize()`, which
+        // awaits an IPC dir-read. During that cold-start window (~1-2s after
+        // launch) the sound toggle and test buttons were unbound, so toggling
+        // "sound effects" did nothing. Wire first so they work immediately; the
+        // sound <select>s repopulate on the 'sound:files-loaded' event below.
         this.wireSettingsControls({
             soundEnabled, completionSound, injectionSound, promptedSound,
             terminalsPerChunk, chunkOrientation, theme
         });
+
+        // ---- Init sound manager (loads available files; heals stale prefs) ----
+        await this.soundManager.initialize();
     }
 
     /** Push a theme to the data-theme attribute and live xterm instances. */
@@ -1828,29 +1841,40 @@ class TerminalGUI {
             });
         }
 
-        // Populate the three sound <select>s from the available files.
-        const sounds = (this.soundManager.getAvailableSounds && this.soundManager.getAvailableSounds()) || [];
-        const fill = (selectId, value, onChange) => {
-            const sel = byId(selectId);
-            if (!sel) return;
-            const opts = (sounds.length ? sounds.slice() : ['none', 'completion.mp3', 'injection.mp3', 'prompted.mp3']);
-            if (!opts.includes('none')) opts.unshift('none');
-            sel.innerHTML = '';
-            opts.forEach(f => { const o = document.createElement('option'); o.value = f; o.textContent = f; sel.appendChild(o); });
-            sel.value = value;
-            sel.addEventListener('change', () => onChange(sel.value));
+        // Populate the three sound <select>s from the available files. This may
+        // run before SoundManager.initialize() has loaded the real file list, so
+        // it is idempotent (uses `sel.onchange`, not addEventListener) and is
+        // re-run on 'sound:files-loaded' once the files arrive.
+        const populateSoundSelects = () => {
+            const sounds = (this.soundManager.getAvailableSounds && this.soundManager.getAvailableSounds()) || [];
+            const fill = (selectId, value, onChange) => {
+                const sel = byId(selectId);
+                if (!sel) return;
+                const opts = (sounds.length ? sounds.slice() : ['none', 'completion.mp3', 'injection.mp3', 'prompted.mp3']);
+                if (!opts.includes('none')) opts.unshift('none');
+                sel.innerHTML = '';
+                opts.forEach(f => { const o = document.createElement('option'); o.value = f; o.textContent = f; sel.appendChild(o); });
+                sel.value = value;
+                sel.onchange = () => onChange(sel.value); // idempotent across repopulation
+            };
+            // Read selected values from the SoundManager (it heals stale .mp3
+            // prefs on init) so the <select> reflects a file that actually exists.
+            fill('completion-sound-select', this.soundManager.getCompletionSound(), (v) => {
+                this.soundManager.setCompletionSound(v); this.persistSetting('completionSound', v);
+            });
+            fill('injection-sound-select', this.soundManager.getInjectionSound(), (v) => {
+                this.soundManager.setInjectionSound(v); this.persistSetting('injectionSound', v);
+            });
+            fill('prompted-sound-select', this.soundManager.getPromptedSound(), (v) => {
+                this.soundManager.setPromptedSound(v); this.persistSetting('promptedSound', v);
+            });
         };
-        // Read selected values from the SoundManager (it heals stale .mp3 prefs
-        // on init) so the <select> reflects a file that actually exists.
-        fill('completion-sound-select', this.soundManager.getCompletionSound(), (v) => {
-            this.soundManager.setCompletionSound(v); this.persistSetting('completionSound', v);
-        });
-        fill('injection-sound-select', this.soundManager.getInjectionSound(), (v) => {
-            this.soundManager.setInjectionSound(v); this.persistSetting('injectionSound', v);
-        });
-        fill('prompted-sound-select', this.soundManager.getPromptedSound(), (v) => {
-            this.soundManager.setPromptedSound(v); this.persistSetting('promptedSound', v);
-        });
+        populateSoundSelects();
+        // Repopulate after SoundManager.initialize() finishes. We listen for
+        // 'sound:update-ui' (emitted at the END of initialize, AFTER stale-pref
+        // healing) rather than 'sound:files-loaded' (emitted mid-init, before
+        // healing) so the <select> reflects the healed, real-file selection.
+        this.eventBus.on('sound:update-ui', () => populateSoundSelects());
 
         const wireTest = (id, fn) => { const b = byId(id); if (b) b.addEventListener('click', () => this.soundManager[fn]()); };
         wireTest('test-completion-sound-btn', 'testCompletionSound');
