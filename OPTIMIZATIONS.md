@@ -615,3 +615,42 @@ left the grid scroll at its snap point unchanged. Note: synthetic
 `page.mouse.wheel` was required to exercise this honestly.
 
 **Restart needed?** Yes — the listener is wired once at renderer startup.
+
+---
+
+## 2026-06-09 — BUGFIX: todo output panel always said "No terminal output available"
+
+**Symptom.** Every todo item's output (shown in the completion-details modal) read
+"No terminal output available", even when that terminal had output.
+
+**Root cause.** `CompletionManager` fetches a terminal's live data through a
+synchronous request/callback event — `this.eventBus.emit('completion:request:terminalData',
+{ terminalId, callback })` — in both `recordHookCompletion` and
+`displayCompletionOutput`. **Nothing in the renderer listened for that event**, so the
+callback was never invoked and `terminalData` stayed `null`. `displayCompletionOutput`
+then hit its `if (!terminalData)` branch → "No terminal output available" every time
+(and the todo's colour/name fell back to defaults). Confirmed by grepping: only
+`emit('completion:request:terminalData', …)` existed, zero `.on(...)`.
+
+**Fix (`renderer.js`).** Register the missing provider next to the other terminal
+eventBus listeners. It resolves the terminal from the state store and answers the
+callback synchronously (EventBus dispatch is synchronous, same pattern as
+`preference:get`):
+```js
+this.eventBus.on('completion:request:terminalData', ({ terminalId, callback }) => {
+    if (typeof callback !== 'function') return;
+    const t = this.terminalStateManager.getTerminal(parseInt(terminalId, 10));
+    if (!t) return;
+    callback({ lastOutput: t.lastOutput || '', color: t.color || this.getTerminalColor(terminalId),
+               name: t.title || `Terminal ${terminalId}` });
+});
+```
+`displayCompletionOutput` already extracts the text between `⏺` and `╭` from
+`lastOutput` — it just never received any data to extract from.
+
+**How verified (live, Playwright).** Created a terminal, set its `lastOutput` to
+`…⏺ Hello output line 1\n  line 2\n╭…`, fired a `completion:recorded` hook, opened the
+todo's modal → output panel showed **"Hello output line 1  line 2"** (the extracted
+text) instead of the "No terminal output available" placeholder. Test data cleared.
+
+**Restart needed?** Yes — the listener is wired once at renderer startup.

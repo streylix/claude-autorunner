@@ -700,6 +700,22 @@ class TerminalGUI {
             if (terminalId === this.activeTerminalId) this.updateStatusBar(terminalId);
         });
 
+        // CompletionManager asks for a terminal's live data (synchronously, via a
+        // callback) when rendering a todo and its output panel. Nothing answered
+        // this request before, so the callback never fired: terminalData stayed
+        // null and every todo showed "No terminal output available" with a default
+        // colour/name. Resolve it from the terminal state store.
+        this.eventBus.on('completion:request:terminalData', ({ terminalId, callback }) => {
+            if (typeof callback !== 'function') return;
+            const t = this.terminalStateManager.getTerminal(parseInt(terminalId, 10));
+            if (!t) return;
+            callback({
+                lastOutput: t.lastOutput || '',
+                color: t.color || this.getTerminalColor(terminalId),
+                name: t.title || `Terminal ${terminalId}`,
+            });
+        });
+
         // Collapsible right-sidebar panels (Status, Timer) with persistence
         document.querySelectorAll('.collapse-toggle[data-collapse-target]').forEach((btn) => {
             const section = btn.closest('.collapsible-section');
