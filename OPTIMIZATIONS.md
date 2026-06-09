@@ -235,3 +235,42 @@ separate decision.
 
 **Requires the same restart.** The fix is in `UsageLimitManager.js` (renderer), loaded
 at startup, so it takes effect on the same relaunch as the rest.
+
+---
+
+## 2026-06-08 — P3: Transcript read endpoint (last N parsed messages)
+
+**The problem.** Reading what a worker has been doing meant the manager hand-parsing a
+big JSONL transcript off disk. The app only ever extracted the single last assistant
+message (for completions); there was no way to get the recent conversation.
+
+**What changed.** New `POST /terminal/transcript` `{ terminalId, limit? }` returns the
+last N (default 20, max 100) **conversational turns** as
+`{ role: "user"|"assistant", text, ts }`, oldest-first:
+
+- Human prompts and assistant replies are included.
+- Assistant turns that only call tools become a compact `[tool_use: Bash, Edit]`
+  marker so activity is visible without dumping raw tool output.
+- Sidechain (subagent) entries, thinking blocks, and raw tool_result output are
+  skipped. Each message is truncated to 4000 chars.
+
+The terminal's transcript path is resolved **server-side** from the `/state` snapshot
+(never from a caller-supplied path), and a terminal with no session yet returns a
+clean `ok:false` instead of an error.
+
+**Where the code lives.**
+- `src/main/transcript-reader.js` — generalized from last-assistant-only to add
+  `readRecentMessages()` (the parser) and `buildTranscriptResponse()` (resolves the
+  path from the snapshot and shapes the response). The existing
+  `readLastAssistantText()` is unchanged. Reads a 4 MB tail (enough for ~20 turns
+  even amid large tool output).
+- `src/main/HookServer.js` — `/terminal/transcript` route added to `CONTROL_ROUTES`.
+- `main.js` — `onControl` handles `terminal-transcript` locally (a main-side file
+  read), resolving the path from the cached snapshot.
+- Tests: `src/main/transcript-reader.test.js` (9 cases) over a fixture matching the
+  real schema, plus a sanity run against a real transcript.
+
+**Backward compatible.** Purely additive; `readLastAssistantText`/completions
+unaffected.
+
+**Requires the same restart.** The route and handler load at startup.

@@ -12,7 +12,7 @@ const MigrationHelper = require('./src/storage/migration-helper');
 // Claude Code hook-based terminal state detection
 const HookServer = require('./src/main/HookServer');
 const { ensureClaudeHooks } = require('./src/main/claude-hooks-setup');
-const { readLastAssistantText } = require('./src/main/transcript-reader');
+const { readLastAssistantText, buildTranscriptResponse } = require('./src/main/transcript-reader');
 const { enrichSnapshot, detectRuntime } = require('./src/main/terminal-runtime');
 const { handlePtyControl } = require('./src/main/pty-control');
 
@@ -506,6 +506,11 @@ app.whenReady().then(async () => {
           };
           const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           return handlePtyControl(action, payload, { ptyFor, runtimeFor, sleep });
+        }
+        // Read the last N parsed conversation turns for a terminal, resolving its
+        // transcript path from the cached state snapshot. Pure file read in main.
+        if (action === 'terminal-transcript') {
+          return Promise.resolve(buildTranscriptResponse(payload, rendererStateCache));
         }
         return sendControlRequest(action, payload);
       }

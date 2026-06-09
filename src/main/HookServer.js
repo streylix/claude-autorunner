@@ -96,6 +96,7 @@ class HookServer {
             '/terminal/screen': 'terminal-screen',
             '/terminal/keys': 'terminal-keys',
             '/terminal/claude': 'terminal-claude',
+            '/terminal/transcript': 'terminal-transcript',
             '/queue/update': 'queue-update'
         };
         if (req.method === 'POST' && CONTROL_ROUTES[req.url]) {
