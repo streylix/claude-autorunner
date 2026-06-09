@@ -26,6 +26,7 @@ const PreferenceManager = require('./src/features/PreferenceManager');
 const TimerManager = require('./src/features/TimerManager');
 const ActionLogManager = require('./src/features/ActionLogManager');
 const ManagerInstance = require('./src/features/ManagerInstance');
+const PromptWatchManager = require('./src/features/PromptWatchManager');
 const UIFocusManager = require('./src/ui/UIFocusManager');
 
 // Import utilities
@@ -160,6 +161,11 @@ class TerminalGUI {
         // Hidden manager Claude instance (terminal 999) - steers the interface
         this.managerInstance = new ManagerInstance(this.eventBus, this.appStateStore, this.ipcHandler, this);
         this.managerInstance.initializeUI();
+
+        // Watches for worker terminals opening a real interactive prompt/menu
+        // and pushes an "awaiting input" note to the manager (999). Subscribes
+        // to terminal:status:changed on construction.
+        this.promptWatchManager = new PromptWatchManager(this.eventBus, this.appStateStore, this);
 
         // The injection gate (R3) blocks while a countdown is armed, so the
         // queue needs a handle on the timer to call isRunning().
@@ -1615,6 +1621,42 @@ class TerminalGUI {
     }
 
     /**
+     * Read a terminal's rendered xterm buffer as text. Used by the /terminal/screen
+     * control endpoint and by PromptWatchManager to detect interactive prompts.
+     * Defaults to the visible viewport; pass { scrollback:true } for the full buffer.
+     * @returns {{ok:true, terminalId, rows, cols, cursorRow, cursorCol, screen}|{ok:false, error}}
+     */
+    readTerminalScreen(terminalId, opts = {}) {
+        const id = parseInt(terminalId, 10);
+        const td = this.terminals.get(id);
+        if (!td || !td.terminal) return { ok: false, error: 'terminal not found' };
+        const term = td.terminal;
+        const buf = term.buffer.active;
+        const includeScrollback = opts.scrollback === true || opts.scrollback === 'true';
+        const start = includeScrollback ? 0 : buf.baseY;
+        const end = buf.baseY + term.rows; // through the bottom of the visible screen
+        const lines = [];
+        for (let i = start; i < end; i++) {
+            const line = buf.getLine(i);
+            lines.push(line ? line.translateToString(true) : '');
+        }
+        // Trim trailing blank lines so the dump ends at the last real output.
+        while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+        let screen = lines.join('\n');
+        const MAX = 50000;
+        if (screen.length > MAX) screen = '…[truncated]\n' + screen.slice(screen.length - MAX);
+        return {
+            ok: true,
+            terminalId: id,
+            rows: term.rows,
+            cols: term.cols,
+            cursorRow: buf.cursorY,
+            cursorCol: buf.cursorX,
+            screen
+        };
+    }
+
+    /**
      * Handle a control-API request (terminal create/update/delete) and return
      * a structured { ok, ... } result for the HookServer to relay.
      */
@@ -1662,33 +1704,7 @@ class TerminalGUI {
             // the live screen (input box, menus, progress) - which the transcript
             // JSONL does not contain. Defaults to the visible viewport; pass
             // scrollback:true for the full buffer.
-            const terminalId = parseInt(payload.terminalId, 10);
-            const td = this.terminals.get(terminalId);
-            if (!td || !td.terminal) return { ok: false, error: 'terminal not found' };
-            const term = td.terminal;
-            const buf = term.buffer.active;
-            const includeScrollback = payload.scrollback === true || payload.scrollback === 'true';
-            const start = includeScrollback ? 0 : buf.baseY;
-            const end = buf.baseY + term.rows; // through the bottom of the visible screen
-            const lines = [];
-            for (let i = start; i < end; i++) {
-                const line = buf.getLine(i);
-                lines.push(line ? line.translateToString(true) : '');
-            }
-            // Trim trailing blank lines so the dump ends at the last real output.
-            while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
-            let screen = lines.join('\n');
-            const MAX = 50000;
-            if (screen.length > MAX) screen = '…[truncated]\n' + screen.slice(screen.length - MAX);
-            return {
-                ok: true,
-                terminalId,
-                rows: term.rows,
-                cols: term.cols,
-                cursorRow: buf.cursorY,
-                cursorCol: buf.cursorX,
-                screen
-            };
+            return this.readTerminalScreen(payload.terminalId, { scrollback: payload.scrollback });
         }
 
         if (action === 'queue-update') {
