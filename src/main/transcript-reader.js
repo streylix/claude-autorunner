@@ -13,6 +13,49 @@ const fs = require('fs');
 const TAIL_BYTES = 1024 * 1024;
 const MAX_TEXT_LENGTH = 8000;
 
+// For the recent-messages endpoint: read a larger tail (tool_result entries can
+// be large, so a few MB is needed to cover the last ~20 conversational turns).
+const RECENT_TAIL_BYTES = 4 * 1024 * 1024;
+const RECENT_DEFAULT_LIMIT = 20;
+const RECENT_MAX_LIMIT = 100;
+const RECENT_MAX_TEXT = 4000;
+
+// Read the last `bytes` of a file as UTF-8, or null if unreadable. The first
+// line of the result may be a partial JSON record (callers skip it on parse fail).
+function readTail(filePath, bytes) {
+    try {
+        const stats = fs.statSync(filePath);
+        const start = Math.max(0, stats.size - bytes);
+        const fd = fs.openSync(filePath, 'r');
+        const buffer = Buffer.alloc(stats.size - start);
+        fs.readSync(fd, buffer, 0, buffer.length, start);
+        fs.closeSync(fd);
+        return buffer.toString('utf8');
+    } catch (error) {
+        return null;
+    }
+}
+
+// Human-readable text for one transcript record's message.content (a string, or
+// an array of text/thinking/tool_use/tool_result blocks). Returns the joined
+// prose, or a compact `[tool_use: …]` marker for an assistant turn that only
+// called tools, or '' for thinking-/tool-output-only records (which are dropped).
+function extractMessageText(record) {
+    const content = record.message && record.message.content;
+    if (typeof content === 'string') return content.trim();
+    if (!Array.isArray(content)) return '';
+
+    const text = content
+        .filter((b) => b && b.type === 'text' && b.text)
+        .map((b) => b.text)
+        .join('\n')
+        .trim();
+    if (text) return text;
+
+    const tools = content.filter((b) => b && b.type === 'tool_use').map((b) => b.name).filter(Boolean);
+    return tools.length ? `[tool_use: ${tools.join(', ')}]` : '';
+}
+
 /**
  * Extract the text of the last assistant message in a transcript.
  * @param {string} transcriptPath - Path from the Stop hook payload
@@ -73,4 +116,76 @@ function readLastAssistantText(transcriptPath) {
     return null;
 }
 
-module.exports = { readLastAssistantText };
+/**
+ * Parse the last N conversational turns from a transcript: human prompts and
+ * assistant replies (with compact tool markers), skipping sidechains, thinking,
+ * and raw tool output. Returns oldest-first, or null if the file is unreadable.
+ * @param {string} transcriptPath
+ * @param {{limit?:number, tailBytes?:number, maxTextLength?:number}} [opts]
+ * @returns {Array<{role:string, text:string, ts:(string|null)}>|null}
+ */
+function readRecentMessages(transcriptPath, opts = {}) {
+    if (!transcriptPath) return null;
+    const tail = readTail(transcriptPath, opts.tailBytes || RECENT_TAIL_BYTES);
+    if (tail === null) return null;
+
+    const limit = Math.min(Math.max(1, opts.limit || RECENT_DEFAULT_LIMIT), RECENT_MAX_LIMIT);
+    const maxText = opts.maxTextLength || RECENT_MAX_TEXT;
+
+    const out = [];
+    for (const raw of tail.split('\n')) {
+        const line = raw.trim();
+        if (!line) continue;
+
+        let record;
+        try {
+            record = JSON.parse(line);
+        } catch {
+            continue; // partial first line / malformed - skip
+        }
+
+        if (record.isSidechain) continue;
+        if (record.type !== 'user' && record.type !== 'assistant') continue;
+
+        let text = extractMessageText(record);
+        if (!text) continue; // tool-output-only / thinking-only - skip
+        if (text.length > maxText) text = text.slice(0, maxText) + '\n…[truncated]';
+
+        out.push({ role: record.type, text, ts: record.timestamp || null });
+    }
+
+    return out.slice(-limit);
+}
+
+/**
+ * Build the /terminal/transcript response for a terminal id, resolving its
+ * transcript path from the /state snapshot (never from caller-supplied paths).
+ * @param {{terminalId:(number|string), limit?:number}} payload
+ * @param {Object} snapshot - the renderer state snapshot ({ terminals:[...] })
+ * @returns {{ok:boolean, ...}}
+ */
+function buildTranscriptResponse(payload = {}, snapshot) {
+    const terminalId = parseInt(payload.terminalId, 10);
+    if (!Number.isInteger(terminalId)) return { ok: false, error: 'invalid terminalId' };
+
+    const terminals = snapshot && Array.isArray(snapshot.terminals) ? snapshot.terminals : null;
+    const terminal = terminals ? terminals.find((t) => t.id === terminalId) : null;
+    if (!terminal) return { ok: false, error: `terminal ${terminalId} not found` };
+    if (!terminal.transcriptPath) {
+        return { ok: false, error: `no transcript for terminal ${terminalId} (no Claude session yet)` };
+    }
+
+    const messages = readRecentMessages(terminal.transcriptPath, { limit: payload.limit });
+    if (messages === null) return { ok: false, error: 'transcript unreadable' };
+
+    return {
+        ok: true,
+        terminalId,
+        sessionId: terminal.sessionId || null,
+        transcriptPath: terminal.transcriptPath,
+        count: messages.length,
+        messages,
+    };
+}
+
+module.exports = { readLastAssistantText, readRecentMessages, buildTranscriptResponse };

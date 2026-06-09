@@ -83,14 +83,20 @@ class HookServer {
             return;
         }
 
-        // Terminal management: round-trip to the renderer and answer with
-        // its result. Actions: create {directory?, title?, color?},
-        // update {terminalId, title?, color?}, delete {terminalId}.
+        // Terminal management: routed to onControl and answered with its result.
+        // Most round-trip to the renderer; the PTY-level ones (keys, claude
+        // lifecycle) are handled directly in main. Actions: create {directory?,
+        // title?, color?}, update {terminalId, title?, color?}, delete
+        // {terminalId}, screen {terminalId, scrollback?}, keys {terminalId,
+        // keys[]}, claude {terminalId, action: start|resume|restart, ...}.
         const CONTROL_ROUTES = {
             '/terminal/create': 'terminal-create',
             '/terminal/update': 'terminal-update',
             '/terminal/delete': 'terminal-delete',
             '/terminal/screen': 'terminal-screen',
+            '/terminal/keys': 'terminal-keys',
+            '/terminal/claude': 'terminal-claude',
+            '/terminal/transcript': 'terminal-transcript',
             '/queue/update': 'queue-update'
         };
         if (req.method === 'POST' && CONTROL_ROUTES[req.url]) {

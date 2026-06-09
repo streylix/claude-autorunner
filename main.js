@@ -12,7 +12,9 @@ const MigrationHelper = require('./src/storage/migration-helper');
 // Claude Code hook-based terminal state detection
 const HookServer = require('./src/main/HookServer');
 const { ensureClaudeHooks } = require('./src/main/claude-hooks-setup');
-const { readLastAssistantText } = require('./src/main/transcript-reader');
+const { readLastAssistantText, buildTranscriptResponse } = require('./src/main/transcript-reader');
+const { enrichSnapshot, detectRuntime } = require('./src/main/terminal-runtime');
+const { handlePtyControl } = require('./src/main/pty-control');
 
 let mainWindow;
 let hookServer = null;
@@ -481,8 +483,37 @@ app.whenReady().then(async () => {
           mainWindow.webContents.send('queue-add-request', payload);
         }
       },
-      getState: () => rendererStateCache,
-      onControl: sendControlRequest
+      // Enrich the renderer's cached snapshot with a ground-truth `runtime`
+      // (claude | shell | unknown) and live `directory` per terminal, derived
+      // from each PTY's process tree in /proc. Computed fresh on every /state
+      // GET, in main (where the PTYs live), so it is never stale.
+      getState: () => enrichSnapshot(
+        rendererStateCache,
+        (id) => {
+          const p = ptyProcesses.get(id);
+          return p ? p.pid : undefined;
+        }
+      ),
+      // PTY-level control (raw keys, Claude start/resume/restart) is handled
+      // here in main — it writes to the PTY directly and uses the /proc runtime
+      // signal as a safety guard. Everything else round-trips to the renderer.
+      onControl: (action, payload) => {
+        if (action === 'terminal-keys' || action === 'terminal-claude') {
+          const ptyFor = (id) => ptyProcesses.get(id) || ptyProcesses.get(Number(id));
+          const runtimeFor = (id) => {
+            const p = ptyFor(id);
+            return detectRuntime(p ? p.pid : undefined);
+          };
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          return handlePtyControl(action, payload, { ptyFor, runtimeFor, sleep });
+        }
+        // Read the last N parsed conversation turns for a terminal, resolving its
+        // transcript path from the cached state snapshot. Pure file read in main.
+        if (action === 'terminal-transcript') {
+          return Promise.resolve(buildTranscriptResponse(payload, rendererStateCache));
+        }
+        return sendControlRequest(action, payload);
+      }
     });
     const port = await hookServer.start();
     safeLog('[Main] Hook server listening on 127.0.0.1:' + port);
@@ -498,6 +529,25 @@ app.whenReady().then(async () => {
     safeLog('[Main] Claude hooks setup:', hookResult.status,
       hookResult.changed.length ? hookResult.changed.join(', ') : '(no changes needed)',
       hookResult.error || '');
+
+    // Runtime watcher (P4 leak-guard): poll each PTY's /proc runtime and push
+    // changes to the renderer so the injection gate can refuse to leak a prompt
+    // into a bare shell. Cheap (a few /proc reads per terminal), pushes only on
+    // change. Detection lives in main because the PTYs and /proc are here.
+    const lastRuntimeByTerminal = new Map();
+    setInterval(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      for (const [id, p] of ptyProcesses) {
+        const rt = detectRuntime(p ? p.pid : undefined);
+        if (lastRuntimeByTerminal.get(id) !== rt) {
+          lastRuntimeByTerminal.set(id, rt);
+          mainWindow.webContents.send('terminal-runtime', { terminalId: id, runtime: rt });
+        }
+      }
+      for (const id of lastRuntimeByTerminal.keys()) {
+        if (!ptyProcesses.has(id)) lastRuntimeByTerminal.delete(id);
+      }
+    }, 2500);
   } catch (error) {
     try { console.error('[Main] Hook server failed to start:', error); } catch (e) { /* ignore */ }
     hookServer = null;

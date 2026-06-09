@@ -382,11 +382,15 @@ class TimerManager {
     }
 
     /**
-     * Whether the timer is actively counting down (running and not paused).
+     * Whether the timer is actively counting down (running, not paused, not
+     * expired). A countdown that has reached 0 leaves timerRunning=true (the
+     * interval is only cleared on error/explicit stop), so timerExpired must be
+     * excluded here — otherwise the injection gate would keep blocking with
+     * "timer still counting down" after the timer fired, freezing the queue.
      * @returns {boolean}
      */
     isRunning() {
-        return this.timerRunning && !this.timerPaused;
+        return this.timerRunning && !this.timerPaused && !this.timerExpired;
     }
 
     /**

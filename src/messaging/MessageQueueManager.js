@@ -1,5 +1,6 @@
 const ValidationUtils = require('../utils/validation');
 const { BoundedSet, BoundedArray } = require('../utils/bounded-collections');
+const { evaluateInjectionGate } = require('./injection-gate');
 
 /**
  * MessageQueueManager - Centralized message queue and injection system
@@ -325,39 +326,24 @@ class MessageQueueManager {
     }
 
     canInjectToTerminal(terminalId, messageType = 'normal') {
-        // (a) Timer / usage-limit gate.
-        if (this.usageLimitWaiting) {
-            return { allowed: false, reason: 'usage limit active - waiting for reset' };
-        }
-        // Block only while a countdown is ACTIVELY armed (manual auto-inject or
-        // usage-limit deferral). With no timer running, inject when idle - the
-        // old `!timerExpired` check was a one-shot edge flag that stayed false
-        // forever when no timer was ever set, silently blocking all injection.
-        if (this.timerManager && this.timerManager.isRunning()) {
-            return { allowed: false, reason: 'timer still counting down' };
-        }
-        if (this.injectionPaused) {
-            return { allowed: false, reason: 'injection paused' };
-        }
-
-        // (b) Target terminal status gate.
+        // Gather live state; the policy (precedence, the bare-shell P4 guard, and
+        // the urgent/important status-gate bypass) lives in evaluateInjectionGate.
+        // `runtime` is pushed from main (ground-truth /proc detection); a 'shell'
+        // value means no live Claude session, so a prompt would run as shell
+        // commands - the gate refuses it regardless of priority.
         const tid = terminalId != null ? terminalId : this.activeTerminalId;
-        if (tid == null) {
-            return { allowed: false, reason: 'no target terminal' };
-        }
-        const terminal = this.terminalStateManager
+        const terminal = (tid != null && this.terminalStateManager)
             ? this.terminalStateManager.getTerminal(tid)
             : null;
-        const status = terminal ? terminal.status : null;
-        // 'urgent' and 'important' bypass the terminal-state gate: they inject
-        // even while Claude is running/prompted (typed into its input as a
-        // follow-up). 'normal' waits for the terminal to be idle.
-        const bypassesStateGate = messageType === 'urgent' || messageType === 'important';
-        if (!bypassesStateGate && (status === 'running' || status === 'prompted')) {
-            return { allowed: false, reason: `terminal ${tid} is ${status}` };
-        }
-
-        return { allowed: true, reason: 'ok' };
+        return evaluateInjectionGate({
+            usageLimitWaiting: this.usageLimitWaiting,
+            timerRunning: !!(this.timerManager && this.timerManager.isRunning()),
+            injectionPaused: this.injectionPaused,
+            terminalId: tid,
+            status: terminal ? terminal.status : null,
+            runtime: terminal ? terminal.runtime : undefined,
+            messageType
+        });
     }
 
     /**
