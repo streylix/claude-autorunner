@@ -212,11 +212,10 @@ function ensureManagerClaudeMd(managerDir) {
     }
 }
 
-// The manager boots with --dangerously-skip-permissions (unattended; prompts
-// would hang it). deny rules are still enforced under bypass, so this fences
-// off the genuinely catastrophic / secret-exfil cases. additionalDirectories
-// keeps it working if the bypass flag is ever dropped. Rewritten each prepare
-// so policy updates ship with the app.
+// The manager boots in auto mode (--permission-mode auto), not full bypass.
+// These deny rules still fence off the genuinely catastrophic / secret-exfil
+// cases, and additionalDirectories keeps tool access working. Rewritten each
+// prepare so policy updates ship with the app.
 const MANAGER_SETTINGS = {
     permissions: {
         deny: [

@@ -218,14 +218,14 @@ class ManagerInstance {
         });
 
         // Boot claude once the shell settles - resume if a session exists.
-        // --dangerously-skip-permissions: the manager runs unattended, so
-        // permission prompts would hang it ("tried but couldn't"). A deny-list
-        // in its .claude/settings.local.json still fences off catastrophic ops
-        // (those are honored even under bypass), and the HookServer token gates
-        // the control API. Written by manager-prepare before this boots.
+        // Auto mode (--permission-mode auto): the manager runs unattended and
+        // lets Claude Code auto-handle permissions, but does NOT use
+        // --dangerously-skip-permissions (full bypass). Its allow/deny rules in
+        // .claude/settings.local.json plus the HookServer token still fence off
+        // risky ops. Written by manager-prepare before this boots.
         const bootCommand = prep.resumable
-            ? 'claude --continue --dangerously-skip-permissions\n'
-            : 'claude --dangerously-skip-permissions\n';
+            ? 'claude --continue --permission-mode auto\n'
+            : 'claude --permission-mode auto\n';
         setTimeout(() => {
             this.ipc.send('terminal-input', {
                 terminalId: MANAGER_TERMINAL_ID,

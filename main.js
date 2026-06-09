@@ -487,6 +487,12 @@ app.whenReady().then(async () => {
     const port = await hookServer.start();
     safeLog('[Main] Hook server listening on 127.0.0.1:' + port);
 
+    // Expose the loopback hook-server coordinates to test automation only
+    // (main process global; never sent to the renderer or over the network).
+    // Lets an integration test POST a real hook-event to verify the full
+    // detection path end-to-end. Same info already lives in each PTY's env.
+    global.__ccbotHook = { port, token: hookServer.token };
+
     // Idempotently install guarded hooks into ~/.claude/settings.json
     const hookResult = ensureClaudeHooks();
     safeLog('[Main] Claude hooks setup:', hookResult.status,
