@@ -981,15 +981,17 @@ class TerminalGUI {
         });
     }
 
-    /** Fetch token usage/cost from the backend and populate the pricing view. */
+    /** Fetch token usage/cost and populate the pricing view.
+     *  ccusage runs in the MAIN process (host) via IPC, not the Docker backend —
+     *  the container has no Node/npx and no ~/.claude logs, so the old
+     *  `POST /api/ccusage/` always failed. See src/main/ccusage.js. */
     async loadPricingData() {
         const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
         show('pricing-loading', true); show('pricing-error', false); show('pricing-data', false);
         try {
-            // 60s: a cold ccusage run can download the package + fetch pricing.
-            const res = await fetch('http://localhost:8123/api/ccusage/', { method: 'POST', signal: AbortSignal.timeout(60000) });
-            const data = await res.json();
-            if (!res.ok || data.success === false) throw new Error(data.error || 'pricing unavailable');
+            // Runs `npx ccusage` on the host; a cold run can download the package.
+            const data = await this.ipcHandler.invoke('get-ccusage');
+            if (!data || data.success === false) throw new Error((data && data.error) || 'pricing unavailable');
             const num = (v) => (typeof v === 'number' ? v : 0);
             const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
             set('daily-cost', `$${num(data.daily).toFixed(2)}`);
@@ -1011,7 +1013,7 @@ class TerminalGUI {
         } catch (err) {
             show('pricing-loading', false); show('pricing-error', true);
             const errText = document.querySelector('#pricing-error .error-text');
-            if (errText) errText.textContent = `Pricing unavailable: ${err.message}. Needs the backend + ccusage CLI.`;
+            if (errText) errText.textContent = `Pricing unavailable: ${err.message}. Needs Node/npx on PATH and a logged-in Claude Code (ccusage reads ~/.claude logs).`;
         }
     }
 

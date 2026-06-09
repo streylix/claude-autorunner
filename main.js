@@ -15,6 +15,7 @@ const { ensureClaudeHooks } = require('./src/main/claude-hooks-setup');
 const { readLastAssistantText, buildTranscriptResponse } = require('./src/main/transcript-reader');
 const { enrichSnapshot, detectRuntime } = require('./src/main/terminal-runtime');
 const { handlePtyControl } = require('./src/main/pty-control');
+const { runCcusage } = require('./src/main/ccusage');
 
 let mainWindow;
 let hookServer = null;
@@ -1225,6 +1226,18 @@ function setupIpcHandlers() {
     } catch (error) {
       try { console.error('Error getting file info:', error); } catch (e) { /* ignore */ }
       return { success: false, error: error.message };
+    }
+  });
+
+  // Cost calculator — runs `npx ccusage` HERE (host), not the Docker backend.
+  // The backend container has no Node and no ~/.claude logs, so its
+  // /api/ccusage/ endpoint can never work; main runs on the host where both
+  // exist. See src/main/ccusage.js for the full rationale.
+  ipcMain.handle('get-ccusage', async () => {
+    try {
+      return await runCcusage();
+    } catch (error) {
+      return { success: false, error: (error && error.message) || 'ccusage failed' };
     }
   });
 

@@ -306,3 +306,42 @@ it during active waits, where `timerExpired` is false), so the change is safe.
 **real** `evaluateInjectionGate` then allows injection — i.e. the queue can drain.
 
 **Requires the same restart.** The fix is in `TimerManager.js` (renderer).
+
+---
+
+## 2026-06-09 — BUGFIX: cost calculator never worked (ran ccusage in the wrong process)
+
+**The bug (recurring).** The pricing/cost view always showed an error or nothing.
+Earlier passes "wired" the UI (`98a9d0d`) but the numbers never appeared.
+
+**Root cause (proven live, not guessed).** The renderer fetched
+`POST http://localhost:8123/api/ccusage/`, and the Django backend ran
+`npx ccusage daily --json` to read the Claude Code logs in `~/.claude/projects`.
+But per the project's own rule the backend runs **in Docker**, and that container
+(a) ships **no Node/npx** and (b) does **not mount** the host's `~/.claude`. So the
+endpoint could only ever return `{"success":false,"error":"ccusage unavailable
+(npx/Node not found on PATH)"}` — confirmed with a live `curl` against the running
+container, and `docker compose exec backend which npx node` returns nothing. The
+data ccusage needs (Node + the logs) lives **only on the host**, so no amount of
+renderer/backend wiring could fix it. Every prior attempt patched the wrong layer.
+
+**The fix (right layer).** Run ccusage in the **Electron main process**, which runs
+on the host where `npx` and `~/.claude/projects` both exist. New
+`src/main/ccusage.js` shells out to `npx -y ccusage daily --json`, shapes the JSON
+exactly like the old backend response, and is exposed over IPC as `get-ccusage`.
+`renderer.js#loadPricingData()` now calls `ipcHandler.invoke('get-ccusage')`
+instead of fetching the backend. The Docker backend is no longer in the cost path
+at all, so it works in the default Docker deployment.
+
+**How verified.**
+- Unit: `src/main/ccusage.test.js` (8 cases, `node --test`) — daily/weekly/total
+  math + rounding, today/week windowing, and the failure modes (npx missing,
+  timeout, auth error, non-JSON) all return clean `{success:false}` without throwing.
+- Runtime (live-probed the real app via Playwright on this branch): IPC
+  `get-ccusage` returned real figures (daily **$44.45**, weekly **$1052.12**, total
+  **$3222.67** over 44 days), and after `loadPricingData()` the DOM cost cards read
+  `$44.45 / $1052.12 / $3222.67`, `#pricing-data` visible, `#pricing-error` hidden.
+
+**Restart needed?** Yes — the change is in `main.js` (IPC handler, loaded once at
+startup) + the renderer, so the running app must be relaunched onto this branch.
+Verified post-(fresh-launch). No backend/Docker dependency remains for pricing.
