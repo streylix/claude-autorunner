@@ -86,6 +86,13 @@ const schema = {
     },
     default: []
   },
+  completions: {
+    // "To-dos": the per-terminal record of completed Claude turns (captured from
+    // the Stop hook). Persisted so they survive reload/restart instead of living
+    // only in CompletionManager's in-memory Map.
+    type: 'array',
+    default: []
+  },
   appState: {
     type: 'object',
     properties: {
@@ -345,6 +352,22 @@ class UnifiedStore {
   
   async clearHistory() {
     await store.set('messageHistory', []);
+  }
+
+  // Completions ("to-dos") Management
+  async getCompletions() {
+    return await store.get('completions', []);
+  }
+
+  async saveCompletions(completions) {
+    // Cap to a sane number of most-recent entries to keep the store small.
+    const arr = Array.isArray(completions) ? completions : [];
+    const capped = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
+    await store.set('completions', capped);
+  }
+
+  async clearCompletions() {
+    await store.set('completions', []);
   }
   
   // App State Management

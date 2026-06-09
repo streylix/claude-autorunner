@@ -146,7 +146,7 @@ class TerminalGUI {
     initializeFeatures() {
         // Initialize all feature managers
         this.statusManager = new StatusManager(this.eventBus, this.appStateStore);
-        this.completionManager = new CompletionManager(this.eventBus, this.appStateStore);
+        this.completionManager = new CompletionManager(this.eventBus, this.appStateStore, this.ipcHandler);
         this.usageLimitManager = new UsageLimitManager(this.eventBus, this.appStateStore);
         this.voiceManager = new VoiceManager(this.eventBus, this.appStateStore);
         this.soundManager = new SoundManager(this.eventBus, this.appStateStore);
@@ -1915,6 +1915,10 @@ class TerminalGUI {
         // Load + wire the settings modal (sounds, chunk size, theme). Async;
         // self-sequences (loads persisted values, inits sound, relayouts).
         this.setupSettings();
+
+        // Restore persisted "to-dos" (completed Claude turns) so they survive
+        // reload/restart instead of vanishing with the in-memory Map.
+        this.completionManager.loadPersistedCompletions();
 
         // Boot the manager instance if the user configured a directory for it
         this.managerInstance.startIfConfigured();

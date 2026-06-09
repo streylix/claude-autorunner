@@ -3,18 +3,77 @@
  * Handles creation, monitoring, and UI rendering of completion items
  */
 class CompletionManager {
-    constructor(eventBus, appStateStore) {
+    constructor(eventBus, appStateStore, ipc = null) {
         this.eventBus = eventBus;
         this.appStateStore = appStateStore;
-        
+        // ipc wrapper ({ invoke }) for persisting completions to the unified
+        // store. Optional so existing callers/tests without ipc still work.
+        this.ipc = ipc;
+        this._persistTimer = null;
+
         // Completion tracking state
         this.completionItems = new Map(); // Map of completion ID to completion data
         this.completionIdCounter = 1; // Counter for unique completion IDs
         this.previousCompletionStrings = new Map(); // Track previous completion strings per terminal
         this.completionStabilityTimers = new Map(); // Track completion stability timers per terminal
         this.previousTerminalStatuses = new Map(); // Track previous terminal statuses for completion detection
-        
+
         this.setupEventListeners();
+    }
+
+    // ======= PERSISTENCE ("to-dos" survive reload/restart) =======
+    /** Plain, JSON-safe view of a completion item (drops timer handles). */
+    _serializeCompletion(item) {
+        return {
+            id: item.id,
+            terminalId: item.terminalId,
+            status: item.status === 'in-progress' ? 'interrupted' : item.status,
+            startTime: item.startTime || null,
+            endTime: item.endTime || null,
+            duration: item.duration ?? null,
+            message: item.message || '',
+            fullText: item.fullText || item.message || '',
+            sessionId: item.sessionId || null,
+            terminalColor: item.terminalColor || '#4CAF50',
+            terminalName: item.terminalName || `Terminal ${item.terminalId}`,
+            promptNumber: item.promptNumber || 0,
+        };
+    }
+
+    /** Debounced save of all completion items to the unified store via ipc. */
+    persistCompletions() {
+        if (!this.ipc || typeof this.ipc.invoke !== 'function') return;
+        if (this._persistTimer) clearTimeout(this._persistTimer);
+        this._persistTimer = setTimeout(() => {
+            this._persistTimer = null;
+            const arr = Array.from(this.completionItems.values()).map(i => this._serializeCompletion(i));
+            Promise.resolve(this.ipc.invoke('db-save-completions', arr)).catch(err =>
+                console.error('Failed to persist completions:', err));
+        }, 250);
+    }
+
+    /** Load persisted completions on startup and render them (oldest-first so
+     *  the newest ends up on top, matching renderCompletionItem's prepend). */
+    async loadPersistedCompletions() {
+        if (!this.ipc || typeof this.ipc.invoke !== 'function') return;
+        let saved = [];
+        try {
+            saved = await this.ipc.invoke('db-get-completions');
+        } catch (err) {
+            console.error('Failed to load completions:', err);
+            return;
+        }
+        if (!Array.isArray(saved) || !saved.length) return;
+
+        saved.sort((a, b) => (a.id || 0) - (b.id || 0));
+        let maxId = 0;
+        for (const item of saved) {
+            this.completionItems.set(item.id, item);
+            if (item.id > maxId) maxId = item.id;
+            try { this.renderCompletionItem(item); } catch (e) { /* ignore a bad row */ }
+        }
+        // Avoid id collisions with restored items.
+        this.completionIdCounter = Math.max(this.completionIdCounter, maxId + 1);
     }
     
     setupEventListeners() {
@@ -102,6 +161,7 @@ class CompletionManager {
 
         this.eventBus.emit('completion:created', completionItem);
         this.renderCompletionItem(completionItem);
+        this.persistCompletions();
     }
 
     /**
@@ -120,6 +180,7 @@ class CompletionManager {
         if (element) {
             element.textContent = summary;
         }
+        this.persistCompletions();
     }
     
     // Core creation and management
@@ -169,7 +230,8 @@ class CompletionManager {
             console.error('[ERROR] Failed to render completion item:', error);
             throw new Error(`Failed to render completion item: ${error.message}`);
         }
-        
+        this.persistCompletions();
+
         // Start monitoring for completion
         try {
             this.startCompletionMonitoring(completionId, terminalId);
@@ -219,6 +281,7 @@ class CompletionManager {
         });
         
         console.log(`[COMPLETION] Status updated: ${completionId} from ${previousStatus} to ${status}`);
+        this.persistCompletions();
     }
     
     // Text extraction and processing

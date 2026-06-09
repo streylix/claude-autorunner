@@ -431,3 +431,49 @@ must quit and relaunch the app onto this branch (rebuild if packaged).**
    that symptom is gone.
 4. The "sound effects" master toggle is ON (it defaults OFF), and the per-sound
    `<select>` is not set to `none`.
+
+---
+
+## 2026-06-09 — BUGFIX: to-dos weren't persisted (lost on reload/restart)
+
+**The bug.** "To-dos" (the per-terminal record of completed Claude turns, shown in
+the To-dos / completions panel) vanished on every reload/restart.
+
+**Root cause.** `CompletionManager` held completions ONLY in an in-memory
+`this.completionItems = new Map()`. Nothing ever wrote them to disk and nothing
+loaded them back, so a fresh renderer always started empty. (The codebase still had
+unused `api-client.js` methods pointing at a `/todos/items/` backend, but that
+Django app was deliberately removed — `INSTALLED_APPS` and `urls.py` no longer have
+it — so those calls would 404. Persisting there would mean resurrecting a deleted
+app.)
+
+**The fix (right layer = the app's existing local store).** Persist completions to
+the same `electron-store`-backed unified store that already holds `messages`,
+`messageHistory`, and `settings` — i.e. the app's local "database". Added:
+- `unified-store.js`: a `completions` array in the schema + `getCompletions` /
+  `saveCompletions` (capped to the 500 most recent) / `clearCompletions`.
+- `main.js`: `db-get-completions` / `db-save-completions` / `db-clear-completions`
+  IPC handlers.
+- `CompletionManager`: takes the ipc wrapper; `persistCompletions()` (debounced
+  250ms, serializes a JSON-safe view that drops live timer handles) is called on
+  every record/create/status-change/summary; `loadPersistedCompletions()` rehydrates
+  the Map and re-renders oldest-first on startup, and bumps the id counter past the
+  restored max to avoid collisions.
+- `renderer.js`: passes `ipcHandler` into `CompletionManager` and calls
+  `loadPersistedCompletions()` during `finalizeInitialization()`.
+
+**Why local store, not Postgres.** The backend `todos` app was intentionally
+deleted, and every other client-side record (messages, history, settings) already
+lives in the unified store. Matching that keeps one persistence path and needs no
+backend/Docker round-trip. (Switching to Postgres later would mean re-adding the
+Django app — a larger product decision, not a bugfix.)
+
+**How verified (live, across an ACTUAL restart).** Recorded a hook completion via
+`completion:recorded` → it appeared in `#todo-list` AND `db-get-completions`
+returned it. **Quit the app, relaunched it**, and the same to-do was back in
+`#todo-list` and in `completionItems` (map size 1, mark present). Test data was
+cleared afterward so the real store stays clean.
+
+**Restart needed?** The fix takes effect on relaunch (main IPC + renderer load at
+startup). Once running this branch, to-dos persist continuously — no restart needed
+between sessions, that's the whole point.
