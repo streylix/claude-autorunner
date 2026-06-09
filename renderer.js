@@ -875,6 +875,58 @@ class TerminalGUI {
         if (settingsClose) settingsClose.addEventListener('click', closeSettings);
         if (settingsModal) settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) closeSettings(); });
 
+        // ---- Message history modal ----
+        // The modal markup, the MAX-bounded history array, and the store IPC all
+        // existed, but nothing opened the modal or rendered the list — so history
+        // was invisible. Wire open/close/clear + render here.
+        const historyBtn = document.getElementById('message-history-btn');
+        const historyModal = document.getElementById('message-history-modal');
+        const historyClose = document.getElementById('message-history-close');
+        const clearHistoryBtn = document.getElementById('clear-history-btn');
+        const historyList = document.getElementById('history-list');
+
+        const renderHistory = () => {
+            if (!historyList) return;
+            const items = Array.from((this.messageQueueManager && this.messageQueueManager.messageHistory) || []);
+            if (!items.length) {
+                historyList.innerHTML = '<div class="history-empty"><p>No message history yet. Messages will appear here after they are successfully injected.</p></div>';
+                return;
+            }
+            historyList.innerHTML = '';
+            // newest first
+            items.slice().reverse().forEach((item) => {
+                const row = document.createElement('div');
+                row.className = 'history-item';
+                const when = item.injectedAt || item.timestamp;
+                const meta = document.createElement('div');
+                meta.className = 'history-item-meta';
+                meta.textContent = [
+                    (item.terminalId != null ? `Terminal ${item.terminalId}` : ''),
+                    (when ? new Date(when).toLocaleString() : ''),
+                ].filter(Boolean).join(' · ');
+                const body = document.createElement('div');
+                body.className = 'history-item-content';
+                body.textContent = item.content || ''; // textContent = XSS-safe
+                row.appendChild(meta);
+                row.appendChild(body);
+                historyList.appendChild(row);
+            });
+        };
+
+        const openHistory = () => { if (historyModal) { renderHistory(); historyModal.classList.add('show'); } };
+        const closeHistory = () => { if (historyModal) historyModal.classList.remove('show'); };
+        if (historyBtn) historyBtn.addEventListener('click', openHistory);
+        if (historyClose) historyClose.addEventListener('click', closeHistory);
+        if (historyModal) historyModal.addEventListener('click', (e) => { if (e.target === historyModal) closeHistory(); });
+        if (clearHistoryBtn) clearHistoryBtn.addEventListener('click', () => {
+            this.messageQueueManager.clearMessageHistory();
+            renderHistory();
+        });
+        // Live-refresh while the modal is open as new messages are injected.
+        this.eventBus.on('message:history-updated', () => {
+            if (historyModal && historyModal.classList.contains('show')) renderHistory();
+        });
+
         // ---- Voice recording ----
         const voiceBtn = document.getElementById('voice-btn');
         if (voiceBtn) {
@@ -1386,6 +1438,10 @@ class TerminalGUI {
         }
 
         await this.messageQueueManager.restoreQueue();
+        // Rehydrate persisted message history too, so the history modal shows
+        // past sessions' injected messages after a reload/restart (saveToMessageHistory
+        // persists on every injection; without this load it only lived in memory).
+        await this.messageQueueManager.loadMessageHistory();
     }
 
     /** How many terminals share one on-screen "page" (the chunk size setting). */

@@ -527,3 +527,49 @@ would land — that's what the prior pass failed to assert.
 **Restart needed?** Yes — sound wiring lives in the renderer, loaded once at
 startup. Quit and relaunch onto this branch (rebuild if packaged) for the fix to
 take effect.
+
+---
+
+## 2026-06-09 — BUGFIX: message history was invisible, not loaded, and clobbered
+
+**Symptom.** The message-history feature didn't work: the history modal never
+opened, and even when reached the list was empty across reloads/restarts.
+
+**Three independent defects (all on the path to "history works"):**
+
+**1 — Modal had no wiring.** `index.html` had the full markup (`#message-history-btn`,
+`#message-history-modal`, `#clear-history-btn`, `#history-list`) and MQM kept a
+`BoundedArray` of history, but nothing in the renderer opened the modal or rendered
+the list — so history was structurally invisible. **Fix (`renderer.js`):** wire
+open/close/backdrop-click/clear and a `renderHistory()` that lists items newest-first
+(terminal + timestamp meta, `textContent` body = XSS-safe), plus a live refresh on
+`message:history-updated` while the modal is open.
+
+**2 — Persisted but never loaded back.** `saveToMessageHistory()` (called on every
+injection) pushed to the in-memory array, but nothing wrote it to disk and
+`MQM.loadMessageHistory()` was never called at startup. **Fix:** `persistMessageHistory()`
+writes to the unified store (`db-set-setting 'messageHistory'`, same channel/pattern
+the queue uses) on every record/clear; `renderer.js` calls
+`messageQueueManager.loadMessageHistory()` right after `restoreQueue()` in
+`finalizeInitialization()`. Note the store round-trips a `JSON.stringify`'d array
+back as a *parsed array* (electron-store deserializes), so both load paths use the
+`typeof raw === 'string' ? JSON.parse(raw) : raw` guard — identical to `restoreQueue`.
+
+**3 — A second writer clobbered it.** `PreferenceManager` had its own
+`loadMessageHistory`/`saveMessageHistory` for the *same* `messageHistory` store key,
+capped at 100 and fed from a `preferences.messageHistory` copy that was loaded once
+at startup and never updated as messages injected. On settings import
+(`saveAllPreferences`) it wrote that stale copy back, wiping the session's messages.
+Its `messageHistory:loaded` event had no listeners (dead path). **Fix:** removed
+PreferenceManager's load/save of `messageHistory` entirely; `MessageQueueManager` is
+now the sole owner of that key.
+
+**How verified (live, Playwright against the running app).** Recorded a marked item
+via `saveToMessageHistory` → present in memory; opened the modal via its button →
+modal `show` + the item rendered in `#history-list`; read it back from the store;
+wiped the in-memory array and called `loadMessageHistory()` → the item came back
+(true persistence proof, not just a same-session read); `clearMessageHistory()` →
+gone from both the store and the list. Test data cleared afterward.
+
+**Restart needed?** Yes — renderer wiring + the startup history load take effect on
+relaunch. After that, history persists continuously.

@@ -1181,8 +1181,8 @@ class MessageQueueManager {
         };
         
         this.messageHistory.push(historyItem);
-        
-        // Sync with backend if available
+
+        // Sync with backend if available (best-effort; usually unset)
         if (this.backendAPIClient) {
             try {
                 await this.backendAPIClient.saveMessageHistory(historyItem);
@@ -1190,12 +1190,29 @@ class MessageQueueManager {
                 console.error('Failed to save message history to backend:', error);
             }
         }
-        
+
         // Clean up old history
         this.cleanupOldMessageHistory();
-        
+
+        // Persist to the local store so history survives reload/restart. The
+        // backend sync above is almost always a no-op (backendAPIClient is null),
+        // so without this the history only ever lived in memory.
+        this.persistMessageHistory();
+
         // Emit event for UI update
         this.eventBus.emit('message:history-updated', { history: this.messageHistory });
+    }
+
+    /** Persist message history to the unified store via ipc (JSON-encoded,
+     *  same channel the queue uses). */
+    persistMessageHistory() {
+        if (this.ipc && typeof this.ipc.invoke === 'function') {
+            try {
+                this.ipc.invoke('db-set-setting', 'messageHistory', JSON.stringify([...this.messageHistory]));
+            } catch (error) {
+                console.error('Failed to persist message history:', error);
+            }
+        }
     }
     
     cleanupOldMessageHistory() {
@@ -1217,19 +1234,25 @@ class MessageQueueManager {
     
     async loadMessageHistory() {
         try {
-            const savedHistory = await this.loadPreference('messageHistory');
+            // db-get-setting returns the raw stored value; persistMessageHistory
+            // writes it JSON-encoded, so parse a string back into an array.
+            const raw = await this.loadPreference('messageHistory');
+            const savedHistory = typeof raw === 'string' ? JSON.parse(raw) : raw;
             if (savedHistory && Array.isArray(savedHistory)) {
                 this.messageHistory = new BoundedArray(this.MAX_MESSAGE_HISTORY);
                 savedHistory.forEach(item => this.messageHistory.push(item));
                 this.cleanupOldMessageHistory();
+                this.eventBus.emit('message:history-updated', { history: this.messageHistory });
             }
         } catch (error) {
             console.error('Failed to load message history:', error);
         }
     }
-    
+
     clearMessageHistory() {
-        this.messageHistory.clear();
+        // BoundedArray extends Array and has no clear(); truncate in place.
+        this.messageHistory.length = 0;
+        this.persistMessageHistory();
         this.eventBus.emit('message:history-updated', { history: this.messageHistory });
         this.logAction('Message history cleared', 'info');
     }

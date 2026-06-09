@@ -132,8 +132,10 @@ class PreferenceManager {
             });
             
             // Load complex preferences
+            // NOTE: messageHistory is owned solely by MessageQueueManager
+            // (loaded via its loadMessageHistory(), persisted on each injection).
+            // PreferenceManager must not load/save it or it clobbers MQM's data.
             await this.loadMessageQueue();
-            await this.loadMessageHistory();
             await this.loadTimerState();
             
             // Apply loaded preferences
@@ -164,8 +166,8 @@ class PreferenceManager {
             }
             
             // Save complex preferences
+            // (messageHistory intentionally omitted — owned by MessageQueueManager)
             await this.saveMessageQueue();
-            await this.saveMessageHistory();
             
             this.eventBus.emit('log:action', {
                 message: 'Preferences saved successfully',
@@ -266,31 +268,12 @@ class PreferenceManager {
         }
     }
     
-    async loadMessageHistory() {
-        try {
-            const savedHistory = await ipcRenderer.invoke('db-get-setting', 'messageHistory');
-            if (savedHistory) {
-                this.preferences.messageHistory = JSON.parse(savedHistory);
-                this.eventBus.emit('messageHistory:loaded', this.preferences.messageHistory);
-            }
-        } catch (error) {
-            console.error('Failed to load message history:', error);
-        }
-    }
-    
-    async saveMessageHistory() {
-        try {
-            if (this.preferences.messageHistory && this.preferences.messageHistory.length > 0) {
-                // Limit history to last 100 items
-                const limitedHistory = this.preferences.messageHistory.slice(-100);
-                await ipcRenderer.invoke('db-set-setting', 'messageHistory', 
-                    JSON.stringify(limitedHistory));
-            }
-        } catch (error) {
-            console.error('Failed to save message history:', error);
-        }
-    }
-    
+    // messageHistory load/save removed — MessageQueueManager is the sole owner
+    // of the 'messageHistory' store key (see MQM.loadMessageHistory /
+    // persistMessageHistory). The old duplicate path here capped at 100 vs MQM's
+    // bound and, on settings import, wrote a stale in-memory copy that wiped
+    // messages injected during the session.
+
     async loadTimerState() {
         try {
             const timerState = await ipcRenderer.invoke('db-get-app-state', 'timerTargetDateTime');
