@@ -654,3 +654,30 @@ todo's modal → output panel showed **"Hello output line 1  line 2"** (the extr
 text) instead of the "No terminal output available" placeholder. Test data cleared.
 
 **Restart needed?** Yes — the listener is wired once at renderer startup.
+
+---
+
+## 2026-06-09 — BUGFIX: todo "#N" badge always showed "#0"
+
+**Symptom.** The top-right badge on every todo item read "#0", never a real value.
+
+**Root cause.** `renderCompletionItem` rendered
+`<span class="completion-prompt-number">#${completionItem.promptNumber}</span>`, and
+`promptNumber` was set from `terminalData?.promptCount`. But (a) the `terminalData`
+callback never fired (see the output-panel bug above) and, more fundamentally,
+(b) **`promptCount` does not exist anywhere in the codebase** — the terminal state
+object has no such field, so even with the callback wired the badge would still be 0.
+There was no real data source behind the badge.
+
+**Fix (`CompletionManager.renderCompletionItem`).** Render the value the item actually
+carries and that the user asked for — the **terminal id** —
+`#${completionItem.terminalId}`. It's always present (set at creation and persisted by
+`_serializeCompletion`), so the badge now identifies which terminal each todo belongs
+to. (Reviving a real per-terminal "prompt count" would be a new feature with no
+existing source; the terminal id is the meaningful identifier we have.)
+
+**How verified (live, Playwright).** Spawned several terminals, fired a hook completion
+for a non-1 terminal (id 7), and read the badge → **"#7"**, matching the item's
+`dataset.terminal`, instead of "#0". Test data cleared.
+
+**Restart needed?** Yes — renderer code loads once at startup.

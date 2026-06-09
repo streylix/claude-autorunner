@@ -723,7 +723,7 @@ class CompletionManager {
                 <span class="completion-terminal" style="color: ${completionItem.terminalColor}">
                     ${completionItem.terminalName}
                 </span>
-                <span class="completion-prompt-number">#${completionItem.promptNumber}</span>
+                <span class="completion-prompt-number">#${completionItem.terminalId}</span>
                 <span class="completion-timer">0m 0s</span>
             </div>
             <div class="completion-prompt">${this.escapeHtml(completionItem.message)}</div>
