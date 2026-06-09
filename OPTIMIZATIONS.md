@@ -274,3 +274,35 @@ clean `ok:false` instead of an error.
 unaffected.
 
 **Requires the same restart.** The route and handler load at startup.
+
+---
+
+## 2026-06-08 — BUGFIX: manual auto-inject timer didn't resume the queue at 0
+
+**The bug (same class as the usage-limit one).** When a manual auto-inject timer
+counted down to 0, the queue did not drain. The auto-inject feature is "wait N, then
+inject", but injection never fired after the wait.
+
+**Root cause.** `TimerManager.isRunning()` returned `timerRunning && !timerPaused`.
+A countdown that reaches 0 sets `timerExpired = true` but leaves `timerRunning = true`
+(the interval is only cleared on error/explicit stop). So `isRunning()` stayed true
+after expiry, and `canInjectToTerminal` kept blocking with "timer still counting
+down" — the same stuck-gate as the usage-limit bug, but on the general timer path.
+
+**The fix.** `isRunning()` now also excludes the expired state:
+`timerRunning && !timerPaused && !timerExpired`. An expired timer is not "running", so
+at 0 the gate reopens and the existing `timer:expired → MessageQueueManager.handleTimerExpired → drain`
+path injects the pending messages. This is the source-level fix and complements the
+usage-limit fix above: the `isRunning()` change covers the countdown-reaches-0 path;
+the `UsageLimitManager.stopTimer()` change still covers the usage-limit wall-clock
+path (limit lifts while the timer is mid-count, before `timerExpired` is set).
+
+Every `isRunning()` caller wants `false` after expiry (the injection gate and the
+injection-loop guard both block while it's true; the usage-limit manager only consults
+it during active waits, where `timerExpired` is false), so the change is safe.
+
+**Regression test.** `src/features/timer-expiry-resume.test.js` drives the **real**
+`TimerManager` to 0 (via `decrementTimer`) and asserts `isRunning()` is false and the
+**real** `evaluateInjectionGate` then allows injection — i.e. the queue can drain.
+
+**Requires the same restart.** The fix is in `TimerManager.js` (renderer).
