@@ -1830,7 +1830,11 @@ class TerminalGUI {
         // ---- Sound effects ----
         const soundToggle = byId('sound-effects-enabled');
         const soundGroup = byId('sound-selection-group');
-        const reflectSoundGroup = (on) => { if (soundGroup) soundGroup.style.opacity = on ? '1' : '0.5'; };
+        // Toggle the `.enabled` class the CSS keys on. The group is
+        // `pointer-events: none` by default and only `auto` with `.enabled`, so
+        // setting inline opacity alone (the previous behaviour) dimmed the group
+        // but left every select/test button permanently unclickable.
+        const reflectSoundGroup = (on) => { if (soundGroup) soundGroup.classList.toggle('enabled', !!on); };
         if (soundToggle) {
             soundToggle.checked = !!current.soundEnabled;
             reflectSoundGroup(soundToggle.checked);

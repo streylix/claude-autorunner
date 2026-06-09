@@ -477,3 +477,53 @@ cleared afterward so the real store stays clean.
 **Restart needed?** The fix takes effect on relaunch (main IPC + renderer load at
 startup). Once running this branch, to-dos persist continuously — no restart needed
 between sessions, that's the whole point.
+
+---
+
+## 2026-06-09 — BUGFIX: sound test buttons + dropdowns stayed unclickable after enabling
+
+**Symptom (precise repro).** In Settings, after checking the "Sound Effects" enable
+checkbox, the three sound `<select>`s and "Test" buttons stayed non-interactive —
+they behaved as if still disabled and never responded to mouse clicks. This is the
+*real* defect behind the long-running "sound is broken" reports, and the prior pass
+([above](#2026-06-09--sound-effects-close-the-cold-start-gap--delete-a-broken-duplicate-path))
+missed it.
+
+**Why the prior pass missed it.** That pass verified the test buttons by calling
+`button.click()` in a Playwright probe. Programmatic `.click()` (and dispatched
+events) fire a handler *regardless of `pointer-events`* — CSS `pointer-events: none`
+only blocks real pointer hit-testing, not synthetic clicks. So the probe reported
+"buttons fire" while a real user's mouse was still blocked. The probe tested the
+handler, not the gate.
+
+**Root cause.** `style.css` gates the whole group on a class:
+```css
+#sound-selection-group        { opacity: .5; pointer-events: none; }
+#sound-selection-group.enabled{ opacity: 1;  pointer-events: auto; }
+```
+But the renderer's `reflectSoundGroup(on)` only set inline
+`soundGroup.style.opacity` and **never added/removed the `.enabled` class**.
+Nothing anywhere toggled `.enabled`. So `pointer-events: none` always won and every
+select/test button was permanently unclickable; checking the box merely changed the
+dimming, which *looked* like it should have enabled them.
+
+**The fix (one line, in `renderer.js`).** Make `reflectSoundGroup` toggle the class
+the CSS actually keys on instead of poking inline opacity:
+```js
+const reflectSoundGroup = (on) => { if (soundGroup) soundGroup.classList.toggle('enabled', !!on); };
+```
+The CSS rule already handles both the opacity and the `pointer-events` flip, so the
+class is the single correct switch. Runs on init (reflecting the persisted state)
+and on every checkbox `change`.
+
+**How verified (live, real gate not synthetic click).** Playwright probe against the
+running app: with the checkbox OFF, `getComputedStyle('#sound-selection-group')
+.pointerEvents === 'none'` and no `.enabled` class; after dispatching the checkbox
+`change` ON, `pointerEvents === 'auto'`, the `.enabled` class is present, the
+20-file dropdown is populated, and the test button's handler fires. The
+`pointer-events` computed-value check is the true test of whether a real mouse click
+would land — that's what the prior pass failed to assert.
+
+**Restart needed?** Yes — sound wiring lives in the renderer, loaded once at
+startup. Quit and relaunch onto this branch (rebuild if packaged) for the fix to
+take effect.
