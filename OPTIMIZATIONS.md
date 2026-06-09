@@ -345,3 +345,32 @@ at all, so it works in the default Docker deployment.
 **Restart needed?** Yes — the change is in `main.js` (IPC handler, loaded once at
 startup) + the renderer, so the running app must be relaunched onto this branch.
 Verified post-(fresh-launch). No backend/Docker dependency remains for pricing.
+
+---
+
+## 2026-06-09 — BUGFIX: message input box didn't grow/shrink with content
+
+**The bug.** The `#message-input` textarea stayed one row tall no matter how much
+was typed; long multi-line prompts were stuck behind a tiny scrollbar instead of
+the box expanding.
+
+**Root cause.** A `<textarea>` does not auto-size to its content — that always
+requires JS to measure `scrollHeight` and set the height. The CSS
+(`.chat-input #message-input`) already had `min-height`/`max-height:200px`/
+`overflow-y:auto`, but nothing ever updated the element's height, so it never grew.
+
+**The fix.** `renderer.js` now binds an `input` handler that does the standard
+auto-size dance: set `height='auto'` (so it can shrink), then
+`height = scrollHeight + 'px'` (so it grows). The CSS `max-height:200px` caps it
+and `overflow-y:auto` takes over with a scrollbar past that. It's also reset after
+a message is sent (textarea cleared → collapse back to one row) and sized once on
+startup.
+
+**How verified (live-probed the real app via Playwright).** Typing 1/3/6/10/30
+lines produced heights 28 → 67 → 125 → 200 (capped) → 200 (capped, scrollbar
+active), and removing text shrank it back through 67 → 28. No per-keystroke height
+creep (border-box is clean). Assertions: grows ✓, caps at max with scroll ✓,
+shrinks back to one row ✓.
+
+**Restart needed?** Yes — renderer change, loaded at startup; relaunch the app onto
+this branch.

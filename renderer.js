@@ -554,6 +554,15 @@ class TerminalGUI {
         const sendButton = document.getElementById('send-btn');
 
         if (messageInput && sendButton) {
+            // Auto-grow the textarea to fit its content (then scroll past the CSS
+            // max-height). A textarea won't resize itself — we must measure
+            // scrollHeight on each input. Reset to 'auto' first so it can also
+            // SHRINK back as text is removed.
+            const autoSizeInput = () => {
+                messageInput.style.height = 'auto';
+                messageInput.style.height = `${messageInput.scrollHeight}px`;
+            };
+
             const handleAddMessage = () => {
                 const message = messageInput.value.trim();
                 if (message) {
@@ -563,8 +572,12 @@ class TerminalGUI {
                         terminalId: this.queueTargetTerminalId ?? this.activeTerminalId
                     });
                     messageInput.value = '';
+                    autoSizeInput(); // collapse back to one row after sending
                 }
             };
+
+            messageInput.addEventListener('input', autoSizeInput);
+            autoSizeInput(); // set the correct initial height
 
             sendButton.addEventListener('click', handleAddMessage);
             messageInput.addEventListener('keypress', (e) => {
