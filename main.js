@@ -13,7 +13,8 @@ const MigrationHelper = require('./src/storage/migration-helper');
 const HookServer = require('./src/main/HookServer');
 const { ensureClaudeHooks } = require('./src/main/claude-hooks-setup');
 const { readLastAssistantText } = require('./src/main/transcript-reader');
-const { enrichSnapshot } = require('./src/main/terminal-runtime');
+const { enrichSnapshot, detectRuntime } = require('./src/main/terminal-runtime');
+const { handlePtyControl } = require('./src/main/pty-control');
 
 let mainWindow;
 let hookServer = null;
@@ -493,7 +494,21 @@ app.whenReady().then(async () => {
           return p ? p.pid : undefined;
         }
       ),
-      onControl: sendControlRequest
+      // PTY-level control (raw keys, Claude start/resume/restart) is handled
+      // here in main — it writes to the PTY directly and uses the /proc runtime
+      // signal as a safety guard. Everything else round-trips to the renderer.
+      onControl: (action, payload) => {
+        if (action === 'terminal-keys' || action === 'terminal-claude') {
+          const ptyFor = (id) => ptyProcesses.get(id) || ptyProcesses.get(Number(id));
+          const runtimeFor = (id) => {
+            const p = ptyFor(id);
+            return detectRuntime(p ? p.pid : undefined);
+          };
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          return handlePtyControl(action, payload, { ptyFor, runtimeFor, sleep });
+        }
+        return sendControlRequest(action, payload);
+      }
     });
     const port = await hookServer.start();
     safeLog('[Main] Hook server listening on 127.0.0.1:' + port);

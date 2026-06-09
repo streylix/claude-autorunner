@@ -106,3 +106,47 @@ Free-text prompts with no menu are out of scope for now.
 
 **Requires the same restart.** The change is in the renderer (loaded at startup), so
 it takes effect on the same relaunch as P1.
+
+---
+
+## 2026-06-08 — P2: Claude lifecycle + raw-key control endpoints
+
+**The problem.** There was no clean way to start, resume, or restart Claude in a
+terminal, or to send a control key (Esc, Ctrl-C, Enter). The only lever was queueing
+the literal text `claude` as if typing at a shell — and when a terminal's state was
+ambiguous, multi-line messages leaked into bash and ran as commands.
+
+**What changed.** Two new control endpoints:
+
+- `POST /terminal/keys` — `{ terminalId, keys }` where `keys` is a string or array
+  of tokens. Named keys (`Ctrl+C`, `Esc`, `Enter`, `Up`, `Shift+Tab`, …) become the
+  right control bytes; anything else is sent literally, so you can mix them — e.g.
+  `["2","Enter"]` answers menu option 2. Writes straight to the PTY (bypasses the
+  injection queue/gate, on purpose — Ctrl-C must work even mid-timer).
+- `POST /terminal/claude` — `{ terminalId, action }`:
+  - `start` — runs `claude` (with optional sanitized `args`), **only if the terminal
+    is a bare shell** (`runtime === 'shell'`). Refuses if Claude is already running
+    or the runtime is unknown — this is what prevents the multi-line-into-bash leak.
+  - `resume` — `claude --continue`, or `claude --resume <sessionId>` when a valid
+    (`[A-Za-z0-9._-]+`) session id is given; same shell-only guard.
+  - `restart` — if Claude is running, interrupts it (Ctrl-C twice), waits for the
+    shell to return, then relaunches; if already at a shell, just starts.
+
+**Why it's main-side.** Unlike terminal create/delete (a renderer/xterm concern),
+these are PTY-level. The PTYs and P1's `/proc` runtime detector both live in main, so
+main handles these actions directly — writing to the PTY with no renderer round-trip
+and using `runtime` as the guard. The renderer is untouched.
+
+**Safety.** Session ids are pattern-validated; `args` have control characters and
+newlines stripped, so a value can't smuggle an extra command past the trailing
+carriage return.
+
+**Where the code lives.**
+- New `src/main/pty-control.js` — `translateKeys()` + `handlePtyControl()` (raw keys,
+  start/resume/restart), dependency-injected and unit-tested (15 cases).
+- `src/main/HookServer.js` — two new routes added to `CONTROL_ROUTES`.
+- `main.js` — `onControl` now routes `terminal-keys` / `terminal-claude` to
+  `handlePtyControl` (with `ptyFor`/`runtimeFor`/`sleep`), everything else still
+  round-trips to the renderer.
+
+**Requires the same restart.** Routes and the main-side handler are loaded at startup.
