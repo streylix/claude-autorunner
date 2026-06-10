@@ -1863,7 +1863,6 @@ button#voice-btn[data-voice-state="processing"] {
     background-color: var(--accent-primary) !important;
     color: #ffffff !important;
     border: 2px solid var(--accent-primary) !important;
-    animation: processing-spin 1s linear infinite !important;
     cursor: not-allowed !important;
     box-shadow: 0 0 15px rgba(0, 122, 204, 0.8) !important;
     z-index: 999 !important;
@@ -1894,17 +1893,34 @@ button#voice-btn.voice-button.recording:hover,
     transform: scale(1.02) !important;
 }
 
-/* Processing State - Blue spinning - Enhanced with higher specificity */
+/* Processing State - blue, with a dedicated spinner ring. The button itself
+   must NOT rotate (that spun the whole mic icon); instead the mic icon is
+   hidden and a circular ::after spinner takes its place. */
 button#voice-btn.voice-button.processing,
 #voice-btn.voice-button.processing {
     background-color: var(--accent-primary) !important;
     color: #ffffff !important;
     border: 2px solid var(--accent-primary) !important;
-    animation: processing-spin 1s linear infinite !important;
     cursor: not-allowed !important;
     box-shadow: 0 0 12px rgba(0, 122, 204, 0.5) !important;
     z-index: 10 !important;
     position: relative !important;
+}
+
+#voice-btn.voice-button.processing svg,
+#voice-btn[data-voice-state="processing"] svg {
+    display: none !important;
+}
+
+#voice-btn.voice-button.processing::after,
+#voice-btn[data-voice-state="processing"]::after {
+    content: '';
+    width: 13px;
+    height: 13px;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: processing-spin-circle 0.8s linear infinite;
 }
 
 /* Processing State Hover - Maintain processing appearance */
@@ -1983,35 +1999,6 @@ button#voice-btn.voice-button.processing:hover,
     }
     100% { 
         transform: rotate(360deg);
-    }
-}
-
-/* Enhanced processing spin animation */
-@keyframes processing-spin {
-    0% { 
-        transform: rotate(0deg) scale(1);
-        box-shadow: 0 0 8px rgba(0, 122, 204, 0.4);
-        background-color: var(--accent-primary);
-    }
-    25% { 
-        transform: rotate(90deg) scale(1.02);
-        box-shadow: 0 0 12px rgba(0, 122, 204, 0.5);
-        background-color: #0088dd;
-    }
-    50% { 
-        transform: rotate(180deg) scale(1);
-        box-shadow: 0 0 8px rgba(0, 122, 204, 0.4);
-        background-color: var(--accent-primary);
-    }
-    75% { 
-        transform: rotate(270deg) scale(1.02);
-        box-shadow: 0 0 12px rgba(0, 122, 204, 0.5);
-        background-color: #0088dd;
-    }
-    100% { 
-        transform: rotate(360deg) scale(1);
-        box-shadow: 0 0 8px rgba(0, 122, 204, 0.4);
-        background-color: var(--accent-primary);
     }
 }
 

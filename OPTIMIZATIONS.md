@@ -804,3 +804,41 @@ counting down"); after stopping the timer → allowed. urgent allowed while
 **Restart needed?** Yes — renderer code loads once at startup. The manager's
 CLAUDE.md template only applies to newly-written manager directories; an existing
 manager dir keeps its old doc text until regenerated.
+
+---
+
+## 2026-06-10 — voice: real processing spinner + microphone device picker
+
+**Symptoms.** (1) While a recording was being transcribed, the whole mic button
+(icon included) rotated — the `.processing` CSS applied `animation:
+processing-spin` to the button element itself. (2) Recordings came back silent
+for users whose system-default input isn't the real microphone, and there was no
+way to choose the input device.
+
+**Fixes.**
+- `style.css` — `.processing` no longer rotates the button. The mic icon (svg) is
+  hidden in that state and a dedicated circular `::after` spinner ring takes its
+  place (reuses the previously-unused `processing-spin-circle` keyframes; the old
+  whole-button `processing-spin` keyframes are deleted).
+- Microphone picker: new "Microphone" select in the settings modal
+  (`#microphone-select`, index.html). `renderer.js` repopulates it on every
+  settings open via `enumerateDevices()` (a throwaway `getUserMedia` first, so
+  device labels are exposed); changes persist as the `microphoneDeviceId`
+  preference (PreferenceManager default: `'default'`).
+- `src/features/VoiceManager.js` — picks the persisted device up on load
+  (`preferences:applied`) and live (`preference:changed`); records with
+  `deviceId: { exact: … }`, falling back to the system default (with a warning in
+  the action log) if the saved device is unplugged/stale. Also logs
+  "🎙️ Using microphone: <label>" at record start so a wrong-input capture is
+  visible immediately.
+
+**How verified (live, Playwright + fake media devices).** During processing the
+button's computed `animation-name` is `none`, the svg is `display:none`, and the
+`::after` pseudo-element spins with `processing-spin-circle` at 50% border-radius
+(a circle). Settings shows "System default" + "Fake Audio Input 1/2" with labels;
+selecting one updates `voiceManager.microphoneDeviceId` and the preference, and
+`buildAudioConstraints()` yields `{deviceId:{exact:…}}`. After an app restart the
+saved device is restored onto VoiceManager (also proven with a marker id via
+`db-get-setting` round-trip). Probe reset the setting to 'default' afterward.
+
+**Restart needed?** Yes — renderer/CSS load once at startup.

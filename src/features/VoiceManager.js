@@ -13,6 +13,10 @@ class VoiceManager {
         this.mediaRecorder = null;
         this.audioChunks = [];
         this.audioStream = null;
+
+        // Microphone input device ('default' = system default). Persisted as
+        // the 'microphoneDeviceId' preference; applied via the events below.
+        this.microphoneDeviceId = 'default';
         
         // Transcription state
         this.speechRecognition = null;
@@ -39,6 +43,27 @@ class VoiceManager {
         this.eventBus.on('voice:transcription-complete', (text) => {
             this.handleTranscriptionComplete(text);
         });
+
+        // Pick up the persisted microphone choice on load and live changes
+        // from the settings modal (PreferenceManager events).
+        this.eventBus.on('preferences:applied', (prefs) => {
+            if (prefs && prefs.microphoneDeviceId) {
+                this.setMicrophoneDevice(prefs.microphoneDeviceId);
+            }
+        });
+        this.eventBus.on('preference:changed', ({ key, value }) => {
+            if (key === 'microphoneDeviceId') this.setMicrophoneDevice(value);
+        });
+    }
+
+    setMicrophoneDevice(deviceId) {
+        this.microphoneDeviceId = deviceId || 'default';
+    }
+
+    // getUserMedia audio constraints honoring the selected input device.
+    buildAudioConstraints() {
+        const id = this.microphoneDeviceId;
+        return (id && id !== 'default') ? { deviceId: { exact: id } } : true;
     }
     
     // ======= RECORDING CONTROL =======
@@ -74,10 +99,36 @@ class VoiceManager {
                 return;
             }
             
-            // Request microphone access
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            // Request microphone access on the selected device; if that device
+            // is gone (unplugged USB mic, stale id), fall back to the system
+            // default rather than failing the recording outright.
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: this.buildAudioConstraints() });
+            } catch (err) {
+                if (this.microphoneDeviceId !== 'default'
+                    && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError')) {
+                    this.eventBus.emit('log:action', {
+                        message: '⚠️ Selected microphone unavailable — falling back to system default',
+                        type: 'warning'
+                    });
+                    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                } else {
+                    throw err;
+                }
+            }
             this.audioStream = stream;
-            
+
+            // Surface which device is actually capturing — the #1 cause of
+            // "recorded but silent" is the wrong input being used.
+            const track = stream.getAudioTracks()[0];
+            if (track) {
+                this.eventBus.emit('log:action', {
+                    message: `🎙️ Using microphone: ${track.label || 'unknown device'}`,
+                    type: 'info'
+                });
+            }
+
             // Create MediaRecorder with appropriate MIME type
             this.mediaRecorder = new MediaRecorder(stream, {
                 mimeType: this.getSupportedMimeType()

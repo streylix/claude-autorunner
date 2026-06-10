@@ -909,7 +909,10 @@ class TerminalGUI {
         const settingsBtn = document.getElementById('settings-btn');
         const settingsModal = document.getElementById('settings-modal');
         const settingsClose = document.getElementById('settings-close');
-        const openSettings = () => { if (settingsModal) settingsModal.classList.add('show'); };
+        const openSettings = () => {
+            if (settingsModal) settingsModal.classList.add('show');
+            this.populateMicrophoneSelect();
+        };
         const closeSettings = () => { if (settingsModal) settingsModal.classList.remove('show'); };
         if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
         if (settingsClose) settingsClose.addEventListener('click', closeSettings);
@@ -966,6 +969,16 @@ class TerminalGUI {
         this.eventBus.on('message:history-updated', () => {
             if (historyModal && historyModal.classList.contains('show')) renderHistory();
         });
+
+        // ---- Microphone picker (settings modal) ----
+        // Options are (re)enumerated on every settings open; the choice persists
+        // as the 'microphoneDeviceId' preference, which VoiceManager listens for.
+        const micSelect = document.getElementById('microphone-select');
+        if (micSelect) {
+            micSelect.addEventListener('change', () => {
+                this.preferenceManager.updatePreference('microphoneDeviceId', micSelect.value);
+            });
+        }
 
         // ---- Voice recording ----
         const voiceBtn = document.getElementById('voice-btn');
@@ -1083,6 +1096,46 @@ class TerminalGUI {
                 loadPricing();
             }
         });
+    }
+
+    /**
+     * Fill the settings-modal microphone <select> with the machine's audio
+     * inputs. Device labels are only exposed after mic permission has been
+     * granted, so a short throwaway stream is opened first (Electron grants
+     * this without prompting); without it every option would read
+     * "Microphone N". Runs on every settings open so plugged/unplugged
+     * devices show up.
+     */
+    async populateMicrophoneSelect() {
+        const micSelect = document.getElementById('microphone-select');
+        if (!micSelect || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+        try {
+            try {
+                const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+                tmp.getTracks().forEach(t => t.stop());
+            } catch { /* no mic / denied — enumerate anyway, labels may be blank */ }
+
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const mics = devices.filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default');
+            const saved = this.preferenceManager.getPreference('microphoneDeviceId') || 'default';
+
+            micSelect.innerHTML = '';
+            const defOpt = document.createElement('option');
+            defOpt.value = 'default';
+            defOpt.textContent = 'System default';
+            micSelect.appendChild(defOpt);
+            mics.forEach((d, i) => {
+                const opt = document.createElement('option');
+                opt.value = d.deviceId;
+                opt.textContent = d.label || `Microphone ${i + 1}`;
+                micSelect.appendChild(opt);
+            });
+            // Re-select the saved device; if it vanished, fall back visually too.
+            micSelect.value = saved;
+            if (micSelect.value !== saved) micSelect.value = 'default';
+        } catch (error) {
+            console.error('Failed to enumerate microphones:', error);
+        }
     }
 
     /** Fetch token usage/cost and populate the pricing view.

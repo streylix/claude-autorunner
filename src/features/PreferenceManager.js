@@ -22,6 +22,7 @@ class PreferenceManager {
             verticalLayout: false,
             showTerminalSelector: true,
             voiceEnabled: false,
+            microphoneDeviceId: 'default',
             soundEffectsEnabled: false,
             completionSound: 'completion.mp3',
             injectionSound: 'injection.mp3',
