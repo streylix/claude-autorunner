@@ -1166,10 +1166,14 @@ class TerminalGUI {
         // in that target rather than reusing/creating a grid wrapper.
         if (mount && !options.hidden && !options.mountTarget) {
             container = mount.closest('.terminal-wrapper') || mount;
-            // The static terminal-1 wrapper hardcodes its dot to --accent-primary;
-            // sync it to the palette so it matches its queued-message tint.
+            // The static terminal-1 wrapper hardcodes its dot to --accent-primary
+            // and its title to "Terminal 1"; sync both to the restored metadata —
+            // otherwise a renamed terminal 1 silently reverts on screen every
+            // restart even though the saved title round-trips through the store.
             const staticDot = container.querySelector && container.querySelector('.terminal-color-dot');
             if (staticDot) staticDot.style.backgroundColor = terminalColor;
+            const staticTitle = container.querySelector && container.querySelector('.terminal-title');
+            if (staticTitle && options.title) staticTitle.textContent = options.title;
         } else {
             container = document.createElement('div');
             container.className = options.hidden ? 'terminal-wrapper manager-hidden' : 'terminal-wrapper';

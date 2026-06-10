@@ -181,7 +181,8 @@ class VoiceManager {
             }
             
             const formData = new FormData();
-            formData.append('audio', audioBlob, 'recording.wav');
+            // Field name must match the backend serializer (audio_file = FileField()).
+            formData.append('audio_file', audioBlob, 'recording.wav');
             
             // Call backend transcription endpoint
             const response = await fetch('http://localhost:8123/api/voice/transcribe/', {

@@ -712,3 +712,53 @@ so restored items show the correct age.
 **"2m 5s"** immediately, then advanced to "2m 6s" after ~2.5s. Test data cleared.
 
 **Restart needed?** Yes — renderer code loads once at startup.
+
+---
+
+## 2026-06-10 — BUGFIX: voice button recorded but every transcription failed (400)
+
+**Symptom.** Clicking the mic button started/stopped recording normally, but every
+attempt ended in "❌ Transcription failed" and no text ever reached the message input.
+
+**Root cause.** Form-field name mismatch on the upload. `VoiceManager.transcribeAudio`
+posted the blob as `formData.append('audio', …)`, but the backend's
+`AudioUploadSerializer` (backend/voice_transcription/serializers.py) declares
+`audio_file = serializers.FileField()` — so Django rejected every request with
+`400 {"audio_file": ["No file was submitted."]}`. The button, recording flow, event
+wiring, health check, and backend endpoint were all fine.
+
+**Fix (`src/features/VoiceManager.js`).** Renamed the form field to `audio_file` to
+match the serializer.
+
+**How verified (live, Playwright + fake media device).** Launched the app with
+`--use-fake-device-for-media-stream`, clicked the voice button, recorded ~3s, stopped.
+Before: 400 "No file was submitted". After: upload accepted, Whisper ran, pipeline
+completed with "⚠️ No speech detected" (the fake device emits a tone, not speech) and
+the button returned to ready — the full happy path now works.
+
+**Restart needed?** Yes — renderer code loads once at startup.
+
+---
+
+## 2026-06-10 — BUGFIX: terminal 1's saved name never showed after restart
+
+**Symptom.** Renaming terminal 1 worked for the session, but after a restart the
+header showed "Terminal 1" again (the store actually held the custom name — e.g. a
+long-saved "Lyra" was sitting in `terminalMetadata`, never displayed).
+
+**Root cause.** `createTerminal()` (renderer.js) reuses the static terminal-1 wrapper
+shipped in index.html instead of building chrome. That reuse branch synced only the
+color dot from restored metadata; the dynamic-wrapper branch sets
+`.terminal-title.textContent` but the reuse branch never did, so the static
+"Terminal 1" text was left in place while the state manager (and persistence) carried
+the real name. Save was never the problem — restore-to-DOM was.
+
+**Fix (`renderer.js`, createTerminal static-wrapper branch).** Sync the title too:
+set the wrapper's `.terminal-title` text from `options.title` when provided,
+mirroring the dynamic branch.
+
+**How verified (live, Playwright, two sessions).** Renamed terminal 1 via
+`setTerminalMetadata(1, {title})`, closed the app, relaunched: DOM title and state
+manager both showed the new name. Original name restored afterward.
+
+**Restart needed?** Yes — renderer code loads once at startup.
