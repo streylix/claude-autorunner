@@ -146,7 +146,7 @@ class TerminalGUI {
     initializeFeatures() {
         // Initialize all feature managers
         this.statusManager = new StatusManager(this.eventBus, this.appStateStore);
-        this.completionManager = new CompletionManager(this.eventBus, this.appStateStore);
+        this.completionManager = new CompletionManager(this.eventBus, this.appStateStore, this.ipcHandler);
         this.usageLimitManager = new UsageLimitManager(this.eventBus, this.appStateStore);
         this.voiceManager = new VoiceManager(this.eventBus, this.appStateStore);
         this.soundManager = new SoundManager(this.eventBus, this.appStateStore);
@@ -554,6 +554,15 @@ class TerminalGUI {
         const sendButton = document.getElementById('send-btn');
 
         if (messageInput && sendButton) {
+            // Auto-grow the textarea to fit its content (then scroll past the CSS
+            // max-height). A textarea won't resize itself — we must measure
+            // scrollHeight on each input. Reset to 'auto' first so it can also
+            // SHRINK back as text is removed.
+            const autoSizeInput = () => {
+                messageInput.style.height = 'auto';
+                messageInput.style.height = `${messageInput.scrollHeight}px`;
+            };
+
             const handleAddMessage = () => {
                 const message = messageInput.value.trim();
                 if (message) {
@@ -563,8 +572,12 @@ class TerminalGUI {
                         terminalId: this.queueTargetTerminalId ?? this.activeTerminalId
                     });
                     messageInput.value = '';
+                    autoSizeInput(); // collapse back to one row after sending
                 }
             };
+
+            messageInput.addEventListener('input', autoSizeInput);
+            autoSizeInput(); // set the correct initial height
 
             sendButton.addEventListener('click', handleAddMessage);
             messageInput.addEventListener('keypress', (e) => {
@@ -685,6 +698,22 @@ class TerminalGUI {
         // cwd changes (cwd hook → terminal:directory).
         this.eventBus.on('terminal:directory', ({ terminalId }) => {
             if (terminalId === this.activeTerminalId) this.updateStatusBar(terminalId);
+        });
+
+        // CompletionManager asks for a terminal's live data (synchronously, via a
+        // callback) when rendering a todo and its output panel. Nothing answered
+        // this request before, so the callback never fired: terminalData stayed
+        // null and every todo showed "No terminal output available" with a default
+        // colour/name. Resolve it from the terminal state store.
+        this.eventBus.on('completion:request:terminalData', ({ terminalId, callback }) => {
+            if (typeof callback !== 'function') return;
+            const t = this.terminalStateManager.getTerminal(parseInt(terminalId, 10));
+            if (!t) return;
+            callback({
+                lastOutput: t.lastOutput || '',
+                color: t.color || this.getTerminalColor(terminalId),
+                name: t.title || `Terminal ${terminalId}`,
+            });
         });
 
         // Collapsible right-sidebar panels (Status, Timer) with persistence
@@ -840,6 +869,30 @@ class TerminalGUI {
                 const terminalId = idFromHeader(titleEl);
                 if (terminalId != null) this.beginTitleEdit(titleEl, terminalId);
             });
+
+            // Shift + mouse wheel pages the terminal grid horizontally. Without
+            // this, a wheel event over a terminal is swallowed by xterm's own
+            // scrollback handler and never reaches the container. Capture phase +
+            // stopPropagation run before xterm so the gesture moves the grid.
+            //
+            // The grid uses `scroll-snap-type: x mandatory` with each chunk a
+            // full-width (100%) snap point, so a sub-page scrollLeft nudge just
+            // snaps straight back — we must advance a whole page (clientWidth) to
+            // land on the next chunk. Throttled so one wheel gesture's momentum
+            // doesn't skip several pages. No-op when the grid isn't horizontally
+            // scrollable (e.g. a single chunk), letting normal behaviour through.
+            let lastGridPageScroll = 0;
+            terminalsContainer.addEventListener('wheel', (e) => {
+                if (!e.shiftKey) return;
+                if (terminalsContainer.scrollWidth <= terminalsContainer.clientWidth) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const dir = Math.sign(e.deltaY || e.deltaX);
+                if (!dir) return;
+                if (e.timeStamp - lastGridPageScroll < 350) return; // ignore momentum after the first notch
+                lastGridPageScroll = e.timeStamp;
+                terminalsContainer.scrollBy({ left: dir * terminalsContainer.clientWidth, behavior: 'smooth' });
+            }, { passive: false, capture: true });
         }
 
         // Wire the secondary UI the thin refactor left unconnected.
@@ -861,6 +914,58 @@ class TerminalGUI {
         if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
         if (settingsClose) settingsClose.addEventListener('click', closeSettings);
         if (settingsModal) settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) closeSettings(); });
+
+        // ---- Message history modal ----
+        // The modal markup, the MAX-bounded history array, and the store IPC all
+        // existed, but nothing opened the modal or rendered the list — so history
+        // was invisible. Wire open/close/clear + render here.
+        const historyBtn = document.getElementById('message-history-btn');
+        const historyModal = document.getElementById('message-history-modal');
+        const historyClose = document.getElementById('message-history-close');
+        const clearHistoryBtn = document.getElementById('clear-history-btn');
+        const historyList = document.getElementById('history-list');
+
+        const renderHistory = () => {
+            if (!historyList) return;
+            const items = Array.from((this.messageQueueManager && this.messageQueueManager.messageHistory) || []);
+            if (!items.length) {
+                historyList.innerHTML = '<div class="history-empty"><p>No message history yet. Messages will appear here after they are successfully injected.</p></div>';
+                return;
+            }
+            historyList.innerHTML = '';
+            // newest first
+            items.slice().reverse().forEach((item) => {
+                const row = document.createElement('div');
+                row.className = 'history-item';
+                const when = item.injectedAt || item.timestamp;
+                const meta = document.createElement('div');
+                meta.className = 'history-item-meta';
+                meta.textContent = [
+                    (item.terminalId != null ? `Terminal ${item.terminalId}` : ''),
+                    (when ? new Date(when).toLocaleString() : ''),
+                ].filter(Boolean).join(' · ');
+                const body = document.createElement('div');
+                body.className = 'history-item-content';
+                body.textContent = item.content || ''; // textContent = XSS-safe
+                row.appendChild(meta);
+                row.appendChild(body);
+                historyList.appendChild(row);
+            });
+        };
+
+        const openHistory = () => { if (historyModal) { renderHistory(); historyModal.classList.add('show'); } };
+        const closeHistory = () => { if (historyModal) historyModal.classList.remove('show'); };
+        if (historyBtn) historyBtn.addEventListener('click', openHistory);
+        if (historyClose) historyClose.addEventListener('click', closeHistory);
+        if (historyModal) historyModal.addEventListener('click', (e) => { if (e.target === historyModal) closeHistory(); });
+        if (clearHistoryBtn) clearHistoryBtn.addEventListener('click', () => {
+            this.messageQueueManager.clearMessageHistory();
+            renderHistory();
+        });
+        // Live-refresh while the modal is open as new messages are injected.
+        this.eventBus.on('message:history-updated', () => {
+            if (historyModal && historyModal.classList.contains('show')) renderHistory();
+        });
 
         // ---- Voice recording ----
         const voiceBtn = document.getElementById('voice-btn');
@@ -981,15 +1086,17 @@ class TerminalGUI {
         });
     }
 
-    /** Fetch token usage/cost from the backend and populate the pricing view. */
+    /** Fetch token usage/cost and populate the pricing view.
+     *  ccusage runs in the MAIN process (host) via IPC, not the Docker backend —
+     *  the container has no Node/npx and no ~/.claude logs, so the old
+     *  `POST /api/ccusage/` always failed. See src/main/ccusage.js. */
     async loadPricingData() {
         const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
         show('pricing-loading', true); show('pricing-error', false); show('pricing-data', false);
         try {
-            // 60s: a cold ccusage run can download the package + fetch pricing.
-            const res = await fetch('http://localhost:8123/api/ccusage/', { method: 'POST', signal: AbortSignal.timeout(60000) });
-            const data = await res.json();
-            if (!res.ok || data.success === false) throw new Error(data.error || 'pricing unavailable');
+            // Runs `npx ccusage` on the host; a cold run can download the package.
+            const data = await this.ipcHandler.invoke('get-ccusage');
+            if (!data || data.success === false) throw new Error((data && data.error) || 'pricing unavailable');
             const num = (v) => (typeof v === 'number' ? v : 0);
             const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
             set('daily-cost', `$${num(data.daily).toFixed(2)}`);
@@ -1011,7 +1118,7 @@ class TerminalGUI {
         } catch (err) {
             show('pricing-loading', false); show('pricing-error', true);
             const errText = document.querySelector('#pricing-error .error-text');
-            if (errText) errText.textContent = `Pricing unavailable: ${err.message}. Needs the backend + ccusage CLI.`;
+            if (errText) errText.textContent = `Pricing unavailable: ${err.message}. Needs Node/npx on PATH and a logged-in Claude Code (ccusage reads ~/.claude logs).`;
         }
     }
 
@@ -1371,6 +1478,10 @@ class TerminalGUI {
         }
 
         await this.messageQueueManager.restoreQueue();
+        // Rehydrate persisted message history too, so the history modal shows
+        // past sessions' injected messages after a reload/restart (saveToMessageHistory
+        // persists on every injection; without this load it only lived in memory).
+        await this.messageQueueManager.loadMessageHistory();
     }
 
     /** How many terminals share one on-screen "page" (the chunk size setting). */
@@ -1743,14 +1854,22 @@ class TerminalGUI {
      * (max-visible) setting, theme, etc. all silently did nothing.
      */
     async setupSettings() {
-        // ---- Load persisted values ----
-        const soundEnabled = await this.getPersistedSetting('soundEffectsEnabled', false);
-        const completionSound = await this.getPersistedSetting('completionSound', 'completion.mp3');
-        const injectionSound = await this.getPersistedSetting('injectionSound', 'injection.mp3');
-        const promptedSound = await this.getPersistedSetting('promptedSound', 'prompted.mp3');
-        const terminalsPerChunk = await this.getPersistedSetting('terminalsPerChunk', 4);
-        const chunkOrientation = await this.getPersistedSetting('chunkOrientation', 'horizontal');
-        const theme = await this.getPersistedSetting('theme', 'dark');
+        // ---- Load persisted values (in PARALLEL) ----
+        // These were 7 sequential IPC awaits, which at cold start delayed wiring
+        // the sound toggle/test buttons by up to a second or two. They're
+        // independent reads, so batch them.
+        const [
+            soundEnabled, completionSound, injectionSound, promptedSound,
+            terminalsPerChunk, chunkOrientation, theme,
+        ] = await Promise.all([
+            this.getPersistedSetting('soundEffectsEnabled', false),
+            this.getPersistedSetting('completionSound', 'completion.mp3'),
+            this.getPersistedSetting('injectionSound', 'injection.mp3'),
+            this.getPersistedSetting('promptedSound', 'prompted.mp3'),
+            this.getPersistedSetting('terminalsPerChunk', 4),
+            this.getPersistedSetting('chunkOrientation', 'horizontal'),
+            this.getPersistedSetting('theme', 'dark'),
+        ]);
 
         // ---- Mirror into the app state store (SoundManager reads settings.sound.*) ----
         this.appStateStore.setState('settings.sound.enabled', !!soundEnabled);
@@ -1760,19 +1879,24 @@ class TerminalGUI {
         this.appStateStore.setState('settings.terminalsPerChunk', terminalsPerChunk);
         this.appStateStore.setState('settings.chunkOrientation', chunkOrientation);
 
-        // ---- Init sound manager (loads available files + the above) ----
-        await this.soundManager.initialize();
-
         // ---- Apply theme + relayout with the loaded chunk size ----
         document.documentElement.setAttribute('data-theme', theme);
         this.applyThemeToTerminals(theme);
         this.relayoutTerminals();
 
-        // ---- Wire the controls ----
+        // ---- Wire the controls BEFORE the (async) sound-file load ----
+        // Wiring used to sit behind `await soundManager.initialize()`, which
+        // awaits an IPC dir-read. During that cold-start window (~1-2s after
+        // launch) the sound toggle and test buttons were unbound, so toggling
+        // "sound effects" did nothing. Wire first so they work immediately; the
+        // sound <select>s repopulate on the 'sound:files-loaded' event below.
         this.wireSettingsControls({
             soundEnabled, completionSound, injectionSound, promptedSound,
             terminalsPerChunk, chunkOrientation, theme
         });
+
+        // ---- Init sound manager (loads available files; heals stale prefs) ----
+        await this.soundManager.initialize();
     }
 
     /** Push a theme to the data-theme attribute and live xterm instances. */
@@ -1802,7 +1926,11 @@ class TerminalGUI {
         // ---- Sound effects ----
         const soundToggle = byId('sound-effects-enabled');
         const soundGroup = byId('sound-selection-group');
-        const reflectSoundGroup = (on) => { if (soundGroup) soundGroup.style.opacity = on ? '1' : '0.5'; };
+        // Toggle the `.enabled` class the CSS keys on. The group is
+        // `pointer-events: none` by default and only `auto` with `.enabled`, so
+        // setting inline opacity alone (the previous behaviour) dimmed the group
+        // but left every select/test button permanently unclickable.
+        const reflectSoundGroup = (on) => { if (soundGroup) soundGroup.classList.toggle('enabled', !!on); };
         if (soundToggle) {
             soundToggle.checked = !!current.soundEnabled;
             reflectSoundGroup(soundToggle.checked);
@@ -1813,29 +1941,40 @@ class TerminalGUI {
             });
         }
 
-        // Populate the three sound <select>s from the available files.
-        const sounds = (this.soundManager.getAvailableSounds && this.soundManager.getAvailableSounds()) || [];
-        const fill = (selectId, value, onChange) => {
-            const sel = byId(selectId);
-            if (!sel) return;
-            const opts = (sounds.length ? sounds.slice() : ['none', 'completion.mp3', 'injection.mp3', 'prompted.mp3']);
-            if (!opts.includes('none')) opts.unshift('none');
-            sel.innerHTML = '';
-            opts.forEach(f => { const o = document.createElement('option'); o.value = f; o.textContent = f; sel.appendChild(o); });
-            sel.value = value;
-            sel.addEventListener('change', () => onChange(sel.value));
+        // Populate the three sound <select>s from the available files. This may
+        // run before SoundManager.initialize() has loaded the real file list, so
+        // it is idempotent (uses `sel.onchange`, not addEventListener) and is
+        // re-run on 'sound:files-loaded' once the files arrive.
+        const populateSoundSelects = () => {
+            const sounds = (this.soundManager.getAvailableSounds && this.soundManager.getAvailableSounds()) || [];
+            const fill = (selectId, value, onChange) => {
+                const sel = byId(selectId);
+                if (!sel) return;
+                const opts = (sounds.length ? sounds.slice() : ['none', 'completion.mp3', 'injection.mp3', 'prompted.mp3']);
+                if (!opts.includes('none')) opts.unshift('none');
+                sel.innerHTML = '';
+                opts.forEach(f => { const o = document.createElement('option'); o.value = f; o.textContent = f; sel.appendChild(o); });
+                sel.value = value;
+                sel.onchange = () => onChange(sel.value); // idempotent across repopulation
+            };
+            // Read selected values from the SoundManager (it heals stale .mp3
+            // prefs on init) so the <select> reflects a file that actually exists.
+            fill('completion-sound-select', this.soundManager.getCompletionSound(), (v) => {
+                this.soundManager.setCompletionSound(v); this.persistSetting('completionSound', v);
+            });
+            fill('injection-sound-select', this.soundManager.getInjectionSound(), (v) => {
+                this.soundManager.setInjectionSound(v); this.persistSetting('injectionSound', v);
+            });
+            fill('prompted-sound-select', this.soundManager.getPromptedSound(), (v) => {
+                this.soundManager.setPromptedSound(v); this.persistSetting('promptedSound', v);
+            });
         };
-        // Read selected values from the SoundManager (it heals stale .mp3 prefs
-        // on init) so the <select> reflects a file that actually exists.
-        fill('completion-sound-select', this.soundManager.getCompletionSound(), (v) => {
-            this.soundManager.setCompletionSound(v); this.persistSetting('completionSound', v);
-        });
-        fill('injection-sound-select', this.soundManager.getInjectionSound(), (v) => {
-            this.soundManager.setInjectionSound(v); this.persistSetting('injectionSound', v);
-        });
-        fill('prompted-sound-select', this.soundManager.getPromptedSound(), (v) => {
-            this.soundManager.setPromptedSound(v); this.persistSetting('promptedSound', v);
-        });
+        populateSoundSelects();
+        // Repopulate after SoundManager.initialize() finishes. We listen for
+        // 'sound:update-ui' (emitted at the END of initialize, AFTER stale-pref
+        // healing) rather than 'sound:files-loaded' (emitted mid-init, before
+        // healing) so the <select> reflects the healed, real-file selection.
+        this.eventBus.on('sound:update-ui', () => populateSoundSelects());
 
         const wireTest = (id, fn) => { const b = byId(id); if (b) b.addEventListener('click', () => this.soundManager[fn]()); };
         wireTest('test-completion-sound-btn', 'testCompletionSound');
@@ -1876,6 +2015,10 @@ class TerminalGUI {
         // Load + wire the settings modal (sounds, chunk size, theme). Async;
         // self-sequences (loads persisted values, inits sound, relayouts).
         this.setupSettings();
+
+        // Restore persisted "to-dos" (completed Claude turns) so they survive
+        // reload/restart instead of vanishing with the in-memory Map.
+        this.completionManager.loadPersistedCompletions();
 
         // Boot the manager instance if the user configured a directory for it
         this.managerInstance.startIfConfigured();

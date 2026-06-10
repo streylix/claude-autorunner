@@ -3,25 +3,120 @@
  * Handles creation, monitoring, and UI rendering of completion items
  */
 class CompletionManager {
-    constructor(eventBus, appStateStore) {
+    constructor(eventBus, appStateStore, ipc = null) {
         this.eventBus = eventBus;
         this.appStateStore = appStateStore;
-        
+        // ipc wrapper ({ invoke }) for persisting completions to the unified
+        // store. Optional so existing callers/tests without ipc still work.
+        this.ipc = ipc;
+        this._persistTimer = null;
+
         // Completion tracking state
         this.completionItems = new Map(); // Map of completion ID to completion data
         this.completionIdCounter = 1; // Counter for unique completion IDs
         this.previousCompletionStrings = new Map(); // Track previous completion strings per terminal
         this.completionStabilityTimers = new Map(); // Track completion stability timers per terminal
         this.previousTerminalStatuses = new Map(); // Track previous terminal statuses for completion detection
-        
+        this._elapsedTicker = null;
+
         this.setupEventListeners();
+        this.startElapsedTicker();
+    }
+
+    // ======= "set X ago" elapsed timer (live, for every todo) =======
+    /** Format elapsed seconds as "Xm Ys" (the format the header timer uses). */
+    _formatElapsed(totalSeconds) {
+        const s = Math.max(0, Math.floor(totalSeconds));
+        return `${Math.floor(s / 60)}m ${s % 60}s`;
+    }
+
+    /** One shared 1s interval that shows each todo's time-since-set, counting up
+     *  live. Hook completions render as 'completed' and restored items aren't
+     *  monitored, so the old in-progress-only timer never ticked them — they were
+     *  stuck at the hardcoded "0m 0s". This drives every rendered item from its
+     *  startTime, so all of them advance. */
+    startElapsedTicker() {
+        if (this._elapsedTicker) return;
+        this._elapsedTicker = setInterval(() => this.updateElapsedTimers(), 1000);
+    }
+
+    updateElapsedTimers() {
+        const list = document.getElementById('todo-list');
+        if (!list) return;
+        const now = Date.now();
+        list.querySelectorAll('.completion-item').forEach(el => {
+            const id = parseInt(el.dataset.completionId, 10);
+            const item = this.completionItems.get(id);
+            if (!item || !item.startTime) return;
+            const timerEl = el.querySelector('.completion-timer');
+            if (timerEl) timerEl.textContent = this._formatElapsed((now - item.startTime) / 1000);
+        });
+    }
+
+    // ======= PERSISTENCE ("to-dos" survive reload/restart) =======
+    /** Plain, JSON-safe view of a completion item (drops timer handles). */
+    _serializeCompletion(item) {
+        return {
+            id: item.id,
+            terminalId: item.terminalId,
+            status: item.status === 'in-progress' ? 'interrupted' : item.status,
+            startTime: item.startTime || null,
+            endTime: item.endTime || null,
+            duration: item.duration ?? null,
+            message: item.message || '',
+            fullText: item.fullText || item.message || '',
+            sessionId: item.sessionId || null,
+            terminalColor: item.terminalColor || '#4CAF50',
+            terminalName: item.terminalName || `Terminal ${item.terminalId}`,
+            promptNumber: item.promptNumber || 0,
+        };
+    }
+
+    /** Debounced save of all completion items to the unified store via ipc. */
+    persistCompletions() {
+        if (!this.ipc || typeof this.ipc.invoke !== 'function') return;
+        if (this._persistTimer) clearTimeout(this._persistTimer);
+        this._persistTimer = setTimeout(() => {
+            this._persistTimer = null;
+            const arr = Array.from(this.completionItems.values()).map(i => this._serializeCompletion(i));
+            Promise.resolve(this.ipc.invoke('db-save-completions', arr)).catch(err =>
+                console.error('Failed to persist completions:', err));
+        }, 250);
+    }
+
+    /** Load persisted completions on startup and render them (oldest-first so
+     *  the newest ends up on top, matching renderCompletionItem's prepend). */
+    async loadPersistedCompletions() {
+        if (!this.ipc || typeof this.ipc.invoke !== 'function') return;
+        let saved = [];
+        try {
+            saved = await this.ipc.invoke('db-get-completions');
+        } catch (err) {
+            console.error('Failed to load completions:', err);
+            return;
+        }
+        if (!Array.isArray(saved) || !saved.length) return;
+
+        saved.sort((a, b) => (a.id || 0) - (b.id || 0));
+        let maxId = 0;
+        for (const item of saved) {
+            this.completionItems.set(item.id, item);
+            if (item.id > maxId) maxId = item.id;
+            try { this.renderCompletionItem(item); } catch (e) { /* ignore a bad row */ }
+        }
+        // Avoid id collisions with restored items.
+        this.completionIdCounter = Math.max(this.completionIdCounter, maxId + 1);
     }
     
     setupEventListeners() {
         // Listen for terminal status changes
         this.eventBus.on('terminal:status:changed', ({ terminalId, status, previousStatus }) => {
             this.checkTerminalCompletionStatus(terminalId);
-            this.checkCompletionSoundTrigger(previousStatus, status, terminalId);
+            // NOTE: completion SOUND is owned by SoundManager (it subscribes to
+            // the same event via checkStatusChangeSounds). The old duplicate
+            // path here used the wrong asset dir ('sounds/…' instead of
+            // 'assets/soundeffects/…') and a setting key that is never set, so it
+            // silently failed on every completion — removed.
         });
         
         // Listen for terminal data
@@ -98,6 +193,7 @@ class CompletionManager {
 
         this.eventBus.emit('completion:created', completionItem);
         this.renderCompletionItem(completionItem);
+        this.persistCompletions();
     }
 
     /**
@@ -116,6 +212,7 @@ class CompletionManager {
         if (element) {
             element.textContent = summary;
         }
+        this.persistCompletions();
     }
     
     // Core creation and management
@@ -165,7 +262,8 @@ class CompletionManager {
             console.error('[ERROR] Failed to render completion item:', error);
             throw new Error(`Failed to render completion item: ${error.message}`);
         }
-        
+        this.persistCompletions();
+
         // Start monitoring for completion
         try {
             this.startCompletionMonitoring(completionId, terminalId);
@@ -215,6 +313,7 @@ class CompletionManager {
         });
         
         console.log(`[COMPLETION] Status updated: ${completionId} from ${previousStatus} to ${status}`);
+        this.persistCompletions();
     }
     
     // Text extraction and processing
@@ -656,7 +755,7 @@ class CompletionManager {
                 <span class="completion-terminal" style="color: ${completionItem.terminalColor}">
                     ${completionItem.terminalName}
                 </span>
-                <span class="completion-prompt-number">#${completionItem.promptNumber}</span>
+                <span class="completion-prompt-number">#${completionItem.terminalId}</span>
                 <span class="completion-timer">0m 0s</span>
             </div>
             <div class="completion-prompt">${this.escapeHtml(completionItem.message)}</div>
@@ -665,7 +764,15 @@ class CompletionManager {
         
         // Prepend to list (newest first)
         todoList.insertBefore(itemElement, todoList.firstChild);
-        
+
+        // Show the correct "set X ago" immediately — restored items have a
+        // startTime in the past, so the hardcoded "0m 0s" above would be wrong
+        // until the shared ticker's next tick. Seed it now; the ticker advances it.
+        const timerEl = itemElement.querySelector('.completion-timer');
+        if (timerEl && completionItem.startTime) {
+            timerEl.textContent = this._formatElapsed((Date.now() - completionItem.startTime) / 1000);
+        }
+
         // Set up click handler for modal
         itemElement.addEventListener('click', () => {
             this.openCompletionModal(itemElement, 0);
@@ -789,58 +896,12 @@ class CompletionManager {
             });
         });
     }
-    
-    // Sound handling
-    checkCompletionSoundTrigger(previousStatus, currentStatus, terminalId) {
-        // Trigger completion sound when transitioning from 'running' to idle
-        if (previousStatus === 'running' && (currentStatus === '...' || currentStatus === '')) {
-            // Delay to ensure completion is real
-            setTimeout(() => {
-                const stillIdle = this.appStateStore.getTerminalStatus(terminalId);
-                const isStillIdle = stillIdle === '...' || stillIdle === '';
-                
-                if (isStillIdle) {
-                    this.playCompletionSound();
-                    
-                    // Emit sound trigger event
-                    this.eventBus.emit('completion:sound:triggered', { terminalId });
-                }
-            }, 1000);
-        }
-    }
-    
-    playCompletionSound(filename = null) {
-        const preferences = this.appStateStore.getPreferences();
-        if (!preferences?.completionSoundEnabled) {
-            return;
-        }
-        
-        const soundFile = filename || preferences.completionSoundFile;
-        if (!soundFile) {
-            return;
-        }
-        
-        try {
-            const audio = new Audio(`sounds/${soundFile}`);
-            audio.volume = 0.5;
-            audio.play().catch(error => {
-                console.error('Error playing completion sound:', error);
-            });
-        } catch (error) {
-            console.error('Error creating completion audio:', error);
-        }
-    }
-    
-    testCompletionSound() {
-        const soundFile = document.getElementById('completion-sound-select')?.value;
-        if (!soundFile) {
-            console.log('No completion sound selected');
-            return;
-        }
-        this.playCompletionSound(soundFile);
-        console.log(`Testing sound: ${soundFile}`);
-    }
-    
+
+    // Sound handling: intentionally none here. Completion/prompted/injection
+    // sounds are centralized in SoundManager (assets/soundeffects/, settings.sound.*).
+    // The former checkCompletionSoundTrigger/playCompletionSound/testCompletionSound
+    // duplicated that with a broken asset path + dead setting key and were removed.
+
     // Cleanup
     cleanupTerminalCompletions(terminalId) {
         // Cancel any stability timers

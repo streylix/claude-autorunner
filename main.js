@@ -15,6 +15,7 @@ const { ensureClaudeHooks } = require('./src/main/claude-hooks-setup');
 const { readLastAssistantText, buildTranscriptResponse } = require('./src/main/transcript-reader');
 const { enrichSnapshot, detectRuntime } = require('./src/main/terminal-runtime');
 const { handlePtyControl } = require('./src/main/pty-control');
+const { runCcusage } = require('./src/main/ccusage');
 
 let mainWindow;
 let hookServer = null;
@@ -1228,6 +1229,18 @@ function setupIpcHandlers() {
     }
   });
 
+  // Cost calculator — runs `npx ccusage` HERE (host), not the Docker backend.
+  // The backend container has no Node and no ~/.claude logs, so its
+  // /api/ccusage/ endpoint can never work; main runs on the host where both
+  // exist. See src/main/ccusage.js for the full rationale.
+  ipcMain.handle('get-ccusage', async () => {
+    try {
+      return await runCcusage();
+    } catch (error) {
+      return { success: false, error: (error && error.message) || 'ccusage failed' };
+    }
+  });
+
   // Get sound effects files
   ipcMain.handle('get-sound-effects', async () => {
     try {
@@ -1512,7 +1525,37 @@ function setupIpcHandlers() {
       return false;
     }
   });
-  
+
+  // Completions ("to-dos") persistence
+  ipcMain.handle('db-get-completions', async () => {
+    try {
+      return await unifiedStore.getCompletions();
+    } catch (error) {
+      try { console.error('Error loading completions:', error); } catch (e) { /* ignore */ }
+      return [];
+    }
+  });
+
+  ipcMain.handle('db-save-completions', async (event, completions) => {
+    try {
+      await unifiedStore.saveCompletions(completions);
+      return true;
+    } catch (error) {
+      try { console.error('Error saving completions:', error); } catch (e) { /* ignore */ }
+      return false;
+    }
+  });
+
+  ipcMain.handle('db-clear-completions', async () => {
+    try {
+      await unifiedStore.clearCompletions();
+      return true;
+    } catch (error) {
+      try { console.error('Error clearing completions:', error); } catch (e) { /* ignore */ }
+      return false;
+    }
+  });
+
   ipcMain.handle('db-save-preferences', async (event, preferences) => {
     try {
       await unifiedStore.saveAllSettings(preferences);
