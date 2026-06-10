@@ -8,11 +8,11 @@
 // Precedence (first match wins):
 //   1. usage-limit wait   2. timer countdown   3. injection paused
 //   4. no target terminal 5. bare-shell guard (P4)
-//   6. terminal status gate (running/prompted; urgent/important bypass)
+//   6. terminal status gate (prompted only; urgent bypasses)
 //
 // The bare-shell guard (5) refuses to inject into a terminal with no live Claude
 // session — otherwise the prompt would run as shell commands. It deliberately
-// sits ABOVE the status gate so urgent/important cannot bypass it: a prompt must
+// sits ABOVE the status gate so urgent cannot bypass it: a prompt must
 // never hit bash. It only triggers on a definitive 'shell'; 'claude'/'unknown'/
 // undefined fail open so injection is never broken when the runtime is undetermined.
 function evaluateInjectionGate({
@@ -39,8 +39,12 @@ function evaluateInjectionGate({
   if (runtime === 'shell') {
     return { allowed: false, reason: `terminal ${terminalId} is a bare shell (no Claude session)` };
   }
-  const bypassesStateGate = messageType === 'urgent' || messageType === 'important';
-  if (!bypassesStateGate && (status === 'running' || status === 'prompted')) {
+  // 'normal' deliberately does NOT gate on the 'running' state — that state is
+  // finnicky and gets stuck, which froze the whole queue. Normal's condition is:
+  // destination isn't 'prompted' AND no countdown is active (the timerRunning
+  // check above; isRunning() is false when stopped, paused, or expired at 0).
+  // 'urgent' bypasses the status gate entirely.
+  if (messageType !== 'urgent' && status === 'prompted') {
     return { allowed: false, reason: `terminal ${terminalId} is ${status}` };
   }
   return { allowed: true, reason: 'ok' };

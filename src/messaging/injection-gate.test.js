@@ -33,7 +33,7 @@ test('blocks when there is no target terminal', () => {
 });
 
 test('P4: blocks injection into a bare shell, regardless of priority', () => {
-  for (const messageType of ['normal', 'important', 'urgent']) {
+  for (const messageType of ['normal', 'urgent']) {
     const r = evaluateInjectionGate({ ...CLEAR, runtime: 'shell', status: '...', messageType });
     assert.strictEqual(r.allowed, false, `should block ${messageType} into a shell`);
     assert.match(r.reason, /bare shell/);
@@ -46,11 +46,15 @@ test('does not block on runtime "claude" or "unknown" (fail-open when undetermin
   assert.strictEqual(evaluateInjectionGate({ ...CLEAR, runtime: undefined }).allowed, true);
 });
 
-test('status gate: normal waits for running/prompted; urgent/important bypass', () => {
-  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, status: 'running', messageType: 'normal' }).allowed, false);
+test('status gate: normal blocks only on prompted (running no longer gates); urgent bypasses', () => {
+  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, status: 'running', messageType: 'normal' }).allowed, true);
   assert.strictEqual(evaluateInjectionGate({ ...CLEAR, status: 'prompted', messageType: 'normal' }).allowed, false);
   assert.strictEqual(evaluateInjectionGate({ ...CLEAR, status: 'running', messageType: 'urgent' }).allowed, true);
-  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, status: 'prompted', messageType: 'important' }).allowed, true);
+  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, status: 'prompted', messageType: 'urgent' }).allowed, true);
+});
+
+test('legacy "important" gets no bypass: it behaves like normal at the gate', () => {
+  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, status: 'prompted', messageType: 'important' }).allowed, false);
 });
 
 test('shell guard is NOT bypassed by urgent (a prompt must never hit bash)', () => {

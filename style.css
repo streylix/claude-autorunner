@@ -6026,7 +6026,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .priority-option:hover { background: var(--bg-quaternary); color: var(--text-primary); }
 .priority-option svg { width: 15px; height: 15px; flex-shrink: 0; }
 .priority-option.active { color: var(--text-primary); background: var(--bg-tertiary); }
-.priority-option[data-priority="important"] svg { color: var(--accent-warning); }
 .priority-option[data-priority="urgent"] svg { color: var(--accent-danger, #ff5f57); }
 
 /* The Manager's mounted terminal: hide its redundant header (yellow dot +

@@ -762,3 +762,45 @@ mirroring the dynamic branch.
 manager both showed the new name. Original name restored afterward.
 
 **Restart needed?** Yes — renderer code loads once at startup.
+
+---
+
+## 2026-06-10 — CHANGE: two message types only; 'normal' no longer waits on 'running'
+
+**Request.** Remove the 'important' priority; keep 'urgent' and 'normal'. Normal's
+send condition: destination terminal isn't 'prompted' AND the auto-inject timer
+isn't running (or is at 0). The 'running' state is finnicky and gets stuck, so its
+role in the normal-inject gate is removed (the underlying running-state bug is
+deliberately NOT fixed here).
+
+**Exact new condition.** `normal` injects iff `terminal.status !== 'prompted'` AND
+`!timerManager.isRunning()` — `isRunning()` is already false when the countdown is
+stopped, paused, or expired at 0, which matches "isn't running or not at 0". The
+usage-limit, paused (master send toggle), and bare-shell guards are unchanged and
+still apply to both types. `urgent` is unchanged: jumps to the queue front and
+bypasses the status gate (but never the bare-shell guard).
+
+**Changes.**
+- `src/messaging/injection-gate.js` — status gate now blocks non-urgent only on
+  'prompted'; 'running' no longer gates. 'important' bypass removed.
+- `src/messaging/MessageQueueManager.js` — `VALID_TYPES = ['normal','urgent']`
+  (legacy/API 'important' coerces to 'normal' via normalizeType, so stale queue
+  items and control-API callers degrade gracefully); queue badge now urgent-only;
+  "Mark important" menu option removed; comments updated.
+- `renderer.js` / `index.html` / `style.css` — Important removed from the input-bar
+  priority selector (UI shows Normal/Urgent only).
+- `src/main/manager-session.js` — manager control-API docs rewritten for the
+  two-type system and the new normal condition.
+- `src/messaging/injection-gate.test.js` — updated; 9/9 pass, including a new
+  legacy-'important'-gets-no-bypass case.
+
+**How verified (live, Playwright + node --test).** In the running app:
+priority menu = [normal, urgent]; normalizeType('important') → 'normal';
+normal while status 'running' → allowed; while 'prompted' → blocked
+("terminal 1 is prompted"); while a 60s countdown armed → blocked ("timer still
+counting down"); after stopping the timer → allowed. urgent allowed while
+'prompted'. All 9 injection-gate unit tests pass.
+
+**Restart needed?** Yes — renderer code loads once at startup. The manager's
+CLAUDE.md template only applies to newly-written manager directories; an existing
+manager dir keeps its old doc text until regenerated.

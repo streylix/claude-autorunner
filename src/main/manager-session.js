@@ -83,14 +83,16 @@ curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/queue/add" \\
   -d '{"terminalId": "3", "content": "your message here"}'
 \`\`\`
 
-By default (\`type\` omitted, or \`"normal"\`) a message injects only when that
-terminal is idle and no usage limit is active - you never interrupt running
-work. Two higher priorities override that:
+By default (\`type\` omitted, or \`"normal"\`) a message injects whenever the
+destination terminal is NOT \`prompted\` (waiting on a human choice) and no
+auto-inject countdown or usage limit is active. It does not wait for a
+\`running\` terminal to go idle. One higher priority overrides that:
 
-- \`"important"\` - waits its turn in the queue, but injects even while the
-  terminal is running/prompted (typed in as a follow-up to the live session).
 - \`"urgent"\` - jumps to the FRONT of the whole queue AND injects even while
-  the terminal is running/prompted. Use sparingly - it pre-empts everything.
+  the terminal is prompted. Use sparingly - it pre-empts everything.
+
+(\`"important"\` no longer exists; anything other than \`"urgent"\` is treated
+as \`"normal"\`.)
 
 \`\`\`bash
 # An urgent course-correction to a terminal that's mid-task:
@@ -113,7 +115,7 @@ curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/queue/update" \\
 # Rewrite a queued message's content and/or change its priority
 curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/queue/update" \\
   -H "X-CCBOT-Token: $CCBOT_TOKEN" -H "Content-Type: application/json" \\
-  -d '{"messageId": "<id>", "content": "new text", "type": "important"}'
+  -d '{"messageId": "<id>", "content": "new text", "type": "urgent"}'
 \`\`\`
 
 A message that is mid-injection cannot be edited (you get \`ok:false\`).

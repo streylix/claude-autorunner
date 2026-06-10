@@ -1042,10 +1042,9 @@ class TerminalGUI {
         if (priorityBtn && priorityMenu) {
             const COLORS = {
                 normal: 'var(--text-tertiary)',
-                important: 'var(--accent-warning)',
                 urgent: 'var(--accent-danger, #ff5f57)'
             };
-            const LABELS = { normal: 'Normal', important: 'Important', urgent: 'Urgent' };
+            const LABELS = { normal: 'Normal', urgent: 'Urgent' };
             const applyPriority = (type) => {
                 const t = COLORS[type] ? type : 'normal';
                 this.messageQueueManager.setSelectedMessageType(t);

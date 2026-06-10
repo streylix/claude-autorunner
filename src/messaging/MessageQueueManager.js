@@ -327,7 +327,7 @@ class MessageQueueManager {
 
     canInjectToTerminal(terminalId, messageType = 'normal') {
         // Gather live state; the policy (precedence, the bare-shell P4 guard, and
-        // the urgent/important status-gate bypass) lives in evaluateInjectionGate.
+        // the urgent status-gate bypass) lives in evaluateInjectionGate.
         // `runtime` is pushed from main (ground-truth /proc detection); a 'shell'
         // value means no live Claude session, so a prompt would run as shell
         // commands - the gate refuses it regardless of priority.
@@ -486,15 +486,14 @@ class MessageQueueManager {
             dot.style.backgroundColor = color;
             dot.title = message.terminalId === 999 ? 'Manager' : `Terminal ${message.terminalId}`;
 
-            // Priority badge (only for non-normal, to keep the list quiet).
+            // Priority badge (urgent only, to keep the list quiet).
             const type = message.type || 'normal';
             let badge = null;
-            if (type !== 'normal') {
+            if (type === 'urgent') {
                 badge = document.createElement('span');
                 badge.className = `message-priority-badge priority-${type}`;
-                badge.textContent = type === 'urgent' ? 'URGENT' : 'IMPORTANT';
-                badge.style.color = type === 'urgent'
-                    ? 'var(--accent-danger, #ff5f57)' : 'var(--accent-warning)';
+                badge.textContent = 'URGENT';
+                badge.style.color = 'var(--accent-danger, #ff5f57)';
                 badge.style.fontSize = '9px';
                 badge.style.fontWeight = '700';
                 badge.style.marginRight = '4px';
@@ -534,7 +533,6 @@ class MessageQueueManager {
             // Priority changes (skip the current one). Re-uses applyControlUpdate
             // so urgent re-positions to the front, same as the control API.
             if (type !== 'urgent') addOption('Mark urgent', 'flag', () => this.applyControlUpdate({ messageId: message.id, type: 'urgent' }));
-            if (type !== 'important') addOption('Mark important', 'flag', () => this.applyControlUpdate({ messageId: message.id, type: 'important' }));
             if (type !== 'normal') addOption('Mark normal', 'flag', () => this.applyControlUpdate({ messageId: message.id, type: 'normal' }));
             addOption('Delete', 'trash-2', () => this.deleteMessage(message.id), 'danger');
 
@@ -811,10 +809,10 @@ class MessageQueueManager {
             id: this.generateMessageId(),
             content: content,
             terminalId: terminalId,
-            // Priority: 'normal' (default - waits for an idle terminal),
-            // 'important' (waits its turn in queue but injects even while the
-            // terminal is running/prompted), 'urgent' (jumps to the front AND
-            // bypasses the terminal-state gate). See canInjectToTerminal.
+            // Priority: 'normal' (default - injects whenever the destination
+            // terminal isn't 'prompted' and no countdown is active; it does NOT
+            // wait on the finnicky 'running' state), 'urgent' (jumps to the
+            // front AND bypasses the status gate). See canInjectToTerminal.
             type: MessageQueueManager.normalizeType(providedType != null ? providedType : this.selectedMessageType),
             timestamp: Date.now(),
             wrapWithPlan: this.planModeEnabled
@@ -1432,7 +1430,7 @@ class MessageQueueManager {
         }
         this.messageQueue = queue;
         this._afterControlMutation();
-        // A newly-urgent/important message may now be injectable.
+        // A newly-urgent message may now be injectable.
         this.maybeAutoInject(message.terminalId || this.activeTerminalId);
         return { ok: true, messageId: message.id, type: message.type };
     }
@@ -1444,7 +1442,8 @@ class MessageQueueManager {
         this.eventBus.emit('ui:update-status');
     }
 
-    /** Coerce any value to one of the three valid priorities (default normal). */
+    /** Coerce any value to a valid priority (default normal). A legacy/API
+     *  'important' is no longer valid and coerces to 'normal'. */
     static normalizeType(type) {
         return MessageQueueManager.VALID_TYPES.includes(type) ? type : 'normal';
     }
@@ -1464,7 +1463,7 @@ class MessageQueueManager {
     }
 }
 
-MessageQueueManager.VALID_TYPES = ['normal', 'important', 'urgent'];
+MessageQueueManager.VALID_TYPES = ['normal', 'urgent'];
 
 // label (matches index.html .hotkey-label) -> raw control sequence
 MessageQueueManager.TERMINAL_TOKENS = {
