@@ -122,12 +122,17 @@ class VoiceManager {
             // Surface which device is actually capturing — the #1 cause of
             // "recorded but silent" is the wrong input being used.
             const track = stream.getAudioTracks()[0];
+            this.activeMicLabel = (track && track.label) || 'unknown device';
             if (track) {
                 this.eventBus.emit('log:action', {
-                    message: `🎙️ Using microphone: ${track.label || 'unknown device'}`,
+                    message: `🎙️ Using microphone: ${this.activeMicLabel}`,
                     type: 'info'
                 });
             }
+
+            // Meter the input so a dead mic is reported as such (instead of a
+            // misleading "No speech detected" after a pointless Whisper run).
+            this._startLevelMeter(stream);
 
             // Create MediaRecorder with appropriate MIME type
             this.mediaRecorder = new MediaRecorder(stream, {
@@ -200,18 +205,35 @@ class VoiceManager {
             });
             
             // Create audio blob from chunks
-            const audioBlob = new Blob(this.audioChunks, { 
-                type: this.mediaRecorder.mimeType || 'audio/webm' 
-            });
-            
+            const mimeType = this.mediaRecorder.mimeType || 'audio/webm';
+            const audioBlob = new Blob(this.audioChunks, { type: mimeType });
+
             // Clear chunks for next recording
             this.audioChunks = [];
-            
+
+            // If the meter saw essentially nothing, the capture itself is dead —
+            // tell the user which device was silent rather than sending silence
+            // to Whisper and reporting "No speech detected".
+            const peakPct = Math.round((this.peakLevel || 0) * 100);
+            if ((this.peakLevel || 0) < 0.01) {
+                this.eventBus.emit('log:action', {
+                    message: `🔇 Recording captured no audio (peak ${peakPct}%) from "${this.activeMicLabel}". `
+                        + 'Pick a different input in Settings → Microphone, or check the OS input volume/mute.',
+                    type: 'error'
+                });
+                this.updateButtonState('ready');
+                return;
+            }
+            this.eventBus.emit('log:action', {
+                message: `🎚️ Recording peak input level: ${peakPct}%`,
+                type: 'info'
+            });
+
             // Convert to WAV if needed
             const wavBlob = await this.convertToWav(audioBlob);
-            
+
             // Send to backend for transcription
-            await this.transcribeAudio(wavBlob);
+            await this.transcribeAudio(wavBlob, mimeType);
             
         } catch (error) {
             console.error('Error processing audio:', error);
@@ -225,15 +247,19 @@ class VoiceManager {
         }
     }
     
-    async transcribeAudio(audioBlob) {
+    async transcribeAudio(audioBlob, mimeType = 'audio/webm') {
         try {
             if (!this.backendAPIClient) {
                 throw new Error('Backend API client not initialized');
             }
-            
+
+            // Name the upload by its real container — the backend derives its
+            // temp-file suffix from this name, and MediaRecorder produces
+            // webm/ogg/mp4 here, never an actual WAV.
+            const ext = (/audio\/(\w+)/.exec(audioBlob.type || mimeType) || [, 'webm'])[1];
             const formData = new FormData();
             // Field name must match the backend serializer (audio_file = FileField()).
-            formData.append('audio_file', audioBlob, 'recording.wav');
+            formData.append('audio_file', audioBlob, `recording.${ext}`);
             
             // Call backend transcription endpoint
             const response = await fetch('http://localhost:8123/api/voice/transcribe/', {
@@ -290,6 +316,44 @@ class VoiceManager {
         this.speechResult = text;
     }
     
+    // ======= INPUT LEVEL METER =======
+    // Tracks the peak amplitude (0..1) seen during the recording via a
+    // WebAudio analyser tapped off the same stream MediaRecorder consumes.
+    _startLevelMeter(stream) {
+        try {
+            this.peakLevel = 0;
+            this._meterContext = new AudioContext();
+            const source = this._meterContext.createMediaStreamSource(stream);
+            this._meterAnalyser = this._meterContext.createAnalyser();
+            this._meterAnalyser.fftSize = 2048;
+            source.connect(this._meterAnalyser);
+            const buf = new Float32Array(this._meterAnalyser.fftSize);
+            this._meterInterval = setInterval(() => {
+                this._meterAnalyser.getFloatTimeDomainData(buf);
+                for (let i = 0; i < buf.length; i++) {
+                    const v = Math.abs(buf[i]);
+                    if (v > this.peakLevel) this.peakLevel = v;
+                }
+            }, 150);
+        } catch (e) {
+            // Metering is best-effort; never let it break recording.
+            console.warn('Level meter unavailable:', e);
+            this.peakLevel = 1; // assume audible so the silence guard stays out of the way
+        }
+    }
+
+    _stopLevelMeter() {
+        if (this._meterInterval) {
+            clearInterval(this._meterInterval);
+            this._meterInterval = null;
+        }
+        this._meterAnalyser = null;
+        if (this._meterContext) {
+            this._meterContext.close().catch(() => {});
+            this._meterContext = null;
+        }
+    }
+
     // ======= UTILITY FUNCTIONS =======
     getSupportedMimeType() {
         const types = [
@@ -357,6 +421,9 @@ class VoiceManager {
     }
     
     cleanup() {
+        // Stop the input level meter
+        this._stopLevelMeter();
+
         // Stop any active recording
         if (this.mediaRecorder) {
             if (this.mediaRecorder.state !== 'inactive') {

@@ -842,3 +842,41 @@ saved device is restored onto VoiceManager (also proven with a marker id via
 `db-get-setting` round-trip). Probe reset the setting to 'default' afterward.
 
 **Restart needed?** Yes — renderer/CSS load once at startup.
+
+---
+
+## 2026-06-10 — voice: spinner escaped the button; silent recordings now diagnosed
+
+**Symptoms.** (1) The processing spinner rendered OUTSIDE the mic button (above
+it) while the button itself went flat blue. (2) Real-mic recordings kept ending
+in "No speech detected" with no way to tell whether the mic captured anything.
+
+**Root cause (spinner).** `#voice-btn` carries `.hotkey-enabled`, whose hotkey
+tooltip ALSO styles `::after` (`position:absolute; bottom:100%`, blue pill
+background, hover opacity). The spinner rule only set the properties it needed,
+so the tooltip's positioning/background bled through the cascade and the ring
+ended up above the button. Fix: the processing `::after` now pins every
+layout/visual property (absolute, top/left 50%, margin-centered — not
+transform-centered, since the spin animation owns `transform`) and the
+tooltip's `::before` arrow is suppressed during processing.
+
+**Silent-recording diagnostics (`VoiceManager`).** A WebAudio analyser now
+meters the live input during recording and tracks the peak level:
+- peak < 1% → the upload is skipped and the action log states the capture was
+  silent, naming the device ("🔇 ... from <label>. Pick a different input in
+  Settings → Microphone, or check OS input volume/mute.")
+- otherwise the peak is logged ("🎚️ Recording peak input level: N%") so a
+  too-quiet mic is visible even when Whisper finds no words.
+Uploads are also now named by their real container (`recording.webm`/`ogg`/...,
+from the MediaRecorder mime type) instead of a fake `recording.wav`, so the
+backend's temp-file suffix matches the actual bytes.
+
+**How verified (live, Playwright + fake media device).** During processing the
+`::after` computed style is absolute at top/left 13px with -7px margins (dead
+center of the 30px button), transparent background, opacity 1, spinning
+`processing-spin-circle`; `::before` is display:none; an element screenshot
+shows the white ring inside the blue circular button. Action log for a 2.5s
+fake-device recording: "🎙️ Using microphone: Fake Default Audio Input" →
+"🎚️ Recording peak input level: 93%" → (tone, not speech) "No speech detected".
+
+**Restart needed?** Yes.

@@ -1912,15 +1912,38 @@ button#voice-btn.voice-button.processing,
     display: none !important;
 }
 
+/* The spinner shares ::after with the .hotkey-enabled tooltip (which is
+   absolutely positioned ABOVE the button with a blue pill background), so
+   every layout/visual property must be pinned here or the tooltip cascade
+   bleeds through and the ring renders outside the button. Centering uses
+   margins, not transform — the spin animation owns `transform`. */
 #voice-btn.voice-button.processing::after,
 #voice-btn[data-voice-state="processing"]::after {
-    content: '';
-    width: 13px;
-    height: 13px;
-    border: 2px solid rgba(255, 255, 255, 0.35);
-    border-top-color: #ffffff;
-    border-radius: 50%;
-    animation: processing-spin-circle 0.8s linear infinite;
+    content: '' !important;
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    bottom: auto !important;
+    right: auto !important;
+    width: 14px !important;
+    height: 14px !important;
+    box-sizing: border-box !important;
+    margin: -7px 0 0 -7px !important;
+    padding: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    opacity: 1 !important;
+    transition: none !important;
+    border: 2px solid rgba(255, 255, 255, 0.35) !important;
+    border-top-color: #ffffff !important;
+    border-radius: 50% !important;
+    animation: processing-spin-circle 0.8s linear infinite !important;
+}
+
+/* ...and the tooltip's ::before arrow has no business showing mid-processing. */
+#voice-btn.voice-button.processing::before,
+#voice-btn[data-voice-state="processing"]::before {
+    display: none !important;
 }
 
 /* Processing State Hover - Maintain processing appearance */
