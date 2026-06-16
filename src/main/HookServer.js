@@ -16,13 +16,21 @@ const crypto = require('crypto');
 const VALID_EVENTS = new Set(['stop', 'notification', 'prompt-submit', 'cwd-changed']);
 const MAX_BODY_BYTES = 256 * 1024;
 
+// Mirror of MessageQueueManager.VALID_TYPES. MessageQueueManager.normalizeType
+// remains the canonical validator (it runs again in the renderer), but the
+// HookServer normalizes here too so POST /queue/add {type} is forwarded as a
+// known-good value rather than silently dropped.
+const VALID_QUEUE_TYPES = new Set(['normal', 'urgent']);
+
 class HookServer {
     /**
      * @param {Function|Object} handlers - Either the onEvent callback alone, or
      *   { onEvent, onQueueAdd, getState }:
      *   - onEvent({terminalId, event, hook, receivedAt}) - hook state events
-     *   - onQueueAdd({terminalId, content}) - external queue-add requests
-     *     (e.g. a manager Claude instance steering other terminals)
+     *   - onQueueAdd({terminalId, content, type}) - external queue-add requests
+     *     (e.g. a manager Claude instance steering other terminals). `type` is
+     *     normalized to a valid priority ('normal' | 'urgent'); urgent bypasses
+     *     the injection gate.
      *   - getState() - snapshot of interface state for GET /state
      */
     constructor(handlers) {
@@ -89,16 +97,7 @@ class HookServer {
         // title?, color?}, update {terminalId, title?, color?}, delete
         // {terminalId}, screen {terminalId, scrollback?}, keys {terminalId,
         // keys[]}, claude {terminalId, action: start|resume|restart, ...}.
-        const CONTROL_ROUTES = {
-            '/terminal/create': 'terminal-create',
-            '/terminal/update': 'terminal-update',
-            '/terminal/delete': 'terminal-delete',
-            '/terminal/screen': 'terminal-screen',
-            '/terminal/keys': 'terminal-keys',
-            '/terminal/claude': 'terminal-claude',
-            '/terminal/transcript': 'terminal-transcript',
-            '/queue/update': 'queue-update'
-        };
+        const CONTROL_ROUTES = HookServer.CONTROL_ROUTES;
         if (req.method === 'POST' && CONTROL_ROUTES[req.url]) {
             const action = CONTROL_ROUTES[req.url];
             let body = '';
@@ -154,9 +153,10 @@ class HookServer {
                         res.end();
                         return;
                     }
-                    this.onQueueAdd({ terminalId, content });
+                    const type = HookServer.normalizeQueueType(payload.type);
+                    this.onQueueAdd({ terminalId, content, type });
                     res.writeHead(202, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ accepted: true, terminalId }));
+                    res.end(JSON.stringify({ accepted: true, terminalId, type }));
                     return;
                 }
 
@@ -193,5 +193,26 @@ class HookServer {
         }
     }
 }
+
+// POST control routes -> renderer/main action names. Hoisted to a static so it
+// can be inspected/tested and extended in one place.
+//   /queue/inject-now {messageId} - force-inject a queued message NOW, bypassing
+//   the pause/timer/usage-limit gate (the manual override path).
+HookServer.CONTROL_ROUTES = {
+    '/terminal/create': 'terminal-create',
+    '/terminal/update': 'terminal-update',
+    '/terminal/delete': 'terminal-delete',
+    '/terminal/screen': 'terminal-screen',
+    '/terminal/keys': 'terminal-keys',
+    '/terminal/claude': 'terminal-claude',
+    '/terminal/transcript': 'terminal-transcript',
+    '/queue/update': 'queue-update',
+    '/queue/inject-now': 'queue-inject-now'
+};
+
+// Coerce any incoming queue priority to a valid value (default 'normal').
+HookServer.normalizeQueueType = function normalizeQueueType(type) {
+    return VALID_QUEUE_TYPES.has(type) ? type : 'normal';
+};
 
 module.exports = HookServer;

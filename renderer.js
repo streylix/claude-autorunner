@@ -464,10 +464,10 @@ class TerminalGUI {
 
         // External queue-add requests arriving via the HookServer API
         // (POST /queue/add - e.g. the manager instance steering a terminal)
-        ipcRenderer.on('queue-add-request', (event, { terminalId, content }) => {
-            this.messageQueueManager.addMessage({ content, terminalId });
+        ipcRenderer.on('queue-add-request', (event, { terminalId, content, type }) => {
+            this.messageQueueManager.addMessage({ content, terminalId, type });
             this.eventBus.emit('log:action', {
-                message: `Queued message for Terminal ${terminalId} via control API`,
+                message: `Queued ${type === 'urgent' ? 'URGENT ' : ''}message for Terminal ${terminalId} via control API`,
                 type: 'info'
             });
         });
@@ -1324,6 +1324,15 @@ class TerminalGUI {
             ipcRenderer.send('terminal-resize', { terminalId, cols, rows });
         });
 
+        // Right-click → a small "Copy" context menu for pulling text out of the
+        // pane (xterm captures normal selection-copy, so the human needs an
+        // explicit affordance). Copies the current selection, or the visible
+        // buffer when nothing is selected.
+        mount.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            this.showTerminalContextMenu(e, terminalId);
+        });
+
         // Clicking/focusing a terminal makes it the active one (focusin bubbles
         // from xterm's hidden textarea), so the Status panel + queue target track
         // the terminal the user is actually working in.
@@ -1369,6 +1378,78 @@ class TerminalGUI {
 
         console.log(`✅ Terminal ${terminalId} created${options.hidden ? ' (hidden)' : ''}`);
         return terminalId;
+    }
+
+    /**
+     * Show a minimal context menu over a terminal pane with copy actions.
+     * Closes on the next click anywhere (a one-shot document listener).
+     */
+    showTerminalContextMenu(e, terminalId) {
+        document.querySelectorAll('.terminal-context-menu').forEach(m => m.remove());
+
+        const menu = document.createElement('div');
+        menu.className = 'terminal-context-menu';
+        menu.style.position = 'fixed';
+        menu.style.left = `${e.clientX}px`;
+        menu.style.top = `${e.clientY}px`;
+        menu.style.zIndex = '10000';
+
+        const data = this.terminals.get(terminalId);
+        const hasSelection = !!(data && data.terminal && data.terminal.hasSelection && data.terminal.hasSelection());
+
+        const addItem = (label, handler) => {
+            const opt = document.createElement('button');
+            opt.className = 'terminal-context-menu-item';
+            opt.textContent = label;
+            opt.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                menu.remove();
+                handler();
+            });
+            menu.appendChild(opt);
+        };
+
+        addItem(hasSelection ? 'Copy selection' : 'Copy selection (none)', () => this.copyTerminalText(terminalId, false));
+        addItem('Copy visible buffer', () => this.copyTerminalText(terminalId, true));
+
+        document.body.appendChild(menu);
+        // Defer so this same right-click doesn't immediately close the menu.
+        setTimeout(() => {
+            document.addEventListener('click', () => menu.remove(), { once: true });
+        }, 0);
+    }
+
+    /**
+     * Copy text out of a terminal to the clipboard. With wholeBuffer=false, copies
+     * the current xterm selection (no-op if empty); with true (or no selection),
+     * copies the visible viewport's rendered text.
+     */
+    copyTerminalText(terminalId, wholeBuffer) {
+        const data = this.terminals.get(terminalId);
+        if (!data || !data.terminal) return;
+        const term = data.terminal;
+        let text = '';
+        if (!wholeBuffer && term.hasSelection && term.hasSelection()) {
+            text = term.getSelection();
+        } else {
+            // Read the visible viewport lines from the active buffer.
+            const buffer = term.buffer.active;
+            const lines = [];
+            for (let i = 0; i < term.rows; i++) {
+                const line = buffer.getLine(buffer.viewportY + i);
+                if (line) lines.push(line.translateToString(true));
+            }
+            text = lines.join('\n').replace(/\s+$/, '');
+        }
+        if (!text) {
+            this.eventBus.emit('log:action', { message: `Nothing to copy from Terminal ${terminalId}`, type: 'info' });
+            return;
+        }
+        navigator.clipboard.writeText(text).then(() => {
+            this.eventBus.emit('log:action', { message: `Copied ${text.length} chars from Terminal ${terminalId}`, type: 'success' });
+        }).catch((err) => {
+            this.eventBus.emit('log:action', { message: `Copy failed: ${err.message}`, type: 'error' });
+        });
     }
 
     // Toggle the "No terminals open" empty state. The hidden manager (id 999)
@@ -1884,6 +1965,17 @@ class TerminalGUI {
 
         if (action === 'queue-update') {
             return this.messageQueueManager.applyControlUpdate(payload);
+        }
+
+        if (action === 'queue-inject-now') {
+            // Force-inject a queued message immediately, bypassing pause/timer/
+            // usage-limit gates (the manual override path). POST /queue/inject-now.
+            const messageId = payload.messageId;
+            if (messageId == null) return { ok: false, error: 'messageId required' };
+            const message = this.messageQueueManager.messageQueue.find(m => String(m.id) === String(messageId));
+            if (!message) return { ok: false, error: 'message not found in queue' };
+            this.messageQueueManager.injectMessageNow(message.id);
+            return { ok: true, messageId: message.id };
         }
 
         return { ok: false, error: `unknown control action: ${action}` };

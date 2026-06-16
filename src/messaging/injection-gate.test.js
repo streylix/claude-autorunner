@@ -32,12 +32,13 @@ test('blocks when there is no target terminal', () => {
   assert.match(r.reason, /no target terminal/);
 });
 
-test('P4: blocks injection into a bare shell, regardless of priority', () => {
-  for (const messageType of ['normal', 'urgent']) {
-    const r = evaluateInjectionGate({ ...CLEAR, runtime: 'shell', status: '...', messageType });
-    assert.strictEqual(r.allowed, false, `should block ${messageType} into a shell`);
-    assert.match(r.reason, /bare shell/);
-  }
+test('P4: blocks NORMAL injection into a bare shell; urgent is now allowed', () => {
+  const blocked = evaluateInjectionGate({ ...CLEAR, runtime: 'shell', status: '...', messageType: 'normal' });
+  assert.strictEqual(blocked.allowed, false, 'should block normal into a shell');
+  assert.match(blocked.reason, /bare shell/);
+
+  const allowed = evaluateInjectionGate({ ...CLEAR, runtime: 'shell', status: '...', messageType: 'urgent' });
+  assert.strictEqual(allowed.allowed, true, 'urgent must send into a shell (e.g. SSH-to-remote-Claude)');
 });
 
 test('does not block on runtime "claude" or "unknown" (fail-open when undetermined)', () => {
@@ -57,14 +58,39 @@ test('legacy "important" gets no bypass: it behaves like normal at the gate', ()
   assert.strictEqual(evaluateInjectionGate({ ...CLEAR, status: 'prompted', messageType: 'important' }).allowed, false);
 });
 
-test('shell guard is NOT bypassed by urgent (a prompt must never hit bash)', () => {
-  // status running would be bypassed by urgent, but the shell guard still wins
+test('shell guard IS now bypassed by urgent (urgent sends regardless of any condition)', () => {
   const r = evaluateInjectionGate({ ...CLEAR, runtime: 'shell', status: 'running', messageType: 'urgent' });
-  assert.strictEqual(r.allowed, false);
-  assert.match(r.reason, /bare shell/);
+  assert.strictEqual(r.allowed, true);
 });
 
-test('precedence: usage-limit beats the shell guard', () => {
+test('precedence: usage-limit beats the shell guard for NORMAL messages', () => {
   const r = evaluateInjectionGate({ ...CLEAR, usageLimitWaiting: true, runtime: 'shell' });
   assert.match(r.reason, /usage limit/);
+});
+
+test('urgent overrides usage-limit, timer, paused, shell, and prompted all at once', () => {
+  const r = evaluateInjectionGate({
+    usageLimitWaiting: true,
+    timerRunning: true,
+    injectionPaused: true,
+    terminalId: 7,
+    status: 'prompted',
+    runtime: 'shell',
+    messageType: 'urgent',
+  });
+  assert.deepStrictEqual(r, { allowed: true, reason: 'ok' });
+});
+
+test('urgent bypasses each individual gate', () => {
+  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, usageLimitWaiting: true, messageType: 'urgent' }).allowed, true);
+  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, timerRunning: true, messageType: 'urgent' }).allowed, true);
+  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, injectionPaused: true, messageType: 'urgent' }).allowed, true);
+  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, runtime: 'shell', messageType: 'urgent' }).allowed, true);
+  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, status: 'prompted', messageType: 'urgent' }).allowed, true);
+});
+
+test('urgent is STILL blocked when there is no target terminal (the only hard block)', () => {
+  const r = evaluateInjectionGate({ ...CLEAR, terminalId: null, messageType: 'urgent' });
+  assert.strictEqual(r.allowed, false);
+  assert.match(r.reason, /no target terminal/);
 });

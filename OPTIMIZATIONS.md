@@ -880,3 +880,66 @@ fake-device recording: "🎙️ Using microphone: Fake Default Audio Input" →
 "🎚️ Recording peak input level: 93%" → (tone, not speech) "No speech detected".
 
 **Restart needed?** Yes.
+
+---
+
+## 2026-06-16 — Urgent messages actually send + queue control features
+
+**Why urgent messages were silently vanishing.** Two independent defects, both
+fixed:
+
+1. **The control API dropped the `type` field.** `POST /queue/add {type:"urgent"}`
+   was ignored — `HookServer.onQueueAdd` only forwarded `{terminalId, content}`,
+   and the renderer's `queue-add-request` handler likewise omitted `type`. So an
+   externally-queued message always inherited the UI's `selectedMessageType`
+   (normal), never the caller's. Now `HookServer` validates the incoming `type`
+   against the allowed set (`HookServer.normalizeQueueType`, mirroring
+   `MessageQueueManager.VALID_TYPES = ['normal','urgent']`, default `normal`) and
+   forwards it; the renderer reads `type` and passes it to `addMessage`. The
+   canonical validator stays `MessageQueueManager.normalizeType`, which runs again
+   in the renderer.
+
+2. **Urgent didn't bypass the bare-shell guard.** A terminal SSH'd into a remote
+   machine running Claude is detected *locally* as `runtime:'shell'` (no local
+   `claude` process in `/proc`), so the injection gate's bare-shell guard ate
+   urgent messages bound for that remote session. Per "urgent must send regardless
+   of any condition," `evaluateInjectionGate` now lets `messageType === 'urgent'`
+   bypass **every** gate — usage-limit, timer, paused, bare-shell, and the
+   prompted-status gate. The ONLY remaining hard block for urgent is a missing
+   target terminal (`terminalId == null` — nothing to inject into). Every gate is
+   left fully intact for `normal`. The accepted trade-off: an urgent prompt could
+   land in a genuine bare bash; that's acceptable because urgent is an explicit
+   human/manager override. Tests in `injection-gate.test.js` were updated (normal-
+   into-shell still blocked; urgent-into-shell now allowed) and extended (urgent
+   overrides each gate individually and all at once; urgent still blocked with no
+   target).
+
+**Instant-send endpoint (force inject now).** New control route
+`POST /queue/inject-now {messageId}` → `HookServer.CONTROL_ROUTES['/queue/inject-now']`
+→ main forwards it → renderer's `handleControlRequest('queue-inject-now')` calls
+`MessageQueueManager.injectMessageNow`, which types straight to the PTY via
+`_injectToTerminal` and bypasses the pause/timer/usage-limit gate. A dedicated
+per-message "Send now" button was added to each queue row (alongside the existing
+"Send immediately" menu item).
+
+**Retarget a queued message.** `POST /queue/update` now also accepts `terminalId`
+to move a queued message to a different destination. `applyControlUpdate`
+validates the target exists (`terminalStateManager.getTerminal`) before moving it,
+so a typo'd id can't strand the message on a phantom terminal; combinable with
+`content`/`type`. The queue menu gained "Move to <terminal>" options listing every
+known terminal except the message's current one (and excluding the manager).
+
+**Copy text out of a terminal pane (human UI).** Right-clicking a terminal now
+shows a small context menu with "Copy selection" (xterm `getSelection`) and "Copy
+visible buffer" (reads the viewport lines via `buffer.getLine`/`translateToString`),
+writing to the clipboard via `navigator.clipboard`. Action-log feedback reports how
+many chars were copied.
+
+**Verification.** Pure-module unit tests: `injection-gate.test.js` (12) and the new
+`HookServer.test.js` (3) all pass; the related `timer-expiry-resume`,
+`usage-limit-resume`, and `pty-control` suites (20) still pass. `node --check`
+clean on `renderer.js`, `MessageQueueManager.js`, `HookServer.js`.
+
+**Restart needed?** Yes — changes touch the main process (`HookServer.js`) and
+`renderer.js`, which only take effect after the Electron app is restarted. A human
+must run it (a restart kills all terminals including the manager): `./start.sh`.

@@ -534,6 +534,13 @@ class MessageQueueManager {
             // so urgent re-positions to the front, same as the control API.
             if (type !== 'urgent') addOption('Mark urgent', 'flag', () => this.applyControlUpdate({ messageId: message.id, type: 'urgent' }));
             if (type !== 'normal') addOption('Mark normal', 'flag', () => this.applyControlUpdate({ messageId: message.id, type: 'normal' }));
+            // Retarget: move this message to a different destination terminal.
+            this._terminalChoices(message.terminalId).forEach(({ id, label }) => {
+                addOption(`Move to ${label}`, 'arrow-right-circle', () => {
+                    const r = this.applyControlUpdate({ messageId: message.id, terminalId: id });
+                    if (r && r.ok) this.logAction(`Moved message to ${label}`, 'info');
+                });
+            });
             addOption('Delete', 'trash-2', () => this.deleteMessage(message.id), 'danger');
 
             menuBtn.addEventListener('click', (e) => {
@@ -543,12 +550,24 @@ class MessageQueueManager {
                 if (!isOpen) menu.classList.add('open');
             });
 
+            // Dedicated per-message "Send now" button — force-injects regardless
+            // of pause/timer/usage-limit gates (same path as the menu option).
+            const sendNowBtn = document.createElement('button');
+            sendNowBtn.className = 'message-send-now-btn';
+            sendNowBtn.title = 'Send now (force inject)';
+            sendNowBtn.innerHTML = '<i data-lucide="send-horizontal"></i>';
+            sendNowBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.injectMessageNow(message.id);
+            });
+
             menuWrap.appendChild(menuBtn);
             menuWrap.appendChild(menu);
 
             item.appendChild(dot);
             if (badge) item.appendChild(badge);
             item.appendChild(messageText);
+            item.appendChild(sendNowBtn);
             item.appendChild(menuWrap);
 
             // Drag-to-reorder within the queue.
@@ -586,6 +605,20 @@ class MessageQueueManager {
         if (queueCounter) {
             queueCounter.textContent = this.messageQueue.length;
         }
+    }
+
+    /** List retarget destinations for the queue menu — every known terminal
+     *  except the message's current one. Manager (999) is excluded as a target. */
+    _terminalChoices(currentTerminalId) {
+        if (!this.terminalStateManager || typeof this.terminalStateManager.getAllTerminals !== 'function') {
+            return [];
+        }
+        const choices = [];
+        this.terminalStateManager.getAllTerminals().forEach((data, id) => {
+            if (id === currentTerminalId || id === 999) return;
+            choices.push({ id, label: (data && data.title) || `Terminal ${id}` });
+        });
+        return choices;
     }
 
     /** Resolve a terminal's dot color (manager → yellow) for the queue UI. */
@@ -1388,7 +1421,9 @@ class MessageQueueManager {
      *  - { messageId, content }            → replace its text
      *  - { messageId, type }               → change priority (re-positions to the
      *                                        front if it becomes 'urgent')
-     * content/type may be combined. Returns { ok, ... } for the HookServer.
+     *  - { messageId, terminalId }          → retarget to a different terminal
+     *                                        (validated to exist)
+     * content/type/terminalId may be combined. Returns { ok, ... } for the HookServer.
      */
     applyControlUpdate(payload = {}) {
         const id = payload.messageId;
@@ -1419,7 +1454,21 @@ class MessageQueueManager {
             message.type = MessageQueueManager.normalizeType(payload.type);
             changed = true;
         }
-        if (!changed) return { ok: false, error: 'nothing to update (content or type)' };
+        if (payload.terminalId != null) {
+            const tid = parseInt(payload.terminalId, 10);
+            if (!Number.isInteger(tid)) {
+                return { ok: false, error: 'terminalId must be a number' };
+            }
+            // Validate the destination exists before moving the message there,
+            // so a typo'd id doesn't strand the message on a phantom terminal.
+            const exists = this.terminalStateManager && this.terminalStateManager.getTerminal(tid);
+            if (!exists) {
+                return { ok: false, error: `terminal ${tid} not found` };
+            }
+            message.terminalId = tid;
+            changed = true;
+        }
+        if (!changed) return { ok: false, error: 'nothing to update (content, type, or terminalId)' };
 
         queue.splice(idx, 1);
         // Re-promoting to 'urgent' moves it to the front; otherwise keep position.
