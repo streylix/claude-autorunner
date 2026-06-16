@@ -943,3 +943,37 @@ clean on `renderer.js`, `MessageQueueManager.js`, `HookServer.js`.
 **Restart needed?** Yes — changes touch the main process (`HookServer.js`) and
 `renderer.js`, which only take effect after the Electron app is restarted. A human
 must run it (a restart kills all terminals including the manager): `./start.sh`.
+
+---
+
+## 2026-06-16 — Manager role template updated to v4 (orchestrator doctrine)
+
+**Why.** The manager's role doc (`MANAGER_CLAUDE_MD` in `src/main/manager-session.js`)
+is the template stamped into every manager directory's `CLAUDE.md`. The manager rewrote
+its own canonical doc at `/media/ethan/smalls/claude-manager/CLAUDE.md` (now versioned
+`v4`) to make the manager a pure **engineering orchestrator** — it plans, delegates,
+and reviews but does NO implementation itself.
+
+**What changed.** The body of the `MANAGER_CLAUDE_MD` template literal now reproduces
+that v4 source file verbatim (everything after the marker line), and `MANAGER_MD_VERSION`
+was bumped `v3 → v4` so `ensureManagerClaudeMd` refreshes existing manager directories
+on next boot instead of leaving a stale doc. The literal still begins with the
+interpolated `${MANAGER_MD_MARKER}` (the `<!-- ccbot-manager-md:v4 -->` comment is
+produced by interpolation, not hardcoded). The embedded markdown was escaped for the
+template literal (backslashes doubled for the curl line-continuations, backticks
+escaped; no `${...}` occur in the doc, and `$CCBOT_PORT`/`$CCBOT_TOKEN` need no
+escaping as they have no brace).
+
+**Most important new content preserved:** the section "## The One Hard Rule — You Do
+NOT Touch Projects" — the manager makes no code changes ever, delegates everything
+outside its own directory to terminals it stands up, and its sole role is keeping
+those sessions unblocked and meeting acceptance criteria. The doc also documents the
+new `/queue/inject-now` and `terminalId`-retarget endpoints shipped in the prior entry.
+
+**How verified.** Generated the literal programmatically and confirmed the rendered
+string is byte-for-byte identical to the source file (`rendered === source: true`).
+`node -e "require('./src/main/manager-session.js')"` loads cleanly; `node --check`
+passes.
+
+**Restart needed?** Yes — `manager-session.js` runs in the main process, and the
+refreshed doc is only written when the manager next boots, which happens on app start.
