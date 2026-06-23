@@ -133,6 +133,15 @@ class ManagerInstance {
         const dirInput = document.getElementById('manager-directory-input');
 
         if (startBtn && dirInput) {
+            // Repopulate the field with the persisted directory so a restart
+            // shows the saved path (the setting persists fine; the form just
+            // never reflected it, which read as "it didn't save"). If the saved
+            // dir is gone, auto-start fails silently — at least the user can see
+            // and correct the path here instead of facing a blank field.
+            this.ipc.invoke('db-get-setting', 'managerDirectory')
+                .then(saved => { if (saved && !dirInput.value.trim()) dirInput.value = saved; })
+                .catch(() => { /* settings store unavailable - leave field blank */ });
+
             startBtn.addEventListener('click', async () => {
                 const dir = dirInput.value.trim();
                 if (!dir) return;

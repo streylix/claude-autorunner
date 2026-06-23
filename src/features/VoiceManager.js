@@ -152,23 +152,40 @@ class VoiceManager {
             this.mediaRecorder.onstop = async () => {
                 await this.processAudioRecording();
             };
-            
+
+            this.mediaRecorder.onerror = (event) => {
+                console.error('MediaRecorder error:', event.error);
+                this.eventBus.emit('log:action', {
+                    message: `❌ Recording error: ${event.error?.message || 'unknown'}`,
+                    type: 'error'
+                });
+                this.isRecording = false;
+                this.updateButtonState('error');
+                this.cleanup();
+            };
+
+            // If the mic track ends unexpectedly (e.g. device unplugged), treat as an error
+            if (track) {
+                track.onended = () => {
+                    if (this.isRecording) {
+                        this.eventBus.emit('log:action', {
+                            message: '⚠️ Microphone disconnected — recording stopped',
+                            type: 'error'
+                        });
+                        this.isRecording = false;
+                        if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+                            this.mediaRecorder.stop();
+                        }
+                        this.updateButtonState('error');
+                    }
+                };
+            }
+
             // Start recording
             this.mediaRecorder.start();
-            
+
             // Update UI
             this.updateButtonState('recording');
-            
-            // Auto-stop after 60 seconds
-            setTimeout(() => {
-                if (this.isRecording) {
-                    this.eventBus.emit('log:action', {
-                        message: '⏱️ Auto-stopping recording after 60 seconds',
-                        type: 'info'
-                    });
-                    this.stopRecording();
-                }
-            }, 60000);
             
         } catch (error) {
             console.error('Error starting recording:', error);
