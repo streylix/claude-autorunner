@@ -36,6 +36,9 @@ class NotificationManager {
         this.audio.addEventListener('error', () => this._onPlaybackEnded());
         this.playQueue = [];
         this.playing = false;
+        // True while the current clip is a user-requested replay (vs a first autoplay).
+        // Gates auto-wake-after-notification so replays never re-open the reply window.
+        this._currentIsReplay = false;
 
         // Short heads-up chime played right before each spoken notification so
         // the user knows one is about to read out.
@@ -137,6 +140,7 @@ class NotificationManager {
         if (!n) return;
         this.playing = true;
         this._currentId = n.id;
+        this._currentIsReplay = false; // queue playback = first read-out
         // Heads-up chime first, then the spoken notification.
         this._playHeadsUpThen(() => this._startAudio(n.audio_url));
     }
@@ -170,6 +174,8 @@ class NotificationManager {
     }
 
     _onPlaybackEnded() {
+        const finishedId = this._currentId;
+        const wasReplay = this._currentIsReplay;
         if (this._currentId != null) {
             // Best-effort: mark as played server-side.
             fetch(`${BASE_URL}/api/tts/notifications/${this._currentId}/played/`, { method: 'POST' }).catch(() => {});
@@ -177,8 +183,19 @@ class NotificationManager {
             if (row) row.classList.add('played');
             this._currentId = null;
         }
+        this._currentIsReplay = false;
         this.playing = false;
+        // Snapshot BEFORE draining (drain shifts the queue): only open a reply window
+        // when this was the last notification to read out.
+        const moreQueued = this.playQueue.length > 0;
         this._drainQueue();
+        // Auto-wake-after-notification: a notification's FIRST read-out just finished
+        // and nothing else is queued — tell WakeWordManager to open a brief hands-free
+        // reply window so the user can answer without the wake word. Skipped on replay
+        // and while muted. WakeWordManager only acts if its spotter is enabled + idle.
+        if (finishedId != null && !wasReplay && !moreQueued && !this.muted) {
+            this.eventBus.emit('notification:read-complete', { id: finishedId });
+        }
     }
 
     /**
@@ -206,6 +223,7 @@ class NotificationManager {
         try { this.audio.pause(); } catch (_) {}
         this.playing = true;
         this._currentId = id;
+        this._currentIsReplay = true; // explicit replay: must NOT trigger auto-wake
         this._startAudio(n.audio_url);
     }
 

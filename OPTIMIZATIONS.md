@@ -6,6 +6,63 @@ project's current git branch.
 
 ---
 
+## 2026-06-24 — Auto-wake after a notification (reply without the wake word)
+
+**Want.** Make notification → reply a natural conversational turn: when a notification
+finishes reading aloud, automatically open the capture flow for a brief window so the
+user can fire back a reply immediately, no wake word needed. Only on the FIRST read-out
+(not replays), and it must not fight the existing wake-word → halt-notification behavior.
+
+**How it works (EventBus, decoupled — two managers, no reach-in).**
+- `NotificationManager._onPlaybackEnded()` (the TTS `'ended'` handler) now emits a new
+  `notification:read-complete` event — but only when the finished clip was a **first
+  read-out** (not a replay) AND **nothing else is queued** AND not muted. First-vs-replay
+  is tracked with a `_currentIsReplay` flag: set false when a clip starts from the
+  autoplay queue (`_drainQueue`), true in `replay()`. The "nothing else queued" snapshot
+  is taken before draining, so in a backlog only the LAST notification opens the window.
+- `WakeWordManager` subscribes to `notification:read-complete` and calls the new
+  `startPostNotificationCapture()`, which runs the **same** capture flow as the wake word
+  (refactored into a shared `_beginCapture()`), tagged `_captureSource =
+  'post-notification'`. It is a no-op unless the spotter is enabled and idle-listening
+  (`state === 'listening'`), so it never interrupts an in-flight capture and can't clash
+  with the wake path.
+- **Listen window** = the configured stop-after-silence (`wakeSilenceMs`): `_beginCapture`
+  passes `noSpeechMs: this.silenceMs`, so if the user doesn't start replying within that
+  window the capture closes quietly (the same VAD silence logic as wake otherwise).
+- **Tagging (routed to the manager):** `_sendToManager` keeps the verbatim
+  `🎙️ Voice memo from the user` marker (the manager's CLAUDE.md keys off it) but, for a
+  post-notification capture, frames it as `🎙️ Voice memo from the user [auto-started
+  reply, right after a notification was read out — no wake word; …]` so the manager knows
+  it's an immediate reply, not a wake capture. `_captureSource` resets to `'wake'` in
+  `_resumeListening()` (one-shot).
+
+**No conflict with wake → halt (the prior feature).** Auto-wake only fires on a
+notification's *natural* completion with an empty queue. If the user instead says the
+wake word mid-playback, `stopCurrentPlayback()` **pauses** the audio — which does not fire
+`'ended'` — so that interrupted notification never triggers auto-wake (no double-capture).
+When auto-wake starts and emits `wake:state 'capturing'`, the halt listener's
+`stopCurrentPlayback()` is a clean no-op (the notification already ended, queue empty).
+
+**Requires next app restart** (renderer modules). Per the constraint, the live Electron
+app was NOT restarted (that would kill the manager 999 + all terminals).
+
+**How to test (after the next restart, with the wake word enabled).** (1) Trigger a
+notification: `curl -s -X POST http://localhost:8123/api/tts/speak/ -H 'Content-Type:
+application/json' -d '{"text":"Reply test: say something after this finishes."}'`.
+(2) When it finishes reading out, the activation chime plays and the mic opens — speak a
+reply with no wake word; it should transcribe and reach the manager framed as an
+"auto-started reply". (3) Stay silent instead → it closes quietly after the configured
+stop-after-silence. (4) Press replay on an already-played notification → it must NOT
+re-open the window. (5) Say the wake word mid-readout → the notification halts and only
+the normal wake capture runs (no second auto-capture).
+
+**Verified.** `node --check` passes on both managers; event wiring
+(`notification:read-complete` ↔ `startPostNotificationCapture`) and the
+first-play/replay gating confirmed by inspection. Live mic behavior to be confirmed by
+the user after restart.
+
+---
+
 ## 2026-06-24 — Kokoro TTS device detection (CUDA > MPS > CPU)
 
 **Want.** Kokoro TTS should run on the GPU on a CUDA box (this RTX 3090 machine) and

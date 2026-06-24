@@ -86,8 +86,22 @@ class WakeWordManager {
         this._heardSpeech = false;
         this._voiceRun = 0; // consecutive above-threshold frames (sustained-voice gate)
         this._vadTimer = null;
+        // What started the current capture: 'wake' (wake word) or 'post-notification'
+        // (auto-opened right after a notification finished reading out). Drives how the
+        // transcript is framed for the manager; reset to 'wake' after each capture.
+        this._captureSource = 'wake';
+        // Pre-speech listen window for the current capture (how long to wait for the
+        // user to START talking before closing quietly). Wake uses the long default;
+        // post-notification uses the configured stop-after-silence.
+        this._noSpeechMs = NO_SPEECH_TIMEOUT_MS;
 
         this._setupPreferenceListeners();
+
+        // Auto-wake-after-notification: when a notification finishes its FIRST read-out
+        // (NotificationManager emits this only on first play, not replay, and only when
+        // nothing else is queued), open the capture flow briefly so the user can reply
+        // immediately without the wake word.
+        this.eventBus.on('notification:read-complete', () => this.startPostNotificationCapture());
     }
 
     _setupPreferenceListeners() {
@@ -329,20 +343,43 @@ class WakeWordManager {
 
     _onWakeDetected() {
         if (this.state !== 'listening') return;
-        this.state = 'capturing';
+        this._captureSource = 'wake';
         this._log(`🎙️ Heard "${this.phrase}" — listening for your command…`, 'success');
-        this.eventBus.emit('wake:state', { state: 'capturing' });
-        this._playChime(this.activationSound);
-        this._startCommandCapture();
+        this._beginCapture();
     }
 
-    _startCommandCapture() {
+    // Auto-open a command capture WITHOUT a wake word, right after a notification
+    // finished reading out, so the user can fire back a reply immediately. Same flow
+    // as the wake word but tagged 'post-notification' (see _sendToManager). No-op
+    // unless the spotter is enabled and idle-listening, so it never interrupts an
+    // in-flight capture, a disabled spotter, or startup — and so it can't clash with
+    // the wake-word path. The listen window before the user starts speaking is the
+    // configured stop-after-silence: if no reply comes, it closes quietly.
+    startPostNotificationCapture() {
+        if (!this.enabled || this.state !== 'listening') return;
+        this._captureSource = 'post-notification';
+        this._log('🗣️ Notification read out — listening for your reply (no wake word needed)…', 'info');
+        this._beginCapture({ noSpeechMs: this.silenceMs });
+    }
+
+    // Shared activation: flip to capturing, signal the UI (and the notification-halt
+    // listener), play the activation chime, and start recording. opts is forwarded to
+    // _startCommandCapture (e.g. noSpeechMs for the pre-speech window).
+    _beginCapture(opts = {}) {
+        this.state = 'capturing';
+        this.eventBus.emit('wake:state', { state: 'capturing' });
+        this._playChime(this.activationSound);
+        this._startCommandCapture(opts);
+    }
+
+    _startCommandCapture(opts = {}) {
         try {
             this.commandChunks = [];
             this._captureStartedAt = performance.now();
             this._lastVoiceAt = performance.now();
             this._heardSpeech = false;
             this._voiceRun = 0;
+            this._noSpeechMs = opts.noSpeechMs || NO_SPEECH_TIMEOUT_MS;
 
             const mimeType = this.gui.voiceManager
                 ? this.gui.voiceManager.getSupportedMimeType()
@@ -367,7 +404,7 @@ class WakeWordManager {
         // Before any speech: bail only if the user never starts, so a stray wake
         // activation doesn't record forever. This is the ONLY pre-speech guard.
         if (!this._heardSpeech) {
-            if ((now - this._captureStartedAt) > NO_SPEECH_TIMEOUT_MS) {
+            if ((now - this._captureStartedAt) > this._noSpeechMs) {
                 this._log('🤫 No command heard — going back to listening.', 'info');
                 this._stopCommandCapture(true);
             }
@@ -440,6 +477,7 @@ class WakeWordManager {
     }
 
     _resumeListening() {
+        this._captureSource = 'wake'; // post-notification is one-shot; default back
         if (!this.enabled) { this.state = 'idle'; return; }
         // Fresh recognizer clears any buffered audio so we don't re-trigger.
         this._rebuildRecognizer()
@@ -461,10 +499,18 @@ class WakeWordManager {
         // Keep the "🎙️ Voice memo from the user" marker verbatim — the manager's
         // CLAUDE.md keys off that exact phrase to acknowledge out loud first, then
         // act. The standing how-to is NOT repeated per message.
-        const framed =
-            '🎙️ Voice memo from the user (spoken aloud, auto-transcribed — phrasing '
-            + 'may be imperfect):\n\n'
-            + `"${text}"`;
+        // Keep the "🎙️ Voice memo from the user" marker verbatim either way — the
+        // manager's CLAUDE.md keys off that exact phrase. The post-notification variant
+        // additionally tags that this capture was AUTO-started right after a
+        // notification was read out (the user replying immediately), not a wake word.
+        const framed = this._captureSource === 'post-notification'
+            ? '🎙️ Voice memo from the user [auto-started reply, right after a '
+              + 'notification was read out — no wake word; spoken aloud, auto-'
+              + 'transcribed, phrasing may be imperfect]:\n\n'
+              + `"${text}"`
+            : '🎙️ Voice memo from the user (spoken aloud, auto-transcribed — phrasing '
+              + 'may be imperfect):\n\n'
+              + `"${text}"`;
 
         if (!this.gui.messageQueueManager) {
             this._log('❌ Cannot route voice command — message queue unavailable.', 'error');
