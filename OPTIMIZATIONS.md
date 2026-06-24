@@ -6,6 +6,27 @@ project's current git branch.
 
 ---
 
+## 2026-06-24 — Manager doctrine: the dimmed autosuggestion is not the user
+
+**Want.** The manager (999) inspects terminals via `/terminal/screen` and decides
+whether a terminal is "user-driven" (leave it alone) or idle (step in). Claude Code
+renders a dimmed/greyed autosuggestion in the prompt's input line — text it proposes,
+which the user has not typed. The manager must never mistake that for the user typing or
+for a user instruction.
+
+**Change (`src/main/manager-session.js`).** Added a permanent note to the generated
+manager role doc (`MANAGER_CLAUDE_MD`), right after the screen-reading guidance: the
+dimmed prompt-line autosuggestion is Claude Code's own suggestion ONLY — never a user
+instruction and never evidence the user is driving a terminal; only actually-submitted
+input or a genuinely running/prompted turn counts as user activity. Bumped
+`MANAGER_MD_VERSION` v8 → v9 so existing manager directories get the refreshed doc on
+next boot (the writer only rewrites when the in-file version marker is stale).
+
+**Verified.** `node --check` passes; the version marker is `v9` and the note is present
+in the template.
+
+---
+
 ## 2026-06-24 — Voice dictation: never cut off mid-speech; honor the configured silence
 
 **Want.** When you wake the assistant and speak a command, it must (1) keep listening

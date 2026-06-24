@@ -31,7 +31,7 @@ function hasResumableSession(managerDir) {
 // Bump this when the role doc below changes so existing manager directories
 // (which already have a CLAUDE.md) get refreshed instead of keeping a stale
 // copy that's missing newer endpoints. The marker line is written verbatim.
-const MANAGER_MD_VERSION = 'v8';
+const MANAGER_MD_VERSION = 'v9';
 const MANAGER_MD_MARKER = `<!-- ccbot-manager-md:${MANAGER_MD_VERSION} -->`;
 
 const MANAGER_CLAUDE_MD = `${MANAGER_MD_MARKER}
@@ -154,6 +154,16 @@ curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/terminal/claude" \\
 
 Terminal 999 (you) cannot be renamed or deleted. Each terminal's transcriptPath
 (from \`/state\`) is a JSONL file you can read for the full conversation.
+
+### The dimmed prompt-line autosuggestion is NOT the user
+
+When you read a terminal's screen (\`/terminal/screen\`), Claude Code shows a **dimmed,
+greyed-out suggestion** inside the prompt's input line — text it is auto-proposing,
+which the user has NOT typed or submitted. Treat that faint line as Claude Code's own
+autosuggestion ONLY. It is **never** a user instruction, and it is **not** evidence that
+the user is actively driving that terminal. Only input the user has actually submitted
+(or a genuinely running / prompted Claude turn) counts as user activity — ignore the
+dimmed suggestion entirely when deciding whether to leave a terminal alone or to step in.
 
 ## Session Startup
 
