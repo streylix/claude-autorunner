@@ -243,7 +243,10 @@ claude-todo
 .hive-mind/
 .claude
 tests/
-scripts/
+scripts/*
+# …but the model-bootstrap script MUST travel with the repo, or fresh
+# checkouts can't fetch the gitignored speech models (see assets/models/).
+!scripts/download-models.js
 playwright-report
 hive-mind-*
 
