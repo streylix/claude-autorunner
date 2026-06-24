@@ -289,6 +289,22 @@ class MessageQueueManager {
             this.logAction('Manager input disabled — message held, not injected to the manager (999)', 'info');
             return;
         }
+        // Bare-shell guard re-check (P4). canInjectToTerminal enforces this on the
+        // auto path, but injectMessageNow / "Send now" / the control-API inject-now
+        // route bypass the gate entirely and flow straight here. For a NON-urgent
+        // message, refuse to type into a terminal with no live Claude session
+        // (definitive runtime 'shell') — otherwise the prompt text + carriage
+        // return runs as host shell commands. Mirrors evaluateInjectionGate: only a
+        // definitive 'shell' blocks; 'claude'/'unknown'/undefined fail open so a
+        // transient detection gap never freezes legitimate injection. Urgent keeps
+        // its documented bypass (a remote SSH'd Claude is detected locally as shell).
+        if ((message.type || 'normal') !== 'urgent' && this.terminalStateManager) {
+            const terminal = this.terminalStateManager.getTerminal(terminalId);
+            if (terminal && terminal.runtime === 'shell') {
+                this.logAction(`Held: terminal ${terminalId} is a bare shell (no Claude session) — message not injected`, 'warning');
+                return;
+            }
+        }
         this.currentlyInjectingTerminals.add(terminalId);
         this.currentlyInjectingMessages.add(message.id);
         this.eventBus.emit('message:injection-started', { messageId: message.id, terminalId });

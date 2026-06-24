@@ -15,6 +15,11 @@ const crypto = require('crypto');
 
 const VALID_EVENTS = new Set(['stop', 'notification', 'prompt-submit', 'cwd-changed']);
 const MAX_BODY_BYTES = 256 * 1024;
+// The manager instance's hidden terminal. The control API must never queue a
+// message to it: the manager drives OTHER terminals and queues its own passes
+// via the internal path (ManagerInstance -> messageQueueManager.addMessage),
+// never over HTTP. Mirrors ManagerInstance.MANAGER_TERMINAL_ID.
+const MANAGER_TERMINAL_ID = 999;
 
 // Mirror of MessageQueueManager.VALID_TYPES. MessageQueueManager.normalizeType
 // remains the canonical validator (it runs again in the renderer), but the
@@ -151,6 +156,13 @@ class HookServer {
                     if (!Number.isInteger(terminalId) || !content || !this.onQueueAdd) {
                         res.writeHead(this.onQueueAdd ? 400 : 503);
                         res.end();
+                        return;
+                    }
+                    // Enforce the "never target yourself (999)" invariant at the HTTP
+                    // boundary, regardless of the renderer-side manager-input toggle.
+                    if (terminalId === MANAGER_TERMINAL_ID) {
+                        res.writeHead(403, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ error: 'cannot queue to the manager terminal (999)' }));
                         return;
                     }
                     const type = HookServer.normalizeQueueType(payload.type);
