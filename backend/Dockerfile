@@ -17,9 +17,12 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Install torch from the CPU-only wheel index first. This avoids pulling the
-# ~2GB CUDA build that the default PyPI wheel ships, roughly halving image size.
-RUN pip install --index-url https://download.pytorch.org/whl/cpu torch
+# Install torch first so its wheel source is fixed before requirements resolve.
+# Use the default PyPI wheel, which ships the CUDA build, so Kokoro TTS / Whisper
+# run on an NVIDIA GPU when one is present (this box has an RTX 3090). On hosts
+# without a GPU torch still runs on CPU automatically; the trade-off is a larger
+# image (~2GB CUDA libs) vs the previous CPU-only wheel.
+RUN pip install torch
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt
