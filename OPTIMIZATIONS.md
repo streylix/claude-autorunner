@@ -27,14 +27,29 @@ the container `torch` is `2.x+cpu` and `cuda.is_available()` is `False` regardle
 GPU. The backend code is also **baked into the image** (no code volume mount), so a plain
 `docker compose restart backend` picks up neither the GPU nor this edit.
 
-**To actually run on GPU (pending decision — NOT done yet):** switch `Dockerfile:22` to a
-CUDA torch wheel (e.g. `--index-url https://download.pytorch.org/whl/cu121 torch`) and
-**rebuild** the backend image (`docker compose up -d --build backend` — recreates ONLY
-the backend container; the Electron front-end + terminals are untouched). Tradeoffs:
-~2.5GB download and image growth from ~3GB to ~6–8GB on a disk currently at 89% (47G
-free); this reverses the documented size optimization. Flagged to the user before
-proceeding because it exceeds the "just restart the backend" scope and reverses a
-deliberate decision. Backend NOT restarted yet (no GPU benefit until the rebuild).
+**Resolution — user approved the rebuild; GPU now active.** Two infra changes shipped:
+- `backend/Dockerfile`: torch now installs from the **default PyPI wheel (CUDA build)**
+  instead of the CPU-only index (`pip install torch`). Image grew ~3.02GB → **6.33GB**.
+- `docker-compose.yml`: added `NVIDIA_VISIBLE_DEVICES=all` +
+  `NVIDIA_DRIVER_CAPABILITIES=compute,utility` to the backend service so the nvidia
+  container runtime actually exposes the RTX 3090 (the GPU was not being passed through
+  before, even though the host default runtime is nvidia).
+
+Rebuilt and recreated **only** the backend container (`docker compose build backend`
+then `docker compose up -d --no-deps backend`). The Electron front-end, manager (999),
+all terminals, and the Postgres `db` container were left untouched — verified after:
+control-API `/state` listed all terminals alive, `db` still `Up 5 hours`, only `backend`
+recreated. No volumes were pruned or touched (the host holds many other projects' DB
+volumes — all off-limits).
+
+**Verified GPU + speedup.** In-container: `torch 2.12.1+cu130`, `cuda.is_available()`
+True, device `NVIDIA GeForce RTX 3090`. Kokoro model params load on `cuda:0` (≈578 MB
+GPU mem). Warm single-sentence synth: **0.83s on CPU → 0.05s on GPU (~16× faster)**; the
+real `POST /api/tts/speak/` endpoint returned HTTP 201 in ~0.09s. Brief TTS/voice outage
+during the backend recreate, as expected; service healthy afterward.
+
+**Activation note:** these are backend-container changes and are already live (backend
+recreated). No Electron/front-end restart was performed.
 
 **Want.** When the wake word fires and the user is about to speak a command, any
 notification currently being read aloud (Kokoro TTS) must stop immediately so the

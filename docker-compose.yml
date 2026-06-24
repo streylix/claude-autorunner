@@ -30,6 +30,11 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       DJANGO_SETTINGS_MODULE: terminal_backend.settings
+      # Expose the host NVIDIA GPU to this container (host already runs the nvidia
+      # container runtime). Lets the CUDA torch build see the RTX 3090 for Kokoro
+      # TTS / Whisper; harmless on hosts without a GPU.
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     depends_on:
       db:
         condition: service_healthy
