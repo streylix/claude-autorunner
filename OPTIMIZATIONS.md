@@ -6,6 +6,40 @@ project's current git branch.
 
 ---
 
+## 2026-06-24 — Stop chime on the silent no-speech auto-close of a wake/auto-wake window
+
+**Problem (UX gap from testing #41).** When the auto-wake listening window opens after
+a notification and the user says NOTHING, it closes on the no-speech timeout — but
+silently. There was no audible cue that capture had stopped, so the user couldn't tell
+the mic was no longer listening.
+
+**Root cause.** The "done listening" stop chime (`this.stopSound`, `hud4.wav`) was only
+played in `_onCommandRecorded` (`WakeWordManager.js`), on the path where audio is kept
+and transcribed. The no-speech timeout in `_checkVad` calls `_stopCommandCapture(true)`
+(abort=true); that routes into `_onCommandRecorded`'s discard branch, which returns
+**before** the chime line — so the silent auto-close played nothing.
+
+**Fix.** Play `_playChime(this.stopSound)` in the no-speech-timeout branch of
+`_checkVad`, immediately before the abort. Now every natural termination of the listen
+window fires the same stop sound exactly once:
+
+- Speech captured & transcribed → `_onCommandRecorded` (existing play).
+- Closed on trailing silence after speech → same transcribe path (existing play).
+- **No-speech timeout with nothing said → new play in `_checkVad` (the gap, now fixed).**
+
+**No double-play, by inspection.** The two play sites are mutually exclusive: the
+no-speech branch fires only when the user never started speaking and then aborts (whose
+discard branch returns before the transcribe-path chime); the transcribe path fires only
+on the non-abort stop. The deliberate `cancelCapture` (user taps the yellow mic) and
+`disable()` paths are intentionally left silent — they're user/system-initiated, not the
+silent auto-close this addresses.
+
+**Restart needed?** Yes — `WakeWordManager` runs in the renderer and is wired at app
+start; the new chime activates on the next Electron launch. The app was NOT restarted as
+part of this change.
+
+---
+
 ## 2026-06-24 — Auto-wake after a notification (reply without the wake word)
 
 **Want.** Make notification → reply a natural conversational turn: when a notification

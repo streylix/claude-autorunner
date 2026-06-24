@@ -406,6 +406,12 @@ class WakeWordManager {
         if (!this._heardSpeech) {
             if ((now - this._captureStartedAt) > this._noSpeechMs) {
                 this._log('🤫 No command heard — going back to listening.', 'info');
+                // Play the same "done listening" stop chime the transcribe path plays
+                // (line ~459), so the user gets audible feedback that the window closed
+                // even when they said nothing. The abort below routes through
+                // _onCommandRecorded's discard branch, which returns before that chime —
+                // so this is the ONLY place it fires on the silent no-speech close (once).
+                this._playChime(this.stopSound);
                 this._stopCommandCapture(true);
             }
             return;
