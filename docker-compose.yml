@@ -5,9 +5,9 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ccbot
-      POSTGRES_USER: ccbot
-      POSTGRES_PASSWORD: ccbot
+      POSTGRES_DB: ${POSTGRES_DB:-ccbot}
+      POSTGRES_USER: ${POSTGRES_USER:-ccbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ccbot}
     volumes:
       - ccbot-pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -21,15 +21,27 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8123:8123"
+      # Bind to loopback only. The Electron app + manager reach the backend via
+      # localhost on the host; binding 127.0.0.1 removes LAN exposure (the host
+      # bind is the only effective network boundary here — docker's userland
+      # proxy masquerades all host/LAN traffic to the same gateway IP inside the
+      # container, so an in-container IP filter cannot distinguish the two).
+      - "127.0.0.1:8123:8123"
     environment:
       # Discrete PG vars consumed by terminal_backend/settings.py.
-      POSTGRES_DB: ccbot
-      POSTGRES_USER: ccbot
-      POSTGRES_PASSWORD: ccbot
+      POSTGRES_DB: ${POSTGRES_DB:-ccbot}
+      POSTGRES_USER: ${POSTGRES_USER:-ccbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ccbot}
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       DJANGO_SETTINGS_MODULE: terminal_backend.settings
+      # Production hardening (from .env; see .env.example). DEBUG defaults to
+      # false so a missing .env still runs locked-down. SECRET_KEY must be set
+      # in .env when DEBUG=false or settings.py raises at startup.
+      DEBUG: ${DEBUG:-false}
+      SECRET_KEY: ${SECRET_KEY:-}
+      # Optional API auth; unset = current loopback-only/no-token behavior.
+      CCBOT_API_TOKEN: ${CCBOT_API_TOKEN:-}
       # Expose the host NVIDIA GPU to this container (host already runs the nvidia
       # container runtime). Lets the CUDA torch build see the RTX 3090 for Kokoro
       # TTS / Whisper; harmless on hosts without a GPU.

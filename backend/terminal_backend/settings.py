@@ -13,6 +13,8 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 from pathlib import Path
 import os
 
+from django.core.exceptions import ImproperlyConfigured
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -20,13 +22,32 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-local-dev-only')
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get('DEBUG', 'true').lower() == 'true'
+# Defaults to FALSE (locked down). Opt into debug explicitly for local dev with
+# DEBUG=true; the Docker backend sets DEBUG=false via .env / docker-compose.
+DEBUG = os.environ.get('DEBUG', 'false').lower() == 'true'
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+# SECURITY WARNING: keep the secret key secret. A real key MUST be supplied via
+# the environment when DEBUG is off; we only fall back to an insecure literal
+# for local dev (DEBUG=true) so the venv flow keeps working without setup.
+SECRET_KEY = os.environ.get('SECRET_KEY') or ''
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = 'django-insecure-local-dev-only'
+    else:
+        raise ImproperlyConfigured(
+            'SECRET_KEY environment variable is required when DEBUG is false. '
+            'Set it in .env (see .env.example).'
+        )
+
+# Host header allowlist. Env-driven (DJANGO_ALLOWED_HOSTS, comma-separated) so
+# deployments can extend it; defaults cover the localhost-only access pattern
+# used by the Electron app, the manager, and the container healthcheck.
+ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.environ.get('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+    if h.strip()
+]
 
 
 # Application definition
@@ -192,8 +213,11 @@ CORS_ALLOW_HEADERS = [
 
 # REST Framework settings
 REST_FRAMEWORK = {
+    # Defense-in-depth on top of the loopback bind. Defaults to open (AllowAny
+    # behavior) when CCBOT_API_TOKEN is unset; requires the X-CCBOT-API-Token
+    # header once that env var is set. See terminal_backend/api_security.py.
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.AllowAny',
+        'terminal_backend.api_security.TokenOrOpen',
     ],
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
@@ -203,6 +227,14 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.MultiPartParser',
         'rest_framework.parsers.FileUploadParser',
     ],
+    # Cap the CPU/GPU-bound endpoints so a runaway/abusive caller can't exhaust
+    # the single inference worker. Applied per-view (see TTSSpeakThrottle /
+    # VoiceTranscribeThrottle); rates are generous — well above normal
+    # manager/frontend bursts. GET polling endpoints are NOT throttled.
+    'DEFAULT_THROTTLE_RATES': {
+        'tts_speak': os.environ.get('THROTTLE_TTS_SPEAK', '120/min'),
+        'voice_transcribe': os.environ.get('THROTTLE_VOICE_TRANSCRIBE', '60/min'),
+    },
 }
 
 # Force synchronous execution for compatibility
