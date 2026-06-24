@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "pricing",              # ccusage pricing model (no live endpoint in Docker)
     "message_queue",        # health check pass-through
     "voice_transcription",  # audio transcribing
+    "text_to_speech",       # Kokoro TTS + spoken notifications
     "frontend_control",     # frontend log shipping API
 
     # REMOVED: admin, channels, terminal, settings, todos, user_settings

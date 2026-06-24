@@ -28,6 +28,7 @@ urlpatterns = [
     path("", include("pricing.urls")),                    # ccusage functionality
     path("api/queue/", include("message_queue.urls")),    # addmsg functionality  
     path("api/voice/", include("voice_transcription.urls")), # audio transcribing
+    path("api/tts/", include("text_to_speech.urls")),     # Kokoro TTS + notifications
     path("api/", include("frontend_control.urls")),       # frontend control API
     
     # REMOVED: admin, terminal sessions, settings, todos - all moved to frontend-only

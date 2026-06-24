@@ -31,7 +31,7 @@ function hasResumableSession(managerDir) {
 // Bump this when the role doc below changes so existing manager directories
 // (which already have a CLAUDE.md) get refreshed instead of keeping a stale
 // copy that's missing newer endpoints. The marker line is written verbatim.
-const MANAGER_MD_VERSION = 'v4';
+const MANAGER_MD_VERSION = 'v7';
 const MANAGER_MD_MARKER = `<!-- ccbot-manager-md:${MANAGER_MD_VERSION} -->`;
 
 const MANAGER_CLAUDE_MD = `${MANAGER_MD_MARKER}
@@ -216,10 +216,57 @@ alone. YOUR judgment that the work is done is the only thing that stops the loop
 be decisive. To catch terminals that are stuck (and so never fire a completion),
 schedule periodic self-checks of \`/state\` and screens.
 
+## Acknowledge instructions out loud the moment they arrive
+
+The user talks to you by voice. A message that begins with "🎙️ Voice memo from the
+user" (or is otherwise clearly a direct instruction from the user, not an automated
+completion) MUST be acknowledged **immediately, before you do anything else**, with
+a short spoken notification via the TTS endpoint below — e.g. "On it — let me take a
+look and get started." This is the conversational turn that tells the user you heard
+them; send it first, then start the actual work.
+
+Then **be vocal while you work**. Speak a brief update at each meaningful step — when
+you've understood the request and made a plan, when you spin up or hand off to a
+terminal, when something interesting comes back, and when you're done. The user is
+listening, not watching; short, frequent, plain-language updates ("Spinning up a
+terminal to build the app now", "The build is running, I'll report back when it
+passes") are how they follow along. Keep each one to a sentence or two. Don't
+narrate trivial internal steps, but err toward keeping the user in the loop.
+
+## Spoken notifications — announce completions out loud
+
+The user prefers to *hear* what happened rather than read long transcripts. When a
+terminal finishes meaningful work (especially work the user kicked off and you are
+NOT taking over), turn its last message into a short spoken notification.
+
+This is a SEPARATE service from the Control API: it lives on the local Django
+backend at \`http://localhost:8123\` and needs **no token** (do NOT send
+\`X-CCBOT-Token\` here).
+
+\`\`\`bash
+curl -s -X POST "http://localhost:8123/api/tts/speak/" \\
+  -H "Content-Type: application/json" \\
+  -d '{"text":"Terminal 3 finished the auth refactor and all tests pass.",
+       "terminal_id":3, "terminal_name":"auth-refactor"}'
+\`\`\`
+
+Rules for the spoken text:
+
+- **1-3 sentences, plain language**, written to be heard — what got done and any
+  decision the user needs to know. No code, paths, or markdown; spell things out.
+- Keep it short enough to read aloud in a few seconds; don't narrate everything.
+- **Omit \`"voice"\`** to use the user's preferred voice. You MAY override with a
+  voice id from \`GET http://localhost:8123/api/tts/voices/\` (e.g. \`"bm_george"\`)
+  to differentiate terminals, but default to omitting it.
+- The notification is read aloud automatically and shown in the user's
+  Notifications tab — so this is your primary way to keep the user informed.
+- One notification per meaningful completion. Don't announce your own internal
+  steps or trivial intermediate turns.
+
 ## Rules
 
-- All project work happens on git branches (\`auto-optimize/<date>\`), never on main —
-  enforced by the delegate agents, not you.
+- Stay on whatever git branch the project is currently on; do not create or switch
+  to a new branch for project work.
 - Require every change to be logged in plain English to \`OPTIMIZATIONS.md\` in the
   affected project's directory.
 - One focused objective per terminal; skip terminals that are running or prompted

@@ -165,6 +165,12 @@ if [ "$RUN_SETUP" == "true" ]; then
         print_status "Backend requirements verified"
     fi
 
+    # Kokoro text-to-speech (spoken notifications) needs the espeak-ng binary.
+    # The Docker image installs it automatically; the venv flow does not.
+    if ! command -v espeak-ng >/dev/null 2>&1; then
+        print_warning "espeak-ng not found — spoken notifications (Kokoro TTS) will fail. Install it: brew install espeak-ng (macOS) / apt-get install espeak-ng (Linux)."
+    fi
+
     # Run migrations if needed
     echo "🗄️  Checking database migrations..."
     python manage.py migrate --noinput 2>/dev/null
@@ -191,6 +197,12 @@ fi
 if [ ! -d "backend/venv" ]; then
     print_error "Python virtual environment not found. Please run: ./start.sh --setup"
     exit 1
+fi
+
+# Vosk wake-word model is gitignored (~39 MB); fetch it if missing.
+if [ ! -f "assets/models/vosk-model-small-en-us.tar.gz" ]; then
+    echo "🎤 Vosk wake-word model missing — downloading..."
+    npm run download-models
 fi
 
 echo "🚀 Starting Terminal GUI with Django Backend..."
@@ -305,6 +317,12 @@ else
     echo "📋 Checking backend requirements..."
     pip install -q -r requirements.txt 2>/dev/null
     print_status "Backend requirements verified"
+fi
+
+# Kokoro text-to-speech (spoken notifications) needs the espeak-ng binary.
+# The Docker image installs it automatically; the venv flow does not.
+if ! command -v espeak-ng >/dev/null 2>&1; then
+    print_warning "espeak-ng not found — spoken notifications (Kokoro TTS) will fail. Install it: brew install espeak-ng (macOS) / apt-get install espeak-ng (Linux)."
 fi
 
 # Check if .env file exists

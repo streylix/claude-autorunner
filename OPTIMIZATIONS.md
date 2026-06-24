@@ -2,7 +2,352 @@
 
 Plain-English log of improvements to the Auto-Injector control interface, driven by
 the manager (terminal 999) as product owner. Each entry is one focused change on the
-`auto-optimize/<date>` branch.
+project's current git branch.
+
+---
+
+## 2026-06-23 — Task J: Tap the yellow mic to cancel an auto-listening capture
+
+**Want.** If the wake word triggers when the user didn't mean it, tapping the (yellow)
+mic button should cancel the in-flight command capture — nothing transcribed, nothing
+sent — without disturbing the button's other two behaviors.
+
+**Where the click handler branches (renderer.js).** The single `#voice-btn` click handler
+now branches on state up front: if `wakeWordManager.isCapturing()` is true (the YELLOW
+`wake-listening` state), it calls `wakeWordManager.cancelCapture()` and **returns early** —
+so the cancel does NOT also fall through to `eventBus.emit('voice:toggle')` (no
+double-trigger, no manual recording started from the same click). Otherwise the existing
+`voice:toggle` flow runs unchanged: a tap in the NORMAL state still starts manual
+recording, a tap during the red `.recording` state still stops it.
+
+**The WakeWordManager cancel path (new).**
+- `isCapturing()` → `this.state === 'capturing'`. The renderer uses this (the authoritative
+  manager state, not just the CSS class) to decide the tap means "cancel".
+- `cancelCapture()` — no-op unless capturing; logs the cancellation, emits `wake:state`
+  `'idle'` (clears the yellow immediately), then calls the existing
+  `_stopCommandCapture(true)`. The `abort=true` flag is the key: it stops the recorder and,
+  in `_onCommandRecorded`, routes to the `if (this._abortCapture) { discard; resume; return }`
+  branch — which clears `commandChunks` and returns **before** the `transcribeBlob` /
+  `_sendToManager` calls. After that, `_resumeListening()` rebuilds the recognizer and
+  re-emits `wake:state 'listening'`, so the spotter keeps working for next time.
+
+**How nothing can be sent after a cancel.** The only transcription/send path is
+`_onCommandRecorded` → `transcribeBlob` → `_sendToManager`, and it is gated entirely behind
+`!this._abortCapture`. `cancelCapture()` sets that flag (via `_stopCommandCapture(true)`)
+*before* the recorder's async `onstop` fires, the VAD timer is cleared in the same call so
+it can't re-stop with a non-abort flag, and the captured chunks are discarded. So once
+cancelled, the recorded audio is dropped and neither Whisper nor the manager queue is ever
+reached.
+
+**Safety.** Branches only the YELLOW case; the normal/red manual paths are untouched.
+`node --check` passes on `renderer.js` and `WakeWordManager.js`. (Live mic can't be
+exercised here — to test: trigger the wake word, then tap the yellow mic mid-capture →
+the yellow clears, the action log shows "Wake capture cancelled — nothing transcribed or
+sent", and nothing is queued to the manager; a tap with the button idle still starts a
+manual recording, and a tap while red still stops it.)
+
+---
+
+## 2026-06-23 — BUGFIX (Task I): Wake word false-triggered on non-keyword speech (root cause: grammar-restricted recognizer)
+
+**Reported.** Saying "Mo" (and other random speech) triggered the wake phrase
+"miranda". The exact-phrase + average-confidence gate added earlier was NOT rejecting
+non-keyword speech.
+
+**Root cause (confirmed, not guessed).** The Vosk spotter was **grammar-restricted**.
+`_rebuildRecognizer` built `new this.model.KaldiRecognizer(16000, JSON.stringify([phrase,
+'[unk]']))`. A Kaldi recognizer constrained to a tiny grammar **snaps any incoming audio
+to the nearest in-grammar token** — so a short noise like "Mo" decoded to "miranda", and
+because that was the model's best (only) in-grammar hypothesis it came back with *high*
+confidence. That simultaneously defeated the exact-text match (the snapped text literally
+*was* "miranda") and the confidence gate (the snapped confidence was inflated). No
+threshold tuning could fix a recognizer that can only ever output the phrase.
+
+**The fix — open-vocabulary decoding + whole-word match + confidence backstop, final-only.**
+1. **Removed the grammar.** `_rebuildRecognizer` now constructs `new
+   this.model.KaldiRecognizer(16000)` (full open vocabulary). Random speech now
+   transcribes as ITSELF — "mo" → "mo", never "miranda" — so the snap-to-phrase problem
+   that caused the false positives is gone at the root. The bundled
+   `vosk-model-small-en-us` is a full model, so no new asset is needed.
+2. **Whole-word phrase match.** `_onResult` now requires the wake phrase to appear as a
+   **contiguous whole-word** sequence in the transcription (new `_findPhrase` helper),
+   not a loose substring — so "amanda"/"veranda"/"mirandaesque" don't match, and a
+   multi-word phrase like "hey claude" must appear as those two words in order.
+3. **Confidence backstop on the matched words only.** The average confidence is now
+   computed over just the matched phrase words (previously: all words), and must clear
+   `matchThreshold`. With open-vocab the confidence is meaningful again (no longer
+   inflated by grammar snapping), so it genuinely rejects mumbled near-homophones.
+4. **Final-result only.** Dropped the `partialresult` trigger (and the old `_onPartial`).
+   Partials carry no confidence and flicker through interim near-words, so triggering on
+   them fought the "never false-trigger" goal. Triggering on the final result (fired at
+   the natural pause after the wake word, before the command) costs only a little latency.
+
+**Why this hits the target (≈100% true-negative, genuine still works).** Non-keyword
+speech essentially never decodes to the exact word "miranda" as a standalone token in an
+open-vocabulary model, so it can't pass the whole-word match — the primary filter — which
+is what drives false positives to ~zero. A clear, genuine "miranda" decodes to "miranda"
+with high confidence and passes both gates. Less-clear utterances may occasionally miss
+(decode as a homophone or score under threshold), which is the deliberate accuracy-over-
+sensitivity trade the user asked for.
+
+**Strict default + working slider.** `wakeMatchThreshold` default raised **0.6 → 0.75**
+in all four places (PreferenceManager default, WakeWordManager init, the `#wake-threshold`
+slider `value` + its `75%` label, and renderer `syncWakeUI`'s fallback). The slider still
+feeds `wakeMatchThreshold` live via `_applyConfig` (clamped 0–0.95) and now meaningfully
+changes behavior because the confidence is real: raise it toward 0.95 to reject more
+borderline matches, lower it if a genuine phrase is missed.
+
+**Safety.** `node --check` passes on `WakeWordManager.js`, `PreferenceManager.js`,
+`renderer.js`; no dangling refs to the removed `_onPartial`/`partialresult`/old
+`_matchConfidence`. The manual (red) voice-recording path is untouched.
+
+**Can't validate live mic here — how to test.** Relaunch the app on this branch (renderer
+code loads at startup) with wake word enabled. Expected: saying **"Mo"** and assorted
+random words/sentences = **no activation** (watch the action log — no "Heard …" line);
+saying the real phrase **"miranda"** clearly = **activates** (chime + "Heard 'miranda'").
+If genuine detection feels too strict, lower the Wake-word strictness slider; if anything
+still slips through, raise it.
+
+---
+
+## 2026-06-23 — BUGFIX (Task H): Settings forms showed hardcoded defaults, not saved values
+
+**The bug.** Opening Settings showed the wake-phrase input as "hey claude" even though
+detection was correctly listening for the real saved phrase ("miranda" — saying it
+worked). The form was displaying the HTML/JS default, not the persisted value. The new
+sliders (wakeSilenceMs, injectionDelayMs, wakeMatchThreshold) had the same gap.
+
+**Root cause (timing).** Preferences load asynchronously: `preferenceManager.initialize()`
+(renderer.js:192) is **async and not awaited** — it does `await db-get-all-settings` and
+only then populates `preferenceManager.preferences` and emits `preferences:applied`. But
+`setupSecondaryUI` runs `syncWakeUI()` / `syncInjDelay()` **synchronously during init**, so
+they read the *constructor defaults* (`'hey claude'`, 3000, 0.6, 400). Those sync functions
+were never re-run — not on the load completing, not on settings-modal open — so the form
+stayed frozen on defaults. Detection, by contrast, reads the saved phrase because
+`WakeWordManager` subscribes to `preferences:applied` (fired after the DB load) — the exact
+event the form ignored. So form and detection diverged.
+
+**The fix (renderer.js).** Reflect the saved values at the right moments:
+1. `syncWakeUI()` now also sets the two wake-sound `<select>` values from prefs (once their
+   options exist), in addition to phrase/silence/threshold.
+2. Captured both reflectors as `this._syncVoiceSettingsForms = () => { syncWakeUI(); syncInjDelay(); }`.
+3. Subscribed it to `preferences:applied`, so when the async DB load finishes the form
+   re-reflects the real saved values.
+4. Called it again on every settings-modal **open** (`openSettings`), which covers the
+   round-trip case (change → reopen → see the change; values are kept live in
+   `preferenceManager.preferences` by `updatePreference`) and any missed load event.
+
+Saving still flows the other direction unchanged: the input `change`/`input` handlers call
+`preferenceManager.updatePreference(...)`, which persists AND emits `preference:changed`, which
+`WakeWordManager._applyConfig` consumes live — so form↔detection stay in sync both directions.
+
+**Verified each control loads its saved value:** wake phrase, wakeSilenceMs slider,
+wakeMatchThreshold slider, injectionDelayMs slider, and the two wake-sound selects all read
+from `preferenceManager.preferences` via the re-run path. The mute toggle (Task G) already
+initialized correctly — it restores via `preferences:applied` → `_applyMutedState` →
+`_updateMuteButtonUI`. The theme/sound/manager-input/TTS controls were already correct (they
+read from awaited `getPersistedSetting` values in `wireSettingsControls`, not the un-awaited
+`preferences`). `node --check` passes; the manual voice path is untouched.
+
+---
+
+## 2026-06-23 — Tasks F & G verified complete (no code change needed)
+
+**F — "Manager input" disabled blocks EVERY path to terminal 999.** Confirmed fully
+implemented: `MessageQueueManager.isManagerInputDisabled()` reads
+`appStateStore.getState('settings.managerInputEnabled')` **live at send time**; two
+enforcement points cover all paths — `canInjectToTerminal` short-circuits for tid 999
+*before* `evaluateInjectionGate` (so even **urgent** is blocked), and a universal guard at the
+top of `_injectToTerminal` (the single sink for both auto and force/"Send now") blocks the
+force path that skips the gate. The auto "terminal finished → notify manager" push is also
+suppressed at source in `ManagerInstance.onTerminalCompletion` (`!this.completionWatchEnabled`
+returns early). The renderer mirrors the toggle into `appStateStore` at load and on every
+change (immediate, no restart), and re-enabling calls `maybeAutoInject(999)` to flush held
+messages. Default = enabled.
+
+**G — Mute notifications is a real persistent toggle.** Confirmed: `#notification-mute-btn`
+is a stateful `mute-toggle` (toggles `is-muted`, sets `aria-pressed`, swaps the icon
+volume-2↔volume-x, swaps the label "Sound on"↔"Muted"). Muting pauses BOTH the spoken clip
+and the heads-up chime and the queue stops draining (`_drainQueue` guard), so ALL playback is
+silenced. State persists as the `notificationsMuted` preference and restores on
+`preferences:applied`/`preference:changed` via `_applyMutedState` (no persist, no loop) plus
+`_updateMuteButtonUI` on first toolbar render — survives restart.
+
+---
+
+## 2026-06-23 — Voice: 3s stop delay + yellow "listening" mic indicator
+
+**The problem.** With wake-word auto-listening on, the only feedback that the system
+was actively hearing your command was the activation sound — the mic button gave no
+visual cue. The red/spinner button states were wired only to the *manual* VoiceManager;
+the wake-word system emitted its own `wake:state` events but nothing in the renderer
+listened to them. The trailing-silence cutoff was also a slightly sluggish 5 seconds.
+
+**What changed.**
+
+1. **Faster stop-after-silence: 5s → 3s.** Lowered the wake-word VAD trailing-silence
+   default in all four places it lived: `WakeWordManager`'s `this.silenceMs` initializer
+   and its `wakeSilenceMs` load fallback, the settings slider's default `value` plus its
+   `3.0s` label in `index.html`, and the renderer's load-default in `syncWakeUI()`.
+   Slider min/max/step (2s–10s) were left untouched, so a user can still dial it back up.
+
+2. **Yellow "listening" + spinner feedback on the mic.** Added a `wake:state` listener in
+   `renderer.js` (right beside the existing manual `voice:button-state` listener). It maps
+   the wake-word states onto the `#voice-btn`: `capturing` (recording your command) adds a
+   new `wake-listening` class for a pulsing yellow/gold glow; `transcribing` reuses the
+   exact same `.processing` spinner the manual flow uses, so transcription looks identical
+   in both modes; `listening`/`idle`/`error` clear both classes back to normal. The state
+   strings were verified against what `WakeWordManager` actually emits.
+
+3. **Independent yellow path in CSS.** Added `.wake-listening` rules in `style.css` modeled
+   on the existing red `.recording` rules but in gold (`#f5c542`) — yellow background/border,
+   a yellow box-shadow glow, and a gentle `wake-listening-pulse` keyframe. The mic icon stays
+   visible (no spinner during capture). The red manual `.recording` path is untouched, so
+   manual (red) and auto (yellow) feedback stay fully independent.
+
+**Why it's safe.** The manual `voice:button-state` wiring and the red `.recording` CSS were
+not modified, so manual recording and its blue spinner behave exactly as before. `transcribing`
+reuses the existing `.processing` class/keyframes rather than introducing a parallel spinner.
+`node --check` passes on `renderer.js` and `WakeWordManager.js`.
+
+---
+
+## 2026-06-23 — Manager-input gating fix + a real mute toggle (Tasks F, G)
+
+Two changes, left uncommitted for review.
+
+### F. "Manager input" disabled now blocks EVERY path to the manager (999)
+
+**Root cause of the leak.** The "manager input" toggle (Notifications-tab + settings
+checkboxes `#manager-input-enabled` / `#manager-input-enabled-setting`, persisted as
+`managerCompletionWatchEnabled`, default **enabled/true**) only drove
+`ManagerInstance.setCompletionWatchEnabled`, which gates a *single* path — the auto
+"terminal finished → notify manager" push in `onTerminalCompletion`. Every other route to
+terminal 999 was ungated: the **urgent** voice-memo (`WakeWordManager` →
+`addMessage({terminalId:999, type:'urgent'})`), the `PromptWatchManager` push, normal queue
+injection, and the manager's own `/queue/add` control API. Worse, two structural bypasses let
+urgent/forced messages through even at the gate: `evaluateInjectionGate` lets **urgent bypass
+everything**, and `injectMessageNow` ("Send now"/force) **skips the gate entirely** and calls
+`_injectToTerminal` directly. So an urgent message reached the manager despite the toggle.
+
+**Fix — gate at the injection chokepoint, read live.** Added `MANAGER_TERMINAL_ID = 999` and
+`isManagerInputDisabled()` to `MessageQueueManager`; the latter reads
+`appStateStore.getState('settings.managerInputEnabled')` **at send time** (never cached;
+`undefined`/`true` = enabled, only explicit `false` disables). Two enforcement points:
+1. `canInjectToTerminal` short-circuits to `{allowed:false, reason:'manager input disabled'}`
+   for tid 999 — placed **before** `evaluateInjectionGate`, so it also blocks urgent. This
+   covers the auto path (`maybeAutoInject`), the toolbar/manual path
+   (`manualInjectNextMessage`), and the legacy `injectMessageAndContinueQueue` — all of which
+   consult `canInjectToTerminal`.
+2. A universal guard at the top of `_injectToTerminal` (the single sink for both the auto and
+   the force/"Send now" paths) — guarantees no path injects to 999 while disabled. The message
+   stays queued and flushes when re-enabled.
+
+Renderer mirrors the toggle into `appStateStore` (`settings.managerInputEnabled`) both at
+startup load and on every toggle change, so flipping it takes effect immediately with no
+restart; re-enabling also calls `maybeAutoInject(999)` to flush any held messages. The pure
+`evaluateInjectionGate` policy (and its unit tests) was deliberately left untouched.
+
+**Default kept:** enabled (`managerCompletionWatchEnabled` default `true`). **Confirmed blocked
+when disabled:** urgent voice-memo → `addMessage(999,'urgent')` → `maybeAutoInject(999)` →
+`canInjectToTerminal(999,'urgent')` returns blocked *before* the urgent bypass; force "Send now"
+→ `_injectToTerminal` top guard returns early; auto completion push → suppressed at
+`onTerminalCompletion` *and* blocked at the gate. `node --check` passes.
+
+### G. Mute notifications is now a real, persistent toggle switch
+
+**What changed.** The bare `#notification-mute-btn` icon button became a stateful toggle
+(`class="mute-toggle"`, `aria-pressed`, an icon + a `.mute-toggle-label`). New CSS gives an
+unmistakable two-state look: subdued "Sound on" (volume-2) when unmuted, filled red
+"Muted" (volume-x) when muted. `NotificationManager` was split into `_applyMutedState()`
+(applies to playback + UI, no persist — used by the restore/sync event handlers) and
+`setMuted()` (applies **and** persists by emitting `preference:update`), avoiding a feedback
+loop with `PreferenceManager`. Muting now pauses BOTH the spoken clip and the heads-up chime,
+and `_drainQueue`'s existing `this.muted` guard keeps the whole queue from draining until
+unmuted (silences ALL playback, not just the current clip). State persists under the new
+`notificationsMuted` preference (default `false`) and is restored on `preferences:applied`,
+so it survives navigation/restart; `_updateMuteButtonUI()` is also called on first toolbar
+render. `node --check` passes; the manual voice path and wake-word B/C/D work are untouched.
+
+---
+
+## 2026-06-23 — Wake word: verify the stop-delay, expose send delay, cut false positives
+
+Three changes to the voice/queue stack (Tasks B–D). All left uncommitted for review.
+
+### A. Barge-in guard — REMOVED by user decision
+
+This task originally added a self-trigger guard that muted the wake-word listener while the
+app's own TTS/NotificationManager audio played (a `tts:playback` event broadcast from
+`NotificationManager`, a `this.suppressed` flag + `_resumeTimer` and `PLAYBACK_RESUME_TAIL_MS`
+tail in `WakeWordManager`, plus detection gates). **It was fully removed at the user's request**
+because of the stuck-listening risk (if the resume signal were ever missed, the spotter could
+stay muted). False positives are instead handled by the stricter wake-word matching/threshold
+in Task D. Reverted cleanly: `NotificationManager` and `WakeWordManager` are back to their
+pre-Task-A behavior for the TTS/wake interaction, with no orphaned flags, listeners, methods,
+or constants (`grep` confirms zero references to the removed symbols).
+
+### B. Verified the "Stop after silence" slider end-to-end (and fixed the real default)
+
+**Verified wiring (already worked):** slider `#wake-silence-ms` `input` handler
+(`renderer.js:1003-1006`) updates the `#wake-silence-value` label live AND calls
+`preferenceManager.updatePreference('wakeSilenceMs', …)`, which persists
+(`PreferenceManager.updatePreference` → `savePreference`) and emits `preference:changed`.
+`WakeWordManager` subscribes and applies it **live** via `_applyConfig` →
+`this.silenceMs = Math.max(1000, …)`; the VAD consumes `this.silenceMs` to end capture.
+
+**Bug found + fixed.** `PreferenceManager`'s default still said `wakeSilenceMs: 5000`, which
+is emitted on `preferences:applied` and would override the constructor's 3000 for any fresh
+user — so the earlier "3s default" change was being defeated at the authoritative source.
+Changed that default to `3000`. Now the default is genuinely 3s everywhere.
+
+### C. Exposed the "Queue send delay" in Settings
+
+**Investigation.** The only pref-backed injection delay, `injectionDelayMs` (default 1000),
+lived in `MessageQueueManager.scheduleNextInjection`, which belongs to the **legacy** sequential
+engine that the live per-terminal parallel path (`maybeAutoInject` → `_injectToTerminal`)
+superseded — so that knob is effectively dead. The real "delay before the next queued message
+is sent to a terminal" in the live engine was the hardcoded `400ms` re-drain in
+`_finishInjection`. There was no Settings control either way, and `MessageQueueManager.preferences`
+was never populated (stayed `{}`), so even the existing consumer never read a saved value.
+
+**What changed.** Added a "Queue send delay" slider (`#injection-delay-ms`, readout
+`#injection-delay-value`, range 0–3000ms step 100, default **400** to match the existing
+hardcoded re-drain), wired in `renderer.js` to persist `injectionDelayMs` and update its label
+live. `MessageQueueManager.setupEventListeners` now mirrors `preferences:applied` /
+`preference:changed` into `this.preferences`, and `_finishInjection` reads
+`this.preferences.injectionDelayMs` (fallback 400) for the re-drain wait. Default 400 preserves
+current behavior exactly. (Bonus: populating `this.preferences` also makes the previously-dead
+`keepScreenAwake` read live.)
+
+### D. Stricter wake matching + a "Wake-word strictness" slider
+
+**Matching mechanism found.** The Vosk recognizer used a grammar restricted to
+`[phrase, '[unk]']`, and `_onPartial` fired `_onWakeDetected` on a loose **substring** match
+(`norm.includes(phrase)`) for BOTH partial and final results — no confidence check at all.
+Partial/interim hypotheses are the biggest false-positive source.
+
+**What tightened (highest-leverage).** (1) Final results now go through a new `_onResult` that
+requires an **exact** phrase match plus an **average word-confidence ≥ `matchThreshold`**
+(`setWords(true)` is requested so confidences are available; if absent it falls back to the
+exact-text match rather than blocking). (2) `_onPartial` now requires an **exact** phrase match
+instead of a substring. Both are strictly tighter than before.
+
+**New setting.** "Wake-word strictness" slider (`#wake-threshold`, readout
+`#wake-threshold-value`, range 0–0.95 step 0.05, default **0.6**, shown as a percentage),
+persisted as `wakeMatchThreshold` and applied live in `WakeWordManager._applyConfig`
+(`this.matchThreshold`, clamped 0–0.95). Higher = stricter.
+
+**Real phrase preserved.** A clearly spoken "hey claude" resolves to exactly the phrase under
+the restricted grammar with high confidence (typically ≫0.6), so it still fires; the default
+0.6 only rejects garbled, low-confidence near-matches. The slider lets the user raise strictness
+toward 0.95 if false positives persist, or lower it if their genuine phrase is missed.
+
+**Safety.** `node --check` passes on all changed files (`renderer.js`, `WakeWordManager.js`,
+`PreferenceManager.js`, `MessageQueueManager.js`; `NotificationManager.js` was reverted to
+pre-Task-A state). Could not launch the Electron app in this environment; verified by code
+inspection, syntax checks, and tracing each pref → consumer path. The manual voice path and
+red `.recording` UI remain untouched.
 
 ---
 

@@ -345,3 +345,6 @@ claudebot_internal/
 .mcp.json
 memory/
 data/
+
+# Large speech models — fetched on install via scripts/download-models.js
+assets/models/
