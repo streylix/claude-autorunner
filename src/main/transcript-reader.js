@@ -7,11 +7,56 @@
  * or miss content. Used to populate plain-English "completion" entries.
  */
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 // Read at most this much from the end of large transcripts; long sessions can
 // reach tens of MB and the last assistant message is always near the end.
 const TAIL_BYTES = 1024 * 1024;
 const MAX_TEXT_LENGTH = 8000;
+
+// Containment root for transcript reads. Claude Code stores every session
+// transcript under ~/.claude/projects/<munged-dir>/<uuid>.jsonl. The Stop-hook
+// payload's transcript_path arrives over the (token-authed but PTY-wide) HTTP
+// control API, so it is attacker-influenced: a malicious local process holding
+// CCBOT_TOKEN could POST a stop event with transcript_path pointing at, e.g.,
+// ~/.ssh/id_rsa to exfiltrate it via the completion text. We refuse to read any
+// path that does not resolve to a .jsonl file under the projects root.
+const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
+
+// Trusted containment roots. Production uses only the Claude projects dir.
+// CCBOT_TRANSCRIPT_ROOTS (path-delimited) appends extra roots — used solely by
+// the test harness to read fixtures from a temp dir; production never sets it.
+function _trustedRoots() {
+    const roots = [PROJECTS_ROOT];
+    const extra = process.env.CCBOT_TRANSCRIPT_ROOTS;
+    if (extra) roots.push(...extra.split(path.delimiter).filter(Boolean));
+    return roots.map((r) => {
+        try {
+            return fs.realpathSync(r);
+        } catch {
+            return r; // may not exist yet; reads fail naturally and return null
+        }
+    });
+}
+
+// True only if `p` resolves (following symlinks) to a .jsonl file strictly
+// inside a trusted root. realpathSync collapses `..` and symlinks, so a symlink
+// planted under a root that points outside it is rejected.
+function isTrustedTranscriptPath(p) {
+    if (!p || typeof p !== 'string') return false;
+    let real;
+    try {
+        real = fs.realpathSync(p);
+    } catch {
+        return false; // unreadable / nonexistent — nothing to contain
+    }
+    if (!real.endsWith('.jsonl')) return false;
+    return _trustedRoots().some((root) => {
+        const rel = path.relative(root, real);
+        return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+    });
+}
 
 // For the recent-messages endpoint: read a larger tail (tool_result entries can
 // be large, so a few MB is needed to cover the last ~20 conversational turns).
@@ -23,6 +68,7 @@ const RECENT_MAX_TEXT = 4000;
 // Read the last `bytes` of a file as UTF-8, or null if unreadable. The first
 // line of the result may be a partial JSON record (callers skip it on parse fail).
 function readTail(filePath, bytes) {
+    if (!isTrustedTranscriptPath(filePath)) return null;
     try {
         const stats = fs.statSync(filePath);
         const start = Math.max(0, stats.size - bytes);
@@ -62,6 +108,7 @@ function extractMessageText(record) {
  * @returns {string|null} Message text, or null if unavailable
  */
 function readLastAssistantText(transcriptPath) {
+    if (!isTrustedTranscriptPath(transcriptPath)) return null;
     let tail;
     try {
         const stats = fs.statSync(transcriptPath);
@@ -188,4 +235,4 @@ function buildTranscriptResponse(payload = {}, snapshot) {
     };
 }
 
-module.exports = { readLastAssistantText, readRecentMessages, buildTranscriptResponse };
+module.exports = { readLastAssistantText, readRecentMessages, buildTranscriptResponse, isTrustedTranscriptPath };

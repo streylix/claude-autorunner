@@ -8,6 +8,9 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+// Transcript reads are contained to ~/.claude/projects in production; allow the
+// temp-dir fixtures used here (production never sets this env var).
+process.env.CCBOT_TRANSCRIPT_ROOTS = os.tmpdir();
 const { readRecentMessages, buildTranscriptResponse } = require('./transcript-reader');
 
 function writeFixture(lines) {
@@ -76,6 +79,28 @@ test('skips malformed JSON lines without throwing', () => {
   const msgs = readRecentMessages(file, { limit: 10 });
   assert.strictEqual(msgs.length, 1);
   assert.strictEqual(msgs[0].text, 'hi');
+});
+
+// ---- path containment (arbitrary-file-read fix) ----
+
+test('isTrustedTranscriptPath contains reads to .jsonl under a trusted root', () => {
+  const { isTrustedTranscriptPath } = require('./transcript-reader');
+  // A real .jsonl under the (test-)trusted tmp root is accepted.
+  const ok = writeFixture(FIXTURE);
+  assert.strictEqual(isTrustedTranscriptPath(ok), true);
+  // A real file that is not .jsonl is rejected even under a trusted root.
+  const notJsonl = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccbot-tx-')), 'secret.txt');
+  fs.writeFileSync(notJsonl, 'nope');
+  assert.strictEqual(isTrustedTranscriptPath(notJsonl), false);
+  // A path outside any trusted root is rejected.
+  assert.strictEqual(isTrustedTranscriptPath('/etc/hostname'), false);
+  assert.strictEqual(isTrustedTranscriptPath(null), false);
+});
+
+test('readLastAssistantText refuses an out-of-root path (arbitrary file read)', () => {
+  const { readLastAssistantText } = require('./transcript-reader');
+  // Simulate the /hook-event attack: point at a sensitive file outside roots.
+  assert.strictEqual(readLastAssistantText('/etc/hostname'), null);
 });
 
 // ---- buildTranscriptResponse (resolves path from the /state snapshot) ----
