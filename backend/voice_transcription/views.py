@@ -1,7 +1,9 @@
 from rest_framework import status
-from rest_framework.decorators import api_view, parser_classes
+from rest_framework.decorators import api_view, parser_classes, throttle_classes
 from rest_framework.parsers import MultiPartParser, FileUploadParser
 from rest_framework.response import Response
+
+from terminal_backend.api_security import VoiceTranscribeThrottle
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
@@ -42,6 +44,7 @@ def _prune_transcriptions():
 
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FileUploadParser])
+@throttle_classes([VoiceTranscribeThrottle])
 def transcribe_audio(request):
     """
     Transcribe uploaded audio file
