@@ -32,7 +32,31 @@ class KokoroTTSService:
         # Guards check-and-load so concurrent requests don't build the same
         # pipeline twice or race on self.pipelines.
         self._lock = threading.Lock()
+        # Resolved once on first pipeline load (CUDA > MPS > CPU). Cached so the
+        # probe + log happen a single time.
+        self._device = None
         logger.info("Kokoro TTS service initialized (pipelines load lazily)")
+
+    def _resolve_device(self) -> str:
+        """Best available torch device for Kokoro: CUDA (NVIDIA) > MPS (Apple
+        Silicon) > CPU. So a CUDA box runs the model on GPU while a Mac/CPU host
+        falls back gracefully. torch is imported lazily and any probe failure
+        degrades to CPU rather than breaking synthesis."""
+        if self._device is not None:
+            return self._device
+        device = "cpu"
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+                device = "mps"
+        except Exception as exc:  # torch missing/old or probe error -> safe CPU
+            logger.warning(f"Device probe failed ({exc!r}); using CPU for Kokoro")
+        self._device = device
+        logger.info(f"Kokoro device resolved to {device!r}")
+        return device
 
     def _get_pipeline(self, lang_code: str):
         # Fast path: already built.
@@ -43,13 +67,19 @@ class KokoroTTSService:
             if lang_code in self.pipelines:
                 return self.pipelines[lang_code]
 
-            logger.info(f"Loading Kokoro pipeline for lang_code={lang_code!r}")
+            device = self._resolve_device()
+            logger.info(f"Loading Kokoro pipeline for lang_code={lang_code!r} on device={device!r}")
             # Imported lazily so importing this module (e.g. during migrations)
             # never pulls in torch/kokoro.
             from kokoro import KPipeline
 
-            self.pipelines[lang_code] = KPipeline(lang_code=lang_code, repo_id=REPO_ID)
-            logger.info(f"Kokoro pipeline ready for lang_code={lang_code!r}")
+            # kokoro 0.9.4 KPipeline(__init__) accepts device=; it forwards to
+            # KModel(...).to(device). Passing None would auto-pick (CUDA if a CUDA
+            # torch build sees a GPU, else CPU); we pass the explicit resolved value.
+            self.pipelines[lang_code] = KPipeline(
+                lang_code=lang_code, repo_id=REPO_ID, device=device
+            )
+            logger.info(f"Kokoro pipeline ready for lang_code={lang_code!r} on device={device!r}")
         return self.pipelines[lang_code]
 
     def synthesize(
