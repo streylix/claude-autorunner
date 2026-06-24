@@ -6,6 +6,54 @@ project's current git branch.
 
 ---
 
+## 2026-06-24 — Voice dictation: never cut off mid-speech; honor the configured silence
+
+**Want.** When you wake the assistant and speak a command, it must (1) keep listening
+for as long as you keep talking — no matter how long — and (2) stop only after the
+amount of trailing silence YOU configured ("Stop after silence", set to 3s), not some
+other number. It had been cutting off mid-sentence and taking ~5s to stop despite the
+3s setting.
+
+**Which path it was.** Traced to the in-app wake-word capture (`WakeWordManager`), not
+the Django transcription backend (which only transcribes an uploaded clip — no
+silence logic) and not the manual mic button (`VoiceManager`, which records until you
+click again — no auto-stop). The wake-word path is the one that "stops after silence"
+and sends a voice memo to the manager, matching the symptom.
+
+**Why "set 3s but ~5s".** The setting wiring is actually correct end-to-end: the
+`#wake-silence-ms` slider persists `wakeSilenceMs` and emits a live `preference:changed`
+that `WakeWordManager` applies immediately. There is no hardcoded `5000` in the path —
+the running value is 3000ms. Two real causes remained: (a) the silence clock
+(`_lastVoiceAt`) was refreshed by *every* audio frame above a fixed RMS gate, so room
+tone/breathing during natural pauses kept nudging it — the configured value behaved as
+a "minimum clean-silence gap" that drifts longer, not a wall-clock timer from when you
+stop; the same fixed gate (0.015, too high) also froze the clock during quiet trailing
+speech and clipped sentence ends; and (b) a separate hardcoded `maxCommandMs` 60s cap
+hard-stopped long speech regardless of silence. (Also: `wakeSilenceMs` was missing from
+the persisted store — consistent with the earlier stale-lock persistence freeze — so a
+post-freeze slider change wouldn't have survived a restart; that lock is now cleared.)
+
+**Change (`src/features/WakeWordManager.js`, `src/features/PreferenceManager.js`).**
+- **Unlimited duration:** removed the `maxCommandMs` cap entirely (field, the
+  `wakeMaxCommandMs` preference + its now-dead default). Long continuous speech is
+  never cut by a time limit.
+- **Silence is the sole stop:** `_checkVad` now, once speech has started, ends capture
+  *only* when `now - _lastVoiceAt > silenceMs` (the user's configured value). The only
+  other guard is a pre-speech bail (≈8s) that fires *only if you never start talking*,
+  so a stray activation can't record forever — it can never interrupt actual speech.
+- **Configured seconds = real trailing silence:** the silence clock now resets only on
+  a short *sustained* voiced run (`VOICE_RUN_FRAMES = 2`, ~170ms) instead of any single
+  frame, so isolated noise spikes during a pause can't stretch the stop past the set
+  value; and the RMS gate was lowered 0.015 → 0.010 so quiet/trailing speech still
+  registers (fixing the mid-sentence clip). Net: set 3s ⇒ stop ~3s after you actually
+  stop talking. The value still applies live (no restart) via `preference:changed`.
+
+**Verified.** `node --check` passes on both files; no remaining `maxCommandMs` /
+`wakeMaxCommandMs` references anywhere. (VAD timing behavior to be confirmed live by the
+user against a real utterance.)
+
+---
+
 ## 2026-06-24 — Stale terminals resurrecting on restart: a frozen store caused by a dead lock file
 
 **Want.** Old, unused terminals (e.g. the defunct SSH leftovers "Caltrack mobile" and

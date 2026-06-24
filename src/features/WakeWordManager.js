@@ -10,7 +10,8 @@
  *              ▼
  *     1. play activation chime           (default screenshot.wav)
  *     2. capture the command             (same mic stream + MediaRecorder)
- *        └ VAD: stop after `silenceMs` of silence, or `maxCommandMs` hard cap
+ *        └ VAD: stop ONLY after `silenceMs` of continuous trailing silence
+ *          (user-configured; no maximum-duration cap — long speech is never cut)
  *     3. play stop chime                 (default hud4.wav)
  *     4. transcribe ONCE                 (VoiceManager.transcribeBlob → Whisper)
  *     5. frame as a voice memo and queue it to the manager (terminal 999, urgent)
@@ -30,8 +31,16 @@ const MODEL_PATH = path.join(__dirname, '..', '..', 'assets', 'models', 'vosk-mo
 const SOUND_DIR = 'assets/soundeffects/'; // renderer-relative (matches SoundManager)
 
 // VAD tuning.
-const RMS_VOICE_THRESHOLD = 0.015; // frame RMS above this counts as speech
-const NO_SPEECH_TIMEOUT_MS = 8000; // if nothing is said after activation, bail
+// A frame's RMS must exceed RMS_VOICE_THRESHOLD to count toward speech. Lowered
+// from 0.015 so quiet/trailing speech still registers — a too-high gate froze the
+// silence clock mid-utterance and clipped the ends of sentences.
+const RMS_VOICE_THRESHOLD = 0.010;
+// Consecutive above-threshold frames (~85ms each @48kHz) required before audio
+// counts as the user genuinely speaking and refreshes the trailing-silence clock.
+// Rejecting lone spikes keeps "stop after N s of silence" honest: isolated room
+// noise during a pause can't keep nudging the clock and stretch the stop past N.
+const VOICE_RUN_FRAMES = 2;
+const NO_SPEECH_TIMEOUT_MS = 8000; // ONLY used before any speech: bail if the user never starts
 const FRAME_SIZE = 4096;           // ScriptProcessor buffer (~85ms @ 48kHz)
 
 class WakeWordManager {
@@ -43,8 +52,11 @@ class WakeWordManager {
         // Config (persisted as preferences; defaults below match index.html).
         this.enabled = false;
         this.phrase = 'hey claude';
+        // The ONLY thing that ends a command capture: how long of continuous
+        // trailing silence to wait after speech before stopping. User-configured
+        // via the wakeSilenceMs preference ("Stop after silence" slider). There is
+        // deliberately NO maximum-duration cap — long continuous speech is never cut.
         this.silenceMs = 3000;
-        this.maxCommandMs = 60000;
         // Minimum average word confidence (0..1) the matched phrase words in a
         // FINAL open-vocabulary recognition must reach before it counts as the wake
         // phrase. Higher = stricter / fewer false positives. Defaults to the strict
@@ -72,6 +84,7 @@ class WakeWordManager {
         this._captureStartedAt = 0;
         this._lastVoiceAt = 0;
         this._heardSpeech = false;
+        this._voiceRun = 0; // consecutive above-threshold frames (sustained-voice gate)
         this._vadTimer = null;
 
         this._setupPreferenceListeners();
@@ -98,7 +111,6 @@ class WakeWordManager {
             phraseChanged = true;
         }
         if (prefs.wakeSilenceMs != null) this.silenceMs = Math.max(1000, Number(prefs.wakeSilenceMs) || 3000);
-        if (prefs.wakeMaxCommandMs != null) this.maxCommandMs = Math.max(5000, Number(prefs.wakeMaxCommandMs) || 60000);
         if (prefs.wakeMatchThreshold != null) {
             const t = Number(prefs.wakeMatchThreshold);
             if (Number.isFinite(t)) this.matchThreshold = Math.min(0.95, Math.max(0, t));
@@ -245,8 +257,17 @@ class WakeWordManager {
             this.recognizer.acceptWaveformFloat(frame.slice(0), this.audioContext.sampleRate);
         } else if (this.state === 'capturing') {
             if (rms > RMS_VOICE_THRESHOLD) {
-                this._heardSpeech = true;
-                this._lastVoiceAt = performance.now();
+                // Require a short sustained run so a lone noise spike can't pass as
+                // speech and refresh the silence clock (which would stretch the stop
+                // past the configured seconds). Continuous speech trivially clears
+                // this and keeps _lastVoiceAt current every frame.
+                this._voiceRun++;
+                if (this._voiceRun >= VOICE_RUN_FRAMES) {
+                    this._heardSpeech = true;
+                    this._lastVoiceAt = performance.now();
+                }
+            } else {
+                this._voiceRun = 0;
             }
         }
     }
@@ -321,6 +342,7 @@ class WakeWordManager {
             this._captureStartedAt = performance.now();
             this._lastVoiceAt = performance.now();
             this._heardSpeech = false;
+            this._voiceRun = 0;
 
             const mimeType = this.gui.voiceManager
                 ? this.gui.voiceManager.getSupportedMimeType()
@@ -342,14 +364,18 @@ class WakeWordManager {
     _checkVad() {
         if (this.state !== 'capturing') return;
         const now = performance.now();
-        const elapsed = now - this._captureStartedAt;
-        if (elapsed > this.maxCommandMs) {
-            this._log('⏱️ Command hit max length — sending what I have.', 'warning');
-            this._stopCommandCapture();
-        } else if (!this._heardSpeech && elapsed > NO_SPEECH_TIMEOUT_MS) {
-            this._log('🤫 No command heard — going back to listening.', 'info');
-            this._stopCommandCapture(true);
-        } else if (this._heardSpeech && (now - this._lastVoiceAt) > this.silenceMs) {
+        // Before any speech: bail only if the user never starts, so a stray wake
+        // activation doesn't record forever. This is the ONLY pre-speech guard.
+        if (!this._heardSpeech) {
+            if ((now - this._captureStartedAt) > NO_SPEECH_TIMEOUT_MS) {
+                this._log('🤫 No command heard — going back to listening.', 'info');
+                this._stopCommandCapture(true);
+            }
+            return;
+        }
+        // After speech starts, the configurable trailing-silence is the SOLE stop —
+        // there is no maximum-duration cap, so long continuous speech is never cut.
+        if ((now - this._lastVoiceAt) > this.silenceMs) {
             this._stopCommandCapture();
         }
     }
