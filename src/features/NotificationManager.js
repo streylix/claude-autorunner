@@ -43,6 +43,13 @@ class NotificationManager {
         this.headsUp.volume = 0.5;
 
         this._setupPreferenceListeners();
+
+        // When the wake word fires (WakeWordManager → wake:state 'capturing'), the
+        // user is about to speak a command — immediately halt any in-flight spoken
+        // notification so we never talk over them.
+        this.eventBus.on('wake:state', ({ state } = {}) => {
+            if (state === 'capturing') this.stopCurrentPlayback();
+        });
     }
 
     _setupPreferenceListeners() {
@@ -172,6 +179,23 @@ class NotificationManager {
         }
         this.playing = false;
         this._drainQueue();
+    }
+
+    /**
+     * Halt any in-flight spoken notification RIGHT NOW. Wired to the wake word
+     * firing (wake:state 'capturing'): the user is about to speak and must not be
+     * talked over. Stops the current clip and the heads-up chime, and drops the
+     * autoplay backlog so a queued clip can't start over them. Notifications stay in
+     * history (rows remain, the user can replay) and the interrupted one is left
+     * un-marked-as-played; normal autoplay resumes for the next NEW notification.
+     * Independent of the persistent mute toggle — this does not change muted state.
+     */
+    stopCurrentPlayback() {
+        try { this.audio.pause(); } catch (_) {}
+        try { this.headsUp.pause(); this.headsUp.currentTime = 0; } catch (_) {}
+        this.playQueue = [];
+        this.playing = false;
+        this._currentId = null;
     }
 
     /** Explicit user replay of one row — plays now, regardless of mute/queue. */

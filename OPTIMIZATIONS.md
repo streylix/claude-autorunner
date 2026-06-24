@@ -6,6 +6,54 @@ project's current git branch.
 
 ---
 
+## 2026-06-24 — Wake word halts any in-flight spoken notification (don't talk over the user)
+
+**Want.** When the wake word fires and the user is about to speak a command, any
+notification currently being read aloud (Kokoro TTS) must stop immediately so the
+assistant isn't talking over them.
+
+**Where the audio lives.** Spoken notifications are played in the renderer by
+`NotificationManager`: a single reused `HTMLAudioElement` (`this.audio`) streams the
+clip from the Django backend (`localhost:8123` `audio_url`), preceded by a short
+heads-up chime (`this.headsUp`), with a small FIFO autoplay queue. (The backend only
+synthesizes/serves the audio; playback and timing are entirely client-side.)
+
+**Change (`src/features/NotificationManager.js`).** Added `stopCurrentPlayback()` —
+pauses the current spoken clip and the heads-up chime, clears the autoplay backlog so a
+queued clip can't immediately start over the user, and resets `playing`/`_currentId`.
+The interrupted notification is left un-marked-as-played and stays in history (the user
+can replay it); normal autoplay resumes for the next NEW notification. It does not touch
+the persistent mute toggle. Wired via the EventBus (the codebase's decoupled pattern,
+not cross-module reach-in): `WakeWordManager` already emits `wake:state` with
+`{state:'capturing'}` the instant the wake word activates command capture, so
+`NotificationManager` subscribes to `wake:state` and calls `stopCurrentPlayback()` on
+`'capturing'`. The wake activation chime (a separate WakeWordManager audio element) is
+unaffected.
+
+**Scope note.** This implements the clear "halt on wake" requirement. A second, related
+request ("…if the wake-up is currently active, do not delay to play the current
+notification…") was cut off and is deferred for manager clarification — i.e. whether to
+also SUPPRESS new notifications from autoplaying while a capture is in progress. Not done
+here; today only the in-flight readout is halted.
+
+**Activation / restart.** Renderer-module change — it takes effect on the user's **next
+manual app restart**. Per the hard constraint, the Electron app was NOT restarted (that
+would kill every terminal including the manager 999).
+
+**How to test (after the next manual restart).** (1) Trigger a spoken notification so a
+readout begins — e.g. `curl -s -X POST http://localhost:8123/api/tts/speak/ -H
+'Content-Type: application/json' -d '{"text":"This is a long test notification being
+read aloud so there is time to interrupt it."}'`. (2) While it is speaking, say the
+configured wake word. (3) Expect: the readout cuts off immediately (activation chime
+still plays, mic stays open for the command). Alternatively live-probe a freshly-loaded
+app: `window.terminalGUI.eventBus.emit('wake:state', { state: 'capturing' })` while a
+notification plays and confirm it stops.
+
+**Verified.** `node --check` passes; the `wake:state` subscription and
+`stopCurrentPlayback()` are present and wired.
+
+---
+
 ## 2026-06-24 — Manager doctrine: the dimmed autosuggestion is not the user
 
 **Want.** The manager (999) inspects terminals via `/terminal/screen` and decides
