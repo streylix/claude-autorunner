@@ -25,7 +25,7 @@
     "dist": "npm run build",
     "rebuild": "electron-rebuild",
     "download-models": "node scripts/download-models.js",
-    "postinstall": "electron-rebuild && node scripts/download-models.js"
+    "postinstall": "electron-rebuild && (node scripts/download-models.js || true)"
   },
   "build": {
     "appId": "com.auto.injector",
