@@ -6,6 +6,48 @@ project's current git branch.
 
 ---
 
+## 2026-06-24 — Stale terminals resurrecting on restart: a frozen store caused by a dead lock file
+
+**Want.** Old, unused terminals (e.g. the defunct SSH leftovers "Caltrack mobile" and
+"jade", plus orphans like "Lyra") kept reappearing after a restart even though they'd
+been deleted live. The persisted store needed to permanently match the live terminals so
+nothing dead comes back.
+
+**Root cause (the real bug).** Terminals persist to `~/.config/auto-injector/auto-injector.json`
+under `settings.terminalMetadata` (written by `renderer.js` `persistTerminalMetadata()`,
+read at launch by `restoreTerminalsAndQueue()`). The store had been **frozen since
+2026-06-11**: a stale, empty lock file `auto-injector.json.lock` (left behind ~5 minutes
+after the last good write, almost certainly a crash mid-write) was blocking every
+subsequent save. `AtomicStore.acquireLock()` creates the lock with an exclusive `wx`
+flag, so it kept hitting `EEXIST`, spun for its 15s timeout, and threw — so **no setting
+had persisted for ~13 days**. Because `createBackup()` runs *before* the lock step in
+`processQueue`, the 5-minute backups kept appearing (all identical copies of the frozen
+file), which masked the failure. Result: the store was a June-11 snapshot, the manager's
+live deletes never saved, and every restart restored the old June-11 terminal list.
+
+**Fix (no app restart needed).** Investigated read-only, backed up the store first
+(`backups/auto-injector-PRE-DBCLEAN-…json`), then moved the stale lock aside (to
+`backups/STALE-LOCK-removed-…lock`, reversible) so writes could resume. Then triggered a
+clean re-persist through the normal path — the same control API the manager uses,
+`POST /terminal/update {terminalId:1}` — which fires `persistTerminalMetadata()`. That
+rebuilds the metadata from the **live** terminals and writes it through `AtomicStore`,
+updating both the on-disk file and the main-process in-memory cache. No manual JSON
+surgery (which would have been clobbered by the cache anyway) and no restart.
+
+**Result.** Persisted `terminalMetadata` now exactly equals live state — `1=limerence`,
+`2=validate`, `3=db-fix` (manager 999 is excluded by design). Orphans gone: old
+`2=Caltrack mobile`, `6=jade`, and stale `1=Lyra` no longer exist. Verified writes are
+healthy again: the store mtime now advances on every save and the lock is created and
+released cleanly each cycle (no lingering `.lock`/`.tmp`). The cleanup is durable across
+the next restart.
+
+**Latent bug worth a code follow-up (not done here).** `AtomicStore`'s lock has no
+staleness/age check and no recovery — any crash mid-write bricks all persistence
+indefinitely and silently. Worth adding a stale-lock breaker (e.g. ignore/reclaim a lock
+older than the 15s timeout) and surfacing write failures instead of swallowing them.
+
+---
+
 ## 2026-06-23 — Task J: Tap the yellow mic to cancel an auto-listening capture
 
 **Want.** If the wake word triggers when the user didn't mean it, tapping the (yellow)
