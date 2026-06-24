@@ -6,7 +6,35 @@ project's current git branch.
 
 ---
 
-## 2026-06-24 — Wake word halts any in-flight spoken notification (don't talk over the user)
+## 2026-06-24 — Kokoro TTS device detection (CUDA > MPS > CPU)
+
+**Want.** Kokoro TTS should run on the GPU on a CUDA box (this RTX 3090 machine) and
+fall back to CPU on a Mac, instead of always CPU.
+
+**Change (`backend/text_to_speech/tts_service.py`).** Added `_resolve_device()` —
+probes torch once and returns `'cuda'` if `torch.cuda.is_available()`, else `'mps'` on
+Apple Silicon (`torch.backends.mps.is_available()`, guarded for older torch), else
+`'cpu'`; any probe failure degrades to CPU. `_get_pipeline()` now passes the resolved
+value as `KPipeline(..., device=device)`. Confirmed the installed **kokoro 0.9.4**
+`KPipeline.__init__` accepts `device: Optional[str]` (forwarded to `KModel(...).to(device)`).
+Safe and portable: no behavior change on a CPU host, GPU/MPS where available.
+
+**BLOCKER found — the container is CPU-only by design, so this resolves to CPU here.**
+The host is GPU-ready (`docker info` shows `Default Runtime: nvidia`, toolkit installed,
+RTX 3090 present), but the backend image **deliberately installs the CPU-only torch
+wheel** (`backend/Dockerfile:22`, commented "roughly halving image size") — so inside
+the container `torch` is `2.x+cpu` and `cuda.is_available()` is `False` regardless of the
+GPU. The backend code is also **baked into the image** (no code volume mount), so a plain
+`docker compose restart backend` picks up neither the GPU nor this edit.
+
+**To actually run on GPU (pending decision — NOT done yet):** switch `Dockerfile:22` to a
+CUDA torch wheel (e.g. `--index-url https://download.pytorch.org/whl/cu121 torch`) and
+**rebuild** the backend image (`docker compose up -d --build backend` — recreates ONLY
+the backend container; the Electron front-end + terminals are untouched). Tradeoffs:
+~2.5GB download and image growth from ~3GB to ~6–8GB on a disk currently at 89% (47G
+free); this reverses the documented size optimization. Flagged to the user before
+proceeding because it exceeds the "just restart the backend" scope and reverses a
+deliberate decision. Backend NOT restarted yet (no GPU benefit until the rebuild).
 
 **Want.** When the wake word fires and the user is about to speak a command, any
 notification currently being read aloud (Kokoro TTS) must stop immediately so the
