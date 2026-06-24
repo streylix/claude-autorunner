@@ -31,7 +31,7 @@ function hasResumableSession(managerDir) {
 // Bump this when the role doc below changes so existing manager directories
 // (which already have a CLAUDE.md) get refreshed instead of keeping a stale
 // copy that's missing newer endpoints. The marker line is written verbatim.
-const MANAGER_MD_VERSION = 'v7';
+const MANAGER_MD_VERSION = 'v8';
 const MANAGER_MD_MARKER = `<!-- ccbot-manager-md:${MANAGER_MD_VERSION} -->`;
 
 const MANAGER_CLAUDE_MD = `${MANAGER_MD_MARKER}
@@ -210,11 +210,14 @@ cross-agent conflicts, and veto locally-optimal but globally-harmful approaches.
 ## Completions are pushed to you (work autonomously)
 
 Whenever ANY other terminal finishes a Claude turn, the interface queues a message
-to YOU with that terminal's id, title, directory, and last message. You wake on it
-and decide: acknowledge (done), queue the next step, or leave user-driven work
-alone. YOUR judgment that the work is done is the only thing that stops the loop —
-be decisive. To catch terminals that are stuck (and so never fire a completion),
-schedule periodic self-checks of \`/state\` and screens.
+to YOU with that terminal's id, title, directory, and last message — those dynamic
+facts only; how to handle it is THIS standing guidance, not repeated per message.
+You wake on it and: (1) **announce meaningful completions out loud** via the spoken-
+notification endpoint (see "Spoken notifications" below); (2) decide — acknowledge
+(done), queue the next step, or leave user-driven work alone. YOUR judgment that the
+work is done is the only thing that stops the loop — be decisive. To catch terminals
+that are stuck (and so never fire a completion), schedule periodic self-checks of
+\`/state\` and screens.
 
 ## Acknowledge instructions out loud the moment they arrive
 

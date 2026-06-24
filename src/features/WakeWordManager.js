@@ -432,13 +432,13 @@ class WakeWordManager {
     _sendToManager(text) {
         // Frame the transcript as a voice memo so the manager treats it as the
         // user speaking aloud and acknowledges out loud before starting.
+        // Keep the "🎙️ Voice memo from the user" marker verbatim — the manager's
+        // CLAUDE.md keys off that exact phrase to acknowledge out loud first, then
+        // act. The standing how-to is NOT repeated per message.
         const framed =
-            '🎙️ Voice memo from the user (spoken aloud, transcribed automatically — '
-            + 'phrasing may be imperfect). Treat this as a direct instruction from the user. '
-            + 'Immediately send a short spoken acknowledgement via the TTS endpoint '
-            + '(POST http://localhost:8123/api/tts/speak/) confirming you are on it, '
-            + 'then begin the work and keep narrating progress out loud.\n\n'
-            + `User said: "${text}"`;
+            '🎙️ Voice memo from the user (spoken aloud, auto-transcribed — phrasing '
+            + 'may be imperfect):\n\n'
+            + `"${text}"`;
 
         if (!this.gui.messageQueueManager) {
             this._log('❌ Cannot route voice command — message queue unavailable.', 'error');

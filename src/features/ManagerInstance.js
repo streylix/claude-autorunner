@@ -60,17 +60,12 @@ class ManagerInstance {
         const title = (terminal && terminal.title) || `Terminal ${data.terminalId}`;
         const dir = data.directory ? ` in ${data.directory}` : '';
         const text = (data.text || '').trim() || '(no message text)';
+        // Dynamic facts only — how to announce/decide is standing guidance in the
+        // manager's CLAUDE.md (the "Completions are pushed to you" and "Spoken
+        // notifications" sections), so it is NOT repeated per message.
         const note =
             `Terminal ${data.terminalId} ("${title}")${dir} just finished. Its last message:\n\n` +
-            `${text}\n\n` +
-            `Announce this to the user with a spoken notification: POST a concise 1-3 sentence ` +
-            `plain-language summary of what this terminal did to ` +
-            `http://localhost:8123/api/tts/speak/ with JSON ` +
-            `{"text":"<summary>","terminal_id":${data.terminalId},"terminal_name":"${title.replace(/"/g, "'")}"}. ` +
-            `Keep it short enough to read aloud in a few seconds; omit "voice" to use the user's ` +
-            `preferred voice. Then decide whether this work is complete or needs a follow-up. If it ` +
-            `needs a next step, queue it to terminal ${data.terminalId} via the control API. If it is ` +
-            `done, or this was user-driven work you should not steer, take no further action.`;
+            `${text}`;
         this.dispatch(note);
     }
 
