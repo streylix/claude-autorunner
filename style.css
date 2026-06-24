@@ -1893,6 +1893,29 @@ button#voice-btn.voice-button.recording:hover,
     transform: scale(1.02) !important;
 }
 
+/* Wake-word (auto) Listening State - Yellow with gentle pulse. Independent of
+   the red manual `.recording` path; the mic icon stays visible (no spinner). */
+button#voice-btn.voice-button.wake-listening,
+#voice-btn.voice-button.wake-listening {
+    background-color: #f5c542 !important;
+    color: #1a1a1a !important;
+    border: 2px solid #f5c542 !important;
+    animation: wake-listening-pulse 1.4s infinite !important;
+    cursor: pointer !important;
+    box-shadow: 0 0 12px rgba(245, 197, 66, 0.6) !important;
+    z-index: 10 !important;
+    position: relative !important;
+}
+
+button#voice-btn.voice-button.wake-listening:hover,
+#voice-btn.voice-button.wake-listening:hover {
+    background-color: #f5c542 !important;
+    color: #1a1a1a !important;
+    border: 2px solid #f5c542 !important;
+    box-shadow: 0 0 18px rgba(245, 197, 66, 0.8) !important;
+    transform: scale(1.02) !important;
+}
+
 /* Processing State - blue, with a dedicated spinner ring. The button itself
    must NOT rotate (that spun the whole mic icon); instead the mic icon is
    hidden and a circular ::after spinner takes its place. */
@@ -2012,6 +2035,19 @@ button#voice-btn.voice-button.processing:hover,
         transform: scale(1);
         box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.6), 0 0 8px rgba(255, 0, 0, 0.4);
         background-color: var(--accent-error);
+    }
+}
+
+/* Wake-word (auto) listening pulse - yellow glow, gentler than recording */
+@keyframes wake-listening-pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(245, 197, 66, 0.6), 0 0 8px rgba(245, 197, 66, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 0 8px rgba(245, 197, 66, 0), 0 0 16px rgba(245, 197, 66, 0.7);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(245, 197, 66, 0), 0 0 8px rgba(245, 197, 66, 0.4);
     }
 }
 
@@ -6132,3 +6168,148 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     background: var(--bg-secondary);
     cursor: text;
 }
+
+/* ============================================================
+   Spoken Notifications tab (Kokoro TTS) — replaces Completions
+   ============================================================ */
+.notifications-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-secondary);
+}
+
+.notifications-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.notifications-toggle input { cursor: pointer; }
+
+/* Spoken-notification mute toggle: a stateful switch whose styling makes the
+   muted vs unmuted state unambiguous (icon + label + color). Default = unmuted
+   (sound on, subdued); .is-muted = muted (filled red/error). */
+.mute-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 12px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    transition: all 0.2s;
+}
+
+.mute-toggle i { width: 14px; height: 14px; }
+
+.mute-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--text-quaternary);
+}
+
+/* Muted: unmistakable "off" state. */
+.mute-toggle.is-muted {
+    background: var(--accent-error);
+    border-color: var(--accent-error);
+    color: #ffffff;
+}
+
+.mute-toggle.is-muted:hover {
+    color: #ffffff;
+    filter: brightness(1.08);
+}
+
+.notification-item {
+    background-color: var(--bg-tertiary);
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    border-left: 3px solid var(--accent-primary, var(--border-secondary));
+    transition: background-color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+
+.notification-item:hover {
+    border-color: var(--border-secondary);
+    background-color: var(--bg-secondary);
+}
+
+.notification-item.played { opacity: 0.62; }
+
+.notification-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.notification-terminal {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.notification-voice {
+    color: var(--text-tertiary);
+    font-size: 10px;
+    text-transform: lowercase;
+}
+
+.notification-time {
+    color: var(--text-tertiary);
+    font-size: 10px;
+    flex-shrink: 0;
+}
+
+.notification-text {
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+    word-wrap: break-word;
+}
+
+.notification-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 6px;
+}
+
+.notification-replay-btn {
+    background: transparent;
+    border: 1px solid var(--border-secondary);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    width: 26px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.notification-replay-btn:hover {
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.notification-replay-btn i { width: 14px; height: 14px; }

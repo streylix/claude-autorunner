@@ -38,8 +38,8 @@
                         <button class="icon-btn sidebar-nav-btn active" id="action-log-nav-btn" title="Action Log" data-test-id="action-log-nav-btn">
                             <i data-lucide="scroll-text"></i>
                         </button>
-                        <button class="icon-btn sidebar-nav-btn" id="todo-nav-btn" title="Completions" data-test-id="todo-nav-btn">
-                            <i data-lucide="list-checks"></i>
+                        <button class="icon-btn sidebar-nav-btn" id="todo-nav-btn" title="Notifications" data-test-id="todo-nav-btn">
+                            <i data-lucide="bell"></i>
                         </button>
                         <button class="icon-btn sidebar-nav-btn" id="pricing-nav-btn" title="Pricing" data-test-id="pricing-nav-btn">
                             <i data-lucide="dollar-sign"></i>
@@ -69,18 +69,32 @@
                     </div>
                 </div>
 
-                <!-- Completions View -->
+                <!-- Notifications View -->
                 <div class="sidebar-view" id="todo-view" style="display: none;">
                     <div class="todo-search">
-                        <input type="text" id="todo-search" placeholder="Search todos..." class="log-search-input">
+                        <input type="text" id="todo-search" placeholder="Search notifications..." class="log-search-input">
                         <button class="icon-btn" id="todo-search-clear-btn" title="Clear search" data-test-id="todo-search-clear-btn">
                             <i data-lucide="x"></i>
                         </button>
                     </div>
+                    <div class="notifications-toolbar">
+                        <label class="notifications-toggle" title="Pause/resume completion messages routed to the manager">
+                            <input type="checkbox" id="manager-input-enabled" checked>
+                            <span>Manager input</span>
+                        </label>
+                        <button class="mute-toggle" id="notification-mute-btn" title="Mute / unmute all spoken notifications" data-test-id="notification-mute-btn" aria-pressed="false">
+                            <i data-lucide="volume-2"></i>
+                            <span class="mute-toggle-label">Sound on</span>
+                        </button>
+                    </div>
                     <div class="todo-content" id="todo-list">
-                        <!-- Completion items will be dynamically added here -->
+                        <!-- Notification items are rendered here by NotificationManager -->
                     </div>
                     <div class="sidebar-footer">
+                        <button class="footer-btn" id="clear-notifications-btn" title="Clear all notifications" data-test-id="clear-notifications-btn">
+                            <i data-lucide="eraser"></i>
+                            Clear all notifications
+                        </button>
                     </div>
                 </div>
 
@@ -470,6 +484,20 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Queue Send Delay -->
+                <div class="setting-group">
+                    <label class="setting-label">
+                        <span class="setting-title">Queue send delay</span>
+                    </label>
+                    <p class="setting-description">How long to wait after a terminal becomes free before the next queued message is auto-injected into it.</p>
+                    <div class="sound-category">
+                        <label class="sound-category-label">Send delay: <span id="injection-delay-value">0.4s</span></label>
+                        <input type="range" id="injection-delay-ms" min="0" max="3000" step="100" value="400" class="setting-range">
+                        <p class="setting-help">Lower sends queued messages faster; higher leaves more breathing room between sends.</p>
+                    </div>
+                </div>
+
                 <!-- Voice Input Settings -->
                 <div class="setting-group">
                     <label class="setting-label">
@@ -481,19 +509,97 @@
                     <p class="setting-description">Input device used for voice transcription. If recordings come back silent, pick your actual microphone here.</p>
                 </div>
 
-                <!-- Todo Generation Settings -->
+                <!-- Wake Word ("Hey Claude") Settings -->
                 <div class="setting-group">
                     <div class="setting-header">
-                        <span class="setting-title">Todo Generation</span>
+                        <span class="setting-title">Wake Word</span>
                     </div>
-                    <p class="setting-description">Keep a per-terminal record of what Claude did, built from the hook events Claude fires when it finishes a turn.</p>
+                    <p class="setting-description">Always-on voice activation. Say your wake phrase, wait for the chime, then speak your command — after a pause it's transcribed and sent to the manager as a voice memo. Works even when this window is hidden.</p>
 
                     <div class="setting-row">
                         <label class="setting-label">
-                            <input type="checkbox" id="automatic-todo-generation">
-                            <span class="setting-text">Automatic todo generation</span>
+                            <input type="checkbox" id="wake-word-enabled">
+                            <span class="setting-text">Listen for the wake word</span>
                         </label>
-                        <p class="setting-help">When on, each completed Claude turn is logged to the Completions list. Turn off to stop recording new entries.</p>
+                        <p class="setting-help">Keeps the microphone open and runs a local, offline spotter (Vosk). Nothing leaves your machine until the wake word fires.</p>
+                    </div>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">Wake phrase</label>
+                        <input type="text" id="wake-word-phrase" class="setting-input" value="hey claude" placeholder="hey claude">
+                        <p class="setting-help">The phrase that activates listening. Lowercase, common words work best (the spotter is restricted to exactly this phrase).</p>
+                    </div>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">Stop after silence: <span id="wake-silence-value">3.0s</span></label>
+                        <input type="range" id="wake-silence-ms" min="2000" max="10000" step="500" value="3000" class="setting-range">
+                        <p class="setting-help">How long a pause ends your command and sends it.</p>
+                    </div>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">Wake-word strictness: <span id="wake-threshold-value">75%</span></label>
+                        <input type="range" id="wake-threshold" min="0" max="0.95" step="0.05" value="0.75" class="setting-range">
+                        <p class="setting-help">Higher = stricter matching and fewer false activations (the spotter must be more confident it heard the phrase). Lower it if your real wake word stops being detected.</p>
+                    </div>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">Activation sound</label>
+                        <select id="wake-activation-sound" class="setting-select" data-test-id="wake-activation-sound">
+                            <option value="screenshot.wav">screenshot.wav</option>
+                        </select>
+                        <p class="setting-help">Plays when the wake word is heard and it starts listening for your command.</p>
+                    </div>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">End-of-command sound</label>
+                        <select id="wake-stop-sound" class="setting-select" data-test-id="wake-stop-sound">
+                            <option value="hud4.wav">hud4.wav</option>
+                        </select>
+                        <p class="setting-help">Plays when it stops listening and sends your command.</p>
+                    </div>
+                </div>
+
+                <!-- Spoken Notifications (Kokoro TTS) Settings -->
+                <div class="setting-group">
+                    <div class="setting-header">
+                        <span class="setting-title">Spoken Notifications</span>
+                    </div>
+                    <p class="setting-description">The manager turns terminal completions into short spoken summaries (Kokoro text-to-speech) that show in the Notifications tab and read out automatically.</p>
+
+                    <div class="setting-row">
+                        <label class="setting-label">
+                            <input type="checkbox" id="tts-autoplay-enabled" checked>
+                            <span class="setting-text">Read notifications aloud</span>
+                        </label>
+                        <p class="setting-help">When on, new notifications play automatically. Turn off to only show them in the list (replay any row by hand).</p>
+                    </div>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">Preferred Voice</label>
+                        <div class="sound-selection-row">
+                            <select id="tts-voice-select" class="setting-select" data-test-id="tts-voice-select">
+                                <option value="af_heart">Heart (US ♀)</option>
+                            </select>
+                            <button type="button" id="test-tts-voice-btn" class="setting-btn setting-btn-small" data-test-id="test-tts-voice-btn">
+                                <i data-lucide="volume-2"></i>
+                                Test
+                            </button>
+                        </div>
+                        <p class="setting-help">Default voice used when the manager doesn't pick one. The manager may still choose a different voice per notification.</p>
+                    </div>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">Playback Speed: <span id="tts-playback-speed-value">1.3×</span></label>
+                        <input type="range" id="tts-playback-speed" min="0.75" max="2" step="0.05" value="1.3" class="setting-range">
+                        <p class="setting-help">How fast notifications are read back. Applied on playback, so it changes existing notifications too.</p>
+                    </div>
+
+                    <div class="setting-row">
+                        <label class="setting-label">
+                            <input type="checkbox" id="manager-input-enabled-setting" checked>
+                            <span class="setting-text">Send completions to manager</span>
+                        </label>
+                        <p class="setting-help">When on, every terminal that finishes is reported to the manager (which decides what to announce). Turn off on the fly when the volume gets overwhelming.</p>
                     </div>
                 </div>
 
@@ -550,30 +656,6 @@
         </div>
     </div>
 
-    <!-- Completion Details Modal -->
-    <div id="completion-details-modal" class="modal completion-modal">
-        <div class="modal-content completion-modal-content">
-            <div class="modal-header completion-modal-header">
-                <div class="completion-modal-title" id="completion-modal-title">
-                    # claudecodebot • #6
-                </div>
-                <div class="completion-modal-status">
-                    <svg class="status-icon completed-icon" width="18" height="18" viewBox="0 0 18 18" id="completion-modal-status-icon">
-                        <path d="M15.464 4.101a.562.562 0 0 1 0 .796l-7.875 7.875a.562.562 0 0 1-.796 0l-3.937-3.937a.562.562 0 1 1 .796-.796L7.313 11.579l7.355-7.478a.562.562 0 0 1 .796 0z"/>
-                    </svg>
-                </div>
-                <button class="modal-close completion-modal-close" id="completion-modal-close" title="Close completion details">&times;</button>
-            </div>
-            <div class="modal-body completion-modal-body">
-                <div class="completion-modal-prompt" id="completion-modal-prompt">
-                    > Create a new React component for user authentication with login and signup forms
-                </div>
-                <div class="completion-modal-output" id="completion-modal-output">
-                    <!-- Terminal output will be displayed here -->
-                </div>
-            </div>
-        </div>
-    </div>
 
     <!-- Hotkey Dropdown -->
     <div id="hotkey-dropdown" class="hotkey-dropdown">
@@ -644,7 +726,6 @@
     <script src="src/audio/microwave-mode.js"></script>
     <script src="utils/api-client.js"></script>
     <script src="utils/completion-timer.js"></script>
-    <script src="utils/completion-modal.js"></script>
     <script src="renderer.js"></script>
     <script src="src/utils/microwave-init.js"></script>
 </body>

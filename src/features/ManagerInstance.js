@@ -63,10 +63,31 @@ class ManagerInstance {
         const note =
             `Terminal ${data.terminalId} ("${title}")${dir} just finished. Its last message:\n\n` +
             `${text}\n\n` +
-            `Decide whether this work is complete or needs a follow-up. If it needs a next ` +
-            `step, queue it to terminal ${data.terminalId} via the control API. If it is done, ` +
-            `or this was user-driven work you should not steer, do nothing.`;
+            `Announce this to the user with a spoken notification: POST a concise 1-3 sentence ` +
+            `plain-language summary of what this terminal did to ` +
+            `http://localhost:8123/api/tts/speak/ with JSON ` +
+            `{"text":"<summary>","terminal_id":${data.terminalId},"terminal_name":"${title.replace(/"/g, "'")}"}. ` +
+            `Keep it short enough to read aloud in a few seconds; omit "voice" to use the user's ` +
+            `preferred voice. Then decide whether this work is complete or needs a follow-up. If it ` +
+            `needs a next step, queue it to terminal ${data.terminalId} via the control API. If it is ` +
+            `done, or this was user-driven work you should not steer, take no further action.`;
         this.dispatch(note);
+    }
+
+    /**
+     * Live on/off for routing terminal completions to the manager. The user can
+     * flip this from the Notifications tab / settings when the volume gets
+     * overwhelming; the completion:recorded subscription stays wired and is
+     * gated here at fire time (see onTerminalCompletion).
+     */
+    setCompletionWatchEnabled(enabled) {
+        this.completionWatchEnabled = !!enabled;
+        try {
+            this.eventBus.emit('log:action', {
+                message: `Manager input ${this.completionWatchEnabled ? 'enabled' : 'paused'} — completions ${this.completionWatchEnabled ? 'will be' : 'will not be'} sent to the manager`,
+                type: 'info',
+            });
+        } catch (_) { /* ignore */ }
     }
 
     // ======= RECURRING OPTIMIZATION PASSES =======

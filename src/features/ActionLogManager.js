@@ -17,7 +17,7 @@ const SHIP_CIRCUIT_MS = 60000; // back off this long after a failed ship
 
 const VIEWS = {
     'action-log-nav-btn': { viewId: 'action-log-view', title: 'Action Log' },
-    'todo-nav-btn': { viewId: 'todo-view', title: 'Completions' },
+    'todo-nav-btn': { viewId: 'todo-view', title: 'Notifications' },
     'pricing-nav-btn': { viewId: 'pricing-view', title: 'Token Usage & Costs' },
     'manager-nav-btn': { viewId: 'manager-view', title: 'Manager' }
 };

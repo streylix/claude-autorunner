@@ -21,6 +21,14 @@ openai-whisper
 torch>=2.2.0
 ffmpeg-python==0.2.0
 
+# Text-to-speech (Kokoro-82M). Reuses the CPU torch wheel above. kokoro pulls
+# misaki[en] (g2p) + spacy; the Dockerfile installs the espeak-ng + libsndfile
+# system libs and pre-downloads the en_core_web_sm spacy model. soundfile
+# writes the synthesized WAVs. The ~330MB Kokoro weights download from the HF
+# Hub on first synthesis (warm them via GET /api/tts/health/).
+kokoro==0.9.4
+soundfile==0.13.1
+
 # Database
 # Postgres driver, used only when DATABASE_URL / PG* env vars are set.
 # Falls back to the bundled sqlite config when those are absent.

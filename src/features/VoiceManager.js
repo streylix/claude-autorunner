@@ -264,35 +264,39 @@ class VoiceManager {
         }
     }
     
+    // Upload an audio blob to the Whisper backend and return the transcript
+    // text (trimmed; '' if no speech). Shared by the voice button and the
+    // wake-word command capture so the network path lives in one place.
+    async transcribeBlob(audioBlob, mimeType = 'audio/webm') {
+        // Name the upload by its real container — the backend derives its
+        // temp-file suffix from this name, and MediaRecorder produces
+        // webm/ogg/mp4 here, never an actual WAV.
+        const ext = (/audio\/(\w+)/.exec(audioBlob.type || mimeType) || [, 'webm'])[1];
+        const formData = new FormData();
+        // Field name must match the backend serializer (audio_file = FileField()).
+        formData.append('audio_file', audioBlob, `recording.${ext}`);
+
+        const response = await fetch('http://localhost:8123/api/voice/transcribe/', {
+            method: 'POST',
+            body: formData
+        });
+        if (!response.ok) {
+            throw new Error(`Transcription failed: ${await response.text()}`);
+        }
+        const data = await response.json();
+        return (data.text || '').trim();
+    }
+
     async transcribeAudio(audioBlob, mimeType = 'audio/webm') {
         try {
             if (!this.backendAPIClient) {
                 throw new Error('Backend API client not initialized');
             }
 
-            // Name the upload by its real container — the backend derives its
-            // temp-file suffix from this name, and MediaRecorder produces
-            // webm/ogg/mp4 here, never an actual WAV.
-            const ext = (/audio\/(\w+)/.exec(audioBlob.type || mimeType) || [, 'webm'])[1];
-            const formData = new FormData();
-            // Field name must match the backend serializer (audio_file = FileField()).
-            formData.append('audio_file', audioBlob, `recording.${ext}`);
-            
-            // Call backend transcription endpoint
-            const response = await fetch('http://localhost:8123/api/voice/transcribe/', {
-                method: 'POST',
-                body: formData
-            });
-            
-            if (!response.ok) {
-                const error = await response.text();
-                throw new Error(`Transcription failed: ${error}`);
-            }
-            
-            const data = await response.json();
-            
-            if (data.text && data.text.trim()) {
-                this.handleTranscriptionSuccess(data.text.trim());
+            const text = await this.transcribeBlob(audioBlob, mimeType);
+
+            if (text) {
+                this.handleTranscriptionSuccess(text);
             } else {
                 this.eventBus.emit('log:action', {
                     message: '⚠️ No speech detected in recording',

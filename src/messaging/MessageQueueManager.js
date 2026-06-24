@@ -2,6 +2,11 @@ const ValidationUtils = require('../utils/validation');
 const { BoundedSet, BoundedArray } = require('../utils/bounded-collections');
 const { evaluateInjectionGate } = require('./injection-gate');
 
+// The hidden manager instance lives on this terminal id. When "manager input"
+// is disabled, NOTHING (normal, urgent, force, or the auto completion push) may
+// be injected here until it is re-enabled.
+const MANAGER_TERMINAL_ID = 999;
+
 /**
  * MessageQueueManager - Centralized message queue and injection system
  * 
@@ -97,6 +102,17 @@ class MessageQueueManager {
     }
     
     setupEventListeners() {
+        // Keep our local preferences mirror populated so consumers like the
+        // queue send delay (injectionDelayMs) and keepScreenAwake actually read
+        // the user's saved values. Without these, this.preferences stayed {} and
+        // every read fell through to its hardcoded default.
+        this.eventBus.on('preferences:applied', (prefs) => {
+            if (prefs) this.preferences = { ...this.preferences, ...prefs };
+        });
+        this.eventBus.on('preference:changed', ({ key, value } = {}) => {
+            if (key != null) this.preferences[key] = value;
+        });
+
         // Listen for timer events
         this.eventBus.on('timer:expired', () => {
             this.handleTimerExpired();
@@ -264,6 +280,15 @@ class MessageQueueManager {
      * for the duration so a second message can't pile in on top of it.
      */
     _injectToTerminal(message, terminalId) {
+        // Universal manager-input guard. canInjectToTerminal already blocks the
+        // auto path, but injectMessageNow ("Send now" / force) bypasses the gate
+        // entirely — so re-check here, the single sink every injection flows
+        // through, to guarantee a disabled manager (999) is never reached by ANY
+        // path. The message stays queued and flushes once input is re-enabled.
+        if (terminalId === MANAGER_TERMINAL_ID && this.isManagerInputDisabled()) {
+            this.logAction('Manager input disabled — message held, not injected to the manager (999)', 'info');
+            return;
+        }
         this.currentlyInjectingTerminals.add(terminalId);
         this.currentlyInjectingMessages.add(message.id);
         this.eventBus.emit('message:injection-started', { messageId: message.id, terminalId });
@@ -301,7 +326,12 @@ class MessageQueueManager {
         // Drain the next message for this same terminal once it settles. If the
         // terminal goes 'running' (Claude is working), the gate blocks here and
         // terminal:status:changed re-triggers maybeAutoInject when it idles.
-        setTimeout(() => this.maybeAutoInject(terminalId), 400);
+        // The wait is the user-tunable "queue send delay" (injectionDelayMs);
+        // default 400 preserves the previous hardcoded spacing.
+        const sendDelayMs = (this.preferences && this.preferences.injectionDelayMs != null)
+            ? Math.max(0, Number(this.preferences.injectionDelayMs))
+            : 400;
+        setTimeout(() => this.maybeAutoInject(terminalId), sendDelayMs);
     }
 
     /**
@@ -325,6 +355,19 @@ class MessageQueueManager {
         this._injectToTerminal(message, tid);
     }
 
+    /**
+     * Live read of the "manager input" toggle. Read at SEND time (never cached)
+     * so flipping it in the UI takes effect immediately. Default = enabled:
+     * undefined/true mean enabled; only an explicit `false` disables. Mirrors the
+     * managerCompletionWatchEnabled preference into settings.managerInputEnabled.
+     */
+    isManagerInputDisabled() {
+        const v = this.appStateStore
+            ? this.appStateStore.getState('settings.managerInputEnabled')
+            : undefined;
+        return v === false;
+    }
+
     canInjectToTerminal(terminalId, messageType = 'normal') {
         // Gather live state; the policy (precedence, the bare-shell P4 guard, and
         // the urgent status-gate bypass) lives in evaluateInjectionGate.
@@ -332,6 +375,12 @@ class MessageQueueManager {
         // value means no live Claude session, so a prompt would run as shell
         // commands - the gate refuses it regardless of priority.
         const tid = terminalId != null ? terminalId : this.activeTerminalId;
+        // Manager-input gate: blocks the manager terminal (999) for EVERY message
+        // type, deliberately ahead of evaluateInjectionGate's urgent bypass so a
+        // disabled manager can't be reached even by urgent/voice-memo messages.
+        if (tid === MANAGER_TERMINAL_ID && this.isManagerInputDisabled()) {
+            return { allowed: false, reason: 'manager input disabled' };
+        }
         const terminal = (tid != null && this.terminalStateManager)
             ? this.terminalStateManager.getTerminal(tid)
             : null;

@@ -18,7 +18,7 @@ const InjectionManager = require('./src/messaging/injection-manager');
 
 // Import feature managers
 const StatusManager = require('./src/features/StatusManager');
-const CompletionManager = require('./src/features/CompletionManager');
+const NotificationManager = require('./src/features/NotificationManager');
 const UsageLimitManager = require('./src/features/UsageLimitManager');
 const VoiceManager = require('./src/features/VoiceManager');
 const SoundManager = require('./src/features/SoundManager');
@@ -27,6 +27,7 @@ const TimerManager = require('./src/features/TimerManager');
 const ActionLogManager = require('./src/features/ActionLogManager');
 const ManagerInstance = require('./src/features/ManagerInstance');
 const PromptWatchManager = require('./src/features/PromptWatchManager');
+const WakeWordManager = require('./src/features/WakeWordManager');
 const UIFocusManager = require('./src/ui/UIFocusManager');
 
 // Import utilities
@@ -146,7 +147,7 @@ class TerminalGUI {
     initializeFeatures() {
         // Initialize all feature managers
         this.statusManager = new StatusManager(this.eventBus, this.appStateStore);
-        this.completionManager = new CompletionManager(this.eventBus, this.appStateStore, this.ipcHandler);
+        this.notificationManager = new NotificationManager(this.eventBus, this.appStateStore);
         this.usageLimitManager = new UsageLimitManager(this.eventBus, this.appStateStore);
         this.voiceManager = new VoiceManager(this.eventBus, this.appStateStore);
         this.soundManager = new SoundManager(this.eventBus, this.appStateStore);
@@ -166,6 +167,10 @@ class TerminalGUI {
         // and pushes an "awaiting input" note to the manager (999). Subscribes
         // to terminal:status:changed on construction.
         this.promptWatchManager = new PromptWatchManager(this.eventBus, this.appStateStore, this);
+
+        // Always-on "Hey Claude" wake word → records a command → routes it to
+        // the manager (999) as a voice memo. Off until enabled in settings.
+        this.wakeWordManager = new WakeWordManager(this.eventBus, this.appStateStore, this);
 
         // The injection gate (R3) blocks while a countdown is armed, so the
         // queue needs a handle on the timer to call isRunning().
@@ -536,18 +541,6 @@ class TerminalGUI {
             emptyNewBtn.addEventListener('click', () => this.createTerminal());
         }
 
-        // Todo Generation toggle: gates the hook-driven per-terminal completion
-        // record (CompletionManager.recordHookCompletion). DOM id differs from
-        // the preference key (generateTodoOnCompletion) — the binding maps them.
-        const todoGenCheckbox = document.getElementById('automatic-todo-generation');
-        if (todoGenCheckbox) {
-            todoGenCheckbox.addEventListener('change', (e) => {
-                this.eventBus.emit('preference:update', {
-                    key: 'generateTodoOnCompletion',
-                    value: e.target.checked
-                });
-            });
-        }
 
         // Message queue controls
         const messageInput = document.getElementById('message-input');
@@ -698,22 +691,6 @@ class TerminalGUI {
         // cwd changes (cwd hook → terminal:directory).
         this.eventBus.on('terminal:directory', ({ terminalId }) => {
             if (terminalId === this.activeTerminalId) this.updateStatusBar(terminalId);
-        });
-
-        // CompletionManager asks for a terminal's live data (synchronously, via a
-        // callback) when rendering a todo and its output panel. Nothing answered
-        // this request before, so the callback never fired: terminalData stayed
-        // null and every todo showed "No terminal output available" with a default
-        // colour/name. Resolve it from the terminal state store.
-        this.eventBus.on('completion:request:terminalData', ({ terminalId, callback }) => {
-            if (typeof callback !== 'function') return;
-            const t = this.terminalStateManager.getTerminal(parseInt(terminalId, 10));
-            if (!t) return;
-            callback({
-                lastOutput: t.lastOutput || '',
-                color: t.color || this.getTerminalColor(terminalId),
-                name: t.title || `Terminal ${terminalId}`,
-            });
         });
 
         // Collapsible right-sidebar panels (Status, Timer) with persistence
@@ -912,6 +889,9 @@ class TerminalGUI {
         const openSettings = () => {
             if (settingsModal) settingsModal.classList.add('show');
             this.populateMicrophoneSelect();
+            // Re-reflect saved voice/wake/delay values on open (covers round-trip:
+            // change a setting, reopen, see the change; and any missed load event).
+            if (this._syncVoiceSettingsForms) this._syncVoiceSettingsForms();
         };
         const closeSettings = () => { if (settingsModal) settingsModal.classList.remove('show'); };
         if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
@@ -980,6 +960,103 @@ class TerminalGUI {
             });
         }
 
+        // ---- Queue send delay (injectionDelayMs) ----
+        // Delay after a terminal becomes free before its next queued message is
+        // auto-injected; consumed by MessageQueueManager._finishInjection.
+        const injDelay = document.getElementById('injection-delay-ms');
+        const injDelayVal = document.getElementById('injection-delay-value');
+        const syncInjDelay = () => {
+            const ms = this.preferenceManager.preferences.injectionDelayMs;
+            const v = ms != null ? ms : 400;
+            if (injDelay) injDelay.value = v;
+            if (injDelayVal) injDelayVal.textContent = `${(v / 1000).toFixed(1)}s`;
+        };
+        syncInjDelay();
+        if (injDelay) injDelay.addEventListener('input', () => {
+            const v = parseInt(injDelay.value, 10);
+            if (injDelayVal) injDelayVal.textContent = `${(v / 1000).toFixed(1)}s`;
+            this.preferenceManager.updatePreference('injectionDelayMs', v);
+        });
+
+        // ---- Wake word ("Hey Claude") ----
+        const wakeEnabled = document.getElementById('wake-word-enabled');
+        const wakePhrase = document.getElementById('wake-word-phrase');
+        const wakeSilence = document.getElementById('wake-silence-ms');
+        const wakeSilenceVal = document.getElementById('wake-silence-value');
+        const wakeThreshold = document.getElementById('wake-threshold');
+        const wakeThresholdVal = document.getElementById('wake-threshold-value');
+        const wakeActSound = document.getElementById('wake-activation-sound');
+        const wakeStopSound = document.getElementById('wake-stop-sound');
+
+        // Reflect persisted prefs into the controls when the settings open.
+        const syncWakeUI = () => {
+            const p = this.preferenceManager.preferences;
+            if (wakeEnabled) wakeEnabled.checked = !!p.wakeWordEnabled;
+            if (wakePhrase) wakePhrase.value = p.wakeWordPhrase || 'hey claude';
+            if (wakeSilence) wakeSilence.value = p.wakeSilenceMs || 3000;
+            if (wakeSilenceVal) wakeSilenceVal.textContent = `${((p.wakeSilenceMs || 3000) / 1000).toFixed(1)}s`;
+            const thr = p.wakeMatchThreshold != null ? p.wakeMatchThreshold : 0.75;
+            if (wakeThreshold) wakeThreshold.value = thr;
+            if (wakeThresholdVal) wakeThresholdVal.textContent = `${Math.round(thr * 100)}%`;
+            // Reflect the persisted wake sound choices too, but only once their
+            // <option>s exist (they're populated asynchronously below).
+            if (wakeActSound && wakeActSound.options.length) wakeActSound.value = p.wakeActivationSound || 'screenshot.wav';
+            if (wakeStopSound && wakeStopSound.options.length) wakeStopSound.value = p.wakeStopSound || 'hud4.wav';
+        };
+        // Populate the sound dropdowns from the real soundeffects folder, then
+        // select the persisted choices (falling back to the fixed defaults).
+        ipcRenderer.invoke('get-sound-effects').then((files) => {
+            const list = Array.isArray(files) ? files : [];
+            [[wakeActSound, 'wakeActivationSound', 'screenshot.wav'], [wakeStopSound, 'wakeStopSound', 'hud4.wav']]
+                .forEach(([sel, key, def]) => {
+                    if (!sel) return;
+                    const chosen = this.preferenceManager.preferences[key] || def;
+                    sel.innerHTML = '';
+                    (list.length ? list : [def]).forEach((f) => {
+                        const o = document.createElement('option');
+                        o.value = f; o.textContent = f;
+                        if (f === chosen) o.selected = true;
+                        sel.appendChild(o);
+                    });
+                });
+        }).catch(() => {});
+        syncWakeUI();
+
+        // The saved values arrive asynchronously — preferenceManager.initialize()
+        // (the DB load) runs AFTER this wiring and is not awaited, so the first
+        // syncWakeUI()/syncInjDelay() above read constructor defaults. Without
+        // re-reflecting, the form stayed frozen on the hardcoded HTML defaults
+        // (e.g. the wake phrase showed "hey claude" while detection used the real
+        // saved phrase). Re-reflect every voice/wake/delay control both when the
+        // persisted prefs finish loading and on each settings-modal open, so the
+        // form always shows what the system actually uses.
+        this._syncVoiceSettingsForms = () => { syncWakeUI(); syncInjDelay(); };
+        this.eventBus.on('preferences:applied', () => this._syncVoiceSettingsForms());
+
+        if (wakeEnabled) wakeEnabled.addEventListener('change', () => {
+            this.preferenceManager.updatePreference('wakeWordEnabled', wakeEnabled.checked);
+        });
+        if (wakePhrase) wakePhrase.addEventListener('change', () => {
+            const v = wakePhrase.value.trim().toLowerCase() || 'hey claude';
+            wakePhrase.value = v;
+            this.preferenceManager.updatePreference('wakeWordPhrase', v);
+        });
+        if (wakeSilence) wakeSilence.addEventListener('input', () => {
+            if (wakeSilenceVal) wakeSilenceVal.textContent = `${(wakeSilence.value / 1000).toFixed(1)}s`;
+            this.preferenceManager.updatePreference('wakeSilenceMs', parseInt(wakeSilence.value, 10));
+        });
+        if (wakeThreshold) wakeThreshold.addEventListener('input', () => {
+            const v = parseFloat(wakeThreshold.value);
+            if (wakeThresholdVal) wakeThresholdVal.textContent = `${Math.round(v * 100)}%`;
+            this.preferenceManager.updatePreference('wakeMatchThreshold', v);
+        });
+        if (wakeActSound) wakeActSound.addEventListener('change', () => {
+            this.preferenceManager.updatePreference('wakeActivationSound', wakeActSound.value);
+        });
+        if (wakeStopSound) wakeStopSound.addEventListener('change', () => {
+            this.preferenceManager.updatePreference('wakeStopSound', wakeStopSound.value);
+        });
+
         // ---- Voice recording ----
         const voiceBtn = document.getElementById('voice-btn');
         if (voiceBtn) {
@@ -987,11 +1064,33 @@ class TerminalGUI {
             // truthy client so its internal guard passes, and activate it.
             this.voiceManager.setBackendClient({ baseUrl: 'http://localhost:8123' });
             this.voiceManager.initialize();
-            voiceBtn.addEventListener('click', () => this.eventBus.emit('voice:toggle'));
+            voiceBtn.addEventListener('click', () => {
+                // Branch on the button's current state. While the wake-word system
+                // is mid-capture (YELLOW / wake-listening), a tap CANCELS that
+                // capture — nothing is transcribed or sent — and must NOT also fall
+                // through to start a manual recording. The normal and red-recording
+                // cases are unchanged and handled by the 'voice:toggle' flow.
+                if (this.wakeWordManager && this.wakeWordManager.isCapturing && this.wakeWordManager.isCapturing()) {
+                    this.wakeWordManager.cancelCapture();
+                    return;
+                }
+                this.eventBus.emit('voice:toggle');
+            });
             // Reflect recording/processing state on the button
             this.eventBus.on('voice:button-state', (state) => {
                 voiceBtn.classList.toggle('recording', state === 'recording');
                 voiceBtn.classList.toggle('processing', state === 'processing');
+            });
+            // Reflect wake-word (auto) listening state on the same button, but with
+            // a YELLOW path independent of the manual red 'recording' path:
+            //   capturing    -> yellow glow (wake-listening), no spinner
+            //   transcribing -> reuse the manual blue spinner (.processing)
+            //   listening/idle/error -> back to normal (clear both)
+            this.eventBus.on('wake:state', ({ state } = {}) => {
+                const capturing = state === 'capturing';
+                const transcribing = state === 'transcribing';
+                voiceBtn.classList.toggle('wake-listening', capturing);
+                voiceBtn.classList.toggle('processing', transcribing);
             });
             // Drop transcribed text into the message input
             this.eventBus.on('voice:insert-text', (text) => {
@@ -2009,6 +2108,7 @@ class TerminalGUI {
         const [
             soundEnabled, completionSound, injectionSound, promptedSound,
             terminalsPerChunk, chunkOrientation, theme,
+            ttsPreferredVoice, ttsPlaybackSpeed, ttsAutoplayEnabled, managerInputEnabled,
         ] = await Promise.all([
             this.getPersistedSetting('soundEffectsEnabled', false),
             this.getPersistedSetting('completionSound', 'completion.mp3'),
@@ -2017,7 +2117,24 @@ class TerminalGUI {
             this.getPersistedSetting('terminalsPerChunk', 4),
             this.getPersistedSetting('chunkOrientation', 'horizontal'),
             this.getPersistedSetting('theme', 'dark'),
+            this.getPersistedSetting('ttsPreferredVoice', 'af_heart'),
+            this.getPersistedSetting('ttsPlaybackSpeed', 1.3),
+            this.getPersistedSetting('ttsAutoplayEnabled', true),
+            this.getPersistedSetting('managerCompletionWatchEnabled', true),
         ]);
+
+        // Apply TTS prefs to the NotificationManager immediately (it may already
+        // be polling/playing before the settings modal is ever opened).
+        if (this.notificationManager) {
+            this.notificationManager.setPlaybackRate(ttsPlaybackSpeed);
+            this.notificationManager.setAutoplay(ttsAutoplayEnabled);
+        }
+        if (this.managerInstance && this.managerInstance.setCompletionWatchEnabled) {
+            this.managerInstance.setCompletionWatchEnabled(managerInputEnabled);
+        }
+        // Mirror into app state so the injection gate can read it live at send
+        // time (blocks ALL injection to the manager terminal 999 when disabled).
+        this.appStateStore.setState('settings.managerInputEnabled', !!managerInputEnabled);
 
         // ---- Mirror into the app state store (SoundManager reads settings.sound.*) ----
         this.appStateStore.setState('settings.sound.enabled', !!soundEnabled);
@@ -2040,7 +2157,8 @@ class TerminalGUI {
         // sound <select>s repopulate on the 'sound:files-loaded' event below.
         this.wireSettingsControls({
             soundEnabled, completionSound, injectionSound, promptedSound,
-            terminalsPerChunk, chunkOrientation, theme
+            terminalsPerChunk, chunkOrientation, theme,
+            ttsPreferredVoice, ttsPlaybackSpeed, ttsAutoplayEnabled, managerInputEnabled
         });
 
         // ---- Init sound manager (loads available files; heals stale prefs) ----
@@ -2129,6 +2247,85 @@ class TerminalGUI {
         wireTest('test-injection-sound-btn', 'testInjectionSound');
         wireTest('test-prompted-sound-btn', 'testPromptedSound');
 
+        // ---- Spoken notifications (Kokoro TTS) ----
+        const nm = this.notificationManager;
+        // Preferred voice: fetch the catalog from the backend, then bind change.
+        const voiceSelect = byId('tts-voice-select');
+        if (voiceSelect) {
+            const selected = current.ttsPreferredVoice || 'af_heart';
+            fetch('http://localhost:8123/api/tts/voices/')
+                .then(r => r.json())
+                .then(({ voices }) => {
+                    voiceSelect.innerHTML = '';
+                    (voices || []).forEach(v => {
+                        const o = document.createElement('option');
+                        o.value = v.id; o.textContent = v.label || v.id;
+                        voiceSelect.appendChild(o);
+                    });
+                    voiceSelect.value = selected;
+                })
+                .catch(() => { voiceSelect.value = selected; });
+            voiceSelect.addEventListener('change', () => {
+                const v = voiceSelect.value;
+                this.persistSetting('ttsPreferredVoice', v);
+                if (nm) nm.setPreferredVoice(v);
+            });
+        }
+        const testVoiceBtn = byId('test-tts-voice-btn');
+        if (testVoiceBtn) testVoiceBtn.addEventListener('click', () => {
+            if (nm) nm.testVoice(voiceSelect ? voiceSelect.value : 'af_heart');
+        });
+
+        // Playback speed (applied client-side as audio.playbackRate).
+        const speedRange = byId('tts-playback-speed');
+        const speedValue = byId('tts-playback-speed-value');
+        if (speedRange) {
+            speedRange.value = current.ttsPlaybackSpeed;
+            if (speedValue) speedValue.textContent = `${Number(current.ttsPlaybackSpeed).toFixed(2)}×`;
+            speedRange.addEventListener('input', () => {
+                if (speedValue) speedValue.textContent = `${Number(speedRange.value).toFixed(2)}×`;
+                if (nm) nm.setPlaybackRate(speedRange.value);
+            });
+            speedRange.addEventListener('change', () => {
+                this.persistSetting('ttsPlaybackSpeed', parseFloat(speedRange.value));
+            });
+        }
+
+        // Autoplay toggle.
+        const autoplayToggle = byId('tts-autoplay-enabled');
+        if (autoplayToggle) {
+            autoplayToggle.checked = !!current.ttsAutoplayEnabled;
+            autoplayToggle.addEventListener('change', () => {
+                if (nm) nm.setAutoplay(autoplayToggle.checked);
+                this.persistSetting('ttsAutoplayEnabled', autoplayToggle.checked);
+            });
+        }
+
+        // Manager-input toggle — mirrored in two places (Notifications tab toolbar
+        // + this settings group). Both drive the same preference and stay in sync.
+        const applyManagerInput = (on, persist) => {
+            const tabToggle = byId('manager-input-enabled');
+            const settingToggle = byId('manager-input-enabled-setting');
+            if (tabToggle) tabToggle.checked = on;
+            if (settingToggle) settingToggle.checked = on;
+            if (this.managerInstance && this.managerInstance.setCompletionWatchEnabled) {
+                this.managerInstance.setCompletionWatchEnabled(on);
+            }
+            // Live gate for the injection path: read by MessageQueueManager at
+            // send time so toggling takes effect immediately (no restart).
+            this.appStateStore.setState('settings.managerInputEnabled', on);
+            // Re-enabling: flush any manager messages that were held while off.
+            if (on && this.messageQueueManager && this.messageQueueManager.maybeAutoInject) {
+                this.messageQueueManager.maybeAutoInject(999);
+            }
+            if (persist) this.persistSetting('managerCompletionWatchEnabled', on);
+        };
+        applyManagerInput(!!current.managerInputEnabled, false);
+        ['manager-input-enabled', 'manager-input-enabled-setting'].forEach(id => {
+            const el = byId(id);
+            if (el) el.addEventListener('change', () => applyManagerInput(el.checked, true));
+        });
+
         // ---- Terminal chunk layout (max visible per page) ----
         const chunkRange = byId('terminals-per-chunk');
         const chunkValue = byId('terminals-per-chunk-value');
@@ -2164,9 +2361,9 @@ class TerminalGUI {
         // self-sequences (loads persisted values, inits sound, relayouts).
         this.setupSettings();
 
-        // Restore persisted "to-dos" (completed Claude turns) so they survive
-        // reload/restart instead of vanishing with the in-memory Map.
-        this.completionManager.loadPersistedCompletions();
+        // Load notification history and start polling the TTS backend for new
+        // spoken notifications (the manager produces them; this just plays/shows).
+        this.notificationManager.initialize();
 
         // Boot the manager instance if the user configured a directory for it
         this.managerInstance.startIfConfigured();
