@@ -47,6 +47,14 @@ const RMS_VOICE_THRESHOLD = 0.010;
 const VOICE_RUN_FRAMES = 4;
 const NO_SPEECH_TIMEOUT_MS = 8000; // ONLY used before any speech: bail if the user never starts
 const FRAME_SIZE = 4096;           // ScriptProcessor buffer (~85ms @ 48kHz)
+// Continuous "is the user speaking right now" signal (drives speech:active/idle for
+// the TTS-notification hold). Independent of command capture: it runs in EVERY mic
+// state so spoken notifications can defer while the user talks even before a wake
+// word. SPEECH_IDLE_MS is the trailing silence before we declare the user done — set
+// longer than a normal inter-word gap so a sentence doesn't flap active→idle→active
+// between words, but short enough that NotificationManager's own release timer adds
+// up to the ~1-1.5s total trailing window the user asked for.
+const SPEECH_IDLE_MS = 600;
 
 class WakeWordManager {
     constructor(eventBus, appStateStore, gui) {
@@ -98,6 +106,12 @@ class WakeWordManager {
         this._heardSpeech = false;
         this._voiceRun = 0; // consecutive above-threshold frames (sustained-voice gate)
         this._vadTimer = null;
+        // Continuous speech signal (speech:active/idle) — separate from the capture
+        // VAD above so the wake tuning is untouched. Edge-triggered: rises on a
+        // sustained run, falls after SPEECH_IDLE_MS of silence.
+        this._speechRun = 0;
+        this._userSpeaking = false;
+        this._lastUserVoiceAt = 0;
         // What started the current capture: 'wake' (wake word) or 'post-notification'
         // (auto-opened right after a notification finished reading out). Drives how the
         // transcript is framed for the manager; reset to 'wake' after each capture.
@@ -262,6 +276,13 @@ class WakeWordManager {
     }
 
     _teardownAudio() {
+        // Releasing the mic ends any in-progress utterance: clear the speech signal so
+        // a held TTS notification isn't stuck waiting on a speaker that's now gone.
+        if (this._userSpeaking) {
+            this._userSpeaking = false;
+            try { this.eventBus.emit('speech:idle', {}); } catch (_) {}
+        }
+        this._speechRun = 0;
         if (this.processorNode) { try { this.processorNode.onaudioprocess = null; this.processorNode.disconnect(); } catch (_) {} this.processorNode = null; }
         if (this.sourceNode) { try { this.sourceNode.disconnect(); } catch (_) {} this.sourceNode = null; }
         if (this.sinkNode) { try { this.sinkNode.disconnect(); } catch (_) {} this.sinkNode = null; }
@@ -277,6 +298,10 @@ class WakeWordManager {
         let sum = 0;
         for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
         const rms = Math.sqrt(sum / frame.length);
+
+        // Continuous "user is speaking" signal — runs in every state so spoken
+        // notifications can hold while the user talks, even outside a capture window.
+        this._updateSpeechSignal(rms);
 
         if (this.state === 'listening' && this.recognizer) {
             // Feed a COPY — the underlying buffer is recycled by Web Audio.
@@ -294,6 +319,33 @@ class WakeWordManager {
                 }
             } else {
                 this._voiceRun = 0;
+            }
+        }
+    }
+
+    // Continuous voice-activity edge detector that powers the speech:active /
+    // speech:idle events NotificationManager uses to hold spoken notifications while
+    // the user is talking. Deliberately separate from the capture VAD: same RMS
+    // threshold + sustained-run gate (so room blips don't trip it), but it emits on
+    // rising/falling edges in ANY state. Frames arrive continuously (the
+    // ScriptProcessor fires on silence too), so the falling edge is detected here
+    // rather than on a timer.
+    _updateSpeechSignal(rms) {
+        const now = performance.now();
+        if (rms > RMS_VOICE_THRESHOLD) {
+            this._speechRun++;
+            if (this._speechRun >= VOICE_RUN_FRAMES) {
+                this._lastUserVoiceAt = now;
+                if (!this._userSpeaking) {
+                    this._userSpeaking = true;
+                    try { this.eventBus.emit('speech:active', {}); } catch (_) {}
+                }
+            }
+        } else {
+            this._speechRun = 0;
+            if (this._userSpeaking && (now - this._lastUserVoiceAt) > SPEECH_IDLE_MS) {
+                this._userSpeaking = false;
+                try { this.eventBus.emit('speech:idle', {}); } catch (_) {}
             }
         }
     }
