@@ -6,6 +6,64 @@ project's current git branch.
 
 ---
 
+## 2026-06-25 — Spoken notifications wait until the user stops talking (full barge-in hold)
+
+**Problem.** Spoken (TTS) notifications could read out over the user while they were
+mid-sentence talking to the assistant. An earlier pass (2026-06-24, commit `119db8d`)
+added a partial fix — the wake word firing halted the *in-flight* clip — but it (a)
+only reacted to the wake word, not to the user actually speaking, (b) **dropped** the
+halted clip and the whole backlog, and (c) did nothing to stop the *next* queued
+notification from starting while the user was still talking. The follow-up ("don't
+autoplay new notifications while the user is speaking") was explicitly deferred.
+
+**What we built.**
+
+1. **A real "is the user speaking right now" signal.** `WakeWordManager._onAudioFrame`
+   already computes per-frame mic RMS, but only used it *inside* a wake-command capture.
+   Added `_updateSpeechSignal(rms)` which runs in **every** mic state and emits
+   edge-triggered `speech:active` / `speech:idle` EventBus events — same RMS threshold
+   and sustained-run gate as the wake VAD (so room blips don't trip it). The falling
+   edge is detected in the frame handler itself because the Web Audio ScriptProcessor
+   keeps firing during silence. Trailing silence before `speech:idle`: `SPEECH_IDLE_MS`
+   (600ms), long enough not to flap between words of a sentence. The signal is also
+   force-released on mic teardown so a held notification never gets stuck.
+
+2. **A playback gate in `NotificationManager`.** It now tracks why it believes the user
+   is speaking in a `_speakingSources` set, fed by three inputs: the new
+   `speech:active/idle` (continuous RMS), `wake:state` `capturing`/`transcribing` (an
+   active voice-command window), and `voice:button-state` `recording`/`processing` (the
+   manual push-to-talk button). While any source is active — or within a trailing
+   release window — `_drainQueue()` **holds**: queued notifications stay in order and
+   nothing plays.
+
+3. **Resume after a short silence, in order, nothing dropped.** When the last speaking
+   source clears, a `SPEAKING_RELEASE_MS` (700ms) timer starts; if the user speaks again
+   it's cancelled. On fire, the queue drains oldest-first. Combined with the 600ms RMS
+   trailing silence that's a **~1.3s total quiet window** before a deferred notification
+   reads out — within the requested ~1–1.5s. If a notification is mid-readout when the
+   user starts talking, `_holdCurrentPlayback()` pauses it and **re-queues it to the
+   front** (replaced the old drop-the-backlog `stopCurrentPlayback`, now removed), so the
+   interrupted readout replays once the user is silent instead of being lost.
+
+**No regression when silent.** With no speech (and the manual button idle), no source is
+ever added, `_isUserSpeaking()` stays false, and notifications autoplay promptly exactly
+as before. If the wake word is disabled there's no mic graph and thus no `speech:*`
+events, so the manual-recording source is the only gate — silent operation is unchanged.
+
+**Files.** `src/features/WakeWordManager.js` (signal: `SPEECH_IDLE_MS`,
+`_updateSpeechSignal`, teardown release), `src/features/NotificationManager.js` (gate:
+`_setupSpeakingGate`, `_addSpeakingSource`/`_removeSpeakingSource`, `_isUserSpeaking`,
+`_holdCurrentPlayback`, `_drainQueue` guard, `SPEAKING_RELEASE_MS`).
+
+**How to verify (requires a restart — not performed automatically; see note).** Restart
+the app, enable the wake word, and trigger a notification (or let the manager post one)
+while talking: it should not play until ~1.3s after you stop. Live-probe without a
+restart by emitting the signal on the running renderer:
+`window.eventBus.emit('speech:active', {})` (queue holds) then
+`window.eventBus.emit('speech:idle', {})` (drains ~700ms later).
+
+---
+
 ## 2026-06-24 — Stop chime on the silent no-speech auto-close of a wake/auto-wake window
 
 **Problem (UX gap from testing #41).** When the auto-wake listening window opens after

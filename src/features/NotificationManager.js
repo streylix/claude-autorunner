@@ -13,6 +13,11 @@
 
 const BASE_URL = 'http://localhost:8123';
 const POLL_INTERVAL_MS = 3000;
+// After every speaking source clears, wait this long before releasing held
+// notifications. Combined with WakeWordManager's SPEECH_IDLE_MS (~600ms) trailing
+// silence, this gives a ~1.3s total quiet window before a deferred notification
+// reads out — so the assistant doesn't jump in the instant the user pauses.
+const SPEAKING_RELEASE_MS = 700;
 
 class NotificationManager {
     constructor(eventBus, appStateStore) {
@@ -45,14 +50,84 @@ class NotificationManager {
         this.headsUp = new Audio('assets/soundeffects/click2.wav');
         this.headsUp.volume = 0.5;
 
-        this._setupPreferenceListeners();
+        // ---- talk-over prevention ------------------------------------------
+        // Hold spoken notifications while the user is talking and resume after a
+        // short trailing silence — never play over them, never drop them.
+        // `_speakingSources` tracks every reason we currently believe the user is
+        // speaking; while it's non-empty (or the post-silence release timer is
+        // still pending) the play queue holds instead of draining.
+        this._speakingSources = new Set();
+        this._speakingReleaseTimer = null;
 
-        // When the wake word fires (WakeWordManager → wake:state 'capturing'), the
-        // user is about to speak a command — immediately halt any in-flight spoken
-        // notification so we never talk over them.
+        this._setupPreferenceListeners();
+        this._setupSpeakingGate();
+    }
+
+    /**
+     * Wire the "is the user speaking" inputs that gate playback:
+     *   - speech:active / speech:idle  — continuous RMS voice activity (WakeWordManager)
+     *   - wake:state capturing|transcribing — an active voice-command window
+     *   - voice:button-state recording|processing — manual push-to-talk (VoiceManager)
+     * Any active source holds the queue; when the last one clears we wait
+     * SPEAKING_RELEASE_MS of silence, then drain in order.
+     */
+    _setupSpeakingGate() {
+        this.eventBus.on('speech:active', () => this._addSpeakingSource('rms'));
+        this.eventBus.on('speech:idle', () => this._removeSpeakingSource('rms'));
+
         this.eventBus.on('wake:state', ({ state } = {}) => {
-            if (state === 'capturing') this.stopCurrentPlayback();
+            if (state === 'capturing' || state === 'transcribing') this._addSpeakingSource('capture');
+            else this._removeSpeakingSource('capture'); // 'listening' | 'idle'
         });
+
+        this.eventBus.on('voice:button-state', (state) => {
+            if (state === 'recording' || state === 'processing') this._addSpeakingSource('manual');
+            else this._removeSpeakingSource('manual'); // 'ready' | 'error'
+        });
+    }
+
+    _addSpeakingSource(source) {
+        // A new utterance starts: cancel any pending release so we stay held.
+        if (this._speakingReleaseTimer) { clearTimeout(this._speakingReleaseTimer); this._speakingReleaseTimer = null; }
+        const wasSpeaking = this._isUserSpeaking();
+        this._speakingSources.add(source);
+        // If a notification is mid-readout when the user starts talking, halt it and
+        // re-queue it to the FRONT so it isn't lost — it replays once they're silent.
+        if (!wasSpeaking && this.playing) this._holdCurrentPlayback();
+    }
+
+    _removeSpeakingSource(source) {
+        if (!this._speakingSources.delete(source)) return;
+        if (this._speakingSources.size > 0) return; // still speaking via another source
+        // Last source cleared — start the trailing-silence release. If the user
+        // speaks again before it fires, _addSpeakingSource cancels it.
+        if (this._speakingReleaseTimer) clearTimeout(this._speakingReleaseTimer);
+        this._speakingReleaseTimer = setTimeout(() => {
+            this._speakingReleaseTimer = null;
+            this._drainQueue();
+        }, SPEAKING_RELEASE_MS);
+    }
+
+    /** True while we should hold notifications: actively speaking OR in the release window. */
+    _isUserSpeaking() {
+        return this._speakingSources.size > 0 || this._speakingReleaseTimer != null;
+    }
+
+    /**
+     * Stop the in-flight notification because the user just started speaking, but
+     * KEEP it: pause the clip + chime and push the interrupted notification back to
+     * the front of the queue so it reads out (from the start) once the user is silent.
+     * Nothing is dropped — the readout is deferred, not cancelled.
+     */
+    _holdCurrentPlayback() {
+        try { this.audio.pause(); } catch (_) {}
+        try { this.headsUp.pause(); this.headsUp.currentTime = 0; } catch (_) {}
+        if (this._currentId != null && !this._currentIsReplay) {
+            const n = this.items.get(this._currentId);
+            if (n && n.audio_url) this.playQueue.unshift(n);
+        }
+        this.playing = false;
+        this._currentId = null;
     }
 
     _setupPreferenceListeners() {
@@ -136,6 +211,10 @@ class NotificationManager {
 
     _drainQueue() {
         if (this.playing || this.muted) return;
+        // Hold while the user is speaking (or within the trailing-silence window):
+        // the queue keeps its items and drains once _removeSpeakingSource's release
+        // timer fires. Never talk over the user; never drop the notification.
+        if (this._isUserSpeaking()) return;
         const n = this.playQueue.shift();
         if (!n) return;
         this.playing = true;
@@ -196,23 +275,6 @@ class NotificationManager {
         if (finishedId != null && !wasReplay && !moreQueued && !this.muted) {
             this.eventBus.emit('notification:read-complete', { id: finishedId });
         }
-    }
-
-    /**
-     * Halt any in-flight spoken notification RIGHT NOW. Wired to the wake word
-     * firing (wake:state 'capturing'): the user is about to speak and must not be
-     * talked over. Stops the current clip and the heads-up chime, and drops the
-     * autoplay backlog so a queued clip can't start over them. Notifications stay in
-     * history (rows remain, the user can replay) and the interrupted one is left
-     * un-marked-as-played; normal autoplay resumes for the next NEW notification.
-     * Independent of the persistent mute toggle — this does not change muted state.
-     */
-    stopCurrentPlayback() {
-        try { this.audio.pause(); } catch (_) {}
-        try { this.headsUp.pause(); this.headsUp.currentTime = 0; } catch (_) {}
-        this.playQueue = [];
-        this.playing = false;
-        this._currentId = null;
     }
 
     /** Explicit user replay of one row — plays now, regardless of mute/queue. */
