@@ -25,7 +25,7 @@ class PreferenceManager {
             microphoneDeviceId: 'default',
             wakeWordEnabled: false,
             wakeWordPhrase: 'hey claude',
-            wakeSilenceMs: 3000,
+            wakeSilenceMs: 5000,
             wakeMatchThreshold: 0.75,
             injectionDelayMs: 400,
             wakeActivationSound: 'screenshot.wav',
