@@ -993,8 +993,8 @@ class TerminalGUI {
             const p = this.preferenceManager.preferences;
             if (wakeEnabled) wakeEnabled.checked = !!p.wakeWordEnabled;
             if (wakePhrase) wakePhrase.value = p.wakeWordPhrase || 'hey claude';
-            if (wakeSilence) wakeSilence.value = p.wakeSilenceMs || 3000;
-            if (wakeSilenceVal) wakeSilenceVal.textContent = `${((p.wakeSilenceMs || 3000) / 1000).toFixed(1)}s`;
+            if (wakeSilence) wakeSilence.value = p.wakeSilenceMs || 5000;
+            if (wakeSilenceVal) wakeSilenceVal.textContent = `${((p.wakeSilenceMs || 5000) / 1000).toFixed(1)}s`;
             const thr = p.wakeMatchThreshold != null ? p.wakeMatchThreshold : 0.75;
             if (wakeThreshold) wakeThreshold.value = thr;
             if (wakeThresholdVal) wakeThresholdVal.textContent = `${Math.round(thr * 100)}%`;

@@ -6,6 +6,44 @@ project's current git branch.
 
 ---
 
+## 2026-06-25 — Voice end-of-speech silence cutoff raised 3.0s → 5.0s
+
+**Problem.** Dictating a voice memo from across the room, the user was cut off
+mid-thought: the command capture finalizes and submits after a fixed window of
+trailing silence, and the old window was too short for slower, more distant speech.
+
+**Exact current value found.** The end-of-speech timeout is
+`WakeWordManager.silenceMs` — the SOLE thing that ends a command capture once speech
+has started (`_checkVad`: `if ((now - this._lastVoiceAt) > this.silenceMs) stop`).
+Its value comes from the `wakeSilenceMs` preference, but that key was **not persisted**
+in the user's store, so the live value was the code default of **3000 ms (3.0s)** (the
+"~3.5s" estimate was slightly high). It is read **live per recording**, not cached at
+startup.
+
+**Change.** Raised the default to **5000 ms (5.0s)** at every default site so a fresh
+install and the unset-preference fallback both use 5.0s:
+- `src/features/WakeWordManager.js` — `this.silenceMs = 5000` (constructor default) and
+  the `_applyConfig` fallback `Number(prefs.wakeSilenceMs) || 5000`.
+- `src/features/PreferenceManager.js` — default `wakeSilenceMs: 5000`.
+- `renderer.js` — the two `p.wakeSilenceMs || 3000` UI fallbacks → `|| 5000`.
+- `index.html` — "Stop after silence" slider `value="5000"` and label `5.0s` (range
+  unchanged at 2000–10000, so the user can still tune it).
+
+**Why this is the right knob.** `silenceMs` is the only trailing-silence end-of-speech
+stop (there is deliberately no max-duration cap — long continuous speech is never cut),
+and it's re-read on every VAD poll, so the change applies the moment the in-memory value
+updates. The separate `SPEECH_IDLE_MS` (notification-hold debounce) was left untouched.
+
+**Live vs. pending.** The committed code changes do NOT alter the already-running
+renderer's in-memory `this.silenceMs` (still 3000 until the renderer reloads), so the new
+default is **pending the next deliberate app restart**. Because the value is read live and
+applied via `preference:changed`, the user can also make it take effect **immediately with
+zero process disruption** by dragging the Settings → "Stop after silence" slider to 5.0s
+(emits `preference:changed` → `_applyConfig` sets `silenceMs` live, and persists it). No
+restart was performed for this change to avoid dropping the manager session (terminal 999).
+
+---
+
 ## 2026-06-25 — Spoken notifications wait until the user stops talking (full barge-in hold)
 
 **Problem.** Spoken (TTS) notifications could read out over the user while they were

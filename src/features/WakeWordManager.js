@@ -69,7 +69,9 @@ class WakeWordManager {
         // trailing silence to wait after speech before stopping. User-configured
         // via the wakeSilenceMs preference ("Stop after silence" slider). There is
         // deliberately NO maximum-duration cap — long continuous speech is never cut.
-        this.silenceMs = 3000;
+        // Default raised 3000→5000: users dictating from across the room were cut off
+        // mid-thought by the shorter trailing-silence window.
+        this.silenceMs = 5000;
         // Strictness (0..1): the minimum per-word STRING SIMILARITY each spoken word
         // must reach against the corresponding wake-phrase word in a FINAL open-
         // vocabulary recognition. 1 ≈ require a near-exact phrase; lower = accept
@@ -150,7 +152,7 @@ class WakeWordManager {
             this.phrase = String(prefs.wakeWordPhrase).trim().toLowerCase() || 'hey claude';
             phraseChanged = true;
         }
-        if (prefs.wakeSilenceMs != null) this.silenceMs = Math.max(1000, Number(prefs.wakeSilenceMs) || 3000);
+        if (prefs.wakeSilenceMs != null) this.silenceMs = Math.max(1000, Number(prefs.wakeSilenceMs) || 5000);
         if (prefs.wakeMatchThreshold != null) {
             const t = Number(prefs.wakeMatchThreshold);
             if (Number.isFinite(t)) this.matchThreshold = Math.min(0.95, Math.max(0, t));
