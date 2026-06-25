@@ -37,9 +37,14 @@ const SOUND_DIR = 'assets/soundeffects/'; // renderer-relative (matches SoundMan
 const RMS_VOICE_THRESHOLD = 0.010;
 // Consecutive above-threshold frames (~85ms each @48kHz) required before audio
 // counts as the user genuinely speaking and refreshes the trailing-silence clock.
-// Rejecting lone spikes keeps "stop after N s of silence" honest: isolated room
-// noise during a pause can't keep nudging the clock and stretch the stop past N.
-const VOICE_RUN_FRAMES = 2;
+// Rejecting short runs keeps "stop after N s of silence" honest: bursty room noise
+// during a pause can't keep nudging the clock and stretch the stop past N.
+// Raised 2→4 (~170ms→~340ms sustained): brief ambient blips (key clicks, single
+// thuds) no longer refresh the clock so the stop lands near the configured silence
+// (~2.5s) instead of drifting to ~5s, while genuine speech — continuous, words
+// typically ≥340ms — still clears the run every frame. The RMS floor is left at
+// 0.010 so quiet trailing speech is NOT clipped (the 9f4a976 fix is preserved).
+const VOICE_RUN_FRAMES = 4;
 const NO_SPEECH_TIMEOUT_MS = 8000; // ONLY used before any speech: bail if the user never starts
 const FRAME_SIZE = 4096;           // ScriptProcessor buffer (~85ms @ 48kHz)
 
@@ -57,10 +62,17 @@ class WakeWordManager {
         // via the wakeSilenceMs preference ("Stop after silence" slider). There is
         // deliberately NO maximum-duration cap — long continuous speech is never cut.
         this.silenceMs = 3000;
-        // Minimum average word confidence (0..1) the matched phrase words in a
-        // FINAL open-vocabulary recognition must reach before it counts as the wake
-        // phrase. Higher = stricter / fewer false positives. Defaults to the strict
-        // end; tunable via the wakeMatchThreshold preference.
+        // Strictness (0..1): the minimum per-word STRING SIMILARITY each spoken word
+        // must reach against the corresponding wake-phrase word in a FINAL open-
+        // vocabulary recognition. 1 ≈ require a near-exact phrase; lower = accept
+        // near-matches (small edit distance). This is the lever the "strictness"
+        // slider drives, and it is genuinely observable: at the high end only a clean
+        // utterance of the phrase triggers; at the low end near-homophones (and, at
+        // the extreme, almost anything) trigger. We use string similarity rather than
+        // the engine's per-word `conf` because — although vosk-browser DOES supply
+        // `conf` — genuine speech decodes near 1.0, so confidence is a poor strictness
+        // lever (it barely changes behaviour across the slider). Tunable via the
+        // wakeMatchThreshold preference.
         this.matchThreshold = 0.75;
         this.activationSound = 'screenshot.wav';
         this.stopSound = 'hud4.wav';
@@ -287,56 +299,90 @@ class WakeWordManager {
     }
 
     // Final recognition. With open-vocabulary decoding the result text is a real
-    // transcription of what was said, so we require the wake phrase to appear as a
-    // contiguous WHOLE-WORD match in it (not a loose substring — so "amanda" or
-    // "mirandaesque" can't match) AND require the matched phrase words' average
-    // confidence to clear matchThreshold. Random speech transcribes as itself and
-    // simply never contains the phrase words, which is what drives false positives
-    // to ~zero; the confidence gate is a secondary backstop on near-homophones.
+    // transcription of what was said, so we look for the wake phrase as a contiguous
+    // run of words whose per-word STRING SIMILARITY to the phrase clears the
+    // strictness threshold (matchThreshold). Random speech transcribes as itself and
+    // is dissimilar to the phrase, so at normal/high strictness false positives stay
+    // ~zero; lowering strictness deliberately widens what counts as a match, which is
+    // what makes the slider observable.
     _onResult(res) {
         if (this.state !== 'listening' || !res) return;
 
-        // Prefer the per-word array (carries confidences + exact tokenization);
-        // fall back to splitting the plain text if word details are absent.
+        // Prefer the per-word array (exact tokenization, and carries `conf` for
+        // logging); fall back to splitting the plain text if word details are absent.
         const wordObjs = Array.isArray(res.result) ? res.result : null;
         const words = wordObjs
             ? wordObjs.map((w) => String((w && w.word) || '').toLowerCase())
             : String(res.text || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
         const phraseWords = this.phrase.split(/\s+/).filter(Boolean);
-        if (!phraseWords.length) return;
+        if (!phraseWords.length || !words.length) return;
 
-        const at = this._findPhrase(words, phraseWords);
-        if (at < 0) return; // phrase not spoken → reject (the primary filter)
+        // Strictness slider → minimum per-word similarity. No qualifying window → reject.
+        const match = this._matchPhrase(words, phraseWords, this.matchThreshold);
+        if (!match) return;
 
-        // Average confidence over just the matched phrase words. If the engine
-        // didn't supply confidences, treat as 1 so the whole-word match alone
-        // decides rather than blocking every detection.
-        let conf = 1;
+        // Engine confidence IS available (vosk-browser final words carry `conf`) but
+        // clusters near 1.0 for genuine speech, so it is logged for diagnostics only —
+        // the fuzzy similarity above is the actual gate the strictness slider drives.
+        let conf = null;
         if (wordObjs) {
-            const confs = wordObjs.slice(at, at + phraseWords.length)
+            const confs = wordObjs.slice(match.index, match.index + phraseWords.length)
                 .map((w) => Number(w && w.conf))
                 .filter((n) => Number.isFinite(n));
             if (confs.length) conf = confs.reduce((a, b) => a + b, 0) / confs.length;
         }
-        if (conf < this.matchThreshold) {
-            this._log(`wake: ignored low-confidence "${this.phrase}" (${conf.toFixed(2)} < ${this.matchThreshold.toFixed(2)})`, 'info');
-            return;
-        }
+        this._log(`wake: matched "${this.phrase}" (similarity ${match.score.toFixed(2)} ≥ strictness ${this.matchThreshold.toFixed(2)}`
+            + (conf != null ? `, conf ${conf.toFixed(2)}` : '') + ')', 'info');
         this._onWakeDetected();
     }
 
-    // Index of the first contiguous whole-word occurrence of `phraseWords` within
-    // `words`, or -1. Single-word phrases ("miranda") and multi-word phrases
-    // ("hey claude") are both handled.
-    _findPhrase(words, phraseWords) {
+    // Best contiguous window in `words` whose EVERY word is at least `minSim` string-
+    // similar to the matching wake-phrase word. Returns { index, score } (score =
+    // average similarity of the best-scoring qualifying window) or null. `minSim` is
+    // the strictness: ~1 demands a near-exact phrase, lower accepts near-matches.
+    // Single-word ("miranda") and multi-word ("hey claude") phrases both work.
+    _matchPhrase(words, phraseWords, minSim) {
+        let best = null;
         for (let i = 0; i + phraseWords.length <= words.length; i++) {
+            let sum = 0;
             let ok = true;
             for (let j = 0; j < phraseWords.length; j++) {
-                if (words[i + j] !== phraseWords[j]) { ok = false; break; }
+                const sim = this._wordSimilarity(words[i + j], phraseWords[j]);
+                if (sim < minSim) { ok = false; break; }
+                sum += sim;
             }
-            if (ok) return i;
+            if (!ok) continue;
+            const score = sum / phraseWords.length;
+            if (!best || score > best.score) best = { index: i, score };
         }
-        return -1;
+        return best;
+    }
+
+    // Normalized 0..1 similarity between two words (1 = identical), from edit distance.
+    _wordSimilarity(a, b) {
+        a = a || ''; b = b || '';
+        if (a === b) return 1;
+        const max = Math.max(a.length, b.length);
+        if (!max) return 1;
+        return 1 - this._levenshtein(a, b) / max;
+    }
+
+    // Levenshtein edit distance (two-row, O(min) memory).
+    _levenshtein(a, b) {
+        const m = a.length, n = b.length;
+        if (!m) return n;
+        if (!n) return m;
+        let prev = new Array(n + 1);
+        for (let j = 0; j <= n; j++) prev[j] = j;
+        for (let i = 1; i <= m; i++) {
+            const cur = [i];
+            for (let j = 1; j <= n; j++) {
+                const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+                cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+            }
+            prev = cur;
+        }
+        return prev[n];
     }
 
     // ---- activation → command capture ---------------------------------------
