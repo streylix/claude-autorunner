@@ -96,22 +96,44 @@ test('interruption pauses and RESUMES from the same position (never restarts fro
   assert.strictEqual(mgr.audio.srcWrites, srcWritesBefore, 'resume must not reload src (which would reset to 0)');
 });
 
-test('repeated interruptions do not loop forever — after the cap the message is marked played and dropped', () => {
-  const { mgr, eventBus, fetchCalls } = makeEnv();
+test('repeated interruptions never loop and never drop the message — it plays through to completion', () => {
+  const { mgr, eventBus } = makeEnv();
   startClip(mgr, 1, '/audio/1.wav', 1.0);
 
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 6; i++) {
     eventBus.emit('speech:active');
     eventBus.emit('speech:idle');
     flushRelease(mgr);
   }
 
-  const played = fetchCalls.filter(
-    (c) => /\/api\/tts\/notifications\/1\/played\//.test(c.url) && c.opts && c.opts.method === 'POST'
-  );
-  assert.ok(played.length >= 1, 'message must be marked played after exceeding the interruption cap');
-  assert.strictEqual(mgr._held, null, 'no message should be left held after the cap');
-  assert.strictEqual(mgr.playQueue.some((q) => q.id === 1), false, 'capped message must not be re-queued for replay');
+  // After the hold cap the clip is flagged "play through": actively playing,
+  // not held, not dropped, and resumed in place (never restarted from 0).
+  assert.strictEqual(mgr.playing, true, 'message must be playing through, not stalled or dropped');
+  assert.strictEqual(mgr._currentId, 1);
+  assert.strictEqual(mgr._held, null);
+  assert.strictEqual(mgr.audio.currentTime, 1.0, 'must have resumed in place, never from 0');
+  eventBus.emit('speech:active');
+  assert.strictEqual(mgr.audio.paused, false, 'a play-through clip must never be paused again');
+});
+
+test('a clip held while the user keeps talking is force-resumed (watchdog) and plays through — never stalls', () => {
+  const { mgr, eventBus } = makeEnv();
+  startClip(mgr, 1, '/audio/1.wav', 2.0);
+
+  eventBus.emit('speech:active'); // user starts talking and does NOT stop (no speech:idle)
+  assert.strictEqual(mgr.audio.paused, true, 'the first barge-in pauses');
+  assert.ok(mgr._held && mgr._held.id === 1, 'clip is held');
+
+  mgr._onHeldWatchdog(); // the bounded-hold watchdog fires while the user is still talking
+  assert.strictEqual(mgr.audio.paused, false, 'watchdog force-resumes so the clip cannot stall');
+  assert.strictEqual(mgr._held, null);
+  assert.strictEqual(mgr.audio.currentTime, 2.0, 'resumes in place, not from 0');
+
+  // a later, separate utterance must NOT pause it again — it plays through.
+  eventBus.emit('speech:idle');
+  if (mgr._speakingReleaseTimer) { clearTimeout(mgr._speakingReleaseTimer); mgr._speakingReleaseTimer = null; }
+  eventBus.emit('speech:active');
+  assert.strictEqual(mgr.audio.paused, false, 'play-through clip is never paused again');
 });
 
 test('the same notification is not enqueued twice', () => {
