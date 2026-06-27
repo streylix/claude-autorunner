@@ -6,6 +6,43 @@ project's current git branch.
 
 ---
 
+## 2026-06-27 — Audit fixes: two HIGH-severity autorunner bugs
+
+From the all-projects bug-swarm audit; user approved fixing the **highs only**
+(mediums/lows deferred).
+
+**1. Device screenshots corrupted by UTF-8 decoding (`src/adb/adb-manager.js`).**
+`executeCommand()` accumulated stdout with `output += data.toString()` — a lossy
+UTF-8 decode of every chunk (invalid byte sequences collapse to U+FFFD). For text
+commands that's fine, but `takeScreenshot()` then rebuilt the PNG via
+`Buffer.from(result.output, 'binary')`, and the bytes were already destroyed, so
+the screenshot was garbage. Fix: accumulate raw `Buffer` chunks
+(`stdoutChunks.push(...)`) and `Buffer.concat` them; resolve with both a string
+`output` (backward-compatible for text callers) and a raw `outputBuffer`.
+`takeScreenshot` now uses `result.outputBuffer`. Added an injectable `this.spawn`
+seam so the binary path is unit-testable.
+
+**2. Fallback usage-limit detection was dead code
+(`src/features/UsageLimitManager.js`).** `isDuplicateDetection(resetTime)` has a
+side effect — it records the minute-precision reset-time key and returns false
+only the first time. `detectUsageLimit()` (the raw `terminal:data` fallback)
+called it at line 114 (recording the key), then called `onUsageLimitDetected()`,
+which called `isDuplicateDetection()` *again* — now the key existed, so it
+reported a duplicate and bailed before `beginWaiting()`. The fallback never once
+engaged the gate. Fix: drop the redundant pre-check in `detectUsageLimit()` and
+let `onUsageLimitDetected()` be the single dedup/cooldown authority (mirrors the
+primary hook path). Genuine duplicates are still deduped (verified).
+
+**Verified (no deploy — Electron NOT restarted, manager 999 left alive).** New
+`src/adb/adb-manager.test.js` (fake spawn streaming non-UTF-8 PNG bytes: raw
+bytes survive intact; the old string path is shown lossy) and
+`src/features/usage-limit-fallback.test.js` (fallback now fires; repeats still
+de-dupe). Both confirmed RED with the fixes stashed, GREEN with them applied;
+full feature + adb suites green; `node --check` clean. Deploys on the next
+deliberate Electron restart. Mediums/lows from the audit left for later.
+
+---
+
 ## 2026-06-27 — Spoken notifications: echo gate + guaranteed completion
 
 **Follow-up to the talk-over fix below.** Two remaining gaps: (1) the spoken

@@ -111,10 +111,11 @@ class UsageLimitManager {
         const parsed = parseUsageLimitMessage(data);
         if (!parsed) return;
 
-        if (this.isDuplicateDetection(parsed.resetTime)) return;
-        if (this.isInCooldownPeriod()) return;
-
-        this.state.terminals.add(terminalId);
+        // Dedup + cooldown are enforced once, inside onUsageLimitDetected. Calling
+        // isDuplicateDetection() here too made the whole fallback path dead code:
+        // it has the SIDE EFFECT of recording the minute-precision reset-time key,
+        // so onUsageLimitDetected's own isDuplicateDetection() then saw a
+        // "duplicate" and bailed before ever starting the wait.
         this.onUsageLimitDetected(parsed.resetTime, terminalId);
     }
 
