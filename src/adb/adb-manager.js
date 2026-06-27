@@ -24,6 +24,7 @@ class ADBManager extends EventEmitter {
         // Command execution tracking
         this.activeCommands = new Map(); // commandId -> process
         this.commandIdCounter = 1;
+        this.spawn = spawn; // injectable seam (overridden in tests)
         
         // Auto-reconnection settings
         this.reconnectionEnabled = true;
@@ -297,18 +298,21 @@ class ADBManager extends EventEmitter {
         const fullArgs = deviceId ? ['-s', deviceId, ...command, ...args] : [...command, ...args];
         
         return new Promise((resolve, reject) => {
-            const process = spawn(this.adbPath, fullArgs, {
+            const process = this.spawn(this.adbPath, fullArgs, {
                 stdio: 'pipe',
                 timeout: options.timeout || 30000,
                 ...options.spawnOptions
             });
 
-            let output = '';
+            const stdoutChunks = [];
             let errorOutput = '';
 
             if (process.stdout) {
                 process.stdout.on('data', (data) => {
-                    output += data.toString();
+                    // Accumulate raw bytes — do NOT decode here. Binary outputs like
+                    // `screencap -p` PNGs are corrupted by an intermediate UTF-8
+                    // toString() (lossy: invalid sequences become U+FFFD).
+                    stdoutChunks.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
                     if (options.onData) {
                         options.onData(data);
                     }
@@ -325,9 +329,13 @@ class ADBManager extends EventEmitter {
                 this.activeCommands.delete(commandId);
                 
                 if (code === 0) {
+                    const stdoutBuffer = Buffer.concat(stdoutChunks);
                     resolve({
                         success: true,
-                        output: output,
+                        // String view for text commands (backward compatible) plus the
+                        // raw bytes for binary outputs like screencap PNGs.
+                        output: stdoutBuffer.toString(),
+                        outputBuffer: stdoutBuffer,
                         exitCode: code
                     });
                 } else {
@@ -363,8 +371,9 @@ class ADBManager extends EventEmitter {
                 }
             );
 
-            // Convert screenshot data
-            const screenshotData = Buffer.from(result.output, 'binary');
+            // Use the raw bytes captured by executeCommand; decoding stdout as a
+            // UTF-8 string (and reinterpreting it as 'binary') corrupts the PNG.
+            const screenshotData = result.outputBuffer || Buffer.from(result.output, 'binary');
             
             // Emit screenshot event
             this.emit('screenshot-captured', {
