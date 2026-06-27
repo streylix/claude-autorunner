@@ -55,6 +55,17 @@ const FRAME_SIZE = 4096;           // ScriptProcessor buffer (~85ms @ 48kHz)
 // between words, but short enough that NotificationManager's own release timer adds
 // up to the ~1-1.5s total trailing window the user asked for.
 const SPEECH_IDLE_MS = 600;
+// Echo/output gate. While our own spoken notification is playing (plus a short
+// tail), its audio bleeds from the speakers back into the mic and would trip the
+// VAD as if the user were talking — pausing the readout. So during playback we
+// raise the gate from the sensitive floor to RMS_BARGE_IN_THRESHOLD: only sound
+// clearly louder than the echo (a real, close-mic barge-in) counts. Outside
+// playback the floor is used unchanged. RMS_BARGE_IN_THRESHOLD is the tunable
+// knob — lower = easier to interrupt the TTS (and more echo false-positives);
+// higher = the readout is harder to barge in on. TTS_ECHO_TAIL_MS keeps the
+// raised gate up briefly past the clip's end for the buffer/reverb tail.
+const RMS_BARGE_IN_THRESHOLD = 0.030;
+const TTS_ECHO_TAIL_MS = 400;
 
 class WakeWordManager {
     constructor(eventBus, appStateStore, gui) {
@@ -114,6 +125,11 @@ class WakeWordManager {
         this._speechRun = 0;
         this._userSpeaking = false;
         this._lastUserVoiceAt = 0;
+        // Echo/output gate state: true while our TTS is producing sound (+ a short
+        // tail), during which the VAD uses RMS_BARGE_IN_THRESHOLD. Driven by
+        // NotificationManager's tts:playback events.
+        this._ttsPlaybackActive = false;
+        this._ttsEchoTailTimer = null;
         // What started the current capture: 'wake' (wake word) or 'post-notification'
         // (auto-opened right after a notification finished reading out). Drives how the
         // transcript is framed for the manager; reset to 'wake' after each capture.
@@ -130,6 +146,10 @@ class WakeWordManager {
         // nothing else is queued), open the capture flow briefly so the user can reply
         // immediately without the wake word.
         this.eventBus.on('notification:read-complete', () => this.startPostNotificationCapture());
+
+        // Raise the speech gate while a spoken notification is actually playing so
+        // its own audio echoing into the mic can't be mistaken for the user talking.
+        this.eventBus.on('tts:playback', ({ active } = {}) => this._setTtsPlayback(!!active));
     }
 
     _setupPreferenceListeners() {
@@ -332,9 +352,32 @@ class WakeWordManager {
     // rising/falling edges in ANY state. Frames arrive continuously (the
     // ScriptProcessor fires on silence too), so the falling edge is detected here
     // rather than on a timer.
+    /** Track whether our TTS is producing sound (drives the echo gate + its tail). */
+    _setTtsPlayback(active) {
+        if (active) {
+            if (this._ttsEchoTailTimer) { clearTimeout(this._ttsEchoTailTimer); this._ttsEchoTailTimer = null; }
+            this._ttsPlaybackActive = true;
+        } else if (this._ttsPlaybackActive) {
+            this._ttsPlaybackActive = false;
+            if (this._ttsEchoTailTimer) clearTimeout(this._ttsEchoTailTimer);
+            const t = setTimeout(() => { this._ttsEchoTailTimer = null; }, TTS_ECHO_TAIL_MS);
+            if (t && typeof t.unref === 'function') t.unref();
+            this._ttsEchoTailTimer = t;
+        }
+    }
+
+    /** True while TTS output (or its short tail) should raise the VAD gate. */
+    _inTtsEchoWindow() {
+        return this._ttsPlaybackActive || this._ttsEchoTailTimer != null;
+    }
+
     _updateSpeechSignal(rms) {
         const now = performance.now();
-        if (rms > RMS_VOICE_THRESHOLD) {
+        // During TTS playback (+tail) require the higher barge-in gate so the
+        // notification's own echo doesn't read as the user speaking; otherwise the
+        // sensitive floor so quiet/trailing speech still registers.
+        const threshold = this._inTtsEchoWindow() ? RMS_BARGE_IN_THRESHOLD : RMS_VOICE_THRESHOLD;
+        if (rms > threshold) {
             this._speechRun++;
             if (this._speechRun >= VOICE_RUN_FRAMES) {
                 this._lastUserVoiceAt = now;

@@ -6,6 +6,53 @@ project's current git branch.
 
 ---
 
+## 2026-06-27 — Spoken notifications: echo gate + guaranteed completion
+
+**Follow-up to the talk-over fix below.** Two remaining gaps: (1) the spoken
+notification's own audio, picked up by the mic, tripped the always-on RMS VAD
+(`WakeWordManager._updateSpeechSignal`) and paused the readout — self-inflicted
+interruptions; (2) under *truly continuous* talking a held clip never received a
+`speech:idle`, so it could stall indefinitely, and the old loop-guard *dropped*
+the message at the cap rather than finishing it. The user's priority: a
+notification must **always complete** and **never loop or stall**, whether the
+trigger is the user talking or echo — lean toward letting it play through.
+
+**Echo gate (`WakeWordManager.js`).** While a notification is actually playing
+(plus a short `TTS_ECHO_TAIL_MS = 400` tail), the VAD raises its gate from the
+sensitive floor (`RMS_VOICE_THRESHOLD = 0.010`) to `RMS_BARGE_IN_THRESHOLD =
+0.030`, so only sound clearly louder than the speaker echo — a real, close-mic
+barge-in — counts as "user speaking". `NotificationManager` now emits
+`tts:playback {active}` on every start/resume/pause/end; WakeWordManager tracks
+it (`_setTtsPlayback` / `_inTtsEchoWindow`). Outside playback the floor is
+unchanged, so normal speech sensitivity and wake-word capture are untouched.
+`RMS_BARGE_IN_THRESHOLD` is the tunable knob (lower = easier to interrupt the
+TTS and more echo false-positives; higher = harder to barge in).
+
+**Guaranteed completion (`NotificationManager.js`).** A barge-in still gets a
+brief resume-in-place hold, but completion is now bounded two ways and the
+backstop **plays through** instead of dropping: (a) a held clip that the user
+never lets clear is force-resumed by a `MAX_HELD_MS = 4000` watchdog and flagged
+play-through; (b) a clip interrupted `MAX_HOLDS_PER_MESSAGE = 3` times is flagged
+play-through immediately. A play-through clip is resumed in place and **never
+paused again** (`_playThrough` set), so continuous talking can neither loop nor
+stall it — it finishes. The cap path no longer marks-played-and-drops.
+
+**Real barge-in preserved.** A genuinely loud interruption above the gate still
+pauses and resumes-in-place; only echo (and very soft over-talking) is ignored.
+
+**Verified (no deploy — Electron NOT restarted, manager 999 left alive).** New
+`src/features/tts-echo-gate.test.js` wires both managers on one bus: TTS echo
+during playback does NOT hold; a loud barge-in still holds then resumes in place;
+non-TTS sensitivity is unchanged; the gate persists for the tail. Updated
+`NotificationManager.test.js`: repeated interruptions play through to completion
+(not dropped, not looped, resumed in place), and a watchdog force-resumes a clip
+the user keeps talking over. All feature suites green (NotificationManager 4,
+tts-echo-gate 4, PromptWatchManager 11, others); `node --check` clean on both
+modules and `renderer.js`. Deploys on the next deliberate Electron restart;
+`RMS_BARGE_IN_THRESHOLD` can be tuned then if echo is louder/quieter in practice.
+
+---
+
 ## 2026-06-27 — Spoken notifications: stop the talk-over replay loop
 
 **Problem (live user report).** Talking — or background noise — while a TTS

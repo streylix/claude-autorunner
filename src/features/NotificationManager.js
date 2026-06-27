@@ -22,8 +22,14 @@ const SPEAKING_RELEASE_MS = 700;
 // paused (it never restarts from 0). But if the same clip keeps getting
 // interrupted — continuous talking, background noise, or the TTS output echoing
 // back into the mic — we must not defer it forever. After this many
-// interruptions we stop deferring: mark it played and move on. NEVER replay it.
+// interruptions we stop deferring and play the clip THROUGH to completion (we
+// never drop it). NEVER replay it from the start.
 const MAX_HOLDS_PER_MESSAGE = 3;
+// If a clip is held (paused for a barge-in) but the user just keeps talking so it
+// never clears, resume it anyway after this long and play it THROUGH. Completion
+// is the priority: a notification must never loop and never stall indefinitely,
+// no matter how long the user talks.
+const MAX_HELD_MS = 4000;
 
 class NotificationManager {
     constructor(eventBus, appStateStore) {
@@ -69,6 +75,8 @@ class NotificationManager {
         // position — the audio element keeps its src + currentTime while held.
         this._held = null;             // { id } or null
         this._holdCounts = new Map();  // id -> times interrupted (loop guard)
+        this._playThrough = new Set(); // ids committed to finish without further holds
+        this._heldWatchdog = null;     // forces a stuck-held clip to resume (no stall)
 
         this._setupPreferenceListeners();
         this._setupSpeakingGate();
@@ -128,38 +136,101 @@ class NotificationManager {
      * Pause the in-flight notification because the user just started speaking.
      * The clip is NOT re-queued and NOT rewound: the audio element keeps its src
      * and currentTime, so it RESUMES from this exact spot once the user is silent
-     * (see _drainQueue). The loop guard caps how many times one clip may be
-     * interrupted — past the cap we stop deferring, mark it played, and move on,
-     * so noise/echo can never restart-and-replay it forever.
+     * (see _drainQueue).
+     *
+     * Completion is the priority — a notification must always finish and may never
+     * loop or stall indefinitely. So the hold is bounded two ways: a clip that is
+     * interrupted MAX_HOLDS_PER_MESSAGE times, or that stays held past MAX_HELD_MS
+     * because the user keeps talking, is flagged "play through" and resumed to the
+     * end, ignoring further speech. A play-through clip is never paused again.
      */
     _holdCurrentPlayback() {
+        const id = this._currentId;
+        // Never interrupt a clip we've committed to playing through.
+        if (id != null && this._playThrough.has(id)) return;
         try { this.audio.pause(); } catch (_) {}
         try { this.headsUp.pause(); this.headsUp.currentTime = 0; } catch (_) {}
-        const id = this._currentId;
-        if (id != null && !this._currentIsReplay) {
-            const count = (this._holdCounts.get(id) || 0) + 1;
-            this._holdCounts.set(id, count);
-            if (count > MAX_HOLDS_PER_MESSAGE) {
-                // Interrupted too many times — give up deferring it. Cancel cleanly:
-                // mark played and move on. Never replay.
-                this._finalizePlayed(id);
-                this._held = null;
-            } else {
-                this._held = { id }; // resume from the current position later
-            }
+        if (id == null || this._currentIsReplay) {
+            this.playing = false;
+            this._currentId = null;
+            this._emitPlaybackState(false);
+            return;
         }
+        const count = (this._holdCounts.get(id) || 0) + 1;
+        this._holdCounts.set(id, count);
+        this._held = { id };
         this.playing = false;
         this._currentId = null;
+        this._emitPlaybackState(false);
+        if (count >= MAX_HOLDS_PER_MESSAGE) {
+            // Interrupted too many times — stop deferring and PLAY IT THROUGH to
+            // completion (never drop it), ignoring further speech.
+            this._playThrough.add(id);
+            this._forceResumeHeld();
+        } else {
+            // Bounded hold: if the user keeps talking and it never resumes on its
+            // own, the watchdog forces it through so it can't stall.
+            this._armHeldWatchdog();
+        }
+    }
+
+    _armHeldWatchdog() {
+        this._clearHeldWatchdog();
+        const t = setTimeout(() => this._onHeldWatchdog(), MAX_HELD_MS);
+        if (t && typeof t.unref === 'function') t.unref();
+        this._heldWatchdog = t;
+    }
+
+    _clearHeldWatchdog() {
+        if (this._heldWatchdog) { clearTimeout(this._heldWatchdog); this._heldWatchdog = null; }
+    }
+
+    /** The held clip never cleared (the user kept talking) — force it through. */
+    _onHeldWatchdog() {
+        if (!this._held) { this._clearHeldWatchdog(); return; }
+        this._playThrough.add(this._held.id);
+        this._forceResumeHeld();
+    }
+
+    /** Resume the held clip even if the user is still speaking (completion wins). */
+    _forceResumeHeld() {
+        this._clearHeldWatchdog();
+        if (this.muted || this.playing || !this._held) return;
+        this._resumeHeld();
+    }
+
+    /** Resume the held clip in place — no chime, no src reload, no rewind. */
+    _resumeHeld() {
+        this._clearHeldWatchdog();
+        if (!this._held) return false;
+        const { id } = this._held;
+        this._held = null;
+        const n = this.items.get(id);
+        if (!n || !n.audio_url) return false;
+        this.playing = true;
+        this._currentId = id;
+        this._currentIsReplay = false;
+        const p = this.audio.play();
+        if (p && p.catch) p.catch(() => this._onPlaybackEnded());
+        this._emitPlaybackState(true);
+        return true;
+    }
+
+    /** Tell the rest of the app whether TTS audio is producing sound, so the
+     *  wake-word VAD can raise its gate and ignore the echo (see
+     *  WakeWordManager._setTtsPlayback). */
+    _emitPlaybackState(active) {
+        try { this.eventBus.emit('tts:playback', { active: !!active }); } catch (_) {}
     }
 
     /**
      * Mark a notification played (server-side, best-effort) and forget its hold
-     * count + UI state. Used both on natural completion and when the loop guard
-     * cancels a clip that keeps getting interrupted.
+     * count + play-through + UI state. Used on natural completion.
      */
     _finalizePlayed(id) {
         if (id == null) return;
         this._holdCounts.delete(id);
+        this._playThrough.delete(id);
         fetch(`${BASE_URL}/api/tts/notifications/${id}/played/`, { method: 'POST' }).catch(() => {});
         try {
             const row = document.querySelector(`.notification-item[data-id="${id}"]`);
@@ -259,17 +330,7 @@ class NotificationManager {
         // Resume an interrupted clip first — continue from where it paused (src and
         // currentTime are untouched), no chime, no restart from 0.
         if (this._held) {
-            const { id } = this._held;
-            this._held = null;
-            const n = this.items.get(id);
-            if (n && n.audio_url) {
-                this.playing = true;
-                this._currentId = id;
-                this._currentIsReplay = false;
-                const p = this.audio.play();
-                if (p && p.catch) p.catch(() => this._onPlaybackEnded());
-                return;
-            }
+            if (this._resumeHeld()) return;
             // Item vanished — fall through to the normal queue.
         }
         const n = this.playQueue.shift();
@@ -304,6 +365,7 @@ class NotificationManager {
             this.audio.playbackRate = this.playbackRate;
             const p = this.audio.play();
             if (p && p.catch) p.catch(() => this._onPlaybackEnded());
+            this._emitPlaybackState(true);
         } catch (err) {
             this._onPlaybackEnded();
         }
@@ -316,9 +378,10 @@ class NotificationManager {
             this._finalizePlayed(this._currentId); // mark played + clear hold count
             this._currentId = null;
         }
-        if (this._held && this._held.id === finishedId) this._held = null;
+        if (this._held && this._held.id === finishedId) { this._held = null; this._clearHeldWatchdog(); }
         this._currentIsReplay = false;
         this.playing = false;
+        this._emitPlaybackState(false);
         // Snapshot BEFORE draining (drain shifts the queue): only open a reply window
         // when this was the last notification to read out.
         const moreQueued = this.playQueue.length > 0 || this._held != null;
@@ -341,6 +404,7 @@ class NotificationManager {
         // about to load a different src.
         try { this.audio.pause(); } catch (_) {}
         this._held = null;
+        this._clearHeldWatchdog();
         this.playing = true;
         this._currentId = id;
         this._currentIsReplay = true; // explicit replay: must NOT trigger auto-wake
@@ -372,6 +436,8 @@ class NotificationManager {
             try { this.audio.pause(); } catch (_) {}
             try { this.headsUp.pause(); } catch (_) {}
             this.playing = false;
+            this._clearHeldWatchdog();
+            this._emitPlaybackState(false);
         } else {
             this._drainQueue();
         }
