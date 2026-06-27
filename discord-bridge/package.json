@@ -1,0 +1,27 @@
+{
+  "name": "ccbot-discord-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Discord voice bridge for the auto-injector: talk to manager terminal 999 from a Discord voice channel, hear its TTS replies back.",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/ttsPoller.js && node --check src/audioPlayer.js && node --check src/voiceReceive.js && node --check src/transcribe.js && node --check src/controlApi.js && node --check src/dave.js && node --check src/log.js && node --check src/wav.js && node --check src/doctor.js && node --check config.js",
+    "doctor": "node src/doctor.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "comment": "VERSION PINS ARE LOAD-BEARING: @discordjs/voice MUST be >=0.19.2 — that release (PR #11449) fixes the DAVE voice-RECEIVE bug (RFC3550 padding); 0.19.0/0.19.1 capture broken audio under mandatory DAVE E2EE. @snazzah/davey auto-installs as a hard dep of voice; pinned here for clarity.",
+  "dependencies": {
+    "discord.js": "^14.26.4",
+    "@discordjs/voice": "^0.19.2",
+    "@discordjs/opus": "^0.10.0",
+    "@snazzah/davey": "^0.1.12",
+    "prism-media": "^1.3.5",
+    "sodium-native": "^4.3.1",
+    "ffmpeg-static": "^5.2.0",
+    "dotenv": "^16.4.5"
+  }
+}

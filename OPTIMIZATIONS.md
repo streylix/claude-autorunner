@@ -6,6 +6,164 @@ project's current git branch.
 
 ---
 
+## 2026-06-27 — Spoken notifications: stop the talk-over replay loop
+
+**Problem (live user report).** Talking — or background noise — while a TTS
+notification was being read aloud interrupted it, went silent, and **reset the
+message back to the start**. With continuous talking/noise it looped the *same*
+message forever and never finished.
+
+**Root cause (renderer, `src/features/NotificationManager.js`).** The "hold while
+talking" feature handled a mid-readout interruption by pausing the clip and
+`playQueue.unshift(n)`-ing it back to the front, then — on the trailing-silence
+release — restarting it via `_startAudio`, which reassigns `audio.src` and so
+**plays from position 0**. There was no resume offset and no cap on restarts, so
+each `speech:active`/`speech:idle` cycle replayed the whole clip (chime included)
+from the top. The continuous-noise driver is acoustic feedback: the spoken
+notification itself is picked up by the mic, trips the always-on RMS VAD
+(`WakeWordManager._updateSpeechSignal`), and re-fires the hold — an endless
+restart-from-0 loop. The Django backend and the Discord bridge were ruled out:
+the backend serves each row once (client advances a monotonic `lastSeenId`
+cursor), and the bridge in its default system-audio mode just relays the
+desktop's own playback verbatim — so the loop was entirely the renderer's.
+
+**Fix.** An interrupted clip now **resumes from where it paused instead of
+restarting**: on hold we only `pause()` (the audio element keeps its `src` and
+`currentTime`) and track it in a separate `_held` slot — never re-queued — so
+`_drainQueue` resumes it with a bare `audio.play()` (no chime, no `src` reload,
+no rewind). A loop guard (`MAX_HOLDS_PER_MESSAGE = 3`) caps interruptions per
+clip; past the cap we stop deferring, mark it played server-side, and move on —
+so noise/echo can never restart-and-replay forever. `_enqueuePlay` now de-dupes
+against the playing/held/queued ids so the same notification can't be queued
+twice. Explicit user replays abandon any held clip (shared audio element).
+
+**Verified (no deploy — Electron NOT restarted, manager 999 left alive).** New
+unit tests `src/features/NotificationManager.test.js` (fake `Audio`/`fetch`/DOM):
+a mid-playback interruption resumes from the same position without reloading
+`src`; five back-to-back interruptions do **not** loop — the clip is marked
+played and dropped after the cap; duplicate enqueue is ignored. RED first
+(3 fail on the old code), then GREEN (3/3 pass); `node --check` clean on the
+module and `renderer.js`.
+
+**Not changed (deliberate).** The Discord bridge's separate auto-reply→forward
+content feedback loop (speech re-triggering *new* manager replies) is a distinct
+issue, out of scope for this symptom. Residual follow-up: the always-on VAD has
+no echo/output gating, so the TTS output can still trip a hold or two before a
+clip completes — an acoustic-echo-cancellation / "ignore mic while TTS plays"
+pass would smooth that, but the loop guard already bounds it.
+
+---
+
+## 2026-06-27 — Discord bridge: reliable wake→command pickup + wake sound on detection
+
+**Problems (live user testing).** Two failures in the Discord voice bridge
+(`discord-bridge/src/voiceReceive.js`):
+
+1. **Speech after the wake word often didn't come through.** Commands the user
+   spoke after saying "sean" frequently never reached the manager.
+2. **The wake/"blade" sound didn't fire when the user went silent after the wake
+   word** — it appeared gated on actually capturing a command.
+
+**Root cause (measured, not guessed).** The bridge gates every utterance through
+the cheap CPU **Vosk** endpoint (`/api/voice/wake-check/`) to avoid running GPU
+Whisper on idle chatter, and only matches the wake word against that transcript.
+Synthesizing test speech and POSTing the exact 48 kHz-stereo WAV the bridge
+produces to both endpoints showed Vosk **mishears the short wake name**:
+
+| spoken | Vosk (gate) | Whisper |
+|--------|-------------|---------|
+| "sean" | `sean` ✓ (fragile on mic) | `Sean` ✓ |
+| "sean what is the status" | **`sure what is the status`** ✗ | `Sean, what is the status?` ✓ |
+
+`soundex("sure")=S600 ≠ soundex("sean")=S500` and `lev=2 > 1`, so the wake
+spotter **rejected the whole "sean <command>" utterance** ("no wake word —
+ignoring"). Whisper heard it perfectly. Two consequences: the inline wake+command
+in one breath was dropped (Bug 1), and because detection failed there was no
+`onWakeAck` (Bug 2). A second, independent Bug-1 cause: the *armed follow-up*
+path ran the command through Vosk first and `return`ed on empty/garbled Vosk
+output — discarding a valid command **before Whisper ever saw it**.
+
+**Fix.** Restructured `_processSerial` around "am I expecting a command?":
+
+- **Expecting a command** (armed after a lone wake word, or inside the post-reply
+  auto-reply window): the utterance *is* the command → transcribe **straight to
+  Whisper** (Vosk fallback only if Whisper is empty). Never gate a command
+  through Vosk. The arm/window is consumed only on a real forward; an empty
+  transcript keeps listening instead of dropping it.
+- **Detecting** (not expecting a command): cheap Vosk gate first (fast path,
+  no GPU when it clearly contains the wake word); if it **doesn't** match,
+  **escalate short utterances (≤ `wakeEscalateMaxMs`, default 12 s) to Whisper**
+  to confirm the wake word before giving up — this recovers the
+  Vosk-garbled "sean <command>". The wake-ack sound fires the **instant** the
+  wake word is detected, before/independent of any follow-up command (silence
+  after the wake word still chimes).
+- Timing for breathing room: command end-of-speech silence 1.5 s → **2.0 s**,
+  armed-follow-up window 8 s → **10 s**, plus a `maxUtteranceMs` (30 s) capture
+  cap so a non-stop talker still gets transcribed.
+
+New/changed config (`discord-bridge/config.js`): `wakeEscalateMaxMs` (default
+12000; 0 = pure GPU-saving, no escalation), `maxUtteranceMs` (30000),
+`commandSilenceMs` 1500→2000, `wakeFollowupMs` 8000→10000, `minUtteranceMs`
+250→200.
+
+**GPU note.** Escalation runs Whisper on short utterances the Vosk gate didn't
+match — in a manager-control channel (mostly commands, Discord only fires capture
+on real voice activity) this is a few extra short clips, the right trade for not
+dropping commands. Set `WAKE_ESCALATE_MAX_MS=0` to revert to Vosk-only gating.
+
+**Verified.** A harness drove the **real** `VoiceReceiver._processSerial` against
+the **live backend** with synthesized WAVs (lone wake, inline wake+command,
+two-step armed command, non-wake chatter): **14/14** assertions passed —
+including the escalation log "wake word recovered by Whisper escalation (Vosk
+missed it)" on the inline case, the chime firing on a lone wake with silence
+after, and non-wake chatter still ignored (no false trigger). `npm run check`
+clean. Pending live confirmation by the user before commit.
+
+### Follow-up (same day) — reliable wake DETECTION + audible/logged wake sound
+
+**Live retest.** The forwarding fix worked (command reached terminal 999, and
+Whisper escalation recovered the wake word). But detection was still flaky: the
+speech engines kept rendering a lone "sean" as near-homophones the matcher then
+**rejected** — observed live: `don, john, jon, on, dawn, dawn stone, done, dumb`.
+And the wake/"blade" sound never fired on silence-after-wake (because detection
+failed, `onWakeAck` was never reached — and `playSound` logged nothing, so it was
+invisible).
+
+**Why soundex alone missed them.** "sean" is /ʃɔːn/. The mishearings keep the
+-awn/-on rime but change the onset (SH→D/J/G…), and classic soundex keys off the
+first letter, so it scatters them (`S500` vs `J500` vs `D500`) and the wake match
+fails.
+
+**Fix — a position-gated WEAK homophone layer (`src/wakeWord.js`).** Added a
+curated set of common-word homophones for the wake name (`don/dawn/done/john/
+jon/on/dumb/…`, the -awn/-on family). To avoid false triggers on normal speech,
+a weak match counts **only** when it (1) **leads** the utterance, (2) is in a
+**short** utterance (≤ `WAKE_WEAK_MAX_TOKENS`, default **2**), and (3) is
+**Whisper-confirmed**. `WakeSpotter.check()` now returns `via: 'strong' | 'weak'`.
+
+**Confidence policy (`src/voiceReceive.js _detectWake`).** Trust the cheap Vosk
+gate only for a **strong** match; anything weaker (Vosk empty / wrong / a mere
+homophone) escalates short utterances to Whisper and requires Whisper to land on
+a wake variant. So a bare low-confidence Vosk guess never triggers — a weak
+homophone is accepted only when Whisper independently agrees.
+
+**Wake sound — now fires on detection AND is logged.** The ack fires the instant
+the wake word matches, before/independent of any command (`🗡️ wake word
+DETECTED … playing wake sound now`), and `session.playSound` now logs each play
+(`🔊 wake-sound: played "<file>"`) and warns if it's skipped (no channel /
+missing file). Resolved sound: `screenshot.wav` (present), `AUDIO_SOURCE=system`
+→ paplay to the local sink, relayed into the channel.
+
+**Verified.** `wakeWord` matcher unit tests **28/28** (every observed mishearing
+detected; `turn it on` / `i am done with that` / `on the server` / unrelated
+words rejected). A live-backend harness fed TTS of the actual mishearings through
+the **real** `_processSerial`: `Done!`/`John`/`Dawn` → confirmed-via-Whisper →
+wake sound fired → armed; `turn it on please` → ignored; inline + non-wake
+regressions intact (**11/11**). `npm run check` clean. New tunables:
+`WAKE_WEAK_MAX_TOKENS` (default 2). Pending the user's live re-test before commit.
+
+---
+
 ## 2026-06-25 — Voice end-of-speech silence cutoff raised 3.0s → 5.0s
 
 **Problem.** Dictating a voice memo from across the room, the user was cut off
@@ -1711,3 +1869,249 @@ passes.
 
 **Restart needed?** Yes — `manager-session.js` runs in the main process, and the
 refreshed doc is only written when the manager next boots, which happens on app start.
+
+---
+
+## Discord voice bridge — talk to the manager (999) from a Discord voice channel
+
+**Date:** 2026-06-26. **Branch:** dev. **Scope:** new, fully self-contained
+service under `discord-bridge/`. **Nothing in the running Electron app, the
+manager PTY, or the backend was modified or restarted** — this is purely
+additive and reaches the app only through the documented loopback control API.
+
+**Goal.** Let the user join a Discord voice channel (e.g. from their phone, away
+from the house), speak, and have that reach the manager terminal 999 as a framed
+voice memo; the manager's spoken TTS replies play back into the same channel.
+
+**What was built.** A standalone Node (CommonJS) process in `discord-bridge/`:
+- `config.js` — loads `.env` + inherits `CCBOT_PORT`/`CCBOT_TOKEN` from the
+  launching app terminal; validates; exposes the 🎙️ voice-memo marker.
+- OUTPUT (manager → channel): `src/ttsPoller.js` polls
+  `GET /api/tts/notifications/?after=<lastId>&limit=50`, **seeds `lastId` from
+  the newest row on startup so history is never replayed**, downloads each new
+  `audio_url` WAV, and hands it to `src/audioPlayer.js` (a FIFO
+  `@discordjs/voice` player, ffmpeg-transcoded). Optionally marks `…/played/`.
+- INPUT (channel → 999): `src/voiceReceive.js` captures each speaker's Opus via
+  `VoiceReceiver` (silence-gap utterance segmentation + a min-duration gate to
+  drop clicks), decodes to PCM (`prism-media`), wraps as WAV (`src/wav.js`),
+  transcribes via the app's existing Whisper endpoint
+  `POST /api/voice/transcribe/` (field `audio_file`), then delivers the text to
+  terminal 999 via `POST /terminal/keys` (`src/controlApi.js`). That path has
+  **no 999 block** (unlike `/queue/add`). The memo is framed with the literal
+  marker the manager's CLAUDE.md watches for, and multi-line memos are wrapped in
+  bracketed-paste (`ESC[200~ … ESC[201~`) + trailing Enter so they don't submit
+  early in Claude's TUI.
+- `src/dave.js` (DAVE presence check), `src/log.js` (stdout + optional mirror to
+  the app's unified `[frontend]`/`[discord-bridge]` log stream), `src/doctor.js`
+  (no-token preflight), `run.sh`, `README.md`, `SETUP.md`, and
+  `python-receiver/README.md` (fallback notes).
+
+**DAVE (mandatory E2EE voice since March 2026) — the load-bearing decision.**
+Researched against primary sources. Pinned `@discordjs/voice@^0.19.2`
+**on purpose**: PR #11449 (merged 2026-03-13, shipped 0.19.2) fixes the DAVE
+voice-**receive** bug (RFC3550 padding not stripped → garbled/zero capture);
+0.19.0/0.19.1 receive is broken. `@snazzah/davey` (0.1.12) auto-installs as a
+hard dep of voice — no manual wiring; playback under DAVE is maintainer-confirmed
+working. The Python path (`discord.py 2.7.1` + `discord-ext-voice-recv`) is NOT
+viable as a drop-in: that extension doesn't decrypt DAVE (issue #53 open, fix
+PR #54 unmerged), so Node is the only reliable receive path today.
+
+**Double-audio note.** The in-app NotificationManager also plays each TTS clip.
+Documented fix: toggle the app's mute button (`#notification-mute-btn`,
+persisted `notificationsMuted`) — it silences only the local HTMLAudioElement;
+the backend notification feed the bridge polls is unaffected. No restart, no
+lost messages.
+
+**How verified (without a live Discord token).**
+- `npm install` clean (106 pkgs); all native deps load on Node 20
+  (`@discordjs/voice`, `@discordjs/opus`, `sodium-native`, `prism-media`,
+  `ffmpeg-static`, `@snazzah/davey` v0.1.12).
+- `node src/doctor.js`: backend TTS endpoint reachable; control API `/state`
+  reachable with manager 999 present (status running); CCBOT creds inherited.
+- INPUT pieces (no keys sent to 999): framing + bracketed-paste keys array
+  correct; `POST /api/voice/transcribe/` multipart round-trip returns HTTP 200
+  on Node 20 (silence → empty text, as expected).
+- OUTPUT data path: poller seed correctly skips history; rewinding lastId by 1
+  downloads a real 1.19 MB WAV from the backend (backend state untouched —
+  `markPlayed` stubbed in the test).
+- `node --check` passes for every JS file; `bash -n run.sh` clean.
+
+**Known runtime note.** `@discordjs/voice@0.19.2` declares `engines.node
+>=22.12.0`. All modules load and the non-voice paths verify on the system's
+Node 20; SETUP.md recommends Node 22+ for the live voice run.
+
+**Still needed to go live (handed to user in SETUP.md):** a Discord bot token,
+guild ID, and voice channel ID. Acceptance (bot joins channel; manager TTS plays
+in; user speech reaches 999 as a framed memo; app never restarted) is verified
+end-to-end only after the user provides the token.
+
+**Restart needed?** No. The bridge is a separate process; the Electron app and
+manager were never touched.
+
+### Discord bridge enhancement — system-audio capture (hear EVERYTHING, not just TTS)
+
+**Date:** 2026-06-26. **Branch:** dev. **Still uncommitted** (per user: nothing
+commits until the live token test passes). Additive to `discord-bridge/`.
+
+**Why.** TTS-notification polling only catches TTS clips, so a remote user would
+miss system sound effects, chimes, and especially the morning **wake-up song**
+(plays via mpv straight to the sink, not through the notification feed).
+
+**What.** New `AUDIO_SOURCE` flag:
+- `tts` (default) — existing behavior: poll the notification feed, play TTS only.
+- `system` — capture the machine's audio OUTPUT (the default sink's `.monitor`)
+  and stream it into the channel, so the remote user hears *everything* the
+  speakers play. In this mode the TTS poller is **auto-disabled** (the monitor
+  already contains the TTS audio → no double-play).
+
+**Implementation.** `src/systemAudio.js`: `parec` captures
+`<default-sink>.monitor` as 48kHz/stereo/s16le (Discord-ready `StreamType.Raw`),
+fed to a new `VoicePlayer.playLive()` continuous resource. Because PipeWire
+**suspends idle sinks** (verified: a suspended sink's monitor emits no data), a
+silent **keepalive** (`pacat < /dev/zero` into the sink) keeps it warm so the
+monitor is continuous. Both children auto-restart on exit; `stop()` kills both.
+Device auto-resolves via `pactl get-default-sink` (override:
+`SYSTEM_AUDIO_DEVICE`); socket from `PULSE_SERVER` (default `/run/user/<uid>/pulse/native`).
+Config: `AUDIO_SOURCE`, `PULSE_SERVER`, `SYSTEM_AUDIO_DEVICE`,
+`SYSTEM_AUDIO_KEEPALIVE`, `SYSTEM_AUDIO_WARMUP_MS`.
+
+**Muting interaction (documented in SETUP.md).** Opposite rules per mode:
+`tts` mode → MUTE in-app playback (bridge polls backend independently). `system`
+mode → do NOT mute (audio must reach the sink to be captured).
+
+**How verified (no Discord token needed).**
+- Probed env: PipeWire 1.0.3 (PulseAudio compat), uid 1000, socket present,
+  `parec`/`pacat`/`pactl` present, default sink monitor RUNNING.
+- Proved the idle-suspend problem empirically: raw monitor capture yielded 0
+  bytes when idle, ~2s only while a beep played.
+- Proved the keepalive fix: warmed sink + low-latency parec → **4.98s of
+  continuous PCM in a 5s window**.
+- Module smoke test (`SystemAudioCapture` through real code): `onStream` fired,
+  **3.27s continuous PCM in a 3.3s window** with no real audio playing; clean
+  `stop()` left **no orphan parec/pacat processes**.
+- `doctor.js` in system mode: all tool/socket/device checks green, monitor
+  resolves to `alsa_output.pci-0000_11_00.6.analog-stereo.monitor`.
+- All `node --check` pass.
+
+**Still unverified (needs live token):** the captured stream actually arriving in
+the Discord channel under DAVE, and the wake-up alarm being audible remotely —
+both part of the live test.
+
+### Discord bridge — major re-architecture: standalone service + rotatable session-key link + wake word
+
+**Date:** 2026-06-26. **Branch:** dev. **Still uncommitted** (no commit until the
+live token test). Reworks `discord-bridge/` from a terminal-bound TTS relay into a
+persistent, linkable, wake-word voice assistant.
+
+**1) Standalone persistent service.** The bot no longer depends on the
+discord-bridge terminal or the Electron app's lifecycle. `service/install.sh`
+installs a `systemd --user` unit (`ccbot-discord-bridge.service`, auto-restart,
+optional `--boot` enable-linger), `uninstall.sh` removes it. The service holds
+**no app credentials at rest** and idles until linked, so it survives the
+auto-injector app restarting. (`systemd-analyze verify` clean after moving
+`StartLimitIntervalSec`/`Burst` to `[Unit]`.) `nohup` fallback documented.
+
+**2) Rotatable, local-only session-key linking.** The bot starts UNLINKED. The
+manager (terminal 999, holds live `CCBOT_PORT`/`CCBOT_TOKEN`) runs
+`npm run link-key` (`tools/make-link-key.js`): mints a random revocable
+**link-token**, writes the real creds + token to a `0600` vault at
+`$XDG_RUNTIME_DIR/ccbot-bridge/vault.json` (loopback/tmpfs), and prints a
+paste-able `/link <key>`. **The pasted key carries only `{port, link-token}` —
+never the control token** — so a key leaked through Discord is useless without
+local machine access. The bot resolves the key against the vault locally
+(`src/linkVault.js`), validates against the live control API `/state`, and holds
+creds in memory only (`src/linkManager.js`). **Rotation** = re-run the tool → new
+link-token overwrites the vault → old key stops resolving; the app token never
+changes. Keys expire (default 1h, `--ttl`). This honors: rotatable, decoupled
+from the raw token, local-only loopback, manager-generated, START-SESSION via
+`/link`.
+
+**3) Wake word + music-bot join.** `/link` (slash command) joins the voice
+channel the **invoking user is currently in** (`interaction.member.voice` —
+`DISCORD_VOICE_CHANNEL_ID` is now only an optional fallback). Then only speech
+beginning with the wake phrase (default "hey claude") is forwarded; the phrase is
+stripped, the remainder is the prompt; saying the phrase alone arms a short
+follow-up window (`src/wakeWord.js`, `src/voiceReceive.js`). Slash commands:
+`/link`, `/leave`, `/status` (`src/commands.js`); requires the
+`applications.commands` invite scope.
+
+**Wake-word implementation decision (honest).** The app uses Vosk via
+vosk-browser (WASM, renderer). For this Node service there is **no working native
+Vosk**: the `vosk` npm depends on `ffi-napi`, which fails to build on Node 20/22
+(node-gyp error, reproduced), and there's no pure-JS Vosk. Chosen path:
+**Whisper-text gating** — transcribe each utterance with the app's existing local
+Whisper and forward only wake-prefixed ones. Same product intent, local-only, no
+native build. Trade-off (documented): every utterance is transcribed locally to
+check for the wake word. The spotter interface is small so a Vosk-backed
+gate (e.g. a backend endpoint) can replace it later.
+
+**4) System-audio output retained** (TTS + sound effects + wake-up alarm), now
+started per-session by `src/session.js` on link.
+
+**5) DM-call research (non-blocking).** Confirmed: no Discord bot DM-voice-call
+API and no conversational-AI voice primitive exist in mid-2026; the Social SDK is
+games-only. Guild voice channel + `@discordjs/voice` remains the only path. No
+architecture change.
+
+**How verified (no Discord token).**
+- All modules `require` cleanly; `node --check` passes for every file; slash
+  command defs build (`link, leave, status`).
+- **Full link path tested against the LIVE control API** (this terminal has real
+  `CCBOT_*`): minted a key → bot resolved + validated → manager 999 reachable
+  (running) → linked ✅; **rotation** re-mint correctly invalidated the old key
+  ("superseded"). (No keys sent to 999 — `forward()` not called.)
+- Wake spotter unit tests 6/6 (including "hey cloud" mishearing, wake-alone,
+  no-wake, mid-sentence wake).
+- Service wiring smoke: with a fake token the process loads everything and fails
+  ONLY at Discord login (`TokenInvalid`) — all wiring sound.
+- `doctor.js` green: deps, DAVE v0.1.12, backend, audio tools/monitor (system
+  mode), vault detection, live control API + manager presence.
+- systemd unit renders + `systemd-analyze verify` clean.
+
+**Still needs the token (live test):** Discord login, slash-command registration
+in the guild, `/link` join-current-channel, DAVE voice-receive of "hey claude"
+→ forward to 999, and audio playback (TTS + system audio incl. the wake-up alarm)
+into the channel.
+
+### Discord bridge — shared CPU wake-gate (stop pegging the GPU with constant Whisper)
+
+**Date:** 2026-06-26. **Branch:** dev. **Uncommitted; built but NOT deployed**
+(bot is off + backend not rebuilt — pending the user's thermal all-clear).
+
+**Problem.** The bridge already used the backend's *shared* Whisper (no duplicate
+model in VRAM), but it transcribed EVERY captured utterance to find the wake word
+— and Whisper loads on `cuda` (RTX 3090), so constant channel chatter meant
+constant GPU inference, contributing to a thermal emergency.
+
+**Fix — gate on cheap CPU before the GPU.** Added a Vosk wake-word endpoint to the
+backend and made the bridge gate through it:
+- **Backend:** `backend/voice_transcription/wake_service.py` (`VoskWakeService`,
+  CPU, lazy-loads the app's existing `vosk-model-small-en-us` — extracts the
+  shipped tarball), new `POST /api/voice/wake-check/` view + URL, `vosk==0.3.45`
+  in `requirements.txt`, and a `docker-compose.yml` change mounting
+  `./assets/models:/models:ro` + `VOSK_MODEL_PATH`. Vosk is CPU-only — no GPU, no
+  duplicate model (reuses the desktop app's model).
+- **Bridge:** `src/wakeCheck.js` posts each utterance to the CPU Vosk endpoint;
+  `src/voiceReceive.js` now gates on that transcript and only calls the GPU
+  Whisper (`/api/voice/transcribe/`) AFTER the wake word fires (for an accurate
+  command). Idle chatter = CPU Vosk only; GPU ≈ once per real command. Flags:
+  `USE_SHARED_WAKE_GATE` (default on), `COMMAND_USE_WHISPER` (default on; off =
+  zero-GPU, use the Vosk transcript as the command).
+
+**Why not local Vosk in the bot.** Native `vosk` npm won't build on Node 20/22
+(`ffi-napi`); `vosk-browser` (WASM) needs browser globals (`Worker`/`AudioContext`)
+so it won't run headless in Node. Centralizing Vosk in the backend (CPU) is the
+clean "share the resource" answer and reuses the model the app already ships.
+
+**Net resources:** one Whisper (backend GPU, only on wake), one Vosk (backend
+CPU, the gate), zero duplicates in the bot.
+
+**Verified (no deploy):** bot `node --check` + require-smoke clean; backend
+`python -m py_compile` clean for wake_service/views/urls; `docker compose config`
+valid; live wake config still mirrors the app ("sean").
+
+**To activate (when temps are safe):** `docker compose up -d --build` (rebuilds
+ONLY the backend for the `vosk` dep + model mount; never touches the Electron
+app), then bring the bot back (`systemctl --user enable --now ccbot-discord-bridge`)
+and `/link`. Until rebuilt, the endpoint 404s and the bridge falls back to the
+Whisper gate.
