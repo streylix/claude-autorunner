@@ -30,6 +30,7 @@ class PreferenceManager {
             injectionDelayMs: 400,
             wakeActivationSound: 'screenshot.wav',
             wakeStopSound: 'hud4.wav',
+            wakeMuteDuringCall: false,
             notificationsMuted: false,
             soundEffectsEnabled: false,
             completionSound: 'completion.mp3',

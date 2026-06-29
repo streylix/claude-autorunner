@@ -66,6 +66,14 @@ const SPEECH_IDLE_MS = 600;
 // raised gate up briefly past the clip's end for the buffer/reverb tail.
 const RMS_BARGE_IN_THRESHOLD = 0.030;
 const TTS_ECHO_TAIL_MS = 400;
+// Discord-bot presence. When the "mute wake word while the bot is in a call"
+// preference is on, we poll the backend for whether the Discord bridge is
+// active (linked + in a voice channel) and suppress the LOCAL wake word so the
+// same spoken phrase doesn't trigger twice (once via the bot, once via the host
+// mic). The backend reports inactive if the bridge stops heartbeating, so a
+// crashed/closed bridge can never leave the local wake word stuck muted.
+const BACKEND_URL = 'http://localhost:8123';
+const BOT_STATUS_POLL_MS = 3000;
 
 class WakeWordManager {
     constructor(eventBus, appStateStore, gui) {
@@ -130,6 +138,12 @@ class WakeWordManager {
         // NotificationManager's tts:playback events.
         this._ttsPlaybackActive = false;
         this._ttsEchoTailTimer = null;
+        // Wake-word mute while the Discord bot is in a call (anti double-trigger).
+        // muteWhileBotActive is the user preference; _botInCall is the live state
+        // polled from the backend bridge-status endpoint while enabled.
+        this.muteWhileBotActive = false;
+        this._botInCall = false;
+        this._botPollTimer = null;
         // What started the current capture: 'wake' (wake word) or 'post-notification'
         // (auto-opened right after a notification finished reading out). Drives how the
         // transcript is framed for the manager; reset to 'wake' after each capture.
@@ -179,6 +193,10 @@ class WakeWordManager {
         }
         if (prefs.wakeActivationSound) this.activationSound = prefs.wakeActivationSound;
         if (prefs.wakeStopSound) this.stopSound = prefs.wakeStopSound;
+        if (prefs.wakeMuteDuringCall != null) {
+            this.muteWhileBotActive = !!prefs.wakeMuteDuringCall;
+            if (this.enabled) this._syncBotPoll(); // start/stop polling to match
+        }
         if (prefs.microphoneDeviceId != null && prefs.microphoneDeviceId !== this.microphoneDeviceId) {
             this.microphoneDeviceId = prefs.microphoneDeviceId;
             micChanged = true;
@@ -212,6 +230,7 @@ class WakeWordManager {
             this.state = 'listening';
             this._log(`🟣 Wake word active — say "${this.phrase}"`, 'success');
             this.eventBus.emit('wake:state', { state: 'listening', phrase: this.phrase });
+            this._syncBotPoll(); // begin watching the Discord bot if the mute pref is on
         } catch (err) {
             this.enabled = false;
             this.state = 'idle';
@@ -223,6 +242,8 @@ class WakeWordManager {
 
     disable() {
         this.enabled = false;
+        this._stopBotPoll();
+        this._botInCall = false;
         this._stopCommandCapture(true); // abort any in-flight capture
         this._teardownAudio();
         this.state = 'idle';
@@ -486,9 +507,55 @@ class WakeWordManager {
 
     _onWakeDetected() {
         if (this.state !== 'listening') return;
+        if (this._isWakeMuted()) {
+            // The Discord bot is in a call and the user opted to route the wake
+            // word through it only — ignore the local mic so it can't double-fire.
+            this._log('🔇 Wake word heard but muted — Discord bot is in a call (no double trigger).', 'info');
+            return;
+        }
         this._captureSource = 'wake';
         this._log(`🎙️ Heard "${this.phrase}" — listening for your command…`, 'success');
         this._beginCapture();
+    }
+
+    /** Suppress the local wake word only when the user opted in AND the bot is live. */
+    _isWakeMuted() {
+        return this.muteWhileBotActive && this._botInCall;
+    }
+
+    // ---- Discord-bot presence polling (drives _botInCall) --------------------
+
+    /** Poll the backend only while it can matter: enabled AND the pref is on. */
+    _syncBotPoll() {
+        if (this.enabled && this.muteWhileBotActive) this._startBotPoll();
+        else { this._stopBotPoll(); this._botInCall = false; }
+    }
+
+    _startBotPoll() {
+        if (this._botPollTimer) return;
+        this._pollBotStatus();
+        this._botPollTimer = setInterval(() => this._pollBotStatus(), BOT_STATUS_POLL_MS);
+        if (this._botPollTimer && typeof this._botPollTimer.unref === 'function') this._botPollTimer.unref();
+    }
+
+    _stopBotPoll() {
+        if (this._botPollTimer) { clearInterval(this._botPollTimer); this._botPollTimer = null; }
+    }
+
+    async _pollBotStatus() {
+        try {
+            const res = await fetch(`${BACKEND_URL}/api/voice/bridge-status/`);
+            if (!res.ok) throw new Error(`status ${res.status}`);
+            this._applyBotStatus(await res.json());
+        } catch (_) {
+            // Fail-safe: if the backend is unreachable, never leave the wake word
+            // muted — treat the bot as not in a call so the local mic keeps working.
+            this._botInCall = false;
+        }
+    }
+
+    _applyBotStatus(data) {
+        this._botInCall = !!(data && data.active);
     }
 
     // Auto-open a command capture WITHOUT a wake word, right after a notification

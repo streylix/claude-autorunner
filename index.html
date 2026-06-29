@@ -524,6 +524,14 @@
                         <p class="setting-help">Keeps the microphone open and runs a local, offline spotter (Vosk). Nothing leaves your machine until the wake word fires.</p>
                     </div>
 
+                    <div class="setting-row">
+                        <label class="setting-label">
+                            <input type="checkbox" id="wake-mute-during-call">
+                            <span class="setting-text">Mute local-mic wake word while Discord bot is in a call</span>
+                        </label>
+                        <p class="setting-help">When the Discord bot is linked and in a voice channel, ignore the host microphone's wake word so saying the phrase in the room only triggers once (via the bot), not twice. Local wake word works normally when the bot isn't in a call.</p>
+                    </div>
+
                     <div class="sound-category">
                         <label class="sound-category-label">Wake phrase</label>
                         <input type="text" id="wake-word-phrase" class="setting-input" value="hey claude" placeholder="hey claude">
