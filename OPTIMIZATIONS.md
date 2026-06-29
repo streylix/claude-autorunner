@@ -6,6 +6,103 @@ project's current git branch.
 
 ---
 
+## 2026-06-28 — Mute local-mic wake word while the Discord bot is in a call
+
+**Goal.** Stop the wake word DOUBLE-triggering when the user is in the same room
+as the host mic AND the Discord bot is in the call: saying the phrase should fire
+once (via the bot), not also via the local mic. New opt-in setting in the
+wake-word settings panel: "Mute local-mic wake word while Discord bot is in a
+call". When ON and the bot is active (linked + in a voice channel), the local
+wake word is suppressed; when the bot isn't in a call, local wake word works
+normally.
+
+**How the app learns the bot is active (3 components).**
+1. **Bridge → backend (`discord-bridge/src/bridgeStatus.js`, new).** A
+   fire-and-forget heartbeat (mirroring `log.js`) POSTs `active =
+   linkManager.isLinked() && session.isActive()` to the backend every ~2.5s.
+   `session.isActive()` (`!!this.connection`) is the authoritative in-voice
+   signal. Wired in `src/index.js` (`startBridgeStatusReporter`).
+2. **Backend (`voice_transcription/views.py` + `urls.py`).** New
+   `GET|POST /api/voice/bridge-status/` backed by an in-memory singleton with a
+   monotonic timestamp + 8s TTL (mirrors `wake_service`, no DB/migration). POST
+   records `{active, last_seen}`; GET returns active **only** if reported within
+   the TTL — so if the bridge crashes/quits the flag goes stale and the app
+   un-mutes itself (fail-safe).
+3. **Renderer (`src/features/WakeWordManager.js`).** New preference
+   `wakeMuteDuringCall` (default off). While the spotter is enabled AND the pref
+   is on, it polls `/api/voice/bridge-status/` every 3s (mirrors
+   NotificationManager's poll) into `_botInCall`; an unreachable backend fails
+   safe to "not in call". Suppression is at the single `_onWakeDetected()`
+   chokepoint via `_isWakeMuted() = muteWhileBotActive && _botInCall` — the
+   always-on RMS speech gate (`_updateSpeechSignal` / `speech:active`) and the
+   post-notification reply window are deliberately left untouched.
+
+**UI.** Toggle added to the Wake Word settings group (`index.html`
+`#wake-mute-during-call`), wired through `PreferenceManager` (default
+`wakeMuteDuringCall: false`) and `renderer.js` `setupSettings` (sync + change),
+following the existing `wake-word-enabled` pattern.
+
+**Verified (no deploy — Electron NOT restarted, manager 999 left alive).**
+- Renderer: `src/features/wake-mute-during-call.test.js` — 8 tests: pref ON + bot
+  in call → suppressed; bot not in call → fires; pref OFF → fires; pref mapping
+  (bulk + live); `_applyBotStatus`; the poll drives suppression end-to-end
+  (active→suppressed, inactive→fires); poll failure fails safe; the TTS speech
+  gate still fires while muted. Full feature suite green; `node --check` clean.
+- Backend: exercised the real Django URL+view+TTL in a throwaway container
+  (host code overlaid, live server untouched): initial inactive → active POST →
+  active → stale-by-TTL → inactive → inactive POST → inactive. ✅
+- Bridge: `computeActive` truth table + the reporter POSTs `{"active":true}` to
+  `…/api/voice/bridge-status/` (stubbed fetch). ✅
+
+**Deploy / coordination notes.** Electron picks this up on the next deliberate
+restart. The backend image is baked (not bind-mounted), so the endpoint needs a
+backend rebuild (`docker compose up -d --build backend`); it ships alongside the
+already-staged `wake_check` backend work. The bridge wiring in
+`discord-bridge/src/index.js` (2 lines: require + `startBridgeStatusReporter`)
+was left in the working tree (NOT committed) to avoid bundling T3's large
+in-progress `index.js` refactor — coordinate with the discord-bridge terminal to
+fold it in; it deploys on the next bridge restart regardless.
+
+---
+
+## 2026-06-28 — Discord bridge: `/resume` — reconnect without re-pasting the key
+
+**Problem.** Re-linking the bot meant pasting the long base64 link key every time
+— painful on mobile, where the user lives.
+
+**Feature.** A new `/resume` slash command re-links and rejoins the user's current
+voice channel using the LAST key they successfully `/link`'d with — no paste.
+
+- **Per-user memory** (`src/resumeStore.js`). On every successful `/link`, the
+  bot records `discordUserId -> { key, tag, port, managerId, linkedAt }` in a
+  small 0600 JSON store at `$XDG_RUNTIME_DIR/ccbot-bridge/resume.json`. The stored
+  `key` is the same paste-able link key (port + revocable link-token, **no**
+  control token — see `linkVault.js`). It survives a **bot restart** (systemd
+  --user restart doesn't clear `/run/user`); it's wiped on machine reboot, which
+  is correct because the vault it points at is wiped then too.
+- **`/resume` flow** (`src/commands.js`). Look up the caller's stored key →
+  re-run `linkManager.link(storedKey)`, which re-resolves it against the live
+  vault AND re-validates the control API. On success, rejoin the user's current
+  voice channel (shared `joinCurrentChannel` helper, same as `/link`). Clear,
+  actionable errors otherwise: **no saved session** ("run /link <key> once") and
+  **stored key no longer valid** (rotated / expired / manager gone → "run /link
+  <key> with a fresh key"). `/leave` intentionally keeps the saved mapping so a
+  later `/resume` still works. `/status` now shows whether a resume is available.
+
+**Why it's safe.** `/resume` re-uses the exact same vault + control-API validation
+as `/link`, so it can never connect to a stale/rotated session — it either
+reconnects to a genuinely-live session or fails with guidance. No new trust path.
+
+**Verified.** 13/13 mock-driven tests on the real `commands.handle` + `resumeStore`:
+`/resume` with no prior link errors cleanly (no link attempt, no join); `/link`
+then leave→`/resume` reconnects using the stored key and rejoins; a now-invalid
+stored key yields the clean "run /link" error with no rejoin; the store persists
+across a simulated restart and is 0600. `npm run check` clean. Tunable:
+`CCBOT_RESUME_STORE` (store path). Pending the user's live confirmation before
+commit.
+
+---
+
 ## 2026-06-27 — Audit fixes: two HIGH-severity autorunner bugs
 
 From the all-projects bug-swarm audit; user approved fixing the **highs only**

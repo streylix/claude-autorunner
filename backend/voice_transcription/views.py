@@ -10,6 +10,8 @@ from django.utils.decorators import method_decorator
 from django.views import View
 import json
 import logging
+import threading
+import time
 import traceback
 
 from .transcription_service import transcription_service
@@ -20,6 +22,15 @@ logger = logging.getLogger(__name__)
 
 # Reject audio uploads larger than this to avoid OOM / abuse.
 MAX_AUDIO_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+
+# Discord-bridge presence (in-memory, single ASGI process — no DB/migration,
+# mirrors wake_service's module-level singleton). The bridge heartbeats its
+# "active" (linked + in a voice channel) state here; the desktop app polls it to
+# mute the local wake word. A report older than the TTL counts as inactive, so a
+# crashed/closed bridge can never leave the app's wake word stuck muted.
+_bridge_status_lock = threading.Lock()
+_bridge_status = {'active': False, 'last_seen': 0.0}
+BRIDGE_STATUS_TTL_SECONDS = 8.0  # bridge heartbeats every ~2.5s
 # Keep only the newest N transcription rows to bound unbounded table growth.
 MAX_TRANSCRIPTION_ROWS = 500
 
@@ -135,6 +146,76 @@ def transcribe_audio(request):
             'success': False,
             'error': f'Server error: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@parser_classes([MultiPartParser, FileUploadParser])
+@throttle_classes([VoiceTranscribeThrottle])
+def wake_check(request):
+    """
+    Cheap CPU wake-word transcription (Vosk). Returns Vosk's best-effort text so
+    a caller can gate on a wake word WITHOUT running the GPU Whisper model on
+    every utterance. Same multipart contract as /transcribe/ (field audio_file).
+
+    Response: { "success": true, "text": "<vosk transcript>" }
+
+    The caller decides whether the wake word is present (the desktop app / bridge
+    own the phrase + matching). This endpoint just provides a fast, GPU-free
+    transcript for gating.
+    """
+    from .wake_service import wake_service
+
+    audio_file = request.FILES.get('audio_file')
+    if audio_file is None:
+        return Response({'success': False, 'error': 'audio_file is required'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if audio_file.size is not None and audio_file.size > MAX_AUDIO_UPLOAD_BYTES:
+        return Response({'success': False, 'error': 'Audio file too large'},
+                        status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+
+    temp_file_path = None
+    try:
+        data = audio_file.read()
+        temp_file_path = transcription_service.save_temp_audio_file(data, '.wav')
+        text = wake_service.transcribe(temp_file_path)
+        return Response({'success': True, 'text': text}, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Wake-check endpoint error: {e}")
+        logger.error(traceback.format_exc())
+        return Response({'success': False, 'error': f'Server error: {str(e)}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    finally:
+        if temp_file_path:
+            transcription_service.cleanup_temp_file(temp_file_path)
+
+
+@api_view(['GET', 'POST'])
+def bridge_status(request):
+    """Discord-bridge presence, used by the desktop app to mute its local wake word.
+
+    POST { "active": bool }  - the bridge heartbeats whether it is in a voice channel.
+    GET  -> { "active": bool, "age_seconds": float|None } - active is True only if the
+    bridge reported within BRIDGE_STATUS_TTL_SECONDS, so the app never stays muted
+    after the bridge goes away.
+    """
+    now = time.monotonic()
+
+    if request.method == 'POST':
+        active = bool(request.data.get('active'))
+        with _bridge_status_lock:
+            _bridge_status['active'] = active
+            _bridge_status['last_seen'] = now
+        return Response({'success': True, 'active': active}, status=status.HTTP_200_OK)
+
+    with _bridge_status_lock:
+        reported = _bridge_status['active']
+        last_seen = _bridge_status['last_seen']
+    age = (now - last_seen) if last_seen else None
+    fresh = age is not None and age < BRIDGE_STATUS_TTL_SECONDS
+    return Response(
+        {'success': True, 'active': bool(reported and fresh), 'age_seconds': age},
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(['GET'])

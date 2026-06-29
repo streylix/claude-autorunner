@@ -987,11 +987,13 @@ class TerminalGUI {
         const wakeThresholdVal = document.getElementById('wake-threshold-value');
         const wakeActSound = document.getElementById('wake-activation-sound');
         const wakeStopSound = document.getElementById('wake-stop-sound');
+        const wakeMuteDuringCall = document.getElementById('wake-mute-during-call');
 
         // Reflect persisted prefs into the controls when the settings open.
         const syncWakeUI = () => {
             const p = this.preferenceManager.preferences;
             if (wakeEnabled) wakeEnabled.checked = !!p.wakeWordEnabled;
+            if (wakeMuteDuringCall) wakeMuteDuringCall.checked = !!p.wakeMuteDuringCall;
             if (wakePhrase) wakePhrase.value = p.wakeWordPhrase || 'hey claude';
             if (wakeSilence) wakeSilence.value = p.wakeSilenceMs || 5000;
             if (wakeSilenceVal) wakeSilenceVal.textContent = `${((p.wakeSilenceMs || 5000) / 1000).toFixed(1)}s`;
@@ -1035,6 +1037,9 @@ class TerminalGUI {
 
         if (wakeEnabled) wakeEnabled.addEventListener('change', () => {
             this.preferenceManager.updatePreference('wakeWordEnabled', wakeEnabled.checked);
+        });
+        if (wakeMuteDuringCall) wakeMuteDuringCall.addEventListener('change', () => {
+            this.preferenceManager.updatePreference('wakeMuteDuringCall', wakeMuteDuringCall.checked);
         });
         if (wakePhrase) wakePhrase.addEventListener('change', () => {
             const v = wakePhrase.value.trim().toLowerCase() || 'hey claude';
