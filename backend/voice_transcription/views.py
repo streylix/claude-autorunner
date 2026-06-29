@@ -137,6 +137,47 @@ def transcribe_audio(request):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@api_view(['POST'])
+@parser_classes([MultiPartParser, FileUploadParser])
+@throttle_classes([VoiceTranscribeThrottle])
+def wake_check(request):
+    """
+    Cheap CPU wake-word transcription (Vosk). Returns Vosk's best-effort text so
+    a caller can gate on a wake word WITHOUT running the GPU Whisper model on
+    every utterance. Same multipart contract as /transcribe/ (field audio_file).
+
+    Response: { "success": true, "text": "<vosk transcript>" }
+
+    The caller decides whether the wake word is present (the desktop app / bridge
+    own the phrase + matching). This endpoint just provides a fast, GPU-free
+    transcript for gating.
+    """
+    from .wake_service import wake_service
+
+    audio_file = request.FILES.get('audio_file')
+    if audio_file is None:
+        return Response({'success': False, 'error': 'audio_file is required'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if audio_file.size is not None and audio_file.size > MAX_AUDIO_UPLOAD_BYTES:
+        return Response({'success': False, 'error': 'Audio file too large'},
+                        status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+
+    temp_file_path = None
+    try:
+        data = audio_file.read()
+        temp_file_path = transcription_service.save_temp_audio_file(data, '.wav')
+        text = wake_service.transcribe(temp_file_path)
+        return Response({'success': True, 'text': text}, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Wake-check endpoint error: {e}")
+        logger.error(traceback.format_exc())
+        return Response({'success': False, 'error': f'Server error: {str(e)}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    finally:
+        if temp_file_path:
+            transcription_service.cleanup_temp_file(temp_file_path)
+
+
 @api_view(['GET'])
 def health_check(request):
     """
