@@ -10,17 +10,12 @@ class PreferenceManager {
         // Operational state (NOT a user preference) - persisted separately.
         this.messageQueue = [];
 
-        // Default preferences
+        // Default preferences. Every key here is READ somewhere — dead keys
+        // that were written as defaults but never consumed were removed.
         this.preferences = {
             theme: 'dark',
-            autoScroll: true,
-            smoothScroll: true,
-            alwaysTargetPromptedTerminal: false,
-            autoStart: false,
             leftSidebarWidth: 300,
             rightSidebarWidth: 400,
-            verticalLayout: false,
-            showTerminalSelector: true,
             voiceEnabled: false,
             microphoneDeviceId: 'default',
             wakeWordEnabled: false,
@@ -37,33 +32,20 @@ class PreferenceManager {
             injectionSound: 'injection.mp3',
             promptedSound: 'prompted.mp3',
             promptedSoundKeywordsOnly: false,
+            keepScreenAwake: false,
             currentCwd: null,
             timerPreset1: 120,
             timerPreset2: 180,
             timerPreset3: 300,
-            autoCompleteTodoEnabled: false,
-            generateTodoOnCompletion: true,
-            typewriterEffectEnabled: true,
-            typewriterSpeed: 80,
             microwaveModeEnabled: false,
-            microwaveInterval: 30,
-            startInBackground: false,
-            enablePowerSaveBlocker: false,
-            showInDock: true,
             messageHistory: [],
             timerTargetDateTime: null,
             usageLimitWaiting: false,
             injectionPausedState: false,
             lastStableCompletionByTerminal: {},
-            savedViewState: 'action-log',
-            trayBarTheme: 'auto',
-            completionBehavior: 'auto-send',
-            backgroundServiceEnabled: false
+            savedViewState: 'action-log'
         };
-        
-        // Preference change handlers
-        this.changeHandlers = new Map();
-        
+
         this.setupEventListeners();
     }
     
@@ -83,24 +65,16 @@ class PreferenceManager {
         this.eventBus.on('preference:save-all', async () => {
             await this.saveAllPreferences();
         });
-        
-        // Listen for theme changes
-        this.eventBus.on('theme:change', async (theme) => {
-            await this.setTheme(theme);
-        });
     }
     
     // ======= CORE PREFERENCE OPERATIONS =======
     async updatePreference(key, value) {
         const oldValue = this.preferences[key];
         this.preferences[key] = value;
-        
+
         // Save to database
         await this.savePreference(key, value);
-        
-        // Notify change handlers
-        this.notifyChangeHandlers(key, value, oldValue);
-        
+
         // Emit change event
         this.eventBus.emit('preference:changed', { key, value, oldValue });
         
@@ -296,36 +270,6 @@ class PreferenceManager {
         }
     }
     
-    // ======= THEME MANAGEMENT =======
-    async setTheme(theme) {
-        const validThemes = ['dark', 'light', 'high-contrast', 'midnight', 'ocean', 'forest'];
-        
-        if (!validThemes.includes(theme)) {
-            this.eventBus.emit('log:action', {
-                message: `Invalid theme: ${theme}`,
-                type: 'error'
-            });
-            return;
-        }
-        
-        // Update preference
-        this.preferences.theme = theme;
-        
-        // Apply theme to document
-        document.documentElement.setAttribute('data-theme', theme);
-        
-        // Save preference
-        await this.savePreference('theme', theme);
-        
-        // Emit theme change event
-        this.eventBus.emit('theme:changed', theme);
-        
-        this.eventBus.emit('log:action', {
-            message: `Theme changed to: ${theme}`,
-            type: 'info'
-        });
-    }
-    
     // ======= SIDEBAR PREFERENCES =======
     updateSidebarWidth(side, width) {
         if (side === 'left') {
@@ -336,15 +280,6 @@ class PreferenceManager {
         
         // Save asynchronously without blocking
         this.savePreference(`${side}SidebarWidth`, width);
-    }
-    
-    // ======= LAYOUT PREFERENCES =======
-    setVerticalLayout(enabled) {
-        this.preferences.verticalLayout = enabled;
-        this.savePreference('verticalLayout', enabled);
-        
-        // Emit layout change event
-        this.eventBus.emit('layout:changed', { vertical: enabled });
     }
     
     // ======= DIRECTORY PREFERENCES =======
@@ -392,86 +327,18 @@ class PreferenceManager {
             right: this.preferences.rightSidebarWidth
         });
         
-        // Apply layout
-        if (this.preferences.verticalLayout) {
-            this.eventBus.emit('layout:changed', { vertical: true });
-        }
-        
         // Apply sound settings
         this.eventBus.emit('sound:toggle', this.preferences.soundEffectsEnabled);
-
-        // Reflect checkbox-backed settings onto their controls (DOM id ≠ pref key)
-        const todoGenCheckbox = document.getElementById('automatic-todo-generation');
-        if (todoGenCheckbox) {
-            todoGenCheckbox.checked = !!this.preferences.generateTodoOnCompletion;
-        }
 
         // Apply other UI preferences
         this.eventBus.emit('preferences:applied', this.preferences);
     }
-    
-    // ======= CHANGE HANDLERS =======
-    registerChangeHandler(key, handler) {
-        if (!this.changeHandlers.has(key)) {
-            this.changeHandlers.set(key, []);
-        }
-        this.changeHandlers.get(key).push(handler);
-    }
-    
-    notifyChangeHandlers(key, value, oldValue) {
-        const handlers = this.changeHandlers.get(key);
-        if (handlers) {
-            handlers.forEach(handler => {
-                try {
-                    handler(value, oldValue);
-                } catch (error) {
-                    console.error(`Error in change handler for ${key}:`, error);
-                }
-            });
-        }
-    }
-    
+
     // ======= PUBLIC API =======
     async initialize() {
         await this.loadAllPreferences();
     }
     
-    // Quick access helper (maintains backward compatibility)
-    updatePref(key, value) {
-        this.updatePreference(key, value);
-    }
-    
-    // Get all preferences for export
-    exportPreferences() {
-        return JSON.stringify(this.preferences, null, 2);
-    }
-    
-    // Import preferences from JSON
-    async importPreferences(jsonString) {
-        try {
-            const imported = JSON.parse(jsonString);
-            
-            // Merge with current preferences
-            Object.assign(this.preferences, imported);
-            
-            // Save all
-            await this.saveAllPreferences();
-            
-            // Apply changes
-            await this.applyLoadedPreferences();
-            
-            this.eventBus.emit('log:action', {
-                message: 'Preferences imported successfully',
-                type: 'success'
-            });
-            
-        } catch (error) {
-            this.eventBus.emit('log:action', {
-                message: `Failed to import preferences: ${error.message}`,
-                type: 'error'
-            });
-        }
-    }
 }
 
 module.exports = PreferenceManager;

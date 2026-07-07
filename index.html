@@ -404,9 +404,16 @@
                     <select id="terminal-scroll-behavior" class="setting-select">
                         <option value="smart">Smart (Recommended)</option>
                         <option value="always">Always scroll to bottom</option>
-                        <option value="preserve">Preserve scroll position</option>
                     </select>
-                    <p class="setting-description">Smart: Only scrolls to bottom if you were already there. Always: Always scrolls to bottom on new output. Preserve: Never auto-scrolls.</p>
+                    <p class="setting-description">Smart: Only scrolls to bottom if you were already there. Always: Always scrolls to bottom on new output.</p>
+                </div>
+
+                <div class="setting-group">
+                    <label class="setting-label">
+                        <input type="checkbox" id="keep-screen-awake">
+                        <span class="setting-title">Keep screen awake while injecting</span>
+                    </label>
+                    <p class="setting-description">Blocks display sleep while a queue flush is running, so long unattended runs don't get suspended.</p>
                 </div>
 
                 <div class="setting-group">
@@ -471,7 +478,7 @@
                         <div class="sound-category">
                             <label class="sound-category-label">
                                 Prompted Sound 
-                                <!-- <span class="sound-toggle-text">( <input type="checkbox" id="prompted-sound-keywords-only"> Keywords Only)</span> -->
+                                <span class="sound-toggle-text">( <input type="checkbox" id="prompted-sound-keywords-only"> Keywords Only)</span>
                             </label>
                             <div class="sound-selection-row">
                                 <select id="prompted-sound-select" class="setting-select">
@@ -567,6 +574,25 @@
                     </div>
                 </div>
 
+                <!-- Discord Voice Bridge link key -->
+                <div class="setting-group">
+                    <div class="setting-header">
+                        <span class="setting-title">Discord Voice Bridge</span>
+                    </div>
+                    <p class="setting-description">Connect the Discord voice bot to this session: in your server, run <code>/link</code> with the key below. It encodes only the local control port + a revocable link-token — never your control token. The key is tied to the current session and updates here automatically; click Regenerate for a fresh one (the previous key stops working).</p>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">Discord link key</label>
+                        <div class="setting-input-group">
+                            <input type="text" id="discord-link-key" class="setting-input" readonly value="Loading…" data-test-id="discord-link-key">
+                            <button type="button" id="discord-link-copy-btn" class="setting-btn setting-btn-small" data-test-id="discord-link-copy-btn">Copy</button>
+                            <button type="button" id="discord-link-regen-btn" class="setting-btn setting-btn-small" title="Mint a fresh key (invalidates the previous one)" data-test-id="discord-link-regen-btn">Regenerate</button>
+                        </div>
+                        <p class="setting-help">In Discord, paste this after <strong>/link</strong> — or just type <strong>/resume</strong> to rejoin without it.</p>
+                        <p class="setting-help" id="discord-link-status">Loading the current link key…</p>
+                    </div>
+                </div>
+
                 <!-- Spoken Notifications (Kokoro TTS) Settings -->
                 <div class="setting-group">
                     <div class="setting-header">
@@ -608,6 +634,28 @@
                             <span class="setting-text">Send completions to manager</span>
                         </label>
                         <p class="setting-help">When on, every terminal that finishes is reported to the manager (which decides what to announce). Turn off on the fly when the volume gets overwhelming.</p>
+                    </div>
+
+                    <div class="setting-row">
+                        <label class="setting-label">
+                            <input type="checkbox" id="manager-prompt-watch-enabled" checked>
+                            <span class="setting-text">Manager answers permission prompts</span>
+                        </label>
+                        <p class="setting-help">When a terminal opens a real permission dialog or select menu, the manager is notified so it can answer. Turn off to handle prompts yourself.</p>
+                    </div>
+
+                    <div class="setting-row">
+                        <label class="setting-label">
+                            <input type="checkbox" id="manager-auto-pass-enabled" checked>
+                            <span class="setting-text">Recurring optimization passes</span>
+                        </label>
+                        <p class="setting-help">The manager periodically runs a standing "run a pass" instruction against the routines in its own directory. Applies from the next scheduled tick.</p>
+                    </div>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">Pass interval: <span id="manager-pass-interval-value">60m</span></label>
+                        <input type="range" id="manager-pass-interval-minutes" min="15" max="240" step="15" value="60" class="setting-range">
+                        <p class="setting-help">How often the manager dispatches an optimization pass.</p>
                     </div>
                 </div>
 
@@ -730,10 +778,7 @@
     <script src="node_modules/@xterm/addon-search/lib/addon-search.js"></script>
     <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
     <script src="src/ui/loading-manager.js"></script>
-    <script src="utils/glowing-effect.js"></script>
     <script src="src/audio/microwave-mode.js"></script>
-    <script src="utils/api-client.js"></script>
-    <script src="utils/completion-timer.js"></script>
     <script src="renderer.js"></script>
     <script src="src/utils/microwave-init.js"></script>
 </body>

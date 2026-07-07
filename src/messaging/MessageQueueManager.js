@@ -37,7 +37,6 @@ class MessageQueueManager {
         this.attachedFiles = [];
         this.imagePreviews = [];
         this.backendAPIClient = null; // set by renderer if/when available
-        this.injectionManager = null; // set by renderer if/when available
         this.preferences = {};
         // Default priority applied to user-entered messages; set by the input-bar
         // type selector (renderer). Programmatic adds pass their own type.
@@ -151,26 +150,6 @@ class MessageQueueManager {
             this.clearQueue();
         });
         
-        // Listen for injection events
-        this.eventBus.on('injection:start', () => {
-            this.startSequentialInjection();
-        });
-        
-        this.eventBus.on('injection:pause', () => {
-            this.pauseInjectionExecution();
-        });
-        
-        this.eventBus.on('injection:resume', () => {
-            this.resumeInjectionExecution();
-        });
-        
-        this.eventBus.on('injection:cancel', () => {
-            this.cancelSequentialInjection();
-        });
-        
-        this.eventBus.on('injection:manual', () => {
-            this.manualInjectNextMessage();
-        });
     }
     
     // Getter for message queue from AppStateStore
@@ -209,7 +188,7 @@ class MessageQueueManager {
     /**
      * Send raw input to a terminal via the injected ipc wrapper.
      * The main-process 'terminal-input' handler expects a single object
-     * payload { terminalId, data } (see main.js / ipc-handler.js), NOT
+     * payload { terminalId, data } (see main.js), NOT
      * positional args.
      */
     sendTerminalInput(terminalId, data) {
@@ -732,77 +711,6 @@ class MessageQueueManager {
         this.reorderMessage(fromIndex, toIndex);
     }
     
-    /**
-     * Inject a specific message by ID
-     */
-    injectSpecificMessage(messageId) {
-        const queue = this.messageQueue;
-        const messageIndex = queue.findIndex(m => m.id === messageId);
-        
-        if (messageIndex === -1) return;
-
-        const terminalId = queue[messageIndex].terminalId || this.activeTerminalId;
-
-        // R3 gate (manual path): block + warn.
-        const gate = this.canInjectToTerminal(terminalId);
-        if (!gate.allowed) {
-            this.logAction(`Manual injection blocked: ${gate.reason}`, 'warning');
-            return;
-        }
-
-        const [message] = queue.splice(messageIndex, 1);
-        this.messageQueue = queue;
-
-        if (terminalId) {
-            this.sendTerminalInput(terminalId, message.content + '\n');
-
-            this.injectionCount++;
-            this.eventBus.emit('message:injected', { message, terminalId });
-        }
-
-        this.updateQueueDisplay();
-    }
-
-    validateMessageIds() {
-        const ids = this.messageQueue.map(m => m.id);
-        const uniqueIds = new Set(ids);
-        if (ids.length !== uniqueIds.size) {
-            console.error('Duplicate message IDs detected:', ids);
-            console.error('Message queue:', this.messageQueue);
-        }
-        return ids.length === uniqueIds.size;
-    }
-    
-    setTerminalForNextMessage(terminalId) {
-        // Request the renderer/UI to switch to the specified terminal.
-        this.eventBus.emit('terminal:select:request', { terminalId });
-        this.eventBus.emit('ui:update-terminal-selector');
-        this.logAction(`Terminal ${terminalId} selected for next message`, 'info');
-    }
-    
-    queueContinueMessage() {
-        // Auto-queue a "continue" message to resume conversation flow when usage limit resets
-        const continueMessage = {
-            id: this.generateMessageId(),
-            content: 'continue',
-            terminalId: this.activeTerminalId,
-            timestamp: Date.now(),
-            wrapWithPlan: this.planModeEnabled,
-            isAutoContinue: true
-        };
-        
-        // Add to the front of the queue so it executes first when timer expires
-        const queue = [...this.messageQueue];
-        queue.unshift(continueMessage);
-        this.messageQueue = queue;
-        
-        // Emit events for UI updates
-        this.eventBus.emit('message:queue-updated', { queue: this.messageQueue });
-        this.eventBus.emit('ui:update-status');
-        
-        this.logAction('Auto-queued "continue" message to resume conversation flow when usage limit resets', 'info');
-    }
-    
     async addMessageToQueue(providedContent = null, providedTerminalId = null, providedType = null) {
         const input = document.getElementById('message-input');
         const content = providedContent !== null ? providedContent.trim() : input.value.trim();
@@ -1154,13 +1062,7 @@ class MessageQueueManager {
                 this.injectMessageAndContinueQueue();
             });
         } else {
-            // Use injection manager for proper plan mode delay handling
-            if (this.injectionManager) {
-                this.injectionManager.scheduleNextInjection();
-            } else {
-                // Fallback to direct scheduling
-                this.scheduleNextInjection();
-            }
+            this.scheduleNextInjection();
         }
     }
     
@@ -1413,7 +1315,7 @@ class MessageQueueManager {
 
     /**
      * Schedule the next queued injection after a delay, re-checking the R3 gate
-     * at fire time. Used as the fallback when no external injectionManager is set.
+     * at fire time.
      */
     scheduleNextInjection() {
         if (this.injectionTimer) {
@@ -1424,52 +1326,6 @@ class MessageQueueManager {
             this.injectionTimer = null;
             this.injectMessageAndContinueQueue();
         }, delayMs);
-    }
-
-    /**
-     * Manually inject the next queued message (toolbar / shortcut). Honors the
-     * R3 gate via injectNextMessage, which warns + blocks when not allowed.
-     */
-    manualInjectNextMessage() {
-        this.injectNextMessage();
-    }
-    
-    pauseInjectionExecution() {
-        this.injectionPaused = true;
-        this.eventBus.emit('injection:paused');
-        this.logAction('Injection execution paused', 'info');
-    }
-    
-    resumeInjectionExecution() {
-        this.injectionPaused = false;
-        this.eventBus.emit('injection:resumed');
-        this.logAction('Injection execution resumed', 'info');
-    }
-    
-    cancelSequentialInjection() {
-        this.injectionInProgress = false;
-        this.injectionPaused = false;
-        this.isInjecting = false;
-        
-        // Clear all timers and intervals
-        if (this.injectionTimer) {
-            clearTimeout(this.injectionTimer);
-            this.injectionTimer = null;
-        }
-        
-        if (this.currentTypeInterval) {
-            clearInterval(this.currentTypeInterval);
-            this.currentTypeInterval = null;
-        }
-        
-        // Clear injection tracking
-        this.currentlyInjectingTerminals.clear();
-        this.currentlyInjectingMessages.clear();
-        this.currentlyInjectingMessageId = null;
-        
-        this.eventBus.emit('injection:cancelled');
-        this.eventBus.emit('ui:update-timer');
-        this.logAction('Sequential injection cancelled', 'warning');
     }
 
     /**

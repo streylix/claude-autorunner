@@ -9,7 +9,7 @@
  * - 'injecting' (message being injected)
  */
 
-const { BoundedMap, BoundedSet } = require('../utils/bounded-collections');
+const { BoundedMap } = require('../utils/bounded-collections');
 
 class StatusManager {
     constructor(eventBus, appStateStore) {
@@ -41,12 +41,13 @@ class StatusManager {
             this.applyCanonicalStatus(data.terminalId, data.status, data.previousStatus);
         });
 
-        // Listen for injection events
-        this.eventBus.on('injection:started', (data) => {
+        // Listen for injection events (MessageQueueManager emits the
+        // message:-prefixed names; the unprefixed variants were never emitted)
+        this.eventBus.on('message:injection-started', (data) => {
             this.updateTerminalStatus(data.terminalId, 'injecting');
         });
-        
-        this.eventBus.on('injection:completed', (data) => {
+
+        this.eventBus.on('message:injection-completed', (data) => {
             this.scanSingleTerminalStatus(data.terminalId);
         });
         
@@ -55,8 +56,8 @@ class StatusManager {
             this.setAllTerminalStatuses('');
         });
         
-        // Listen for terminal removal
-        this.eventBus.on('terminal:removed', (data) => {
+        // Listen for terminal removal (the close path emits terminal:closed)
+        this.eventBus.on('terminal:closed', (data) => {
             this.cleanupTerminalStatusTracking(data.terminalId);
         });
     }

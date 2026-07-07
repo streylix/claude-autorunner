@@ -18,7 +18,6 @@
  * GATE (R3): While waiting, MessageQueueManager.usageLimitWaiting is held true so
  * the injection gate blocks all injection until the timer reaches 0.
  */
-const { ipcRenderer } = require('electron');
 const { BoundedSet } = require('../utils/bounded-collections');
 const { parseUsageLimitMessage } = require('../utils/usage-limit-parser');
 
