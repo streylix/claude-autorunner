@@ -337,6 +337,11 @@ function createWindow() {
     width: 1400,
     height: 900,
     webPreferences: {
+      // SECURITY: the renderer runs with full Node (no isolation), so it must
+      // ONLY ever load the local index.html — never a remote URL — and any
+      // untrusted text (Discord messages, transcripts, terminal output) must be
+      // inserted via textContent, never innerHTML. Migrating to
+      // contextIsolation + a preload bridge is the long-term fix.
       nodeIntegration: true,
       contextIsolation: false,
       enableRemoteModule: true,
@@ -950,6 +955,53 @@ function setupIpcHandlers() {
     } catch (error) {
       console.error('Failed to open external link:', error);
       return { success: false, error: error.message };
+    }
+  });
+
+  // Discord voice-bridge link key for the frontend. Uses the LIVE control port +
+  // token (the same creds the manager hands the bridge) and the bridge's own
+  // link-vault so the key shown is exactly one the bridge will accept. We reuse
+  // the current vault token when it's still valid for THIS port (stable display,
+  // no churn); if the port rotated, the token expired, or the user clicked
+  // Regenerate, we mint a fresh one (writeVault) — identical to make-link-key.
+  ipcMain.handle('discord:get-link-key', async (event, opts = {}) => {
+    try {
+      let linkVault;
+      try {
+        linkVault = require('./discord-bridge/src/linkVault');
+      } catch (e) {
+        return { ok: false, error: 'discord-bridge not available in this build' };
+      }
+      if (!hookServer || !hookServer.port || !hookServer.token) {
+        return { ok: false, error: 'control API not running yet — reopen Settings in a moment' };
+      }
+      const port = hookServer.port;
+      const token = hookServer.token;
+      const managerId = 999;
+      const ttlSec = 0; // no time-based expiry — only restart (port rotation) or Regenerate invalidates
+      const regenerate = !!(opts && opts.regenerate);
+
+      let record = null;
+      try { record = JSON.parse(require('fs').readFileSync(linkVault.vaultPath(), 'utf8')); } catch (_) {}
+      // A key is still valid for THIS control port unless it carried an explicit
+      // (legacy) expiry that has passed. Null expiresAt = never expires.
+      const valid = !!(record && record.port === port && record.linkToken
+        && (!record.expiresAt || Date.now() < record.expiresAt));
+
+      let linkToken, expiresAt;
+      if (regenerate || !valid) {
+        const rec = linkVault.writeVault({ port, token, managerId, linkToken: linkVault.mintLinkToken(), ttlSec });
+        linkToken = rec.linkToken;
+        expiresAt = rec.expiresAt;
+      } else {
+        linkToken = record.linkToken;
+        expiresAt = record.expiresAt;
+      }
+      const key = linkVault.encodeKey({ port, linkToken });
+      return { ok: true, key, command: `/link ${key}`, port, expiresAt, regenerated: regenerate || !valid };
+    } catch (error) {
+      console.error('discord:get-link-key failed:', error);
+      return { ok: false, error: error.message };
     }
   });
 

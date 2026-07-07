@@ -59,7 +59,12 @@ class SoundManager {
         this.eventBus.on('sound:play-prompted', (keywordDetected) => {
             this.playPromptedSound(keywordDetected);
         });
-        
+
+        // Generic play request (TimerManager emits this on timer expiry)
+        this.eventBus.on('sound:play', (data) => {
+            if (data && data.type === 'timer-expired') this.playCompletionSound();
+        });
+
         // Listen for canonical status changes to trigger sounds
         this.eventBus.on('terminal:status:changed', (data) => {
             this.checkStatusChangeSounds(data.previousStatus, data.status, data.terminalId);
