@@ -14,7 +14,6 @@ const TerminalStateManager = require('./src/state/TerminalStateManager');
 
 // Import messaging
 const MessageQueueManager = require('./src/messaging/MessageQueueManager');
-const InjectionManager = require('./src/messaging/injection-manager');
 
 // Import feature managers
 const StatusManager = require('./src/features/StatusManager');
@@ -31,8 +30,8 @@ const WakeWordManager = require('./src/features/WakeWordManager');
 const UIFocusManager = require('./src/ui/UIFocusManager');
 
 // Import utilities
-const { getAllTextIn, getLastTextIn, cleanTerminalText } = require('./utils/textExtraction');
 const { parseUsageLimitMessage } = require('./src/utils/usage-limit-parser');
+const { BACKEND_URL } = require('./src/utils/backend-url');
 
 /**
  * Main application controller that orchestrates all modules
@@ -126,9 +125,6 @@ class TerminalGUI {
     }
     
     initializeMessaging() {
-        // Create injection manager, passing the GUI as its context (fix 7).
-        this.injectionManager = new InjectionManager(this);
-
         // Create message queue manager with explicit dependencies and an ipc
         // wrapper (no longer coupled to the renderer "context" object).
         this.messageQueueManager = new MessageQueueManager(
@@ -137,9 +133,6 @@ class TerminalGUI {
             this.terminalStateManager,
             this.ipcHandler
         );
-
-        // Allow the message queue manager to delegate injection scheduling.
-        this.messageQueueManager.injectionManager = this.injectionManager;
 
         console.log('📨 Messaging system initialized');
     }
@@ -325,6 +318,13 @@ class TerminalGUI {
             if (terminalData && terminalData.terminal) {
                 terminalData.terminal.write(content);
 
+                // 'always' forces the viewport down on every output; 'smart'
+                // (default) is xterm's native behavior — follow only when
+                // already at the bottom.
+                if (this.appStateStore.getState('settings.terminalScrollBehavior') === 'always') {
+                    try { terminalData.terminal.scrollToBottom(); } catch { /* disposed */ }
+                }
+
                 // Update state
                 this.terminalStateManager.updateTerminal(terminalId, {
                     lastOutput: content,
@@ -448,6 +448,47 @@ class TerminalGUI {
             this.terminalStateManager.updateTerminal(terminalId, { runtime });
         });
 
+        // PTY spawn failure after all retries — surface it in the log and mark
+        // the terminal errored (main sends this; it was previously dropped).
+        ipcRenderer.on('terminal-error', (event, { terminalId, error }) => {
+            this.eventBus.emit('log:action', {
+                message: `Terminal ${terminalId} failed to start: ${error}`,
+                type: 'error'
+            });
+            const previousStatus = this.terminalStateManager.setTerminalStatus(terminalId, 'error');
+            if (previousStatus !== null) {
+                this.eventBus.emit('terminal:status:changed', {
+                    terminalId,
+                    status: 'error',
+                    previousStatus,
+                    source: 'ipc'
+                });
+            }
+        });
+
+        // Tray menu "Start/Stop Injection" — drive the master send switch
+        ipcRenderer.on('tray-start-injection', () => {
+            if (this.messageQueueManager.injectionPaused) this.toggleSending();
+        });
+        ipcRenderer.on('tray-stop-injection', () => {
+            if (!this.messageQueueManager.injectionPaused) this.toggleSending();
+        });
+
+        // Renderer→main bridges: MessageQueueManager emits these on the event
+        // bus; the main-process handlers already exist but nothing invoked them.
+        this.eventBus.on('ui:tray-badge', ({ count }) => {
+            ipcRenderer.invoke('update-tray-badge', count).catch(() => {});
+        });
+        this.eventBus.on('ui:system-notification', ({ title, body }) => {
+            ipcRenderer.invoke('show-notification', title, body).catch(() => {});
+        });
+        this.eventBus.on('power:save-blocker:start', () => {
+            ipcRenderer.invoke('start-power-save-blocker').catch(() => {});
+        });
+        this.eventBus.on('power:save-blocker:stop', () => {
+            ipcRenderer.invoke('stop-power-save-blocker').catch(() => {});
+        });
+
         // Terminal status updates (canonical: terminal:status:changed)
         ipcRenderer.on('terminal-status', (event, terminalId, status) => {
             const previousStatus = this.terminalStateManager.setTerminalStatus(terminalId, status);
@@ -558,13 +599,24 @@ class TerminalGUI {
 
             const handleAddMessage = () => {
                 const message = messageInput.value.trim();
-                if (message) {
+                // PTY injection is text-only, so attachments ride along as
+                // absolute paths appended to the prompt text.
+                const attachments = this.pendingAttachments || [];
+                if (message || attachments.length) {
+                    let content = message;
+                    if (attachments.length) {
+                        const list = attachments.map(a => a.path).join('\n');
+                        content = content
+                            ? `${content}\n\nAttached file(s):\n${list}`
+                            : `Attached file(s):\n${list}`;
+                    }
                     this.messageQueueManager.addMessage({
-                        content: message,
+                        content,
                         // Selector choice wins; falls back to the active terminal
                         terminalId: this.queueTargetTerminalId ?? this.activeTerminalId
                     });
                     messageInput.value = '';
+                    this.clearAttachments();
                     autoSizeInput(); // collapse back to one row after sending
                 }
             };
@@ -628,6 +680,9 @@ class TerminalGUI {
             const min = Math.min(59, parseInt(m[2], 10));
             const s = Math.min(59, parseInt(m[3], 10));
             this.timerManager.setTimer(h, min, s, true);
+            // User took manual control of the timer — stop the usage-limit
+            // auto-sync so it doesn't fight their edit.
+            this.eventBus.emit('timer:manual-change', { hours: h, minutes: min, seconds: s });
         };
         const beginTimerEdit = () => {
             if (!timerDisplay || timerDisplay.getAttribute('contenteditable') === 'true') return;
@@ -738,9 +793,132 @@ class TerminalGUI {
             else if (key === 'm' && !shift) { e.preventDefault(); click('manager-nav-btn'); }
             else if (key === 'h' && shift) { e.preventDefault(); click('message-history-btn'); }
             else if (key === 'l' && shift) { e.preventDefault(); click('clear-log-btn'); }
+            // Terminal search: Cmd+F (mac) or Ctrl+Shift+F (bare Ctrl+F would
+            // shadow readline's forward-char inside the PTY).
+            else if (key === 'f' && (e.metaKey || shift)) {
+                e.preventDefault();
+                this.toggleTerminalSearch(this.activeTerminalId);
+            }
         });
 
+        this.setupFileAttachments();
+
         console.log('🎮 DOM event handlers configured');
+    }
+
+    /**
+     * File attach: drag-drop onto the input area, paste-image, and the hidden
+     * #file-input. Files become absolute-path references appended to the
+     * message (PTY injection is text-only); pasted images are saved to disk
+     * first via the existing save-screenshot IPC.
+     */
+    setupFileAttachments() {
+        this.pendingAttachments = [];
+        const dropZone = document.getElementById('drop-zone');
+        const dropOverlay = document.getElementById('drop-overlay');
+        const fileInput = document.getElementById('file-input');
+        const messageInput = document.getElementById('message-input');
+
+        const attachDiskFile = (name, absPath) => {
+            if (!absPath) return;
+            if (this.pendingAttachments.some(a => a.path === absPath)) return;
+            this.pendingAttachments.push({ name: name || absPath.split('/').pop(), path: absPath });
+            this.renderAttachmentChips();
+        };
+
+        const attachFiles = async (fileList) => {
+            for (const file of Array.from(fileList || [])) {
+                if (file.path) {
+                    // Real disk file (Electron exposes the absolute path)
+                    attachDiskFile(file.name, file.path);
+                } else if (file.type && file.type.startsWith('image/')) {
+                    // Clipboard-pasted image blob — persist it first
+                    try {
+                        const dataUrl = await new Promise((resolve, reject) => {
+                            const r = new FileReader();
+                            r.onload = () => resolve(r.result);
+                            r.onerror = reject;
+                            r.readAsDataURL(file);
+                        });
+                        const res = await this.ipcHandler.invoke('save-screenshot', dataUrl);
+                        if (res && res.success) attachDiskFile(res.fileName, res.filePath);
+                        else this.eventBus.emit('log:action', { message: `Could not save pasted image: ${res && res.error}`, type: 'error' });
+                    } catch (err) {
+                        this.eventBus.emit('log:action', { message: `Could not save pasted image: ${err.message}`, type: 'error' });
+                    }
+                }
+            }
+        };
+
+        if (dropZone) {
+            let dragDepth = 0;
+            const showOverlay = (on) => { if (dropOverlay) dropOverlay.style.display = on ? '' : 'none'; };
+            dropZone.addEventListener('dragenter', (e) => {
+                e.preventDefault(); dragDepth++; showOverlay(true);
+            });
+            dropZone.addEventListener('dragover', (e) => e.preventDefault());
+            dropZone.addEventListener('dragleave', () => {
+                dragDepth = Math.max(0, dragDepth - 1);
+                if (!dragDepth) showOverlay(false);
+            });
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault(); dragDepth = 0; showOverlay(false);
+                attachFiles(e.dataTransfer && e.dataTransfer.files);
+            });
+        }
+
+        if (messageInput) {
+            messageInput.addEventListener('paste', (e) => {
+                const items = e.clipboardData && e.clipboardData.items;
+                if (!items) return;
+                const files = [];
+                for (const item of items) {
+                    if (item.kind === 'file') {
+                        const f = item.getAsFile();
+                        if (f) files.push(f);
+                    }
+                }
+                if (files.length) { e.preventDefault(); attachFiles(files); }
+            });
+        }
+
+        if (fileInput) {
+            fileInput.addEventListener('change', () => {
+                attachFiles(fileInput.files);
+                fileInput.value = '';
+            });
+        }
+    }
+
+    renderAttachmentChips() {
+        const container = document.getElementById('image-preview-container');
+        const list = document.getElementById('image-preview-list');
+        if (!container || !list) return;
+        list.innerHTML = '';
+        this.pendingAttachments.forEach((att, i) => {
+            const chip = document.createElement('div');
+            chip.className = 'attachment-chip';
+            const name = document.createElement('span');
+            name.textContent = att.name;
+            name.title = att.path;
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.textContent = '×';
+            remove.title = 'Remove attachment';
+            remove.addEventListener('click', () => {
+                this.pendingAttachments.splice(i, 1);
+                this.renderAttachmentChips();
+            });
+            chip.appendChild(name);
+            chip.appendChild(remove);
+            list.appendChild(chip);
+        });
+        container.style.display = this.pendingAttachments.length ? '' : 'none';
+    }
+
+    clearAttachments() {
+        this.pendingAttachments = [];
+        this.renderAttachmentChips();
     }
     
     /**
@@ -1062,7 +1240,7 @@ class TerminalGUI {
         if (voiceBtn) {
             // VoiceManager fetches the transcribe URL directly; give it a
             // truthy client so its internal guard passes, and activate it.
-            this.voiceManager.setBackendClient({ baseUrl: 'http://localhost:8123' });
+            this.voiceManager.setBackendClient({ baseUrl: BACKEND_URL });
             this.voiceManager.initialize();
             voiceBtn.addEventListener('click', () => {
                 // Branch on the button's current state. While the wake-word system
@@ -1273,6 +1451,101 @@ class TerminalGUI {
         }
     }
 
+    /**
+     * Wire a terminal's search overlay to its SearchAddon. The overlay existed
+     * in the markup (and the addon was always loaded) but nothing bound them.
+     */
+    setupTerminalSearch(terminalData) {
+        const { id, container, terminal, searchAddon } = terminalData;
+        if (!container || !searchAddon) return;
+        let overlay = container.querySelector('.terminal-search-overlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.className = 'terminal-search-overlay';
+            overlay.dataset.terminalSearch = id;
+            overlay.style.display = 'none';
+            overlay.innerHTML = `
+                <div class="search-bar">
+                    <div class="search-input-wrapper">
+                        <i class="search-icon" data-lucide="search"></i>
+                        <input type="text" class="search-input" placeholder="Search in terminal..." />
+                    </div>
+                    <div class="search-controls">
+                        <button class="search-btn search-prev" title="Previous match"><i data-lucide="chevron-up"></i></button>
+                        <button class="search-btn search-next" title="Next match"><i data-lucide="chevron-down"></i></button>
+                        <span class="search-matches">0/0</span>
+                        <button class="search-btn search-close" title="Close search"><i data-lucide="x"></i></button>
+                    </div>
+                </div>`;
+            const mount = container.querySelector('.terminal-container');
+            container.insertBefore(overlay, mount);
+            if (window.lucide) window.lucide.createIcons({ nameAttr: 'data-lucide', root: overlay });
+        }
+
+        const input = overlay.querySelector('.search-input');
+        const matchesEl = overlay.querySelector('.search-matches');
+        if (!input) return;
+
+        // Decorations make onDidChangeResults fire (for the n/m counter) and
+        // highlight matches; fall back to plain search on any API mismatch.
+        const SEARCH_OPTS = {
+            decorations: {
+                matchBackground: '#3e4451',
+                activeMatchBackground: '#528bff',
+                matchOverviewRuler: '#3e4451',
+                activeMatchColorOverviewRuler: '#528bff'
+            }
+        };
+        const run = (dir, incremental = false) => {
+            const q = input.value;
+            if (!q) {
+                try { searchAddon.clearDecorations(); } catch { /* older addon */ }
+                if (matchesEl) matchesEl.textContent = '0/0';
+                return;
+            }
+            try {
+                const opts = incremental ? { ...SEARCH_OPTS, incremental: true } : SEARCH_OPTS;
+                if (dir === 'prev') searchAddon.findPrevious(q, opts);
+                else searchAddon.findNext(q, opts);
+            } catch {
+                if (dir === 'prev') searchAddon.findPrevious(q);
+                else searchAddon.findNext(q);
+            }
+        };
+        try {
+            searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+                if (matchesEl) matchesEl.textContent = resultCount ? `${resultIndex + 1}/${resultCount}` : '0/0';
+            });
+        } catch { /* counter stays static on older addon versions */ }
+
+        input.addEventListener('input', () => run('next', true));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); run(e.shiftKey ? 'prev' : 'next'); }
+            else if (e.key === 'Escape') { e.preventDefault(); this.toggleTerminalSearch(id, false); }
+        });
+        const bindClick = (sel, fn) => { const b = overlay.querySelector(sel); if (b) b.addEventListener('click', fn); };
+        bindClick('.search-prev', () => run('prev'));
+        bindClick('.search-next', () => run('next'));
+        bindClick('.search-close', () => this.toggleTerminalSearch(id, false));
+    }
+
+    /** Show/hide a terminal's search overlay. force: true=open, false=close. */
+    toggleTerminalSearch(terminalId, force) {
+        const td = this.terminals.get(terminalId != null ? terminalId : this.activeTerminalId);
+        if (!td || !td.container) return;
+        const overlay = td.container.querySelector('.terminal-search-overlay');
+        if (!overlay) return;
+        const show = force !== undefined ? force : overlay.style.display === 'none';
+        overlay.style.display = show ? '' : 'none';
+        if (show) {
+            const input = overlay.querySelector('.search-input');
+            if (input) { input.focus(); input.select(); }
+        } else {
+            try { td.searchAddon.clearDecorations(); } catch { /* older addon */ }
+            td.terminal.focus();
+        }
+    }
+
     createTerminal(options = {}) {
         // options.id: explicit terminal id (e.g. 0 = the hidden manager instance)
         // options.directory: cwd for the PTY
@@ -1450,7 +1723,11 @@ class TerminalGUI {
         };
         
         this.terminals.set(terminalId, terminalData);
-        
+
+        // Bind the in-terminal search overlay (builds one for dynamic terminals;
+        // the static terminal-1 wrapper ships it in index.html).
+        if (!options.hidden) this.setupTerminalSearch(terminalData);
+
         // Update state (color is read back by the message queue to tint dots)
         this.terminalStateManager.createTerminal({
             id: terminalId,
@@ -2109,6 +2386,8 @@ class TerminalGUI {
             soundEnabled, completionSound, injectionSound, promptedSound,
             terminalsPerChunk, chunkOrientation, theme,
             ttsPreferredVoice, ttsPlaybackSpeed, ttsAutoplayEnabled, managerInputEnabled,
+            managerPromptWatchEnabled, managerAutoPassEnabled, managerPassIntervalMinutes,
+            terminalScrollBehavior, keepScreenAwake, promptedKeywordsOnly,
         ] = await Promise.all([
             this.getPersistedSetting('soundEffectsEnabled', false),
             this.getPersistedSetting('completionSound', 'completion.mp3'),
@@ -2121,6 +2400,12 @@ class TerminalGUI {
             this.getPersistedSetting('ttsPlaybackSpeed', 1.3),
             this.getPersistedSetting('ttsAutoplayEnabled', true),
             this.getPersistedSetting('managerCompletionWatchEnabled', true),
+            this.getPersistedSetting('managerPromptWatchEnabled', true),
+            this.getPersistedSetting('managerAutoPassEnabled', true),
+            this.getPersistedSetting('managerPassIntervalMinutes', 60),
+            this.getPersistedSetting('terminalScrollBehavior', 'smart'),
+            this.getPersistedSetting('keepScreenAwake', false),
+            this.getPersistedSetting('promptedSoundKeywordsOnly', false),
         ]);
 
         // Apply TTS prefs to the NotificationManager immediately (it may already
@@ -2135,6 +2420,14 @@ class TerminalGUI {
         // Mirror into app state so the injection gate can read it live at send
         // time (blocks ALL injection to the manager terminal 999 when disabled).
         this.appStateStore.setState('settings.managerInputEnabled', !!managerInputEnabled);
+
+        // Manager behavior settings — read live from the state store by
+        // PromptWatchManager / ManagerInstance (previously write-nowhere keys).
+        this.appStateStore.setState('managerPromptWatchEnabled', !!managerPromptWatchEnabled);
+        this.appStateStore.setState('managerAutoPassEnabled', !!managerAutoPassEnabled);
+        this.appStateStore.setState('managerPassIntervalMinutes', Number(managerPassIntervalMinutes) || 60);
+        this.appStateStore.setState('settings.terminalScrollBehavior', terminalScrollBehavior);
+        this.appStateStore.setState('settings.sound.promptedKeywordsOnly', !!promptedKeywordsOnly);
 
         // ---- Mirror into the app state store (SoundManager reads settings.sound.*) ----
         this.appStateStore.setState('settings.sound.enabled', !!soundEnabled);
@@ -2158,7 +2451,9 @@ class TerminalGUI {
         this.wireSettingsControls({
             soundEnabled, completionSound, injectionSound, promptedSound,
             terminalsPerChunk, chunkOrientation, theme,
-            ttsPreferredVoice, ttsPlaybackSpeed, ttsAutoplayEnabled, managerInputEnabled
+            ttsPreferredVoice, ttsPlaybackSpeed, ttsAutoplayEnabled, managerInputEnabled,
+            managerPromptWatchEnabled, managerAutoPassEnabled, managerPassIntervalMinutes,
+            terminalScrollBehavior, keepScreenAwake, promptedKeywordsOnly
         });
 
         // ---- Init sound manager (loads available files; heals stale prefs) ----
@@ -2253,7 +2548,7 @@ class TerminalGUI {
         const voiceSelect = byId('tts-voice-select');
         if (voiceSelect) {
             const selected = current.ttsPreferredVoice || 'af_heart';
-            fetch('http://localhost:8123/api/tts/voices/')
+            fetch(`${BACKEND_URL}/api/tts/voices/`)
                 .then(r => r.json())
                 .then(({ voices }) => {
                     voiceSelect.innerHTML = '';
@@ -2326,6 +2621,71 @@ class TerminalGUI {
             if (el) el.addEventListener('change', () => applyManagerInput(el.checked, true));
         });
 
+        // ---- Manager behavior toggles (read live off the state store) ----
+        const promptWatchToggle = byId('manager-prompt-watch-enabled');
+        if (promptWatchToggle) {
+            promptWatchToggle.checked = !!current.managerPromptWatchEnabled;
+            promptWatchToggle.addEventListener('change', () => {
+                this.appStateStore.setState('managerPromptWatchEnabled', promptWatchToggle.checked);
+                this.persistSetting('managerPromptWatchEnabled', promptWatchToggle.checked);
+            });
+        }
+
+        const autoPassToggle = byId('manager-auto-pass-enabled');
+        if (autoPassToggle) {
+            autoPassToggle.checked = !!current.managerAutoPassEnabled;
+            autoPassToggle.addEventListener('change', () => {
+                this.appStateStore.setState('managerAutoPassEnabled', autoPassToggle.checked);
+                this.persistSetting('managerAutoPassEnabled', autoPassToggle.checked);
+            });
+        }
+
+        const passIntervalRange = byId('manager-pass-interval-minutes');
+        const passIntervalValue = byId('manager-pass-interval-value');
+        if (passIntervalRange) {
+            passIntervalRange.value = Number(current.managerPassIntervalMinutes) || 60;
+            if (passIntervalValue) passIntervalValue.textContent = `${passIntervalRange.value}m`;
+            passIntervalRange.addEventListener('input', () => {
+                if (passIntervalValue) passIntervalValue.textContent = `${passIntervalRange.value}m`;
+            });
+            passIntervalRange.addEventListener('change', () => {
+                const mins = parseInt(passIntervalRange.value, 10);
+                this.appStateStore.setState('managerPassIntervalMinutes', mins);
+                this.persistSetting('managerPassIntervalMinutes', mins);
+            });
+        }
+
+        // ---- Terminal scroll behavior ----
+        const scrollBehavior = byId('terminal-scroll-behavior');
+        if (scrollBehavior) {
+            scrollBehavior.value = current.terminalScrollBehavior || 'smart';
+            scrollBehavior.addEventListener('change', () => {
+                this.appStateStore.setState('settings.terminalScrollBehavior', scrollBehavior.value);
+                this.persistSetting('terminalScrollBehavior', scrollBehavior.value);
+            });
+        }
+
+        // ---- Keep screen awake (power-save blocker gate, read by MQM) ----
+        const keepAwakeToggle = byId('keep-screen-awake');
+        if (keepAwakeToggle) {
+            keepAwakeToggle.checked = !!current.keepScreenAwake;
+            keepAwakeToggle.addEventListener('change', () => {
+                // Route through PreferenceManager: persists AND emits
+                // preference:changed, which MessageQueueManager merges live.
+                this.preferenceManager.updatePreference('keepScreenAwake', keepAwakeToggle.checked);
+            });
+        }
+
+        // ---- Prompted sound: keywords-only filter ----
+        const keywordsOnlyToggle = byId('prompted-sound-keywords-only');
+        if (keywordsOnlyToggle) {
+            keywordsOnlyToggle.checked = !!current.promptedKeywordsOnly;
+            keywordsOnlyToggle.addEventListener('change', () => {
+                this.soundManager.setPromptedKeywordsOnly(keywordsOnlyToggle.checked);
+                this.persistSetting('promptedSoundKeywordsOnly', keywordsOnlyToggle.checked);
+            });
+        }
+
         // ---- Terminal chunk layout (max visible per page) ----
         const chunkRange = byId('terminals-per-chunk');
         const chunkValue = byId('terminals-per-chunk-value');
@@ -2388,56 +2748,27 @@ class TerminalGUI {
         console.log('✅ TerminalGUI initialization complete');
     }
     
-    // ===== Compatibility shims for InjectionManager (fix 7) =====
-    // InjectionManager reads several fields/methods off its gui context. These
-    // shims keep it from crashing and bridge to the canonical subsystems.
+    // Bridge kept for script-loaded modules (microwave-mode) that call
+    // gui.logAction directly.
     logAction(message, type = 'info') {
         this.eventBus.emit('log:action', { message, type });
     }
 
-    get messageQueue() {
-        return this.appStateStore.getState('messages.queue') || [];
-    }
-
-    get terminalStatuses() {
-        return (this.statusManager && this.statusManager.terminalStatuses) || new Map();
-    }
-
-    get injectionPaused() {
-        return this.messageQueueManager ? this.messageQueueManager.injectionPaused : false;
-    }
-
-    get usageLimitWaiting() {
-        return this.messageQueueManager ? this.messageQueueManager.usageLimitWaiting : false;
-    }
-    set usageLimitWaiting(v) {
-        if (this.messageQueueManager) this.messageQueueManager.usageLimitWaiting = v;
-    }
-
-    get timerExpired() {
-        return this.messageQueueManager ? this.messageQueueManager.timerExpired : false;
-    }
-    set timerExpired(v) {
-        if (this.messageQueueManager) this.messageQueueManager.timerExpired = v;
-    }
-
-    processMessage(message) {
-        // Delegate actual injection to the message queue manager.
-        if (this.messageQueueManager && typeof this.messageQueueManager.injectNextMessage === 'function') {
-            this.messageQueueManager.injectNextMessage();
-        }
-    }
-
     cleanup() {
+        // Stop the TTS notification poller (otherwise it fetches forever)
+        if (this.notificationManager && this.notificationManager.stopPolling) {
+            this.notificationManager.stopPolling();
+        }
+
         // Dispose all terminals
         this.terminals.forEach(terminalData => {
             terminalData.terminal.dispose();
         });
         this.terminals.clear();
-        
+
         // Clean up managers
         this.eventBus.removeAllListeners();
-        
+
         console.log('🧹 TerminalGUI cleanup completed');
     }
 }
@@ -2448,6 +2779,9 @@ document.addEventListener('DOMContentLoaded', () => {
     
     try {
         const gui = new TerminalGUI();
+        // Teardown on window close: stops the notification poller and disposes
+        // terminals (cleanup() previously existed but nothing invoked it).
+        window.addEventListener('beforeunload', () => gui.cleanup());
         console.log('✅ TerminalGUI created successfully');
     } catch (error) {
         console.error('❌ Failed to initialize TerminalGUI:', error);

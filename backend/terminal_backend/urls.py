@@ -21,12 +21,13 @@ from django.conf.urls.static import static
 
 urlpatterns = [
     # CORE FUNCTIONALITY - Simplified backend for essential features:
-    # 1. ccusage (pricing) - credit card usage tracking
-    # 2. addmsg (message_queue) - add messages to terminal queue  
-    # 3. audio transcription (voice_transcription) - Whisper audio processing
-    # 4. frontend control - timer, terminal, and other frontend controls
-    path("", include("pricing.urls")),                    # ccusage functionality
-    path("api/queue/", include("message_queue.urls")),    # addmsg functionality  
+    # 1. addmsg (message_queue) - add messages to terminal queue
+    # 2. audio transcription (voice_transcription) - Whisper audio processing
+    # 3. frontend control - timer, terminal, and other frontend controls
+    # NOTE: the pricing app keeps its models but exposes no endpoints —
+    # ccusage runs on the HOST via IPC (src/main/ccusage.js); the container
+    # ships no Node, so the old /api/ccusage/ endpoint could only ever 503.
+    path("api/queue/", include("message_queue.urls")),    # addmsg functionality
     path("api/voice/", include("voice_transcription.urls")), # audio transcribing
     path("api/tts/", include("text_to_speech.urls")),     # Kokoro TTS + notifications
     path("api/", include("frontend_control.urls")),       # frontend control API

@@ -337,6 +337,11 @@ function createWindow() {
     width: 1400,
     height: 900,
     webPreferences: {
+      // SECURITY: the renderer runs with full Node (no isolation), so it must
+      // ONLY ever load the local index.html — never a remote URL — and any
+      // untrusted text (Discord messages, transcripts, terminal output) must be
+      // inserted via textContent, never innerHTML. Migrating to
+      // contextIsolation + a preload bridge is the long-term fix.
       nodeIntegration: true,
       contextIsolation: false,
       enableRemoteModule: true,

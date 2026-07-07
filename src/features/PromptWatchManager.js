@@ -17,6 +17,11 @@ const { detectPrompt } = require('./prompt-detector');
 
 const MANAGER_TERMINAL_ID = 999;
 const DEFAULT_SCREEN_DELAY_MS = 350; // let the menu paint after the notification hook
+// Cooldown before the SAME prompt may notify again. A prompt that flickers
+// (prompted -> idle -> prompted) or redraws would otherwise re-fire each cycle;
+// this window collapses that into one notification without delaying a genuinely
+// new/different prompt (which carries a different key and is never debounced).
+const DEFAULT_DEBOUNCE_MS = 8000;
 
 class PromptWatchManager {
   constructor(eventBus, appStateStore, gui, opts = {}) {
@@ -24,20 +29,21 @@ class PromptWatchManager {
     this.appStateStore = appStateStore;
     this.gui = gui;
     this.screenDelayMs = opts.screenDelayMs != null ? opts.screenDelayMs : DEFAULT_SCREEN_DELAY_MS;
+    this.minNotifyIntervalMs = opts.minNotifyIntervalMs != null ? opts.minNotifyIntervalMs : DEFAULT_DEBOUNCE_MS;
     // Injectable so tests run synchronously; defaults to a real deferred timer.
     this._schedule = opts.schedule || ((fn, ms) => setTimeout(fn, ms));
-    // terminalId -> last notified prompt key; reset when the terminal leaves prompted.
-    this._lastKey = new Map();
+    // Injectable clock so the debounce is testable without real time.
+    this._now = opts.now || (() => Date.now());
+    // terminalId -> { key, at } of the last dispatched prompt. Deliberately NOT
+    // cleared when the terminal leaves prompted, so a flicker back into the same
+    // prompt within the debounce window is suppressed.
+    this._lastNotify = new Map();
     this.eventBus.on('terminal:status:changed', (e) => this.onStatusChanged(e));
   }
 
   onStatusChanged(e) {
     if (!e || e.terminalId == null) return;
-    if (e.status !== 'prompted') {
-      // Left the prompted state — allow the next identical prompt to re-notify.
-      this._lastKey.delete(e.terminalId);
-      return;
-    }
+    if (e.status !== 'prompted') return;           // only act on entering a prompt
     if (e.source !== 'claude-hook') return;        // only ground-truth hook prompts
     if (e.terminalId === MANAGER_TERMINAL_ID) return; // never the manager itself
     // Defer briefly so the menu has painted before we read the screen.
@@ -62,8 +68,13 @@ class PromptWatchManager {
     if (!prompt) return; // not a real menu/prompt -> suppress (no spam)
 
     const key = `${terminalId}|${prompt.question}|${prompt.options.map((o) => o.text).join('|')}`;
-    if (this._lastKey.get(terminalId) === key) return; // already notified this exact prompt
-    this._lastKey.set(terminalId, key);
+    const prev = this._lastNotify.get(terminalId);
+    const now = this._now();
+    // Debounce: suppress a repeat of the SAME prompt within the cooldown window
+    // (handles flicker/redraws). A different prompt has a different key and is
+    // notified immediately; the same prompt may re-notify once the window passes.
+    if (prev && prev.key === key && (now - prev.at) < this.minNotifyIntervalMs) return;
+    this._lastNotify.set(terminalId, { key, at: now });
 
     const term = this.gui.terminalStateManager.getTerminal(terminalId);
     const title = (term && term.title) || `Terminal ${terminalId}`;
