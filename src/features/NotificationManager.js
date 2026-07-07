@@ -11,7 +11,7 @@
  * "Playback Speed" setting affects existing notifications too (no re-synthesis).
  */
 
-const BASE_URL = 'http://localhost:8123';
+const { BACKEND_URL: BASE_URL } = require('../utils/backend-url');
 const POLL_INTERVAL_MS = 3000;
 // After every speaking source clears, wait this long before releasing held
 // notifications. Combined with WakeWordManager's SPEECH_IDLE_MS (~600ms) trailing

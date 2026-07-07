@@ -47,6 +47,13 @@ services:
       # TTS / Whisper; harmless on hosts without a GPU.
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      # CPU Vosk wake-word model for /api/voice/wake-check/ (mounted read-only
+      # below). Lets the bridge gate on the wake word without the GPU Whisper.
+      VOSK_MODEL_PATH: /models/vosk-model-small-en-us.tar.gz
+    volumes:
+      # Reuse the desktop app's shipped Vosk model — no duplicate download, and
+      # the model stays out of the image (build context is ./backend).
+      - ./assets/models:/models:ro
     depends_on:
       db:
         condition: service_healthy

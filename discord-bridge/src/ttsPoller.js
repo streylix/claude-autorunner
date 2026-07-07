@@ -16,8 +16,10 @@ const { config } = require('../config');
 const log = require('./log');
 
 class TtsPoller {
-  constructor({ onClip }) {
-    this.onClip = onClip; // async (wavBuffer, notification) => void
+  constructor({ onClip, onNotification, watchOnly = false } = {}) {
+    this.onClip = onClip;                 // async (wavBuffer, notification) => void
+    this.onNotification = onNotification; // (notification) => void — fired for every new row
+    this.watchOnly = watchOnly;           // true: don't download/play, just watch (system-audio mode)
     this.lastId = 0;
     this.timer = null;
     this.polling = false;
@@ -81,6 +83,11 @@ class TtsPoller {
   }
 
   async handle(row) {
+    // Always notify watchers (e.g. to open the auto-reply window) — both modes.
+    try { if (this.onNotification) this.onNotification(row); } catch (_) {}
+    // Watch-only (system-audio mode): the monitor already relays the audio into
+    // the channel, so don't download/play it here.
+    if (this.watchOnly) return;
     if (!row.audio_url) return;
     try {
       const res = await fetch(`${config.backendUrl}${row.audio_url}`);

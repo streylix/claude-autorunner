@@ -10,7 +10,8 @@ const MAX_LOG_ENTRIES = 500;
 // Backend log shipping: every log:action entry is also POSTed to the backend,
 // which prints it to stdout with a [frontend] tag — so `docker logs` carries
 // the full app activity stream alongside Django's own logs.
-const SHIP_ENDPOINT = 'http://localhost:8123/api/logs/frontend/';
+const { BACKEND_URL } = require('../utils/backend-url');
+const SHIP_ENDPOINT = `${BACKEND_URL}/api/logs/frontend/`;
 const SHIP_FLUSH_MS = 3000;
 const SHIP_MAX_BATCH = 50;
 const SHIP_CIRCUIT_MS = 60000; // back off this long after a failed ship

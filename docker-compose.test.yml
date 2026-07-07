@@ -1,0 +1,65 @@
+# ISOLATED TEST BACKEND — Phase 2 sandbox. Completely separate from the live
+# stack (project `claude-autorunner`, port 8123). Bring up with:
+#   docker compose -p ccbot-test -f docker-compose.test.yml up -d --wait
+# Tear down with:
+#   docker compose -p ccbot-test -f docker-compose.test.yml down
+#
+# Why a STANDALONE file (not an override of docker-compose.yml): compose APPENDS
+# the `ports` list when merging, so an override would re-bind 127.0.0.1:8123 and
+# collide with the LIVE backend. This file defines everything itself and binds
+# ONLY 127.0.0.1:8124. Project name `ccbot-test` scopes the containers, network,
+# and the pgdata volume (-> ccbot-test_ccbot-test-pgdata), so nothing here can
+# touch the live containers or the live `claude-autorunner_ccbot-pgdata` volume.
+# Env is inline throwaway values (loopback-only, DEBUG on for tracebacks) — no
+# secrets file, nothing sensitive.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ccbot_test
+      POSTGRES_USER: ccbot_test
+      POSTGRES_PASSWORD: ccbot_test_local
+    volumes:
+      - ccbot-test-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccbot_test -d ccbot_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      # DISTINCT host port 8124 (live is 8123). Container still listens on 8123.
+      - "127.0.0.1:8124:8123"
+    environment:
+      POSTGRES_DB: ccbot_test
+      POSTGRES_USER: ccbot_test
+      POSTGRES_PASSWORD: ccbot_test_local
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      DJANGO_SETTINGS_MODULE: terminal_backend.settings
+      # DEBUG on for the sandbox: tracebacks + no SECRET_KEY requirement. Safe —
+      # loopback-only, throwaway data. (Live runs DEBUG=false.)
+      DEBUG: "true"
+      SECRET_KEY: "test-sandbox-not-secret"
+      CCBOT_API_TOKEN: ""
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      VOSK_MODEL_PATH: /models/vosk-model-small-en-us.tar.gz
+    volumes:
+      - ./assets/models:/models:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8123/api/queue/health/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  ccbot-test-pgdata:
