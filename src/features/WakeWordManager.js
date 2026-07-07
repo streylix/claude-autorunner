@@ -72,7 +72,7 @@ const TTS_ECHO_TAIL_MS = 400;
 // same spoken phrase doesn't trigger twice (once via the bot, once via the host
 // mic). The backend reports inactive if the bridge stops heartbeating, so a
 // crashed/closed bridge can never leave the local wake word stuck muted.
-const BACKEND_URL = 'http://localhost:8123';
+const { BACKEND_URL } = require('../utils/backend-url');
 const BOT_STATUS_POLL_MS = 3000;
 
 class WakeWordManager {

@@ -2,6 +2,8 @@
  * VoiceManager - Handles voice recording and transcription functionality
  * Consolidates voice/Whisper integration from renderer.js
  */
+const { BACKEND_URL } = require('../utils/backend-url');
+
 class VoiceManager {
     constructor(eventBus, appStateStore) {
         this.eventBus = eventBus;
@@ -276,7 +278,7 @@ class VoiceManager {
         // Field name must match the backend serializer (audio_file = FileField()).
         formData.append('audio_file', audioBlob, `recording.${ext}`);
 
-        const response = await fetch('http://localhost:8123/api/voice/transcribe/', {
+        const response = await fetch(`${BACKEND_URL}/api/voice/transcribe/`, {
             method: 'POST',
             body: formData
         });
@@ -407,7 +409,7 @@ class VoiceManager {
     
     async checkBackendHealth() {
         try {
-            const response = await fetch('http://localhost:8123/api/voice/health/', {
+            const response = await fetch(`${BACKEND_URL}/api/voice/health/`, {
                 method: 'GET',
                 signal: AbortSignal.timeout(3000)
             });

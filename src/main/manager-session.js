@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { BACKEND_URL } = require('../utils/backend-url');
 
 /** Munge an absolute path the way Claude Code names its project dirs. */
 function mungeProjectPath(dirPath) {
@@ -253,11 +254,11 @@ terminal finishes meaningful work (especially work the user kicked off and you a
 NOT taking over), turn its last message into a short spoken notification.
 
 This is a SEPARATE service from the Control API: it lives on the local Django
-backend at \`http://localhost:8123\` and needs **no token** (do NOT send
+backend at \`${BACKEND_URL}\` and needs **no token** (do NOT send
 \`X-CCBOT-Token\` here).
 
 \`\`\`bash
-curl -s -X POST "http://localhost:8123/api/tts/speak/" \\
+curl -s -X POST "${BACKEND_URL}/api/tts/speak/" \\
   -H "Content-Type: application/json" \\
   -d '{"text":"Terminal 3 finished the auth refactor and all tests pass.",
        "terminal_id":3, "terminal_name":"auth-refactor"}'
@@ -269,7 +270,7 @@ Rules for the spoken text:
   decision the user needs to know. No code, paths, or markdown; spell things out.
 - Keep it short enough to read aloud in a few seconds; don't narrate everything.
 - **Omit \`"voice"\`** to use the user's preferred voice. You MAY override with a
-  voice id from \`GET http://localhost:8123/api/tts/voices/\` (e.g. \`"bm_george"\`)
+  voice id from \`GET ${BACKEND_URL}/api/tts/voices/\` (e.g. \`"bm_george"\`)
   to differentiate terminals, but default to omitting it.
 - The notification is read aloud automatically and shown in the user's
   Notifications tab — so this is your primary way to keep the user informed.
