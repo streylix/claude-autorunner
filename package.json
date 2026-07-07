@@ -1,18 +1,19 @@
 {
   "name": "auto-injector",
   "version": "1.0.0",
-  "description": "Automated message injection terminal with queuing system",
+  "description": "Run a fleet of Claude Code sessions in one window: terminal grid, idle-time prompt injection, a manager Claude instance, and a local voice layer (wake word, push-to-talk, spoken notifications)",
   "main": "main.js",
   "author": {
-    "name": "Auto-Injector",
-    "email": "auto-injector@example.com"
+    "name": "streylix"
   },
   "license": "MIT",
   "keywords": [
+    "claude-code",
     "terminal",
-    "gui",
+    "automation",
     "queue",
-    "automation"
+    "voice",
+    "electron"
   ],
   "scripts": {
     "start": "electron .",
