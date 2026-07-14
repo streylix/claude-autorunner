@@ -67,7 +67,11 @@ const config = {
   systemGateEnabled: bool(process.env.SYSTEM_GATE_ENABLED, true),
   systemGateThreshold: int(process.env.SYSTEM_GATE_THRESHOLD, 300),   // s16 peak ≈ -41 dBFS
   systemGateHangoverMs: int(process.env.SYSTEM_GATE_HANGOVER_MS, 500), // trailing silence that ends a burst
-  systemGatePrerollMs: int(process.env.SYSTEM_GATE_PREROLL_MS, 120),   // pre-onset audio kept so starts aren't clipped
+  // Pre-onset audio kept so starts aren't clipped. Deep enough (400ms) that the
+  // receiving Discord client locks onto the fresh speaking burst DURING the
+  // silent lead-in — short cues (the pre-TTS click) at the burst head were being
+  // swallowed by the client's stream-start ramp at 120ms.
+  systemGatePrerollMs: int(process.env.SYSTEM_GATE_PREROLL_MS, 400),
   // TTS → SINK (system mode): while a Remote Mode viewer is attached the app's
   // LOCAL renderer suppresses TTS playback (the double-play rule), so nothing
   // reaches the sink monitor and Discord goes silent. The bridge fills that gap:

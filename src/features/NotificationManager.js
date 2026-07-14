@@ -503,7 +503,7 @@ class NotificationManager {
         this._currentId = n.id;
         this._currentIsReplay = false; // queue playback = first read-out
         // Heads-up chime first, then the spoken notification.
-        this._playHeadsUpThen(() => this._startAudio(n.audio_url));
+        this._playHeadsUpThen(() => this._startAudio(n.audio_url, n));
     }
 
     // Play the heads-up chime and invoke cb exactly once when it finishes
@@ -523,12 +523,19 @@ class NotificationManager {
         }
     }
 
-    _startAudio(url) {
+    _startAudio(url, n) {
         try {
             // blob:/data: URLs (Remote Mode pushes raw bytes) and absolute URLs
             // play as-is; backend-relative paths get the backend origin.
             this.audio.src = /^(blob:|data:|https?:)/.test(url) ? url : BASE_URL + url;
-            this.audio.playbackRate = this.playbackRate;
+            // SINGLE-FILE MODEL: the generator synthesizes at the user's speed
+            // (callers pass ttsPlaybackSpeed), and every consumer — this
+            // renderer, remote viewers, the Discord bridge — plays that SAME
+            // file unmodified. A clip that carries its own synthesis speed
+            // plays at 1.0; only legacy speed-1.0 rows get the client rate so
+            // old history still sounds right.
+            this._currentSynthSpeed = Number(n && n.speed) || 1;
+            this.audio.playbackRate = this._currentSynthSpeed > 1.01 ? 1.0 : this.playbackRate;
             const p = this.audio.play();
             if (p && p.then) {
                 p.then(() => {
@@ -610,7 +617,7 @@ class NotificationManager {
         this.playing = true;
         this._currentId = id;
         this._currentIsReplay = true; // explicit replay: must NOT trigger auto-wake
-        this._startAudio(n.audio_url);
+        this._startAudio(n.audio_url, n);
     }
 
     // ---- settings hooks (called from renderer) -------------------------------
@@ -619,7 +626,11 @@ class NotificationManager {
         const r = Number(rate);
         if (!Number.isFinite(r)) return;
         this.playbackRate = Math.min(2, Math.max(0.5, r));
-        if (this.playing) this.audio.playbackRate = this.playbackRate;
+        // Never re-time a clip that was synthesized at the user's speed (see
+        // _startAudio) — the slider affects the SYNTHESIS of future clips.
+        if (this.playing && (this._currentSynthSpeed || 1) <= 1.01) {
+            this.audio.playbackRate = this.playbackRate;
+        }
     }
 
     setAutoplay(enabled) { this.autoplay = !!enabled; }
@@ -688,13 +699,14 @@ class NotificationManager {
             const res = await fetch(`${BASE_URL}/api/tts/speak/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: 'This is how notifications will sound.', voice, source: 'test' }),
+                // SINGLE-FILE MODEL: bake the user's speed into the sample so
+                // the test sounds exactly like real notifications everywhere.
+                body: JSON.stringify({ text: 'This is how notifications will sound.', voice, speed: this.playbackRate, source: 'test' }),
             });
             const data = await res.json();
             if (data && data.audio_url) {
                 // Don't route test clips through the persisted-row queue.
                 const a = new Audio(BASE_URL + data.audio_url);
-                a.playbackRate = this.playbackRate;
                 a.play().catch(() => {});
             }
         } catch (err) {
