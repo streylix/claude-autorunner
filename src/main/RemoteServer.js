@@ -91,6 +91,11 @@ class RemoteServer {
         this.wss = null;
         this.port = null;
         this.clients = new Set(); // authed ws clients
+        // Client-mic forwarding (REMOTE_MODE.md §10): at most ONE client may
+        // stream its microphone at a time (interleaving two streams into the
+        // single wake-word recognizer would be garbage). First-come ownership;
+        // later starters are pushed a 'remote-mic-denied'.
+        this.micOwner = null;
     }
 
     _tokenValid(provided) {
@@ -148,6 +153,9 @@ class RemoteServer {
         if (urlPath === '/remote-bootstrap.js') {
             return this.serveFile(res, path.join(this.appRoot, 'src', 'remote', 'remote-bootstrap.js'));
         }
+        if (urlPath === '/remote-mic.js') {
+            return this.serveFile(res, path.join(this.appRoot, 'src', 'remote', 'remote-mic.js'));
+        }
         if (urlPath === '/renderer.bundle.js') {
             return this.serveFile(res, path.join(this.appRoot, 'dist-remote', 'renderer.bundle.js'));
         }
@@ -188,7 +196,11 @@ class RemoteServer {
             );
             // Bootstrap must run before EVERY other script (xterm, loading
             // manager, the bundle) so window.require/process exist first.
-            out = out.replace('<script', '<script src="remote-bootstrap.js"></script>\n    <script');
+            // remote-mic.js rides right behind it: the client-side microphone
+            // forwarder (REMOTE_MODE.md §10) — browser clients only.
+            out = out.replace('<script',
+                '<script src="remote-bootstrap.js"></script>\n    '
+                + '<script src="remote-mic.js"></script>\n    <script');
             res.writeHead(200, { 'Content-Type': CONTENT_TYPES['.html'], 'Cache-Control': 'no-store' });
             res.end(out);
         });
@@ -244,6 +256,7 @@ class RemoteServer {
 
         ws.on('close', () => {
             clearTimeout(authTimer);
+            this._releaseMic(ws);
             if (this.clients.delete(ws)) {
                 this.deps.log('[Remote] browser client detached (' + this.clients.size + ' attached)');
                 this._notifyClientsChanged();
@@ -259,6 +272,36 @@ class RemoteServer {
         // The local renderer OWNS the state snapshot and control round-trips;
         // a browser echoing these would corrupt main's caches. Drop.
         if (channel === 'ccbot-state-snapshot' || channel === 'control-response') return;
+
+        // Client-mic forwarding: enforce single ownership BEFORE dispatching to
+        // main (which relays to the local renderer's voice pipeline).
+        if (channel === 'remote-mic-state') {
+            const p = args[0] || {};
+            if (p.active) {
+                if (this.micOwner && this.micOwner !== ws) {
+                    this.sendTo(ws, {
+                        t: 'push',
+                        channel: 'remote-mic-denied',
+                        args: [{ reason: 'another remote viewer is already streaming its microphone' }]
+                    });
+                    return;
+                }
+                if (this.micOwner === ws) return; // duplicate start — already own it
+                this.micOwner = ws;
+                this.deps.log('[Remote] client mic stream STARTED (1 owner)');
+            } else {
+                if (this.micOwner !== ws) return; // only the owner can stop it
+                this.micOwner = null;
+                this.deps.log('[Remote] client mic stream STOPPED');
+            }
+            this.deps.dispatchSend(channel, [{ active: !!p.active }], this.makeEvent());
+            return;
+        }
+        if (channel === 'remote-mic-frame') {
+            if (this.micOwner !== ws) return; // only the owning client's frames count
+            this.deps.dispatchSend(channel, args, this.makeEvent());
+            return;
+        }
 
         // Remote-added queue messages route through the authoritative local
         // queue via the same push the HookServer /queue/add path uses.
@@ -331,6 +374,20 @@ class RemoteServer {
         } catch (_) { /* no replay is better than no attach */ }
     }
 
+    /**
+     * A socket that owned the mic stream went away without a clean stop
+     * (network drop, tab closed): release ownership and tell the local voice
+     * pipeline the source detached, so it never waits on a dead stream.
+     */
+    _releaseMic(ws) {
+        if (this.micOwner !== ws) return;
+        this.micOwner = null;
+        this.deps.log('[Remote] client mic stream owner disconnected — mic source released');
+        try {
+            this.deps.dispatchSend('remote-mic-state', [{ active: false, reason: 'client disconnected' }], this.makeEvent());
+        } catch (_) { /* handler not registered yet — nothing to release */ }
+    }
+
     /** Attach/detach hook (audio-sink routing etc.). Count changes only. */
     _notifyClientsChanged() {
         if (typeof this.deps.onClientsChanged === 'function') {
@@ -358,6 +415,7 @@ class RemoteServer {
             try { ws.close(1001, 'server shutting down'); } catch (_) { /* ignore */ }
         }
         this.clients.clear();
+        this.micOwner = null;
         this._notifyClientsChanged();
         if (this.wss) { try { this.wss.close(); } catch (_) { /* ignore */ } this.wss = null; }
         if (this.server) { try { this.server.close(); } catch (_) { /* ignore */ } this.server = null; }
