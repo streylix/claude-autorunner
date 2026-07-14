@@ -6,6 +6,53 @@ project's current git branch.
 
 ---
 
+## 2026-07-14 — Remote Mode client: renderer reload no longer orphans the tunnel; reconnect supersedes stale state (branch `ssh-view`)
+
+**Bug (reproduced by the user).** With a remote connected, a HARD REFRESH of the
+renderer reset the UI, but the main process kept the live connection and the
+`ssh -N -L` tunnel child. The app still believed it was connected, so the next
+connect was rejected with "Already connected — disconnect first" and the only
+way out was a full app restart — with the orphaned ssh tunnel still running.
+
+**Fix — two independent layers.**
+
+1. *Renderer-lifecycle cleanup (`main.js`, createWindow).* The main window's
+   webContents now tears the Remote Mode client connection down whenever the
+   MAIN frame really navigates (`did-start-navigation`, main-frame + not
+   same-document — a reload of index.html; the embedded remote iframe is a
+   subframe and never triggers it), and on `render-process-gone` /
+   `destroyed`. Handles both the Electron 26+ event-object shape and the
+   legacy positional args. So a refresh (or a crashed renderer) kills the
+   tunnel child and resets main-process state to idle immediately.
+2. *Reconnect supersedes (`src/main/remote-client.js`).* `connect()` no longer
+   hard-fails on "already connected/connecting". Every connect and disconnect
+   bumps a connection GENERATION; a new connect first kills any existing
+   tunnel, and an in-flight connect checkpoints the generation after every
+   await and aborts (rejecting with `superseded: true`, never clobbering the
+   newer operation's state) when it has been overtaken. `disconnect()` stays
+   idempotent and now also cancels an in-flight connect. So even if some
+   future path leaves stale state behind, the user can ALWAYS just connect
+   again.
+
+**Verified (headless Xvfb, isolated XDG_CONFIG_HOME, real throwaway sshd —
+`tests/integration/remote-client-reload-e2e.js`).** (a) connect → `page.reload()`
+→ main-process state idle, forwarded port closed, ZERO orphaned `ssh -N`
+children (pgrep scoped to the test's remote port); (b) a fresh connect after
+the reload SUCCEEDS (status log shows no "already connected") and the embedded
+terminal echoes a marker end to end; (c) a second `remote-client-connect`
+while connected supersedes cleanly — new tunnel up, old one torn down, exactly
+ONE ssh child; (d) disconnect is idempotent and leaves zero ssh children, and
+a normal UI connect→disconnect cycle still passes. Regressions: the full
+original `remote-client-e2e.js` (auto-enable, auto-start, fast path) and
+`remote-client-password-e2e.js` (password auth path) both pass unchanged;
+`node --test` suite 162/163 (the one failure is the pre-existing, unrelated
+`tests/unit/usage-limit-and-gate.test.js`). New unit tests cover supersede /
+in-flight-abort / idempotent-disconnect (`src/main/remote-client.test.js`,
+34/34).
+
+- Files: `main.js`, `src/main/remote-client.js`, `src/main/remote-client.test.js`,
+  `tests/integration/remote-client-reload-e2e.js`.
+
 ## 2026-07-14 — Remote Mode client: SSH password fallback, VS Code style (branch `ssh-view`)
 
 **Goal.** Connecting to a remote previously required working key/agent auth

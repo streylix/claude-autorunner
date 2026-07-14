@@ -259,3 +259,72 @@ test('buildSshInvocation: no password → plain ssh with inherited env', () => {
     assert.strictEqual(inv.command, 'ssh');
     assert.strictEqual(inv.env, undefined);
 });
+
+// ---- reconnect supersedes / renderer-reload orphan cleanup ----
+
+/** A fake long-lived tunnel child: records kills, looks alive until killed. */
+function fakeChild() {
+    const child = {
+        killed: [],
+        exitCode: null,
+        signalCode: null,
+        kill(sig) { this.killed.push(sig); this.exitCode = 0; }
+    };
+    return child;
+}
+
+test('connect() while (stale-)connected SUPERSEDES: kills the old tunnel and proceeds instead of "already connected"', async () => {
+    const client = new RemoteClient();
+    // Simulate the renderer-reload orphan: main still holds a live tunnel +
+    // connected state, while the UI has forgotten everything.
+    const orphan = fakeChild();
+    client.tunnelChild = orphan;
+    client.state = { phase: 'connected', host: 'old-host' };
+    // Stub the first network step so the NEW attempt visibly proceeds (and
+    // fails with OUR error — proving the old guard no longer throws first).
+    client._readRemoteSession = async () => { throw new Error('reached-session-read'); };
+    await assert.rejects(() => client.connect({ host: 'new-host' }), /reached-session-read/);
+    assert.deepStrictEqual(orphan.killed, ['SIGTERM'], 'the stale tunnel child must be killed first');
+    assert.strictEqual(client.tunnelChild, null);
+    assert.strictEqual(client.state.phase, 'error', 'the new attempt owns the state');
+});
+
+test('disconnect() aborts an in-flight connect at its next checkpoint (no error state over idle)', async () => {
+    const client = new RemoteClient();
+    let release;
+    client._readRemoteSession = () => new Promise((r) => { release = r; });
+    const attempt = client.connect({ host: 'h' });
+    attempt.catch(() => {}); // observed below
+    assert.strictEqual(client.state.phase, 'connecting');
+    client.disconnect();
+    assert.strictEqual(client.state.phase, 'idle');
+    release({ state: 'remote-on', token: 't', remotePort: 1234 });
+    await assert.rejects(() => attempt, (err) => err.superseded === true);
+    // The superseded attempt must NOT clobber the idle state or spawn anything.
+    assert.strictEqual(client.state.phase, 'idle');
+    assert.strictEqual(client.tunnelChild, null);
+});
+
+test('a second connect() supersedes an in-flight first one (first rejects superseded, no state clobber)', async () => {
+    const client = new RemoteClient();
+    let releaseFirst;
+    const gates = [new Promise((r) => { releaseFirst = r; }), Promise.resolve(null)];
+    client._readRemoteSession = () => gates.shift() || Promise.resolve(null);
+    const first = client.connect({ host: 'h' });
+    first.catch(() => {});
+    // Second attempt: its (immediate) session read returns null → it errors,
+    // but only AFTER it has bumped the generation and taken over the state.
+    const second = client.connect({ host: 'h' });
+    second.catch(() => {});
+    releaseFirst({ state: 'remote-on', token: 't', remotePort: 1234 });
+    await assert.rejects(() => first, (err) => err.superseded === true);
+    await assert.rejects(() => second); // its own (stubbed) failure
+    assert.strictEqual(client.state.phase, 'error', 'the SECOND attempt owns the final state');
+});
+
+test('disconnect() is idempotent and safe with no connection', () => {
+    const client = new RemoteClient();
+    assert.deepStrictEqual(client.disconnect(), { ok: true });
+    assert.deepStrictEqual(client.disconnect(), { ok: true });
+    assert.strictEqual(client.state.phase, 'idle');
+});

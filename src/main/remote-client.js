@@ -428,6 +428,12 @@ class RemoteClient {
         this.log = typeof opts.log === 'function' ? opts.log : () => {};
         this.tunnelChild = null;
         this.state = { phase: 'idle' };
+        // Connection generation: bumped by every connect() AND disconnect().
+        // An in-flight connect checkpoints this after every await and aborts
+        // when a newer operation has taken over — so a reconnect always
+        // SUPERSEDES stale state instead of dead-ending on "already
+        // connected" (the renderer-reload orphan-tunnel bug).
+        this._connectGen = 0;
     }
 
     _setState(next) {
@@ -604,8 +610,23 @@ class RemoteClient {
      * emitted along the way.
      */
     async connect(opts) {
-        if (this.state.phase === 'connecting') throw new Error('Already connecting — wait or disconnect first.');
-        if (this.state.phase === 'connected') throw new Error('Already connected — disconnect first.');
+        // A new connect SUPERSEDES whatever is there — connected, connecting,
+        // or stale (e.g. the renderer reloaded and lost its UI state while the
+        // tunnel lived on in this process). Never hard-fail with "already
+        // connected": bump the generation (aborts any in-flight connect at its
+        // next checkpoint) and kill the existing tunnel, then proceed fresh.
+        const gen = ++this._connectGen;
+        const checkpoint = () => {
+            if (gen !== this._connectGen) {
+                const e = new Error('Superseded by a newer connect/disconnect.');
+                e.superseded = true;
+                throw e;
+            }
+        };
+        if (this.tunnelChild || this.state.phase !== 'idle') {
+            this.log('[RemoteClient] connect supersedes existing state (' + this.state.phase + ') — tearing it down first');
+        }
+        this._teardownTunnel();
 
         const conn = normalizeConnectOptions(opts);
         const pub = { host: conn.host, username: conn.username, sshPort: conn.sshPort };
@@ -614,6 +635,7 @@ class RemoteClient {
         try {
             // ---- 1. read the remote's state (its session file) over SSH ----
             let session = await this._readRemoteSession(conn);
+            checkpoint();
 
             // ---- 1b. remote not serving Remote Mode? Fix it, don't fail. ----
             // Three states (docs/REMOTE_MODE.md §8): remote-on → connect as-is;
@@ -623,17 +645,20 @@ class RemoteClient {
             // scripts/remote-autostart.js over this same SSH channel.
             if (session.state !== 'remote-on') {
                 await this._ensureRemoteMode(conn, session.state, pub);
+                checkpoint();
                 this._setState(Object.assign({
                     phase: 'connecting',
                     message: 'Remote Mode is up on ' + conn.host + ' — reading its session…'
                 }, pub));
                 session = await this._awaitRemoteOn(conn);
+                checkpoint();
             }
             const { token, remotePort } = session;
 
             // ---- 2. open the local-forward tunnel ----
             this._setState(Object.assign({ phase: 'connecting', message: 'Opening SSH tunnel…' }, pub));
             const localPort = await findFreeLocalPort();
+            checkpoint(); // don't spawn a tunnel a newer operation would orphan
             const tunnelArgs = [
                 ...this._baseSshArgs(conn),
                 '-N',                                   // no remote command — tunnel only
@@ -667,6 +692,7 @@ class RemoteClient {
             // ---- 3. wait until the tunneled interface answers ----
             try {
                 await this._probeTunnel(localPort, child);
+                checkpoint(); // superseded mid-probe: our child was already killed
             } catch (err) {
                 this._killChild(child);
                 if (this.tunnelChild === child) this.tunnelChild = null;
@@ -697,6 +723,15 @@ class RemoteClient {
                 url: 'http://127.0.0.1:' + localPort + '/#k=' + token
             };
         } catch (err) {
+            // Superseded by a newer connect/disconnect: that operation owns
+            // the state now — do NOT emit an error state over it. Any tunnel
+            // child this attempt spawned was killed above (or by the
+            // superseding teardown, which nulled this.tunnelChild first).
+            if (gen !== this._connectGen) {
+                const e = new Error('Superseded by a newer connect/disconnect.');
+                e.superseded = true;
+                throw e;
+            }
             // needPassword rides the status event AND the thrown error so the
             // UI can surface the password field. The password itself is never
             // part of any state/status/log.
@@ -718,11 +753,26 @@ class RemoteClient {
         if (t.unref) t.unref();
     }
 
-    /** Tear the tunnel down and return to local-only. Safe to call anytime. */
-    disconnect() {
+    /**
+     * Kill the current tunnel child (if any). Nulls this.tunnelChild FIRST so
+     * the child's own close handler can't emit a spurious "tunnel dropped"
+     * error over whatever state the caller is about to set. No state event —
+     * callers own the state transition.
+     */
+    _teardownTunnel() {
         const child = this.tunnelChild;
         this.tunnelChild = null;
         if (child) this._killChild(child);
+    }
+
+    /**
+     * Tear the tunnel down and return to local-only. Safe to call anytime,
+     * idempotent, and also aborts any in-flight connect() at its next
+     * checkpoint (generation bump).
+     */
+    disconnect() {
+        this._connectGen++;
+        this._teardownTunnel();
         this._setState({ phase: 'idle' });
         return { ok: true };
     }
