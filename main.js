@@ -16,7 +16,7 @@ const { readLastAssistantText, buildTranscriptResponse } = require('./src/main/t
 const { enrichSnapshot, detectRuntime } = require('./src/main/terminal-runtime');
 const { handlePtyControl } = require('./src/main/pty-control');
 const { runCcusage } = require('./src/main/ccusage');
-const { writeSessionFile, removeSessionFile } = require('./src/main/session-file');
+const { writeSessionFile, removeSessionFile, writeAppRootFile } = require('./src/main/session-file');
 const RemoteServer = require('./src/main/RemoteServer');
 const RemoteClient = require('./src/main/remote-client');
 const TtsRemoteForwarder = require('./src/main/tts-remote-forwarder');
@@ -533,6 +533,12 @@ app.whenReady().then(async () => {
       if (action === 'terminal-transcript') {
         return Promise.resolve(buildTranscriptResponse(payload, rendererStateCache));
       }
+      // Live-enable Remote Mode (POST /remote/enable) with NO restart — the
+      // Remote Mode client's auto-start path calls this over loopback when it
+      // finds the app running but not serving Remote Mode.
+      if (action === 'remote-enable') {
+        return enableRemoteModeLive();
+      }
       return sendControlRequest(action, payload);
     };
 
@@ -568,10 +574,108 @@ app.whenReady().then(async () => {
     global.__ccbotHook = { port, token: hookServer.token };
 
     // ---- Remote Mode (web-served interactive replica; docs/REMOTE_MODE.md) ----
-    // Opt-in and OFF by default. Enable with CCBOT_REMOTE=1 (env) or the
-    // persisted `remoteServerEnabled` setting; CCBOT_REMOTE=0 force-disables.
-    // Binds 127.0.0.1 ONLY — reach it via `ssh -L` or Tailscale, exactly like
-    // ssh-view. Shares the HookServer session token for the WS `hello` auth.
+    // Opt-in and OFF by default. Enable with CCBOT_REMOTE=1 (env), the
+    // persisted `remoteServerEnabled` setting, or LIVE at runtime through
+    // POST /remote/enable (no restart — the Remote Mode client's auto-start
+    // path); CCBOT_REMOTE=0 force-disables all of them. Binds 127.0.0.1 ONLY —
+    // reach it via `ssh -L` or Tailscale, exactly like ssh-view. Shares the
+    // HookServer session token for the WS `hello` auth.
+
+    // The browser is served an esbuild bundle of the renderer. `npm run
+    // remote` pre-builds it; every other entry into Remote Mode (plain
+    // CCBOT_REMOTE=1, the setting, live enable, headless auto-start) builds it
+    // here on demand if it is missing, so Remote Mode can never come up
+    // serving a 404 bundle.
+    const ensureRemoteBundle = async () => {
+      const bundle = path.join(__dirname, 'dist-remote', 'renderer.bundle.js');
+      if (require('fs').existsSync(bundle)) return;
+      safeLog('[Main] Building remote renderer bundle (missing dist-remote/renderer.bundle.js)…');
+      const esbuild = require('esbuild');
+      await esbuild.build({
+        entryPoints: [path.join(__dirname, 'renderer.js')],
+        bundle: true,
+        outfile: bundle,
+        format: 'iife',
+        platform: 'browser',
+        external: ['electron', 'fs', 'path', 'vosk-browser'],
+        define: { __dirname: '"/"', __filename: '"/renderer.js"' },
+        logLevel: 'silent',
+        absWorkingDir: __dirname
+      });
+    };
+
+    // Idempotent: brings the RemoteServer (+ TTS forwarder) up. Called at boot
+    // when enabled, and at runtime by enableRemoteModeLive(). Throws on failure.
+    const startRemoteMode = async () => {
+      if (remoteServer) return remoteServer.port;
+      await ensureRemoteBundle();
+      // Voice notifications follow the viewer: while ≥1 remote client is
+      // attached, this forwarder pushes each fresh TTS notification's audio
+      // over the WS so it PLAYS on the device showing the interface, and the
+      // local renderer is told to hold auto playback (no double-play).
+      ttsRemoteForwarder = new TtsRemoteForwarder({
+        backendUrl: BACKEND_URL,
+        broadcast: (channel, args) => { if (remoteServer) remoteServer.broadcast(channel, args); },
+        log: safeLog
+      });
+      remoteServer = new RemoteServer({
+        appRoot: __dirname,
+        token: hookServer.token,
+        deps: {
+          getState: getStateSnapshot,
+          getScreen: (terminalId) => controlDispatch('terminal-screen', { terminalId, scrollback: true }),
+          hasPty: (id) => ptyProcesses.has(id) || ptyProcesses.has(Number(id)),
+          dispatchSend: (channel, args, fakeEvent) => {
+            const handler = rendererSendHandlers.get(channel);
+            if (!handler) throw new Error('no send handler for channel: ' + channel);
+            return handler(fakeEvent, ...args);
+          },
+          dispatchInvoke: async (channel, args, fakeEvent) => {
+            const handler = rendererInvokeHandlers.get(channel);
+            if (!handler) throw new Error('no invoke handler for channel: ' + channel);
+            return handler(fakeEvent, ...args);
+          },
+          broadcastAll: broadcastToRenderers,
+          onClientsChanged: (count) => {
+            // Audio-sink routing: the forwarder activates while any client is
+            // attached; the LOCAL window (only) is told so it suppresses auto
+            // playback. Remote clients don't get this push — they always play.
+            if (ttsRemoteForwarder) ttsRemoteForwarder.setClientCount(count);
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('remote-clients-changed', { count });
+            }
+          },
+          log: safeLog
+        }
+      });
+      const remotePort = await remoteServer.start(process.env.CCBOT_REMOTE_PORT);
+      safeLog('[Main] Remote Mode web server listening on 127.0.0.1:' + remotePort);
+      safeLog('[Main] Remote access URL (via tunnel): http://127.0.0.1:' + remotePort + '/#k=' + hookServer.token);
+      return remotePort;
+    };
+
+    // Runtime enable (POST /remote/enable via controlDispatch): start the
+    // RemoteServer in the RUNNING app — no restart — persist the setting so it
+    // stays on, and re-advertise the session file with the remote port.
+    const enableRemoteModeLive = async () => {
+      const envFlag = process.env.CCBOT_REMOTE;
+      if (envFlag === '0' || envFlag === 'false') {
+        return { ok: false, error: 'Remote Mode is force-disabled on this instance (CCBOT_REMOTE=0).' };
+      }
+      if (remoteServer) return { ok: true, alreadyOn: true, port: remoteServer.port };
+      try {
+        const remotePort = await startRemoteMode();
+        try { await unifiedStore.setSetting('remoteServerEnabled', true); } catch (_) { /* non-fatal */ }
+        writeSessionFile({ port: hookServer.port, token: hookServer.token, remote: { port: remotePort } });
+        safeLog('[Main] Remote Mode enabled live via /remote/enable');
+        return { ok: true, port: remotePort };
+      } catch (error) {
+        if (ttsRemoteForwarder) { try { ttsRemoteForwarder.stop(); } catch (_) { /* ignore */ } ttsRemoteForwarder = null; }
+        if (remoteServer) { try { remoteServer.close(); } catch (_) { /* ignore */ } remoteServer = null; }
+        return { ok: false, error: 'Remote Mode failed to start: ' + ((error && error.message) || error) };
+      }
+    };
+
     try {
       const envFlag = process.env.CCBOT_REMOTE;
       let remoteEnabled = envFlag === '1' || envFlag === 'true';
@@ -582,48 +686,7 @@ app.whenReady().then(async () => {
         } catch (_) { /* setting unavailable = stay off */ }
       }
       if (remoteEnabled) {
-        // Voice notifications follow the viewer: while ≥1 remote client is
-        // attached, this forwarder pushes each fresh TTS notification's audio
-        // over the WS so it PLAYS on the device showing the interface, and the
-        // local renderer is told to hold auto playback (no double-play).
-        ttsRemoteForwarder = new TtsRemoteForwarder({
-          backendUrl: BACKEND_URL,
-          broadcast: (channel, args) => { if (remoteServer) remoteServer.broadcast(channel, args); },
-          log: safeLog
-        });
-        remoteServer = new RemoteServer({
-          appRoot: __dirname,
-          token: hookServer.token,
-          deps: {
-            getState: getStateSnapshot,
-            getScreen: (terminalId) => controlDispatch('terminal-screen', { terminalId, scrollback: true }),
-            hasPty: (id) => ptyProcesses.has(id) || ptyProcesses.has(Number(id)),
-            dispatchSend: (channel, args, fakeEvent) => {
-              const handler = rendererSendHandlers.get(channel);
-              if (!handler) throw new Error('no send handler for channel: ' + channel);
-              return handler(fakeEvent, ...args);
-            },
-            dispatchInvoke: async (channel, args, fakeEvent) => {
-              const handler = rendererInvokeHandlers.get(channel);
-              if (!handler) throw new Error('no invoke handler for channel: ' + channel);
-              return handler(fakeEvent, ...args);
-            },
-            broadcastAll: broadcastToRenderers,
-            onClientsChanged: (count) => {
-              // Audio-sink routing: the forwarder activates while any client is
-              // attached; the LOCAL window (only) is told so it suppresses auto
-              // playback. Remote clients don't get this push — they always play.
-              if (ttsRemoteForwarder) ttsRemoteForwarder.setClientCount(count);
-              if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('remote-clients-changed', { count });
-              }
-            },
-            log: safeLog
-          }
-        });
-        const remotePort = await remoteServer.start(process.env.CCBOT_REMOTE_PORT);
-        safeLog('[Main] Remote Mode web server listening on 127.0.0.1:' + remotePort);
-        safeLog('[Main] Remote access URL (via tunnel): http://127.0.0.1:' + remotePort + '/#k=' + hookServer.token);
+        await startRemoteMode();
       }
     } catch (error) {
       try { console.error('[Main] Remote server failed to start:', error); } catch (e) { /* ignore */ }
@@ -698,6 +761,16 @@ app.whenReady().then(async () => {
       });
       if (written) safeLog('[Main] Wrote Control API session file to ' + written);
     } catch (e) { /* advertising the API must never break startup */ }
+
+    // Record where this app lives (and its Electron binary) in a PERSISTENT
+    // sh-sourceable file next to session.json. Unlike the session file it is
+    // deliberately NOT removed on shutdown: it is what lets the Remote Mode
+    // client auto-START this app over SSH when it is not running
+    // (scripts/remote-autostart.js). Paths only — no secrets.
+    try {
+      const appRootWritten = writeAppRootFile({ appRoot: __dirname, electronPath: process.execPath });
+      if (appRootWritten) safeLog('[Main] Wrote app-root file to ' + appRootWritten);
+    } catch (e) { /* best effort */ }
 
     // Idempotently install guarded hooks into ~/.claude/settings.json
     const hookResult = ensureClaudeHooks();

@@ -3461,3 +3461,68 @@ live.
 - Docs: `docs/SSH_VIEW.md`. Files touched: `main.js` (write/remove the session
   file around the hook-server lifecycle), `package.json` (script), `.gitignore`
   (un-ignore the new script).
+
+## 2026-07-14 — Remote Mode client: top-middle ssh command bar + AUTO-START of the remote (branch `ssh-view`)
+
+Reworked the Remote Mode CLIENT connect flow (docs/REMOTE_MODE.md §8) so that
+connecting to another machine is one typed ssh command — and works even when
+the remote app is not running or not serving Remote Mode.
+
+- **Command bar (primary connect input).** Clicking the bottom-left corner
+  indicator now opens a command bar at the TOP-MIDDLE of the interface. The
+  user types the actual ssh command as real, editable text — `ssh
+  ethan@pop-os`, `ssh host -p 2222`, `user@host`, `-p`/`-l`/`-i` in any
+  position, `ssh://user@host:port` — parsed by the new pure module
+  `src/features/ssh-command-parse.js` (unit-tested); unknown ssh flags merge
+  into the Advanced ssh options and everything is re-validated against
+  remote-client's strict charsets. The most recent command pre-fills as
+  editable text; recents are one click. Advanced… folds out with the session
+  file path, extra ssh options, and a new "remote app directory" field. The
+  old host/port/user form is gone; the bottom-left panel is now purely the
+  connected-state management popover (info + Disconnect).
+- **Auto-start Remote Mode on the remote.** On Connect the client reads the
+  remote session file over SSH and handles all three states instead of
+  erroring: (1) Remote Mode on → connect as before; (2) app running with
+  Remote Mode OFF → the new `scripts/remote-autostart.js` runs on the remote
+  (over the same SSH channel, under ELECTRON_RUN_AS_NODE on the app's own
+  Electron binary — no `node`-on-PATH assumption) and POSTs the new
+  loopback Control API route `POST /remote/enable`, which starts the
+  RemoteServer LIVE with no restart (main.js `startRemoteMode()` is now
+  shared by boot + runtime enable; the renderer bundle is esbuilt on demand
+  if missing; `remoteServerEnabled` is persisted; session.json is rewritten
+  with the remote port); (3) app NOT running → the same script cold-starts it
+  headless + detached with CCBOT_REMOTE=1 (`xvfb-run -a` + `--no-sandbox` on
+  display-less Linux; direct launch on macOS) and polls for a fresh
+  session.json (45 s). Discovery of where the app lives on a stopped machine:
+  the app now writes a persistent, sh-sourceable `~/.config/ccbot/app-root`
+  file (app dir + Electron binary path; paths only, no secrets; 0600; NOT
+  removed on shutdown) via session-file.js. Every phase is narrated in the
+  command bar status line; every failure mode has a specific message (app
+  never ran there → set the app dir; dir gone; checkout too old; no
+  node/electron; xvfb missing; start timeout with remote log tail; stale
+  token; plus the existing ssh auth/host-key/unreachable classes) and the
+  whole ensure step has a 90 s hard kill — nothing silently hangs. Security
+  posture unchanged: BatchMode (no passwords), loopback-only everywhere, the
+  token never leaves the remote (the enable POST happens on the remote
+  itself against 127.0.0.1).
+- **Verified end-to-end headless** (`xvfb-run -a node
+  tests/integration/remote-client-e2e.js`, work dir on a POSIX fs under tmp
+  because the repo drive is FUSE/NTFS and sshd rejects world-readable host
+  keys): real sshd + isolated XDG_CONFIG_HOMEs; command bar proven at the
+  top-middle with real editable text; clear errors for an unreachable host
+  and for a remote with no recorded app; remote app running WITHOUT Remote
+  Mode → Connect live-enabled it (session.json gained remote.port with the
+  SAME pid — no restart) and a typed marker echoed in both the embedded view
+  and the remote's own xterm; app CLOSED → Connect cold-started it (fresh
+  session.json, NEW live pid spawned by the client's action) and the
+  embedded terminal echoed; reconnect fast path showed no enable/start phase
+  and the same pid; disconnect closed the forwarded port with no ssh -L
+  child left. Unit suite: 153 tests, 152 pass — the one failure
+  (`tests/unit/usage-limit-and-gate.test.js`) is a pre-existing, untracked
+  (gitignored) local file unrelated to this work.
+- Files: `src/features/ssh-command-parse.js` (+`.test.js`),
+  `src/features/RemoteConnectionUI.js`, `index.html`, `style.css`,
+  `scripts/remote-autostart.js`, `src/main/remote-client.js` (+`.test.js`),
+  `src/main/session-file.js`, `src/main/HookServer.js`, `main.js`,
+  `tests/integration/remote-client-e2e.js`, `docs/REMOTE_MODE.md`,
+  `.gitignore`.

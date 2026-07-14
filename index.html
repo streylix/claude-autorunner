@@ -788,41 +788,50 @@
         </svg>
         <span id="remote-indicator-label" data-test-id="remote-indicator-label"></span>
     </button>
-    <div id="remote-panel" class="remote-panel hidden" data-test-id="remote-panel">
-        <div class="remote-panel-header">
-            <span class="remote-panel-title">Connect to a remote machine</span>
-            <button id="remote-panel-close-btn" class="remote-panel-close" data-test-id="remote-panel-close-btn" title="Close">&times;</button>
+    <!-- The PRIMARY connect input: a command bar at the TOP-MIDDLE of the
+         interface. The user types a real, editable ssh command
+         (e.g. `ssh ethan@pop-os`, `ssh host -p 2222`, `user@host`); parsing
+         lives in src/features/ssh-command-parse.js. Advanced options
+         (session file path, extra ssh options, remote app directory for
+         auto-start) fold out underneath. -->
+    <div id="remote-command-bar" class="remote-command-bar hidden" data-test-id="remote-command-bar">
+        <div class="remote-command-row">
+            <span class="remote-command-prompt" aria-hidden="true">$</span>
+            <input type="text" id="remote-command-input" data-test-id="remote-command-input"
+                   placeholder="ssh user@host" spellcheck="false" autocomplete="off"
+                   aria-label="SSH command, e.g. ssh ethan@pop-os">
+            <button type="button" id="remote-connect-btn" class="remote-command-connect" data-test-id="remote-connect-btn">Connect</button>
+            <button type="button" id="remote-command-close-btn" class="remote-command-close" data-test-id="remote-command-close-btn" title="Close (Esc)">&times;</button>
         </div>
-        <div id="remote-connect-form">
-            <p class="remote-panel-hint">The machine must be running Auto-Injector in Remote Mode
-                (<code>CCBOT_REMOTE=1</code>). Uses your own ssh keys/config — no passwords.</p>
-            <div class="remote-field-row">
-                <div class="remote-field remote-field-grow">
-                    <label for="remote-host-input">Host / IP</label>
-                    <input type="text" id="remote-host-input" data-test-id="remote-host-input" placeholder="e.g. 192.168.1.20" spellcheck="false" autocomplete="off">
-                </div>
-                <div class="remote-field remote-field-port">
-                    <label for="remote-port-input">SSH port</label>
-                    <input type="text" id="remote-port-input" data-test-id="remote-port-input" value="22" spellcheck="false" autocomplete="off">
-                </div>
+        <div class="remote-command-hintline">
+            <span class="remote-command-hint">ssh user@host · ssh host -p 2222 · user@host — your own ssh keys/config, no passwords. If the remote isn't serving Remote Mode yet, it gets started for you.</span>
+            <button type="button" id="remote-advanced-toggle" class="remote-advanced-toggle" data-test-id="remote-advanced-toggle">Advanced…</button>
+        </div>
+        <div id="remote-advanced-box" class="remote-advanced-box hidden">
+            <div class="remote-field">
+                <label for="remote-session-path-input">Remote session file <span class="remote-label-soft">(default: ~/.config/ccbot/session.json)</span></label>
+                <input type="text" id="remote-session-path-input" data-test-id="remote-session-path-input" placeholder="~/.config/ccbot/session.json" spellcheck="false" autocomplete="off">
             </div>
             <div class="remote-field">
-                <label for="remote-user-input">Username <span class="remote-label-soft">(blank = your ssh config default)</span></label>
-                <input type="text" id="remote-user-input" data-test-id="remote-user-input" placeholder="e.g. ethan" spellcheck="false" autocomplete="off">
+                <label for="remote-ssh-options-input">Extra ssh options <span class="remote-label-soft">(e.g. -i ~/.ssh/other_key)</span></label>
+                <input type="text" id="remote-ssh-options-input" data-test-id="remote-ssh-options-input" placeholder="-i /path/to/key -o SomeOption=value" spellcheck="false" autocomplete="off">
             </div>
-            <button type="button" id="remote-advanced-toggle" class="remote-advanced-toggle" data-test-id="remote-advanced-toggle">Advanced…</button>
-            <div id="remote-advanced-box" class="remote-advanced-box hidden">
-                <div class="remote-field">
-                    <label for="remote-session-path-input">Remote session file <span class="remote-label-soft">(default: ~/.config/ccbot/session.json)</span></label>
-                    <input type="text" id="remote-session-path-input" data-test-id="remote-session-path-input" placeholder="~/.config/ccbot/session.json" spellcheck="false" autocomplete="off">
-                </div>
-                <div class="remote-field">
-                    <label for="remote-ssh-options-input">Extra ssh options <span class="remote-label-soft">(e.g. -i ~/.ssh/other_key)</span></label>
-                    <input type="text" id="remote-ssh-options-input" data-test-id="remote-ssh-options-input" placeholder="-i /path/to/key -o SomeOption=value" spellcheck="false" autocomplete="off">
-                </div>
+            <div class="remote-field">
+                <label for="remote-app-dir-input">Remote app directory <span class="remote-label-soft">(only for auto-start when the app never ran there)</span></label>
+                <input type="text" id="remote-app-dir-input" data-test-id="remote-app-dir-input" placeholder="~/claude-autorunner" spellcheck="false" autocomplete="off">
             </div>
-            <button type="button" id="remote-connect-btn" class="remote-connect-btn" data-test-id="remote-connect-btn">Connect</button>
-            <div id="remote-recents-list" class="remote-recents-list hidden" data-test-id="remote-recents-list"></div>
+        </div>
+        <div id="remote-recents-list" class="remote-recents-list hidden" data-test-id="remote-recents-list"></div>
+        <div id="remote-command-status" class="remote-panel-status" data-test-id="remote-command-status"></div>
+    </div>
+
+    <!-- Bottom-left popover: connection MANAGEMENT while connected
+         (what you're attached to + Disconnect). Connecting starts in the
+         top-middle command bar above. -->
+    <div id="remote-panel" class="remote-panel hidden" data-test-id="remote-panel">
+        <div class="remote-panel-header">
+            <span class="remote-panel-title">Remote connection</span>
+            <button id="remote-panel-close-btn" class="remote-panel-close" data-test-id="remote-panel-close-btn" title="Close">&times;</button>
         </div>
         <div id="remote-connected-box" class="remote-connected-box hidden">
             <p id="remote-connected-text" class="remote-connected-text" data-test-id="remote-connected-text"></p>

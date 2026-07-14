@@ -47,6 +47,13 @@ const CONNECT_TIMEOUT_S = 10;      // ssh -o ConnectTimeout for both phases
 const SESSION_READ_TIMEOUT_MS = 25000; // hard kill on the session-read ssh
 const TUNNEL_PROBE_TIMEOUT_MS = 15000; // how long we wait for the tunnel to answer
 const TUNNEL_PROBE_INTERVAL_MS = 250;
+// Auto-start: the remote-side ensure script polls internally (up to 45s for a
+// cold app start); this is the hard kill on that whole ssh invocation.
+const ENSURE_TIMEOUT_MS = 90000;
+// After a successful ensure, re-reads of the session file get a short retry
+// window (the file is written a beat after the server starts listening).
+const SESSION_SETTLE_TIMEOUT_MS = 15000;
+const SESSION_SETTLE_INTERVAL_MS = 1000;
 
 // ---------- pure helpers (exported for unit tests) ----------
 
@@ -84,6 +91,14 @@ function normalizeConnectOptions(opts) {
         throw new Error('Invalid session file path (no spaces or shell characters).');
     }
 
+    // Optional advanced: the app's directory on the remote, for auto-START
+    // when the app has never run there (no recorded app-root). Same strict
+    // charset as sessionPath — it is interpolated into the remote sh command.
+    const appDir = String(o.appDir || '').trim();
+    if (appDir && !/^[A-Za-z0-9_~/][A-Za-z0-9_./~-]*$/.test(appDir)) {
+        throw new Error('Invalid remote app directory (no spaces or shell characters).');
+    }
+
     // Optional advanced: extra ssh options ("-i /path/key -o SomeOption=x").
     // Tokenized on whitespace; each token restricted to a safe charset.
     const extraArgs = [];
@@ -102,6 +117,7 @@ function normalizeConnectOptions(opts) {
         username,
         sshPort,
         sessionPath,
+        appDir,
         extraArgs,
         dest: username ? username + '@' + host : host
     };
@@ -127,6 +143,114 @@ function parseRemoteSession(raw, host) {
             ' but Remote Mode is OFF. Start it there with CCBOT_REMOTE=1 (or the remoteServerEnabled setting), then reconnect.');
     }
     return { token: String(parsed.token), remotePort: Number(parsed.remote.port) };
+}
+
+/**
+ * Non-throwing session inspection for the auto-start decision tree.
+ * @returns {{state:'remote-on'|'remote-off'|'unreadable', token?:string,
+ *            hookPort?:number, remotePort?:number}}
+ */
+function inspectRemoteSession(raw) {
+    let parsed;
+    try { parsed = JSON.parse(String(raw)); } catch (_) { return { state: 'unreadable' }; }
+    if (!parsed || !parsed.token || !parsed.port) return { state: 'unreadable' };
+    if (parsed.remote && parsed.remote.port) {
+        return {
+            state: 'remote-on',
+            token: String(parsed.token),
+            hookPort: Number(parsed.port),
+            remotePort: Number(parsed.remote.port)
+        };
+    }
+    return { state: 'remote-off', token: String(parsed.token), hookPort: Number(parsed.port) };
+}
+
+/**
+ * Build the remote sh command that runs scripts/remote-autostart.js on the
+ * remote machine (over the same SSH channel) to detect + fix the remote's
+ * state: enable Remote Mode live in a running app, or cold-start the app
+ * headless with CCBOT_REMOTE=1. See that script's header for the states.
+ *
+ * How the script gets found and run with NO assumptions about the remote's
+ * non-interactive PATH:
+ *   - the app records its install dir + Electron binary in the sh-sourceable
+ *     0600 file  <cfg>/ccbot/app-root  on every startup (session-file.js) —
+ *     it survives shutdown, which is the whole point (auto-START);
+ *   - the Advanced "remote app directory" field overrides it;
+ *   - the script runs under ELECTRON_RUN_AS_NODE on the app's own Electron
+ *     binary, falling back to `node` if present.
+ *
+ * IMPORTANT: the command contains NO single quotes (some remote login shells
+ * would mangle nested quoting) and every interpolated value has already been
+ * validated against a strict no-space/no-metacharacter charset in
+ * normalizeConnectOptions. Paths from the app-root file are handled by the
+ * remote shell via sourcing, so they may contain anything.
+ */
+function buildEnsureCommand(conn) {
+    // Where the ccbot config dir lives, and the exact session file to manage.
+    // Left unquoted so the REMOTE shell expands ~ / ${...} (same convention as
+    // DEFAULT_SESSION_CMD above; the charset makes word-splitting impossible).
+    const cfgExpr = conn.sessionPath
+        ? 'cfg=$(dirname ' + conn.sessionPath + ')'
+        : 'cfg="${XDG_CONFIG_HOME:-$HOME/.config}/ccbot"';
+    const sessionFileExpr = conn.sessionPath ? conn.sessionPath : '"$cfg/session.json"';
+    const appDirLine = conn.appDir
+        ? 'd=' + conn.appDir
+        : 'if [ -f "$cfg/app-root" ]; then . "$cfg/app-root"; d="$CCBOT_APP_ROOT"; bin="$CCBOT_ELECTRON"; fi';
+
+    return [
+        cfgExpr,
+        'd=""',
+        'bin=""',
+        appDirLine,
+        'if [ -z "$d" ]; then echo CCBOT_ERR_NO_APP_ROOT; exit 46; fi',
+        'if [ ! -d "$d" ]; then echo "CCBOT_ERR_APP_DIR:$d"; exit 47; fi',
+        'if [ ! -f "$d/scripts/remote-autostart.js" ]; then echo "CCBOT_ERR_OLD_APP:$d"; exit 49; fi',
+        'if [ ! -x "$bin" ]; then for c in "$d/node_modules/electron/dist/electron" "$d/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"; do if [ -x "$c" ]; then bin="$c"; break; fi; done; fi',
+        'if [ ! -x "$bin" ]; then if command -v node >/dev/null 2>&1; then bin=node; else echo CCBOT_ERR_NO_NODE; exit 48; fi; fi',
+        'ELECTRON_RUN_AS_NODE=1 exec "$bin" "$d/scripts/remote-autostart.js" ensure --session-file ' + sessionFileExpr
+    ].join('\n');
+}
+
+// NOTE: appDirLine's else-branch sets bin from the sourced file; when the
+// Advanced app dir is used, bin stays empty and the electron-binary probe
+// below finds it. Marker exit codes map to the user-facing messages here:
+function explainEnsureFailure(stdout, stderr, dest) {
+    const out = String(stdout || '');
+    if (/CCBOT_ERR_NO_APP_ROOT/.test(out)) {
+        return 'The Auto-Injector app has never run on ' + dest + ' (no recorded install location), so it cannot be auto-started. ' +
+            'Set "Remote app directory" under Advanced, or start the app on that machine once.';
+    }
+    const dirErr = out.match(/CCBOT_ERR_APP_DIR:(.*)/);
+    if (dirErr) {
+        return 'The app directory recorded on ' + dest + ' (' + dirErr[1].trim() + ') no longer exists. ' +
+            'Set "Remote app directory" under Advanced to where the app now lives.';
+    }
+    const oldErr = out.match(/CCBOT_ERR_OLD_APP:(.*)/);
+    if (oldErr) {
+        return 'The app checkout on ' + dest + ' (' + oldErr[1].trim() + ') is too old for auto-start (missing scripts/remote-autostart.js). ' +
+            'Update it, or start it there manually with CCBOT_REMOTE=1.';
+    }
+    if (/CCBOT_ERR_NO_NODE/.test(out)) {
+        return 'Could not find a Node runtime or the app\'s Electron binary on ' + dest + ' — run npm install in the app directory there.';
+    }
+    // The ensure script reports its own failures as a JSON result line.
+    const resultLine = out.split('\n').reverse().find((l) => l.startsWith('CCBOT_AUTOSTART_RESULT:'));
+    if (resultLine) {
+        try {
+            const r = JSON.parse(resultLine.slice('CCBOT_AUTOSTART_RESULT:'.length));
+            if (r && r.error) return 'Auto-starting Remote Mode on ' + dest + ' failed: ' + r.error;
+        } catch (_) { /* fall through */ }
+    }
+    return classifySshFailure(stderr, dest);
+}
+
+/** Parse the ensure script's stdout into its final JSON result (or null). */
+function parseEnsureResult(stdout) {
+    const line = String(stdout || '').split('\n').reverse()
+        .find((l) => l.startsWith('CCBOT_AUTOSTART_RESULT:'));
+    if (!line) return null;
+    try { return JSON.parse(line.slice('CCBOT_AUTOSTART_RESULT:'.length)); } catch (_) { return null; }
 }
 
 /**
@@ -230,6 +354,75 @@ class RemoteClient {
         });
     }
 
+    /**
+     * Read + classify the remote session file over SSH.
+     * @returns {Promise<{state:'remote-on'|'remote-off'|'not-running',
+     *                    token?:string, remotePort?:number}>}
+     * Throws (with a user-facing message) on real SSH failures — bad host,
+     * auth, changed host key — but NOT on "app not running": that is a state
+     * the auto-start path handles.
+     */
+    async _readRemoteSession(conn) {
+        const catCmd = conn.sessionPath ? 'cat ' + conn.sessionPath : DEFAULT_SESSION_CMD;
+        const sshArgs = [...this._baseSshArgs(conn), conn.dest, catCmd];
+        this.log('[RemoteClient] reading session: ssh ' + sshArgs.slice(0, -1).join(' ') + ' <cat>');
+        const res = await this._execSsh(sshArgs, SESSION_READ_TIMEOUT_MS);
+        if (res.code !== 0) {
+            if (/No such file or directory/i.test(res.stderr)) return { state: 'not-running' };
+            throw new Error(classifySshFailure(res.stderr, conn.dest));
+        }
+        const info = inspectRemoteSession(res.stdout);
+        if (info.state === 'unreadable') {
+            // The file exists but is not a valid session — don't blind-start a
+            // second app instance over it; make the user look at the machine.
+            throw new Error('The session file on ' + conn.host +
+                ' exists but is unreadable — restart the Auto-Injector app there.');
+        }
+        return info;
+    }
+
+    /**
+     * Run scripts/remote-autostart.js on the remote over SSH to bring Remote
+     * Mode up: live-enable (app running, remote off) or headless cold-start
+     * (app not running). Resolves the script's {ok, action, port} result;
+     * throws a specific, user-facing Error on every failure mode.
+     */
+    async _ensureRemoteMode(conn, state, pub) {
+        const message = state === 'remote-off'
+            ? 'The app on ' + conn.host + ' is running with Remote Mode off — enabling it now (no restart)…'
+            : 'The app is not running on ' + conn.host + ' — starting it in Remote Mode (this can take up to a minute)…';
+        this._setState(Object.assign({ phase: 'connecting', message }, pub));
+
+        const ensureArgs = [...this._baseSshArgs(conn), conn.dest, buildEnsureCommand(conn)];
+        this.log('[RemoteClient] ensuring Remote Mode on ' + conn.dest + ' (state: ' + state + ')');
+        const res = await this._execSsh(ensureArgs, ENSURE_TIMEOUT_MS);
+        const result = parseEnsureResult(res.stdout);
+        if (res.code !== 0 || !result || !result.ok) {
+            throw new Error(explainEnsureFailure(res.stdout, res.stderr, conn.dest));
+        }
+        this.log('[RemoteClient] Remote Mode ' + result.action + ' on ' + conn.dest + ' (remote port ' + result.port + ')');
+        return result;
+    }
+
+    /**
+     * Re-read the session file until it advertises Remote Mode (the file is
+     * written a beat after the server binds). Short window — the heavy
+     * waiting already happened inside the ensure script.
+     */
+    async _awaitRemoteOn(conn) {
+        const deadline = Date.now() + SESSION_SETTLE_TIMEOUT_MS;
+        for (;;) {
+            let info = null;
+            try { info = await this._readRemoteSession(conn); } catch (_) { /* retry below */ }
+            if (info && info.state === 'remote-on') return info;
+            if (Date.now() > deadline) {
+                throw new Error('Remote Mode was brought up on ' + conn.host +
+                    ' but its session file never advertised it — try connecting again.');
+            }
+            await new Promise((r) => setTimeout(r, SESSION_SETTLE_INTERVAL_MS));
+        }
+    }
+
     /** Probe the tunneled RemoteServer until it answers HTTP on loopback. */
     _probeTunnel(localPort, child) {
         const deadline = Date.now() + TUNNEL_PROBE_TIMEOUT_MS;
@@ -275,13 +468,24 @@ class RemoteClient {
         this._setState(Object.assign({ phase: 'connecting', message: 'Reading remote session over SSH…' }, pub));
 
         try {
-            // ---- 1. fetch the remote session file over SSH ----
-            const catCmd = conn.sessionPath ? 'cat ' + conn.sessionPath : DEFAULT_SESSION_CMD;
-            const sshArgs = [...this._baseSshArgs(conn), conn.dest, catCmd];
-            this.log('[RemoteClient] reading session: ssh ' + sshArgs.slice(0, -1).join(' ') + ' <cat>');
-            const res = await this._execSsh(sshArgs, SESSION_READ_TIMEOUT_MS);
-            if (res.code !== 0) throw new Error(classifySshFailure(res.stderr, conn.dest));
-            const { token, remotePort } = parseRemoteSession(res.stdout, conn.host);
+            // ---- 1. read the remote's state (its session file) over SSH ----
+            let session = await this._readRemoteSession(conn);
+
+            // ---- 1b. remote not serving Remote Mode? Fix it, don't fail. ----
+            // Three states (docs/REMOTE_MODE.md §8): remote-on → connect as-is;
+            // remote-off → live-enable through the app's Control API (no
+            // restart); not-running → cold-start the app headless with
+            // CCBOT_REMOTE=1. Both fixes run remotely via
+            // scripts/remote-autostart.js over this same SSH channel.
+            if (session.state !== 'remote-on') {
+                await this._ensureRemoteMode(conn, session.state, pub);
+                this._setState(Object.assign({
+                    phase: 'connecting',
+                    message: 'Remote Mode is up on ' + conn.host + ' — reading its session…'
+                }, pub));
+                session = await this._awaitRemoteOn(conn);
+            }
+            const { token, remotePort } = session;
 
             // ---- 2. open the local-forward tunnel ----
             this._setState(Object.assign({ phase: 'connecting', message: 'Opening SSH tunnel…' }, pub));
@@ -377,5 +581,9 @@ class RemoteClient {
 module.exports = RemoteClient;
 module.exports.normalizeConnectOptions = normalizeConnectOptions;
 module.exports.parseRemoteSession = parseRemoteSession;
+module.exports.inspectRemoteSession = inspectRemoteSession;
+module.exports.buildEnsureCommand = buildEnsureCommand;
+module.exports.explainEnsureFailure = explainEnsureFailure;
+module.exports.parseEnsureResult = parseEnsureResult;
 module.exports.classifySshFailure = classifySshFailure;
 module.exports.findFreeLocalPort = findFreeLocalPort;

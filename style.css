@@ -4669,9 +4669,127 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     color: #1a1a1e;
 }
 
-.remote-connected-box.hidden,
-#remote-connect-form.hidden {
+.remote-connected-box.hidden {
     display: none;
+}
+
+/* ==== Top-middle ssh command bar — the PRIMARY connect input ==== */
+
+.remote-command-bar {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9300; /* above the embedded view + indicator: always reachable */
+    width: min(620px, calc(100vw - 40px));
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    padding: 10px 12px;
+    box-shadow: 0 10px 36px rgba(0, 0, 0, 0.5);
+}
+
+.remote-command-bar.hidden {
+    display: none;
+}
+
+.remote-command-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.remote-command-prompt {
+    color: var(--text-quaternary);
+    font-family: 'SF Mono', 'Fira Code', Consolas, 'Courier New', monospace;
+    font-size: 14px;
+    user-select: none;
+}
+
+#remote-command-input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: 'SF Mono', 'Fira Code', Consolas, 'Courier New', monospace;
+    font-size: 13px;
+    padding: 8px 10px;
+    outline: none;
+}
+
+#remote-command-input:focus {
+    border-color: var(--accent-secondary);
+}
+
+#remote-command-input:disabled {
+    opacity: 0.6;
+}
+
+.remote-command-connect {
+    background: var(--accent-primary);
+    border: none;
+    border-radius: 6px;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 8px 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.remote-command-connect:hover {
+    background: var(--accent-secondary);
+}
+
+.remote-command-connect:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+.remote-command-close {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+    flex-shrink: 0;
+}
+
+.remote-command-close:hover {
+    color: var(--text-primary);
+}
+
+.remote-command-hintline {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 6px;
+}
+
+.remote-command-hint {
+    font-size: 10.5px;
+    color: var(--text-quaternary);
+    line-height: 1.45;
+}
+
+.remote-command-bar .remote-advanced-toggle {
+    flex-shrink: 0;
+    margin: 0;
+}
+
+.remote-command-bar .remote-advanced-box {
+    margin-top: 8px;
+    border-top: 1px solid var(--border-primary);
+    padding-top: 8px;
+}
+
+.remote-command-bar .remote-recents-list {
+    margin-top: 8px;
 }
 
 .remote-connected-text {

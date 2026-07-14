@@ -230,7 +230,11 @@ HookServer.CONTROL_ROUTES = {
     '/terminal/claude': 'terminal-claude',
     '/terminal/transcript': 'terminal-transcript',
     '/queue/update': 'queue-update',
-    '/queue/inject-now': 'queue-inject-now'
+    '/queue/inject-now': 'queue-inject-now',
+    // Turn Remote Mode (RemoteServer) on in the RUNNING app — no restart.
+    // Handled directly in main (controlDispatch); used by the Remote Mode
+    // client's auto-start path (scripts/remote-autostart.js) over loopback.
+    '/remote/enable': 'remote-enable'
 };
 
 // Coerce any incoming queue priority to a valid value (default 'normal').
