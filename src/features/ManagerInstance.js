@@ -217,6 +217,35 @@ class ManagerInstance {
     async start(managerDir) {
         if (this.running) return true;
 
+        // Remote Mode (docs/REMOTE_MODE.md): a browser renderer ATTACHES to the
+        // already-running manager instead of driving it. Build the xterm view
+        // for 999 (the RemoteServer attaches it to the live PTY and replays the
+        // screen instead of respawning), but do NOT boot claude, arm the pass
+        // loop, or react to completions — the local renderer owns all of that.
+        // Running both would double-type into the manager and double-dispatch.
+        if (typeof window !== 'undefined' && window.__CCBOT_REMOTE__) {
+            this.directory = managerDir;
+            this.gui.createTerminal({
+                id: MANAGER_TERMINAL_ID,
+                directory: managerDir,
+                mountTarget: document.getElementById('manager-terminal-mount'),
+                noWebgl: true,
+                skipActive: true,
+                title: 'Manager',
+                lockTitle: true,
+                cssClass: 'manager-terminal',
+                color: 'var(--accent-warning)'
+            });
+            this.running = true;
+            this.completionWatchEnabled = false; // dispatch loop is local-only
+            this.updateView();
+            this.eventBus.emit('log:action', {
+                message: `Attached to the manager instance in ${managerDir} (remote view)`,
+                type: 'info'
+            });
+            return true;
+        }
+
         // Main process validates the dir, writes the role CLAUDE.md if absent,
         // and checks ~/.claude/projects/<munged>/ for a resumable session.
         const prep = await this.ipc.invoke('manager-prepare', managerDir);
@@ -300,6 +329,10 @@ class ManagerInstance {
 
     /** Queue an instruction for the manager (injects when it's idle). */
     dispatch(instruction) {
+        // Remote Mode: automated dispatches (completion watch, prompt watch,
+        // pass loop) belong to the local renderer alone. User-typed messages to
+        // 999 still work remotely via the queue's remote-queue-add forwarding.
+        if (typeof window !== 'undefined' && window.__CCBOT_REMOTE__) return false;
         if (!this.running || !instruction) return false;
         this.gui.messageQueueManager.addMessage({
             content: instruction,

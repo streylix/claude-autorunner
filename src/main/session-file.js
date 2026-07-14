@@ -61,6 +61,12 @@ function writeSessionFile(coords) {
       port: Number(coords.port),
       token: String(coords.token),
       apiBase: `http://127.0.0.1:${Number(coords.port)}`,
+      // Remote Mode (web-served interface) coordinates, when enabled. The web
+      // server shares the same loopback-only token; `npm run remote-url` reads
+      // this to print the browser access URL.
+      remote: coords.remote && coords.remote.port
+        ? { port: Number(coords.remote.port), url: `http://127.0.0.1:${Number(coords.remote.port)}/` }
+        : null,
       pid: process.pid,
       startedAt: new Date().toISOString()
     };
