@@ -22,10 +22,13 @@
  * into a Blob URL and plays them there. No new ports, no new auth surface: the
  * audio rides the token-gated WS that already carries the whole interface.
  *
- * Which device plays (the double-play rule):
- *   - ≥1 remote client attached → the client(s) play; the local renderer is
- *     told (via 'remote-clients-changed') to suppress AUTO playback.
- *   - 0 remote clients → local playback exactly as before.
+ * Which device plays — DUAL OUTPUT:
+ *   - ≥1 remote client attached → the client(s) play their pushed copy AND the
+ *     local renderer keeps playing on the desktop's default sink, so whatever
+ *     captures that sink (the Discord bridge with AUDIO_SOURCE=system, a
+ *     person at the machine) never goes silent. 'remote-clients-changed' still
+ *     reaches the local renderer, but only as attach-state info for the log.
+ *   - 0 remote clients → local playback only, exactly as always.
  *   - Only notifications created while a client is attached are forwarded: the
  *     watermark (lastSeenId) is (re)baselined on every 0→N attach, so history
  *     never replays into a client that just connected.
