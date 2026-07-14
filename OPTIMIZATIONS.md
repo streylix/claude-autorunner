@@ -6,6 +6,64 @@ project's current git branch.
 
 ---
 
+## 2026-07-13 — Remote Mode MVP: the full interface served to a browser over HTTP+WebSocket (branch `ssh-view`)
+
+**Goal.** The VS Code Remote-SSH analog designed in `docs/REMOTE_MODE.md`: a
+browser on another machine (via SSH tunnel / Tailscale) gets a 1:1, fully
+interactive replica of the running interface — every terminal, the manager
+(999), the queue, the whole UI — so a headless box needs no monitor. Strictly a
+superset of the read-only `npm run ssh-view`.
+
+**How it works.** A new `src/main/RemoteServer.js` (loopback-only, off by
+default; enable with `CCBOT_REMOTE=1` or the `remoteServerEnabled` setting)
+serves the app's real `index.html` — transformed at request time to load
+`src/remote/remote-bootstrap.js` plus an esbuild bundle of the unmodified
+`renderer.js` + `src/**` (`npm run build-remote`; `electron`/`fs`/`path`/
+`vosk-browser` external, `__dirname` defined) — and upgrades to a WebSocket
+that bridges the entire Electron IPC surface: `send`/`invoke` frames dispatch
+to the very same `ipcMain` handlers (captured registration maps in `main.js`),
+and every `webContents.send` push now fans out through `broadcastToRenderers`
+to the local window AND all attached browsers, including the raw
+`terminal-data` PTY stream. The bootstrap installs a `require` shim and a
+`wsIpc` object implementing the `ipcRenderer` contract, so the SAME renderer
+runs unchanged in the browser.
+
+**Correctness (the hard part).** A second full renderer must not double-drive
+the app. `window.__CCBOT_REMOTE__` guards: the injection engine (single sink
+`_injectToTerminal` plus the sequential paths), queue/history persistence, the
+manager scheduler (no boot typing, no pass loop, no completion watch — the
+browser only ATTACHES a view of the live 999 PTY), `ccbot-state-snapshot`
+(also dropped server-side), and the completion summarizer. `terminal-start`
+for an existing PTY attaches + replays the current screen (late-join catch-up
+via the existing `readTerminalScreen` path) instead of respawning — enforced
+in both the RemoteServer and main's handler. Browser-added queue messages are
+forwarded (`remote-queue-add`) to the authoritative local queue and echo back
+to every view; terminals created/closed in ANY renderer sync to all others
+(`remote-terminal-created`/`-closed`).
+
+**Security.** Same posture as ssh-view: binds `127.0.0.1` only, reuses the
+HookServer session token (constant-time compare at the WS `hello`; bad token →
+socket closed), token travels only in the URL *fragment* (`/#k=<token>`,
+stripped immediately, never in server logs), transport is the user's SSH
+tunnel or Tailscale. The remote port is advertised in the 0600 session file;
+`npm run remote-url` prints the access URL + tunnel line.
+
+**Verified running (headless, Xvfb + real headless Chromium against the live
+app):** WS auth (bad token rejected 4403 / good token → `welcome` snapshot),
+the real renderer boots in the browser with zero fatal errors, terminals AND
+the live manager (999, mid-session Claude UI) render with replayed screens,
+keystrokes typed in the browser xterm reach the PTY and echo back, resize
+round-trips (`stty size` reports the new dims), remote invokes read AND write
+the real store, a snapshot poisoning attempt from the WS is dropped, a
+terminal created in the browser appears in the local renderer's `/state` and
+is a live echoing PTY. 9/9 protocol + 7/7 + 5/5 browser checks passed.
+
+**Known gaps (v1).** Queue edits/removals/injections don't live-sync to a
+remote's queue *display* (adds do; the authoritative queue is always the local
+one); replay is plain text (colors of the backlog are lost); desktop-only
+invokes (file dialogs, tray) act on the host; no settings-UI toggle yet (env
+var / setting only); PTY frames ride JSON (binary fast-path deferred).
+
 ## 2026-06-30 — Discord bridge: source-tagged forward framing + decouple text from voice (branch `discord-integration`)
 
 **Fix 1 — framing by source.** A TYPED channel message was reaching the manager
