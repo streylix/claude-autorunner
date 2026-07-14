@@ -68,6 +68,12 @@ class VoiceReceiver {
     // acknowledgment sound into the channel. No-ops until set.
     this.onWakeAck = () => {};
     this.onCommandAck = () => {};
+    // BARGE-IN: fired once per bot-speaking episode when the user's own stream
+    // carries sustained real-speech energy DURING bot playback — the session
+    // cuts the bot's audio so the user can talk over it. No-op until set.
+    this.onBargeIn = () => {};
+    this._bargeAccum = null;  // { ms, sumSq, n } accumulated while the bot speaks
+    this._bargeFired = false; // one interrupt per speaking episode
     // Wired by index.js to the text mirror — fired with the transcript of each
     // forwarded utterance ("Heard:" in chat). No-op until set.
     this.onHeard = () => {};
@@ -95,6 +101,32 @@ class VoiceReceiver {
 
   // Audio-activity heartbeat for the deaf-receiver health monitor.
   markAudio() { this.lastAudioAt = Date.now(); }
+
+  // BARGE-IN detection, fed every decoded PCM chunk of the user's own stream.
+  // Accumulates ONLY while the bot is speaking; when bargeInMinSpeechMs of
+  // sustained audio reaches bargeInMinLevelDb (RMS dBFS), fire onBargeIn once
+  // for this speaking episode. A too-quiet window resets the accumulator, so
+  // echo bleed / short noises never trip it; the check re-arms when the bot
+  // stops speaking.
+  _bargeInCheck(chunk) {
+    if (!config.bargeInInterruptEnabled) return;
+    if (!this.isBotSpeaking()) { this._bargeAccum = null; this._bargeFired = false; return; }
+    if (this._bargeFired) return;
+    const a = this._bargeAccum || (this._bargeAccum = { ms: 0, sumSq: 0, n: 0 });
+    const samples = Math.floor(chunk.length / 2);
+    for (let i = 0; i < samples; i++) { const s = chunk.readInt16LE(i * 2); a.sumSq += s * s; }
+    a.n += samples;
+    a.ms += chunk.length / BYTES_PER_MS;
+    if (a.ms < config.bargeInMinSpeechMs) return;
+    const rms = a.n ? Math.sqrt(a.sumSq / a.n) : 0;
+    const rmsDb = rms <= 0 ? -Infinity : 20 * Math.log10(rms / 32768);
+    const ms = Math.round(a.ms);
+    this._bargeAccum = null; // window consumed — a quiet one starts fresh
+    if (rmsDb >= config.bargeInMinLevelDb) {
+      this._bargeFired = true;
+      try { this.onBargeIn({ rmsDb, ms }); } catch (e) { log.warn('barge-in handler failed:', e.message); }
+    }
+  }
 
   // Health snapshot consumed by ReceiverHealthMonitor.
   getHealth() {
@@ -187,19 +219,25 @@ class VoiceReceiver {
   }
 
   async _capture(receiver, userId) {
-    // End-of-speech silence (VAD boundary). In always-listen we use one steady
-    // in-call value; in wake mode it's short while listening for the wake word
-    // and longer once capturing the command.
+    // End-of-speech silence (VAD boundary). In always-listen it's mirrored LIVE
+    // from the app's "Stop after silence" slider (wakeSilenceMs; floor 600ms,
+    // default 1200ms) — read per capture so a slider change applies to the next
+    // utterance. In wake mode it's short while listening for the wake word and
+    // longer once capturing the command.
+    const mode = this._alwaysOn()
+      ? 'always-listen'
+      : (this._expectingCommand(userId) ? 'command' : 'wake-listen');
     const silence = this._alwaysOn()
-      ? config.inCallSilenceMs
-      : (this._expectingCommand(userId) ? config.commandSilenceMs : config.wakeListenSilenceMs);
+      ? config.inCallSilence()
+      : (mode === 'command' ? config.commandSilenceMs : config.wakeListenSilenceMs);
+    log.info(`capture start (${userId}): mode=${mode}, end-of-speech silence=${silence}ms`);
     const opusStream = receiver.subscribe(userId, {
       end: { behavior: EndBehaviorType.AfterSilence, duration: silence },
     });
     const decoder = new prism.opus.Decoder({ rate: SAMPLE_RATE, channels: CHANNELS, frameSize: 960 });
     const chunks = [];
     opusStream.pipe(decoder);
-    decoder.on('data', (c) => { chunks.push(c); this.markAudio(); });
+    decoder.on('data', (c) => { chunks.push(c); this.markAudio(); this._bargeInCheck(c); });
 
     // Safety cap: end an over-long capture so we still transcribe + forward what
     // we have instead of waiting on a talker who never pauses.
@@ -214,6 +252,10 @@ class VoiceReceiver {
       opusStream.once('error', (e) => { log.warn('opus stream error:', e.message); done(); });
     });
     this.active.delete(userId);
+    // Wall-clock from the LAST decoded audio to the cut — should track `silence`
+    // closely; a big gap here means the cutoff isn't what we think it is.
+    const sinceLastAudio = this.lastAudioAt ? Date.now() - this.lastAudioAt : -1;
+    log.info(`capture end (${userId}): ${sinceLastAudio}ms from last audio to cut (applied silence=${silence}ms, mode=${mode})`);
 
     // If they muted mid-utterance, drop it — mute is the off switch.
     if (this.mutedUsers.has(userId)) {

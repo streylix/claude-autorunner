@@ -83,4 +83,17 @@ function forget(userId) {
   }
 }
 
-module.exports = { remember, recall, forget, storePath };
+// The most recently linked session across all users (with its userId), or null.
+// Used by the startup auto-resume so a service restart re-links + rejoins on its
+// own instead of stranding the bridge IDLE until someone types /resume.
+function latest() {
+  const map = _readAll();
+  let best = null;
+  for (const [userId, entry] of Object.entries(map)) {
+    if (!entry || !entry.key) continue;
+    if (!best || (entry.linkedAt || 0) > (best.linkedAt || 0)) best = { userId, ...entry };
+  }
+  return best;
+}
+
+module.exports = { remember, recall, forget, latest, storePath };

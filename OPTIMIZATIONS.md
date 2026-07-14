@@ -6,6 +6,54 @@ project's current git branch.
 
 ---
 
+## 2026-07-14 — Remote Mode: the mic picker now selects the VIEWER's microphone; voice button, TTS read-aloud and the notifications list now work over SSH (branch `ssh-view`)
+
+**Bugs (reported by the user, viewing from his Mac over SSH).** (1) Settings →
+Microphone was useless in the remote view: it didn't list the Mac's mics, and
+selecting anything did nothing — worse, it would have overwritten the DESKTOP's
+saved microphone with a device id that only exists on the Mac. The remote mic
+forwarder (`remote-mic.js`) always captured the browser's default device. (2) The
+voice button was dead remotely: the renderer fetched the Whisper/TTS backend at
+`http://localhost:8123`, which in a browser is the VIEWER's machine (and CORS
+blocks it even when one exists). (3) No TTS read-aloud and an empty Notifications
+panel in the remote view — root cause found live: Electron's Node resolves
+`localhost` to `::1` first with no IPv4 fallback, while the Docker backend
+publishes on `127.0.0.1` only, so the main-process TTS remote forwarder got
+ECONNREFUSED on every poll, silently, forever — not one notification was ever
+pushed to a browser client (the Discord bridge worked because it's a separate
+plain-node process).
+
+**Fixes.**
+
+1. *Backend base URL (`src/utils/backend-url.js`).* Default host is now
+   `127.0.0.1` (kills the ::1 trap for every main-process consumer, including
+   the TTS forwarder), and in a Remote Mode browser it resolves to `''` — all
+   `/api/...` fetches go same-origin to the server that served the page.
+2. *`/api/*` reverse proxy (`src/main/RemoteServer.js`).* The RemoteServer now
+   streams any-method `/api/*` requests to the desktop's loopback backend, so
+   the browser's Whisper transcription, TTS notification list/audio, and
+   frontend-log calls all work over the one tunneled port. Same trust boundary
+   as before: loopback bind + the user's SSH tunnel.
+3. *Per-viewer mic picker (`renderer.js`, `src/remote/remote-mic.js`,
+   `src/features/VoiceManager.js`).* In the remote view the Settings mic picker
+   enumerates THIS browser's inputs; the choice is stored per-browser
+   (localStorage), never in the shared preference. Picking a mic (re)starts the
+   remote-mic stream on that exact device (deviceId-exact capture with fallback
+   to default if it vanished), so wake word + voice pipeline listen to the
+   selected Mac mic; the voice button records from it too. The desktop's own
+   picker/preference behavior is untouched, as is the single-owner relay rule.
+4. *Notifications list mirror (`renderer.js`).* A remote client now loads the
+   notification history and polls through the proxy, so the panel is populated
+   remotely; the id watermark + items map dedupe rows/playback against the WS
+   audio pushes (whichever arrives first wins).
+
+**Verified.** `tests/integration/remote-mic-e2e.js`, `remote-tts-e2e.js`,
+`remote-client-e2e.js` all pass on the change (headless Xvfb, isolated
+instances, real Vosk); plus live headless-Chromium verification against the
+deployed `aci-serve` server on :8130 — see the goal's evidence.
+
+---
+
 ## 2026-07-14 — Remote Mode client: renderer reload no longer orphans the tunnel; reconnect supersedes stale state (branch `ssh-view`)
 
 **Bug (reproduced by the user).** With a remote connected, a HARD REFRESH of the
@@ -260,6 +308,139 @@ remote's queue *display* (adds do; the authoritative queue is always the local
 one); replay is plain text (colors of the backlog are lost); desktop-only
 invokes (file dialogs, tray) act on the host; no settings-UI toggle yet (env
 var / setting only); PTY frames ride JSON (binary fast-path deferred).
+
+## 2026-07-11 — Desktop app: one silence setting for both voice paths + barge-in on spoken notifications (STAGED — loads at the next app reload; branch `discord-integration`)
+
+**Goal.** The user's voice should work through BOTH Discord and the desktop app,
+governed by the ONE app "Stop after silence" setting, with barge-in on both.
+
+**Finding: the single setting already reaches the desktop path.** The desktop
+end-of-speech cutoff is `WakeWordManager.silenceMs`, fed live from the same
+`wakeSilenceMs` preference the bridge now mirrors (`_checkVad` uses it as the
+sole trailing-silence stop). The Django backend has NO silence logic at all — it
+transcribes complete WAV uploads (no VAD, no silence parameter), so no backend
+change and **no process restart of any kind** was needed. The only mismatch was
+the clamp: desktop floored the value at 1000 ms while the new slider floor is
+600 ms — `WakeWordManager._applyConfig` now clamps at 600 ms to match the bridge.
+(`VoiceManager` push-to-talk is manual-only — no cutoff to unify.)
+
+**Barge-in on spoken notifications.** Previously a mid-readout speech onset only
+HELD the clip (pause → resume in place, force-played-through after 3 holds or
+4 s — "completion is the priority"). Per the new product decision the user now
+has the floor: `NotificationManager._interruptCurrentPlayback` STOPS the
+readout outright on speech onset — no hold, no resume, the notification is
+finalized as played, and the log notes where it was cut ("stopped the readout at
+~3.5s/9.0s (~38%)"). Queued notifications still wait for silence before
+starting; the hands-free reply window is deliberately NOT opened on an
+interrupt (the user is already talking). Echo can't trip it: the existing gate
+raises the VAD threshold 3× during playback (+400 ms tail) with a ~340 ms
+sustained-run requirement — the same guard shape as the bridge's 350 ms/−40 dB.
+Legacy hold-and-resume remains behind the `ttsBargeInInterrupt` preference
+(default ON; no UI toggle yet).
+
+**Tests.** `NotificationManager.test.js` + `tts-echo-gate.test.js` updated: the
+hold tests now pin legacy mode explicitly; new tests cover interrupt mode
+(stops for good, finalizes played, queued clips survive, replays don't double-
+mark) and both modes of the loud-barge-in echo-gate test. 20/20 pass
+(`node --test`).
+
+**How to load it (user action, whenever ready).** These are renderer files —
+the running Auto-Injector is untouched (restarting it would kill the manager,
+so nothing was restarted). The changes take effect at the next deliberate app
+relaunch/reload, which also loads the earlier-staged slider floor
+(index.html `wake-silence-ms` min 2000→600, step 100).
+
+---
+
+## 2026-07-11 — Discord bridge: barge-in / interruptible TTS + auto-follow into voice (branch `discord-integration`)
+
+**Barge-in.** The voice loop was walkie-talkie: once the bot started reading a
+reply, the user had to wait it out. Now, when the user starts really speaking
+while the bot is playing, the bot cuts its own audio so the user can talk over
+it naturally.
+
+- **Detection** (`voiceReceive.js` `_bargeInCheck`, fed every decoded 20 ms PCM
+  chunk of the user's own receive stream — which we already capture during
+  playback since `pauseCaptureDuringTts` defaults off): accumulate only while
+  the bot is speaking; fire when ≥ `bargeInMinSpeechMs` (350 ms) of sustained
+  audio measures ≥ `bargeInMinLevelDb` (−40 dBFS RMS). A too-quiet window resets
+  the accumulator, so echo bleed and coughs can't trip it; fires once per
+  speaking episode and re-arms when the bot goes quiet.
+- **Action** (`session.interruptPlayback`): logs where the reply was cut
+  ("at ~4.2 s (~35%) into the reply" — from the episode start + expected
+  duration now tracked in `markBotSpeaking`). In **tts** mode it stops only the
+  active clip (`player.interrupt()`; the queue is kept and the existing
+  hold-check delays the next clip until the user finishes). In **system** mode
+  (the live config — one continuous parec stream of the desktop sink) the
+  desktop audio can't be stopped from the bridge, so the forwarded stream is
+  MUTED in real time (a zero-fill Transform — no lag build-up, instant unmute);
+  `_openGate`'s guaranteed reopen path un-mutes when the speaking window ends.
+- New env knobs: `BARGE_IN_INTERRUPT_ENABLED` (default on),
+  `BARGE_IN_MIN_SPEECH_MS` (350), `BARGE_IN_MIN_LEVEL_DB` (−40).
+
+**Auto-follow** (`index.js` voiceStateUpdate + startup auto-resume): when an
+authorized user joins a voice channel while the bridge is linked but idle, the
+bot now joins them automatically — no `/resume` after a service restart.
+
+Verified offline: syntax + module-load pass; detection fires at ~360 ms on loud
+sustained speech, never on quiet audio, once per episode, re-arms per episode;
+mute/unmute cycle confirmed against a stubbed player. Live verification happens
+at the next safe bridge restart (deliberately deferred — the user was mid-
+conversation; restart only in an idle window).
+
+---
+
+## 2026-07-11 — Discord bridge: app "Stop after silence" slider now controls the in-call voice-memo cutoff (branch `discord-integration`)
+
+**Problem.** Changing the end-of-speech silence slider in the app did nothing to
+Discord voice memos — every memo took ~5 seconds of silence to end.
+
+**Root cause (two layers).**
+1. **Stale process.** The live bridge service had been running since Jul 1 —
+   a work-in-progress build from before commit `4645606`. In that build the
+   in-call cutoff was tied to the app's `wakeSilenceMs`, whose default had been
+   raised to **5000 ms** on Jun 25 (`d306bc7`, for across-the-room dictation)
+   and was unset in the store — hence the constant ~5 s. The service was never
+   restarted when the newer code landed, so nothing the user changed reached it.
+2. **Decoupled by design in HEAD.** The current code had gone the other way:
+   always-listen used a fixed `inCallSilenceMs` (1500 ms, env-only) and ignored
+   the app slider entirely — so even after a restart the slider would still
+   have done nothing. The 6 s auto-reply window was ruled out: it never feeds
+   the always-listen silence choice.
+
+**Change.**
+- `discord-bridge/src/appSettings.js` — new `inCallSilenceMs()`: mirrors the
+  app's `wakeSilenceMs` LIVE (re-read per capture, so a slider change applies to
+  the very next utterance), floor **600 ms**, snappy **1200 ms** default when the
+  app value is unset. `IN_CALL_SILENCE_MS` env pins it for testing only.
+- `discord-bridge/config.js` — `config.inCallSilence()` (function, replaces the
+  static `inCallSilenceMs`).
+- `discord-bridge/src/voiceReceive.js` — `_capture` uses the live value and now
+  logs, per utterance, `capture start: mode=…, end-of-speech silence=…ms` and
+  `capture end: …ms from last audio to cut` so the applied cutoff is visible in
+  the journal.
+- `index.html` — the "Stop after silence" slider minimum lowered 2000 → 600 ms
+  (step 500 → 100) so sub-2 s values are actually reachable in the app UI.
+- `discord-bridge/src/index.js` + `resumeStore.js` — startup **auto-resume**:
+  after a service restart the bridge re-links the last saved session and rejoins
+  the user's current voice channel on its own (previously it idled until a
+  manual `/resume`, which made every restart drop the relay).
+- `discord-bridge/.env` — `DISCORD_ALLOWED_USER_IDS` set (user-approved): the
+  Phase-2 deny-by-default auth from `4645606` went live for the first time with
+  this restart and would otherwise have denied all commands/voice.
+
+**Result.** With the user's current app value (2000 ms) the memo cuts ~2 s after
+speech stops instead of ~5 s; dragging the slider down to ~1.2 s now takes
+effect on the next utterance, no restart needed. One-off test
+(`config.inCallSilence()`): app value respected, 600 ms floor, 1200 ms default,
+env override — 6/6 pass. **Verified live 2026-07-11 14:19**: per-capture log
+shows `applied silence=5000ms` and `capture end: 4798ms from last audio to cut`
+— wall-clock matches the applied value, and the applied value matches the app
+store exactly (the store's `wakeSilenceMs` had been changed 2000→5000 at 14:07,
+so the mirror is demonstrably live). The slider now genuinely drives the
+cutoff; drag it down for snappier memos.
+
+---
 
 ## 2026-06-30 — Discord bridge: source-tagged forward framing + decouple text from voice (branch `discord-integration`)
 

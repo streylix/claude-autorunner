@@ -89,15 +89,31 @@ test('TTS echo during playback does NOT pause/hold the clip', () => {
   assert.strictEqual(notif._held, null, 'echo must not hold the clip');
 });
 
-test('a genuine loud barge-in during playback still holds, then resumes in place', () => {
+test('a genuine loud barge-in during playback STOPS the readout for good (default interrupt mode)', () => {
   const { bus, notif, wake } = makeEnv();
   startClip(notif, 1, '/audio/1.wav', 3.0);
 
   feedFrames(wake, LOUD_RMS, ENOUGH_FRAMES); // user clearly speaks over it
+  assert.strictEqual(notif.audio.paused, true, 'loud barge-in must stop playback');
+  assert.strictEqual(notif._held, null, 'interrupt mode never holds for resume');
+  assert.strictEqual(notif.playing, false);
+
+  // user goes quiet -> release -> the interrupted clip must NOT come back
+  bus.emit('speech:idle');
+  if (notif._speakingReleaseTimer) { clearTimeout(notif._speakingReleaseTimer); notif._speakingReleaseTimer = null; }
+  notif._drainQueue();
+  assert.strictEqual(notif.audio.paused, true, 'an interrupted readout stays stopped');
+});
+
+test('legacy hold mode (pref off): a loud barge-in holds, then resumes in place', () => {
+  const { bus, notif, wake } = makeEnv();
+  notif.bargeInInterrupt = false; // legacy hold-and-resume behaviour
+  startClip(notif, 1, '/audio/1.wav', 3.0);
+
+  feedFrames(wake, LOUD_RMS, ENOUGH_FRAMES);
   assert.strictEqual(notif.audio.paused, true, 'loud barge-in must pause');
   assert.ok(notif._held && notif._held.id === 1, 'clip must be held for resume');
 
-  // user goes quiet -> release -> resume from the same position, no reload
   const srcWrites = notif.audio.srcWrites;
   bus.emit('speech:idle');
   if (notif._speakingReleaseTimer) { clearTimeout(notif._speakingReleaseTimer); notif._speakingReleaseTimer = null; }

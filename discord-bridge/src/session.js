@@ -38,6 +38,8 @@ class BridgeSession {
     this.guild = null;            // the Guild object (for member-presence checks)
     this._intentionalLeave = false; // suppress auto-recovery during /stop & rejoin
     this.botSpeakingUntil = 0;    // ms timestamp until which the BOT is playing audio
+    this._speakStartedAt = 0;     // when the current speaking episode began (barge-in progress)
+    this._speakExpectedMs = 0;    // its expected length
     this._gateTimer = null;       // failsafe timer that guarantees the gate reopens
     this._gateClosedLogged = false; // currently inside a logged "gate closed" episode
 
@@ -72,7 +74,11 @@ class BridgeSession {
   markBotSpeaking(ms, reason = 'TTS') {
     const want = (Number(ms) > 0 ? Number(ms) : config.defaultTtsMs) + config.echoGuardTailMs;
     const capped = Math.min(want, config.botSpeakingMaxMs);
-    const until = Date.now() + capped;
+    const now = Date.now();
+    // Track the episode start + expected length so a barge-in can report roughly
+    // where in the reply the user cut in.
+    if (!this.isBotSpeaking()) { this._speakStartedAt = now; this._speakExpectedMs = capped; }
+    const until = now + capped;
     if (until > this.botSpeakingUntil) this.botSpeakingUntil = until;
     if (!this._gateClosedLogged) {
       this._gateClosedLogged = true;
@@ -102,9 +108,36 @@ class BridgeSession {
   _openGate(reason, forced = false) {
     if (this._gateTimer) { clearTimeout(this._gateTimer); this._gateTimer = null; }
     if (forced) this.botSpeakingUntil = 0;
+    // BARGE-IN cleanup: the speaking window is over — if a barge-in muted the
+    // live stream, un-mute it here (this path is GUARANTEED by the failsafe).
+    if (this.player && this.player.liveMuted) this.player.setLiveMuted(false);
     if (this._gateClosedLogged) {
       this._gateClosedLogged = false;
       log.info(`🎙️ bot finished speaking — deaf-recovery re-armed (${reason}).`);
+    }
+  }
+
+  // BARGE-IN: the user started really speaking while the bot was playing a reply
+  // — cut the bot's audio so they can talk over it. tts mode stops the active
+  // clip (queue kept; the hold gate delays the next clip until they finish);
+  // system mode mutes the forwarded live stream for the rest of the reply (the
+  // desktop keeps playing locally — the remote user only hears Discord).
+  interruptPlayback(meta = {}) {
+    if (!this.player || !this.isBotSpeaking()) return;
+    const now = Date.now();
+    const at = this._speakStartedAt ? ((now - this._speakStartedAt) / 1000).toFixed(1) : null;
+    const pct = this._speakStartedAt && this._speakExpectedMs
+      ? Math.min(99, Math.round(((now - this._speakStartedAt) / this._speakExpectedMs) * 100))
+      : null;
+    const level = Number.isFinite(meta.rmsDb) ? ` (speech ${meta.rmsDb.toFixed(1)} dBFS over ${meta.ms}ms)` : '';
+    const where = at != null ? ` at ~${at}s${pct != null ? ` (~${pct}%)` : ''} into the reply` : '';
+    log.info(`✋ barge-in: user cut in${level} — stopping bot audio${where}.`);
+    if (config.audioSource === 'system') {
+      this.player.setLiveMuted(true); // un-muted by _openGate when the window ends
+    } else {
+      this.player.interrupt();
+      // The clip is dead — reopen the gate now instead of waiting out its length.
+      this._openGate('barge-in interrupt', true);
     }
   }
 

@@ -64,6 +64,11 @@ class NotificationManager {
         this.playbackRate = 1.3;
         this.autoplay = true;
         this.muted = false;
+        // BARGE-IN: when the user starts speaking over an in-flight readout, STOP
+        // that message for good (no resume) so the interaction is a real
+        // back-and-forth. false restores the legacy hold-and-resume behaviour
+        // (pause, then finish the clip once the user is quiet).
+        this.bargeInInterrupt = true;
 
         // Single reused audio element + a small FIFO so notifications don't
         // overlap when several arrive at once.
@@ -138,9 +143,47 @@ class NotificationManager {
         if (this._speakingReleaseTimer) { clearTimeout(this._speakingReleaseTimer); this._speakingReleaseTimer = null; }
         const wasSpeaking = this._isUserSpeaking();
         this._speakingSources.add(source);
-        // If a notification is mid-readout when the user starts talking, halt it and
-        // re-queue it to the FRONT so it isn't lost — it replays once they're silent.
-        if (!wasSpeaking && this.playing) this._holdCurrentPlayback();
+        // The user started talking mid-readout. Barge-in (default): STOP the
+        // message outright so they can cut in naturally. Legacy mode: hold it and
+        // resume from the same spot once they're quiet.
+        if (!wasSpeaking && this.playing) {
+            if (this.bargeInInterrupt) this._interruptCurrentPlayback(source);
+            else this._holdCurrentPlayback();
+        }
+    }
+
+    /**
+     * BARGE-IN: stop the in-flight readout for good — no hold, no resume, no
+     * replay. The notification is finalized as played (it was consciously talked
+     * over, and it must not read out again later), and the log notes roughly
+     * where it was cut. Play-through clips are NOT exempt here: barge-in is an
+     * explicit user action, unlike the echo/noise the play-through flag guards
+     * against. Pre-start holding (never BEGIN a readout while the user talks)
+     * lives in _drainQueue and is unchanged.
+     */
+    _interruptCurrentPlayback(source) {
+        const id = this._currentId;
+        const wasReplay = this._currentIsReplay;
+        const cur = Number(this.audio.currentTime) || 0;
+        const dur = Number(this.audio.duration);
+        const where = Number.isFinite(dur) && dur > 0
+            ? `~${cur.toFixed(1)}s/${dur.toFixed(1)}s (~${Math.min(99, Math.round((cur / dur) * 100))}%)`
+            : `~${cur.toFixed(1)}s`;
+        try { this.audio.pause(); } catch (_) {}
+        try { this.headsUp.pause(); this.headsUp.currentTime = 0; } catch (_) {}
+        this._held = null;
+        this._clearHeldWatchdog();
+        this.playing = false;
+        this._currentId = null;
+        this._currentIsReplay = false;
+        this._emitPlaybackState(false);
+        if (id != null) {
+            this._log(`✋ barge-in (${source || 'speech'}): stopped the readout at ${where} — you have the floor.`, 'info');
+            // First read-outs are consumed; replays were already played.
+            if (!wasReplay) this._finalizePlayed(id);
+        }
+        // NOTE: deliberately NO 'notification:read-complete' here — that event
+        // opens the hands-free reply window, but the user is ALREADY talking.
     }
 
     _removeSpeakingSource(source) {
@@ -280,6 +323,7 @@ class NotificationManager {
             if (!prefs) return;
             if (prefs.ttsPlaybackSpeed != null) this.setPlaybackRate(prefs.ttsPlaybackSpeed);
             if (prefs.ttsAutoplayEnabled != null) this.autoplay = !!prefs.ttsAutoplayEnabled;
+            if (prefs.ttsBargeInInterrupt != null) this.bargeInInterrupt = !!prefs.ttsBargeInInterrupt;
             // Restore the persisted mute state (survives navigation/restart).
             if (prefs.notificationsMuted != null) this._applyMutedState(!!prefs.notificationsMuted);
         });
@@ -288,6 +332,7 @@ class NotificationManager {
         this.eventBus.on('preference:changed', ({ key, value }) => {
             if (key === 'ttsPlaybackSpeed') this.setPlaybackRate(value);
             else if (key === 'ttsAutoplayEnabled') this.autoplay = !!value;
+            else if (key === 'ttsBargeInInterrupt') this.bargeInInterrupt = !!value;
             else if (key === 'notificationsMuted') this._applyMutedState(!!value);
         });
     }
