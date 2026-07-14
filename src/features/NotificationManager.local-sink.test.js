@@ -1,10 +1,12 @@
 'use strict';
 
 // Tests for the LOCAL renderer's side of Remote Mode audio routing
-// (REMOTE_MODE.md §9): while ≥1 remote client is attached ('remote-clients-
-// changed' with count > 0), the local renderer suppresses AUTO playback — the
-// remote viewer(s) are the audio sink — but rows still render, an explicit ▶
-// replay still plays locally, and playback resumes when the last client leaves.
+// (REMOTE_MODE.md §9): DUAL OUTPUT. Remote viewer(s) get the audio over the WS
+// and play it on the viewing device, AND the local renderer keeps auto-playing
+// on the desktop's default sink — the Discord bridge (AUDIO_SOURCE=system) and
+// anyone at the machine must never go silent because a viewer attached.
+// remoteSinkActive only tracks attach state (for the action log); it gates
+// nothing.
 // Run: node --test src/features/NotificationManager.local-sink.test.js
 
 const { test } = require('node:test');
@@ -88,22 +90,24 @@ function notif(id) {
   return { id, text: 'n' + id, audio_url: `/api/tts/audio/${id}/`, created_at: new Date().toISOString() };
 }
 
-test('remote client attached → polled notifications render but do NOT autoplay locally', async () => {
+test('DUAL OUTPUT: remote client attached → polled notifications still autoplay locally', async () => {
   const mgr = makeMgr();
   setClients(1);
-  assert.strictEqual(mgr.remoteSinkActive, true);
+  assert.strictEqual(mgr.remoteSinkActive, true, 'attach state is still tracked');
 
   pollPayload = { notifications: [notif(1)] };
   await mgr.poll();
 
-  assert.ok(mgr.items.has(1), 'row still rendered locally');
+  assert.ok(mgr.items.has(1), 'row rendered locally');
   assert.strictEqual(mgr.lastSeenId, 1, 'watermark advanced (no re-poll storm)');
-  assert.strictEqual(mgr.playing, false, 'no local playback while a remote viewer is attached');
-  assert.strictEqual(mgr.playQueue.length, 0, 'nothing queued locally');
-  assert.strictEqual(mgr.audio.playCount, 0, 'audio element untouched');
+  // The heads-up chime path is async; the clip must at least be in flight or queued.
+  assert.ok(
+    mgr.playing || mgr.playQueue.length > 0 || mgr._currentId === 1,
+    'local playback proceeds even with a remote viewer attached — the desktop sink (Discord bridge) must hear it'
+  );
 });
 
-test('explicit ▶ replay still plays locally even with a remote viewer attached', () => {
+test('explicit ▶ replay plays locally with a remote viewer attached (unchanged)', () => {
   const mgr = makeMgr();
   setClients(1);
   mgr.items.set(5, notif(5));
@@ -112,21 +116,17 @@ test('explicit ▶ replay still plays locally even with a remote viewer attached
   assert.strictEqual(mgr.audio.playCount, 1);
 });
 
-test('last client detaches → queue drains again locally', async () => {
+test('attach/detach transitions never strand the queue', async () => {
   const mgr = makeMgr();
   setClients(1);
-  // Something queued before the sink flipped (e.g. arrived mid-handoff).
   mgr.items.set(2, notif(2));
   mgr.playQueue.push(notif(2));
   mgr._drainQueue();
-  assert.strictEqual(mgr.playing, false, 'held while remote viewers are the sink');
+  assert.strictEqual(mgr._currentId, 2, 'drains immediately — no remote-sink hold');
 
   setClients(0);
   assert.strictEqual(mgr.remoteSinkActive, false);
-  // _drainQueue runs from the signal; the heads-up chime path is async but the
-  // queue must have been consumed by the drain.
-  assert.strictEqual(mgr.playQueue.length, 0, 'queue drained when the sink came back');
-  assert.strictEqual(mgr._currentId, 2, 'held clip is now the in-flight one');
+  assert.strictEqual(mgr._currentId, 2, 'detach does not disturb the in-flight clip');
 });
 
 test('boot-time state comes from the remote-clients-count invoke', async () => {

@@ -15,9 +15,10 @@
  * is no polling there. Instead main forwards each fresh notification — metadata
  * plus the synthesized audio bytes — over the authenticated WebSocket as a
  * 'remote-tts-notification' push, and playback happens on the device actually
- * showing the interface (see initializeRemote). Conversely, while ≥1 remote
- * client is attached, the LOCAL renderer suppresses auto playback so the sound
- * doesn't double-play on the (usually headless) app host.
+ * showing the interface (see initializeRemote). The LOCAL renderer keeps
+ * playing too (DUAL OUTPUT): anything capturing the desktop's audio sink —
+ * the Discord bridge with AUDIO_SOURCE=system, a person at the machine —
+ * still hears every notification while remote viewer(s) are attached.
  */
 
 const { BACKEND_URL: BASE_URL } = require('../utils/backend-url');
@@ -87,10 +88,12 @@ class NotificationManager {
         this.headsUp.volume = 0.5;
 
         // ---- Remote Mode audio routing (docs/REMOTE_MODE.md §9) --------------
-        // Local renderer: while ≥1 remote client is attached, the client(s) are
-        // the audio sink — suppress local AUTO playback (rows still render; an
-        // explicit ▶ replay is always honored locally). Remote renderer: audio
-        // arrives as bytes over the WS and plays here on the viewing device.
+        // DUAL OUTPUT: remote viewer(s) get the audio bytes over the WS and play
+        // them on the viewing device, AND the local renderer keeps auto-playing
+        // on the desktop's default sink — the Discord bridge (AUDIO_SOURCE=system)
+        // and anyone at the machine must never go silent just because a remote
+        // viewer is attached. remoteSinkActive only tracks attach state for the
+        // action log; it no longer gates playback anywhere.
         this.remoteSinkActive = false;      // local only: ≥1 remote client attached
         this._remoteBlobUrls = new Map();   // remote only: id -> blob: URL
         this._gestureArmed = false;         // remote only: awaiting a user gesture to unlock audio
@@ -415,11 +418,9 @@ class NotificationManager {
         if (this.remoteSinkActive === !!active) return;
         this.remoteSinkActive = !!active;
         this._log(
-            `notifications: audio sink → ${this.remoteSinkActive ? 'remote viewer(s) — playback on the device showing the interface' : 'this machine'}`,
+            `notifications: ${this.remoteSinkActive ? 'remote viewer(s) attached — audio plays here AND on the viewing device(s)' : 'no remote viewers — audio plays here only'}`,
             'info'
         );
-        // Sink came back to us: drain anything that queued up while remote played.
-        if (!this.remoteSinkActive) this._drainQueue();
     }
 
     // ---- backend I/O ---------------------------------------------------------
@@ -465,9 +466,10 @@ class NotificationManager {
         for (const n of fresh) {
             this._renderItem(n, { prepend: true });
             this.lastSeenId = Math.max(this.lastSeenId, n.id);
-            // With remote viewer(s) attached, they play the audio — don't queue
-            // it here too (the row still renders; replay stays available).
-            if (this.autoplay && !this.remoteSinkActive) this._enqueuePlay(n);
+            // DUAL OUTPUT: play locally even with remote viewer(s) attached —
+            // the desktop sink feeds the Discord bridge; the viewers get their
+            // own copy over the WS (tts-remote-forwarder).
+            if (this.autoplay) this._enqueuePlay(n);
         }
     }
 
@@ -485,10 +487,6 @@ class NotificationManager {
 
     _drainQueue() {
         if (this.playing || this.muted) return;
-        // Local renderer with remote viewer(s) attached: the client(s) are the
-        // audio sink — hold auto playback here. (An explicit ▶ replay bypasses
-        // this queue on purpose, so a person AT the machine can still listen.)
-        if (this.remoteSinkActive) return;
         // Hold while the user is speaking (or within the trailing-silence window):
         // the queue keeps its items and drains once _removeSpeakingSource's release
         // timer fires. Never talk over the user; never drop the notification.

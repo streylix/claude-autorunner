@@ -792,18 +792,20 @@ machine entirely.
 - **Played-marks** — a remote client can't POST `/played/` to the backend, so
   it sends `remote-tts-played` over the WS and main POSTs on its behalf.
 
-### Which device plays (the no-double-play rule)
+### Which device plays — DUAL OUTPUT (both, always)
 
-- **≥1 remote client attached** → every attached client plays; the LOCAL
-  renderer is told (push `remote-clients-changed`, boot-time invoke
-  `remote-clients-count`) to hold AUTO playback. Rows still render locally and
-  an explicit ▶ replay is always honored locally, so a person physically at
-  the machine can still listen on demand.
-- **0 remote clients** → local playback exactly as before this change.
+- **≥1 remote client attached** → every attached client plays its pushed copy
+  AND the LOCAL renderer keeps auto-playing on the desktop's default sink.
+  Anything capturing that sink — the Discord bridge (`AUDIO_SOURCE=system`),
+  a person physically at the machine — hears every notification regardless of
+  who is viewing remotely. (This replaced the original v1 "no-double-play"
+  suppression rule: suppressing the desktop starved the Discord bridge.) The
+  `remote-clients-changed` push / `remote-clients-count` invoke still reach
+  the local renderer, but only to log attach state — they gate nothing.
+- **0 remote clients** → local playback exactly as always.
 - The forwarder re-baselines its watermark on every 0→N attach, so history is
   never replayed into a client that just connected; notifications created
-  while nobody was attached play locally (clips queued locally just before an
-  attach stay held and drain on detach — v1 tradeoff).
+  while nobody was attached still play locally.
 
 ### End-to-end verification
 
@@ -878,7 +880,7 @@ browser beyond capture; the desktop stays the single voice brain.
   the full loop — speak on the Mac, desktop detects + transcribes, manager
   answers, answer plays on the Mac — never needs the host's audio hardware.
 
-### Which mic feeds the pipeline (the mirror of §9's no-double-play rule)
+### Which mic feeds the pipeline (single-source, unlike §9's dual output)
 
 - **A remote client is streaming its mic** → THAT stream is the pipeline's
   input; local microphone frames are ignored (an already-running LOCAL capture
