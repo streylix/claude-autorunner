@@ -44,10 +44,21 @@
     const TARGET_RATE = 16000;
     const FRAME_SAMPLES = 1360; // ~85ms @ 16kHz — mirrors the desktop frame duration
 
+    // Which of THIS browser's inputs to capture. Chosen in Settings → Microphone
+    // (the remote view's picker lists the VIEWING device's mics, never the
+    // desktop's) and persisted per-browser — it is meaningless to any other
+    // machine, so it never touches the desktop's microphoneDeviceId preference.
+    const DEVICE_KEY = 'ccbotRemoteMicDeviceId';
+    function loadDeviceId() {
+        try { return window.localStorage.getItem(DEVICE_KEY) || 'default'; } catch (_) { return 'default'; }
+    }
+
     const state = {
         streaming: false,     // mic on (either real capture or test mode)
         testMode: false,      // streaming via the test hook, no real audio graph
         denied: false,        // getUserMedia refused or server denied ownership
+        deviceId: loadDeviceId(), // 'default' = browser default input
+        activeLabel: null,    // label of the track actually captured (evidence/UI)
         stream: null,
         ctx: null,
         sourceNode: null,
@@ -157,21 +168,47 @@
         registerProcessor('ccbot-mic-tap', CcbotMicTap);
     `;
 
+    function buildAudioConstraints() {
+        const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+        if (state.deviceId && state.deviceId !== 'default') {
+            return Object.assign({ deviceId: { exact: state.deviceId } }, base);
+        }
+        return base;
+    }
+
     async function start() {
         if (state.streaming) return true;
         state.denied = false;
         let stream;
         try {
-            stream = await navigator.mediaDevices.getUserMedia({
-                audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-            });
+            stream = await navigator.mediaDevices.getUserMedia({ audio: buildAudioConstraints() });
         } catch (err) {
-            console.error('[remote-mic] microphone permission denied / unavailable:', err && err.message);
-            state.denied = true;
-            renderButton();
-            return false;
+            // Selected device gone (unplugged, stale id from a previous session):
+            // fall back to the browser default rather than failing the stream.
+            const gone = err && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError');
+            if (gone && state.deviceId !== 'default') {
+                console.warn('[remote-mic] selected input unavailable — falling back to the default device');
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                    });
+                } catch (err2) {
+                    console.error('[remote-mic] microphone permission denied / unavailable:', err2 && err2.message);
+                    state.denied = true;
+                    renderButton();
+                    return false;
+                }
+            } else {
+                console.error('[remote-mic] microphone permission denied / unavailable:', err && err.message);
+                state.denied = true;
+                renderButton();
+                return false;
+            }
         }
         state.stream = stream;
+        const track = stream.getAudioTracks && stream.getAudioTracks()[0];
+        state.activeLabel = (track && track.label) || null;
+        if (state.activeLabel) console.log('[remote-mic] capturing input device: ' + state.activeLabel);
         // Ask for 16 kHz directly; browsers that ignore it are handled by the
         // downsampler (ctx.sampleRate is always consulted).
         try { state.ctx = new AudioContext({ sampleRate: TARGET_RATE }); } catch (_) { state.ctx = new AudioContext(); }
@@ -240,6 +277,7 @@
         state.sourceNode = null;
         state.ctx = null;
         state.stream = null;
+        state.activeLabel = null;
         state.pending = new Float32Array(0);
         const bridge = ipc();
         if (bridge) bridge.send('remote-mic-state', { active: false });
@@ -351,6 +389,22 @@
     window.__ccbotRemoteMic = {
         start,
         stop,
+        /**
+         * Select which of THIS browser's inputs to capture (Settings →
+         * Microphone drives this in the remote view). Persists per-browser.
+         * Streaming already? Restart the capture on the new device. Not
+         * streaming yet? Start it — picking a mic IS the intent to use it,
+         * which also arms wake-word listening on the desktop pipeline.
+         */
+        async setDevice(deviceId) {
+            state.deviceId = (deviceId && deviceId !== 'default') ? String(deviceId) : 'default';
+            try { window.localStorage.setItem(DEVICE_KEY, state.deviceId); } catch (_) { /* private mode */ }
+            if (state.testMode) return true; // tests drive frames directly — nothing to recapture
+            if (state.streaming) stop('switching input device');
+            return start();
+        },
+        getDevice: () => state.deviceId,
+        activeLabel: () => state.activeLabel,
         isStreaming: () => state.streaming,
         stats: () => ({ frames: state.sent.frames, samples: state.sent.samples, hash: state.sent.hash, seq: state.seq }),
         wakeState: () => state.wakeState,
