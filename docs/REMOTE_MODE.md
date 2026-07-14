@@ -1,7 +1,7 @@
 # Web-Served Remote Mode — Design (the VS Code Remote-SSH analog)
 
-**Status:** Design only. Nothing in this document is implemented. This is the
-architecture + phased plan for a "web-served server mode" that lets a user on
+**Status:** Implemented (server MVP §1-7 + in-app SSH client §8; §1-7 written
+as the original design doc). It is a "web-served server mode" that lets a user on
 machine A open a browser and get a **1:1, fully interactive replica** of the
 Auto-Injector interface running on headless machine B — the same terminals, the
 same manager (999), the same UI, fully interactive (type into terminals, steer,
@@ -557,3 +557,74 @@ verbs and the PTYs already live in main. Remote Mode is therefore a **transport
 swap + a broadcast fan-out + a singleton guard**, reusing `renderer.js`,
 `index.html`, `style.css`, xterm, the Control API token, and the session-file
 discovery essentially unchanged — not a rewrite.
+
+---
+
+## 8. The CLIENT — in-app Remote-SSH style connect (IMPLEMENTED)
+
+Everything above describes (and the code now implements) the SERVER half. The
+CLIENT half is the VS Code Remote-SSH analog *inside the app*: a user sitting
+at their own machine clicks the **bottom-left corner indicator**, enters
+host / SSH port / username, and the app does the whole attach dance itself —
+no browser, no manual tunnel, no token handling.
+
+### What happens on Connect (all automated)
+
+1. **Token + port discovery over SSH** — main spawns the system `ssh` binary
+   (`BatchMode=yes`, so the user's keys/agent/`~/.ssh/config` apply and it can
+   never hang on a password prompt) and reads the remote's
+   `${XDG_CONFIG_HOME:-$HOME/.config}/ccbot/session.json`. The token only ever
+   travels inside the SSH channel.
+2. **Tunnel** — a second `ssh -N -o ExitOnForwardFailure=yes -L
+   127.0.0.1:<freeLocalPort>:127.0.0.1:<remotePort> user@host` child is
+   spawned and owned by main (killed on disconnect and on app quit).
+3. **Embedded view** — once the tunneled RemoteServer answers on the local
+   port, the renderer loads `http://127.0.0.1:<localPort>/#k=<token>` in a
+   full-window `<iframe>` (sandboxed, no Node in subframes): the remote
+   interface, 1:1 interactive, inside the app. The indicator turns green
+   ("Remote: host"); clicking it offers Disconnect, which kills the tunnel
+   and returns to the local interface. An unexpected tunnel drop is pushed to
+   the renderer (`remote-client-status`) and tears the view down with a clear
+   message.
+
+### Pieces
+
+- `src/main/remote-client.js` — RemoteClient (main process; pure Node,
+  unit-tested in `remote-client.test.js`): input validation (strict charsets
+  so form values can never be parsed as ssh options), session parsing (incl.
+  the "app running but Remote Mode OFF → enable CCBOT_REMOTE=1" message),
+  ssh stderr classification (auth / host key / unreachable / no session
+  file), free-port pick, tunnel lifecycle, HTTP probe.
+- `src/features/RemoteConnectionUI.js` — renderer UI: indicator, connect
+  panel (with recent connections in localStorage and an Advanced section:
+  session-file path override + extra ssh options like `-i`), the iframe.
+  Skipped when `window.__CCBOT_REMOTE__` (no nested remote hops).
+- IPC: `remote-client-connect` / `remote-client-disconnect` /
+  `remote-client-status` (invoke) + `remote-client-status` push (main.js).
+
+### Security posture
+
+Identical trust model to the rest of Remote Mode: SSH is the transport, both
+tunnel ends bind 127.0.0.1, the token is fetched over SSH and appears only in
+the loopback iframe URL *fragment* (never logged, never in status events).
+Host keys: `StrictHostKeyChecking=accept-new` — first contact is recorded,
+a CHANGED host key is a hard, surfaced failure.
+
+### Requirements on the remote machine
+
+The app must be running there with `CCBOT_REMOTE=1` (or the
+`remoteServerEnabled` setting). If it isn't, the client says exactly that.
+v1 does not try to start it remotely.
+
+### End-to-end verification
+
+`xvfb-run -a node tests/integration/remote-client-e2e.js` — spins up a
+throwaway sshd (own keys, high port, nothing in `~/.ssh` touched) plus TWO
+isolated app instances (separate `XDG_CONFIG_HOME`s: one CCBOT_REMOTE=1
+"remote", one client), then drives the real UI: opens the panel from the
+corner button, proves a clear error on a bad session path, connects, asserts
+the embedded view WS-authenticates through the tunnel, types a marker command
+into the embedded remote terminal and asserts the output echoes back in BOTH
+the embedded view and the remote instance's own xterm, then disconnects and
+asserts the forwarded port is closed and no `ssh -L` child remains.
+Screenshots + transcript land in `.e2e-remote-client/evidence`.

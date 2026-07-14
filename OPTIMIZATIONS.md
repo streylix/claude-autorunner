@@ -6,6 +6,64 @@ project's current git branch.
 
 ---
 
+## 2026-07-13 — Remote Mode CLIENT: in-app "Connect to a remote machine" (VS Code Remote-SSH style; branch `ssh-view`)
+
+**Goal.** The other half of Remote Mode: a corner control IN the app so a user
+on their laptop can attach to a remote machine's running interface with one
+click — no browser tab, no manual `ssh -L`, no copying tokens.
+
+**What was built.** A VS Code-style indicator pinned to the BOTTOM-LEFT corner
+of the interface opens a "Connect to a remote machine" panel (host/IP, SSH
+port defaulting to 22, username, recent connections remembered locally, plus
+an Advanced section: remote session-file path override and extra ssh options
+like `-i`). On Connect the app does the whole attach sequence automatically:
+(1) it shells out to the system `ssh` (so the user's own `~/.ssh/config`,
+keys, agent and known_hosts apply; `BatchMode=yes` means it can never hang on
+a password prompt) and reads the remote's
+`${XDG_CONFIG_HOME:-$HOME/.config}/ccbot/session.json` to learn the remote
+RemoteServer port and session token — the token only ever travels inside the
+SSH channel; (2) it spawns and owns an `ssh -N -L 127.0.0.1:<free-local>
+:127.0.0.1:<remote>` tunnel child (`ExitOnForwardFailure`, keepalives, killed
+on disconnect and on app quit); (3) once the tunneled server answers, it loads
+the remote interface in a full-window sandboxed iframe — the remote machine's
+terminals, manager and queue, 1:1 interactive, inside the app. The indicator
+turns green ("Remote: host"); clicking it gives Disconnect, which tears the
+tunnel down and returns to the local interface. Unexpected tunnel drops are
+pushed to the renderer and produce a clear message instead of a dead view.
+Clear, specific error messages cover: no ccbot session file (app not running
+there), app running but Remote Mode OFF (says to set CCBOT_REMOTE=1), ssh
+auth failure, changed/unverified host key, unreachable host. New files:
+`src/main/remote-client.js` (main-process client, pure Node, strict input
+validation so form values can never be parsed as ssh options),
+`src/features/RemoteConnectionUI.js` (indicator/panel/iframe UI, skipped in
+remote browser views — no nested hops); wired in `main.js` (3 IPC handlers +
+quit cleanup), `renderer.js`, `index.html`, `style.css`. Design doc §8 in
+`docs/REMOTE_MODE.md`.
+
+**Verified end-to-end (headless Xvfb, real ssh + sshd, this machine as both
+ends).** `tests/integration/remote-client-e2e.js` (committed; un-ignored in
+.gitignore) launches a throwaway sshd (own host/client keys on a high port —
+nothing in the user's ~/.ssh read or written) and TWO isolated app instances
+(separate XDG_CONFIG_HOMEs; the machine's real interface untouched): one with
+CCBOT_REMOTE=1 as the "remote", one as the client. Playwright then drives the
+real UI: corner button opens the panel; a deliberately wrong session path
+surfaces the clear "no session file / not running" error; a real connect
+reads the token over ssh, opens the tunnel, and the embedded iframe
+WS-authenticates and renders the remote terminal (replayed screen); a marker
+command typed INTO the embedded view echoes back both in the embedded xterm
+AND on the remote instance's own window (same PTY, proving the full
+keystroke→ssh-tunnel→WS→PTY→broadcast loop); Disconnect hides the view,
+returns the indicator to idle, closes the forwarded port and leaves no ssh
+child. 16/16 checks passed; screenshots + transcript captured. Unit tests:
+14 new (`src/main/remote-client.test.js`) — validation, session parsing,
+ssh-stderr classification — all green; full tracked suite 120/120.
+
+**Known gaps (v1).** Host keys use `accept-new` (first contact auto-recorded;
+CHANGED keys still hard-fail — no interactive fingerprint prompt yet); no
+"start Remote Mode on the remote machine for me" — the remote must already
+run with CCBOT_REMOTE=1; one remote at a time; the local interface keeps
+running underneath the embedded view (by design, so local terminals continue).
+
 ## 2026-07-13 — Remote Mode MVP: the full interface served to a browser over HTTP+WebSocket (branch `ssh-view`)
 
 **Goal.** The VS Code Remote-SSH analog designed in `docs/REMOTE_MODE.md`: a
