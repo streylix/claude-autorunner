@@ -566,6 +566,11 @@ class TerminalGUI {
             if (!this.terminals.has(terminalId)) return;
             this.closeTerminal(terminalId);
         });
+        // Live metadata sync: another attached renderer renamed/recolored a
+        // terminal — apply it here too. fromSync stops the re-broadcast echo.
+        ipcRenderer.on('remote-terminal-meta', (event, { terminalId, title, color } = {}) => {
+            this.setTerminalMetadata(terminalId, { title, color }, { fromSync: true });
+        });
 
         // Control requests needing a response (terminal create/update/delete
         // via the HookServer) - correlated back to main by requestId
@@ -615,7 +620,7 @@ class TerminalGUI {
                 updatedAt: Date.now()
             });
         };
-        ['terminal:status:changed', 'terminal:directory', 'terminal:created', 'terminal:closed', 'message:queue-updated']
+        ['terminal:status:changed', 'terminal:directory', 'terminal:created', 'terminal:closed', 'terminal:metadata', 'message:queue-updated']
             .forEach((evt) => this.eventBus.on(evt, sendStateSnapshot));
         setTimeout(sendStateSnapshot, 1000); // initial snapshot after init settles
 
@@ -2249,8 +2254,15 @@ class TerminalGUI {
     /**
      * Update a terminal tab's metadata (title and/or color) and reflect it in
      * the DOM chrome immediately. Used by the control API and any UI rename.
+     *
+     * Cross-renderer live sync (Remote Mode): every commit is re-broadcast by
+     * main as 'remote-terminal-meta' so all other attached renderers (the
+     * desktop window and every remote browser) apply the same change within
+     * push latency — no reconnect, no polling. `fromSync` marks an apply of a
+     * received broadcast: it must NOT re-send, or two renderers would ping-pong
+     * the same update forever.
      */
-    setTerminalMetadata(terminalId, { title, color } = {}) {
+    setTerminalMetadata(terminalId, { title, color } = {}, { fromSync = false } = {}) {
         const terminalData = this.terminals.get(terminalId);
         if (!terminalData) return false;
 
@@ -2274,6 +2286,9 @@ class TerminalGUI {
         this.eventBus.emit('terminal:metadata', { terminalId, ...updates });
         if (terminalId === this.queueTargetTerminalId) this.updateSelectorDisplay(terminalId);
         if (terminalId === this.activeTerminalId) this.updateStatusBar(terminalId);
+        if (!fromSync) {
+            try { ipcRenderer.send('terminal-meta-changed', { terminalId, ...updates }); } catch (_) { /* unit tests */ }
+        }
         return true;
     }
 

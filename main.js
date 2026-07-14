@@ -511,6 +511,21 @@ app.whenReady().then(async () => {
       rendererStateCache = snapshot;
     });
 
+    // Live terminal-metadata sync (Remote Mode): any renderer — the desktop
+    // window or a remote browser (whose frame arrives via the RemoteServer's
+    // generic dispatch) — committed a rename/recolor. Fan it out to EVERY
+    // attached renderer so titles/colors update within push latency instead of
+    // waiting for a reconnect. Receivers apply with fromSync (no re-broadcast),
+    // so the originator's own echo is a harmless idempotent apply, not a loop.
+    ipcMain.on('terminal-meta-changed', (event, payload) => {
+      if (!payload || payload.terminalId == null) return;
+      broadcastToRenderers('remote-terminal-meta', {
+        terminalId: payload.terminalId,
+        title: typeof payload.title === 'string' ? payload.title : undefined,
+        color: typeof payload.color === 'string' ? payload.color : undefined
+      });
+    });
+
     // Control-request round trip: HookServer endpoints that need an answer
     // (terminal create/update/delete) correlate by requestId.
     const pendingControlRequests = new Map();
