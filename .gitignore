@@ -252,6 +252,8 @@ scripts/*
 # …but the model-bootstrap script MUST travel with the repo, or fresh
 # checkouts can't fetch the gitignored speech models (see assets/models/).
 !scripts/download-models.js
+# …and the read-only SSH mirror CLI (npm run ssh-view) must ship with the repo.
+!scripts/ssh-view.js
 playwright-report
 hive-mind-*
 

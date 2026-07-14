@@ -26,6 +26,7 @@
     "dist": "npm run build",
     "rebuild": "electron-rebuild",
     "download-models": "node scripts/download-models.js",
+    "ssh-view": "node scripts/ssh-view.js",
     "postinstall": "electron-rebuild && (node scripts/download-models.js || true)"
   },
   "build": {
