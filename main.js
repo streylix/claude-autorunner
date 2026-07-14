@@ -18,10 +18,12 @@ const { handlePtyControl } = require('./src/main/pty-control');
 const { runCcusage } = require('./src/main/ccusage');
 const { writeSessionFile, removeSessionFile } = require('./src/main/session-file');
 const RemoteServer = require('./src/main/RemoteServer');
+const RemoteClient = require('./src/main/remote-client');
 
 let mainWindow;
 let hookServer = null;
 let remoteServer = null;
+let remoteClient = null; // outbound Remote-SSH-style client (bottom-left indicator)
 
 // ---- Remote Mode plumbing (docs/REMOTE_MODE.md) ----
 // Capture every ipcMain.handle / ipcMain.on registration in Maps so the
@@ -606,6 +608,38 @@ app.whenReady().then(async () => {
       try { console.error('[Main] Remote server failed to start:', error); } catch (e) { /* ignore */ }
       remoteServer = null;
     }
+
+    // ---- Remote Mode CLIENT (the other half of the VS Code Remote-SSH analog) ----
+    // Driven by the bottom-left indicator UI in the renderer: reads the remote
+    // machine's session file over the user's own ssh setup, opens a loopback-only
+    // local-forward tunnel, and returns the embedded-view URL (the token rides the
+    // URL fragment; it is never logged or put in status events). The tunnel child
+    // process is owned in main so it is reliably killed on disconnect and on quit.
+    remoteClient = new RemoteClient({
+      log: safeLog,
+      onStatus: (status) => {
+        // Local window only — remote browser views never get the client's tunnel
+        // state and must not offer nested remote hops.
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('remote-client-status', status);
+        }
+      }
+    });
+    ipcMain.handle('remote-client-connect', async (event, opts) => {
+      try {
+        return await remoteClient.connect(opts);
+      } catch (error) {
+        return { ok: false, error: (error && error.message) || 'Connection failed' };
+      }
+    });
+    ipcMain.handle('remote-client-disconnect', async () => {
+      try {
+        return remoteClient.disconnect();
+      } catch (error) {
+        return { ok: false, error: (error && error.message) || 'Disconnect failed' };
+      }
+    });
+    ipcMain.handle('remote-client-status', async () => remoteClient.getStatus());
 
     // Advertise the loopback Control API (port + token) in a tight-perms session
     // file so a same-user local process — notably the read-only `npm run ssh-view`
@@ -1916,6 +1950,12 @@ app.on('before-quit', async (event) => {
     if (remoteServer) {
       remoteServer.close();
       remoteServer = null;
+    }
+
+    // Tear down any outbound Remote-SSH tunnel (kills the ssh child process)
+    if (remoteClient) {
+      try { remoteClient.disconnect(); } catch (e) { /* best effort */ }
+      remoteClient = null;
     }
 
     // Remove the Control API session file so a stale port/token isn't left

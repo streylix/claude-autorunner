@@ -771,8 +771,66 @@
             </div>
         </div>
     </div>
-    
-    
+
+    <!-- ==== Remote connection (VS Code Remote-SSH style corner control) ====
+         Bottom-left indicator + connect panel + the embedded remote view.
+         Driven by src/features/RemoteConnectionUI.js (local desktop app only;
+         a remote browser view skips it). -->
+    <div id="remote-view-container" class="remote-view-container hidden" data-test-id="remote-view-container">
+        <iframe id="remote-view-frame" data-test-id="remote-view-frame" title="Remote interface"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"></iframe>
+    </div>
+    <button id="remote-indicator" class="remote-indicator" data-test-id="remote-indicator" title="Connect to a remote machine">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 8 2 12 6 16"></polyline>
+            <polyline points="18 8 22 12 18 16"></polyline>
+        </svg>
+        <span id="remote-indicator-label" data-test-id="remote-indicator-label"></span>
+    </button>
+    <div id="remote-panel" class="remote-panel hidden" data-test-id="remote-panel">
+        <div class="remote-panel-header">
+            <span class="remote-panel-title">Connect to a remote machine</span>
+            <button id="remote-panel-close-btn" class="remote-panel-close" data-test-id="remote-panel-close-btn" title="Close">&times;</button>
+        </div>
+        <div id="remote-connect-form">
+            <p class="remote-panel-hint">The machine must be running Auto-Injector in Remote Mode
+                (<code>CCBOT_REMOTE=1</code>). Uses your own ssh keys/config — no passwords.</p>
+            <div class="remote-field-row">
+                <div class="remote-field remote-field-grow">
+                    <label for="remote-host-input">Host / IP</label>
+                    <input type="text" id="remote-host-input" data-test-id="remote-host-input" placeholder="e.g. 192.168.1.20" spellcheck="false" autocomplete="off">
+                </div>
+                <div class="remote-field remote-field-port">
+                    <label for="remote-port-input">SSH port</label>
+                    <input type="text" id="remote-port-input" data-test-id="remote-port-input" value="22" spellcheck="false" autocomplete="off">
+                </div>
+            </div>
+            <div class="remote-field">
+                <label for="remote-user-input">Username <span class="remote-label-soft">(blank = your ssh config default)</span></label>
+                <input type="text" id="remote-user-input" data-test-id="remote-user-input" placeholder="e.g. ethan" spellcheck="false" autocomplete="off">
+            </div>
+            <button type="button" id="remote-advanced-toggle" class="remote-advanced-toggle" data-test-id="remote-advanced-toggle">Advanced…</button>
+            <div id="remote-advanced-box" class="remote-advanced-box hidden">
+                <div class="remote-field">
+                    <label for="remote-session-path-input">Remote session file <span class="remote-label-soft">(default: ~/.config/ccbot/session.json)</span></label>
+                    <input type="text" id="remote-session-path-input" data-test-id="remote-session-path-input" placeholder="~/.config/ccbot/session.json" spellcheck="false" autocomplete="off">
+                </div>
+                <div class="remote-field">
+                    <label for="remote-ssh-options-input">Extra ssh options <span class="remote-label-soft">(e.g. -i ~/.ssh/other_key)</span></label>
+                    <input type="text" id="remote-ssh-options-input" data-test-id="remote-ssh-options-input" placeholder="-i /path/to/key -o SomeOption=value" spellcheck="false" autocomplete="off">
+                </div>
+            </div>
+            <button type="button" id="remote-connect-btn" class="remote-connect-btn" data-test-id="remote-connect-btn">Connect</button>
+            <div id="remote-recents-list" class="remote-recents-list hidden" data-test-id="remote-recents-list"></div>
+        </div>
+        <div id="remote-connected-box" class="remote-connected-box hidden">
+            <p id="remote-connected-text" class="remote-connected-text" data-test-id="remote-connected-text"></p>
+            <button type="button" id="remote-disconnect-btn" class="remote-disconnect-btn" data-test-id="remote-disconnect-btn">Disconnect</button>
+        </div>
+        <div id="remote-panel-status" class="remote-panel-status" data-test-id="remote-panel-status"></div>
+    </div>
+
     <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
     <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
     <script src="node_modules/@xterm/addon-search/lib/addon-search.js"></script>
