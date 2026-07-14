@@ -27,7 +27,7 @@
     "rebuild": "electron-rebuild",
     "download-models": "node scripts/download-models.js",
     "ssh-view": "node scripts/ssh-view.js",
-    "build-remote": "esbuild renderer.js --bundle --outfile=dist-remote/renderer.bundle.js --format=iife --platform=browser --external:electron --external:fs --external:path --external:vosk-browser",
+    "build-remote": "esbuild renderer.js --bundle --outfile=dist-remote/renderer.bundle.js --format=iife --platform=browser --external:electron --external:fs --external:path --external:vosk-browser --define:__dirname='\"/\"' --define:__filename='\"/renderer.js\"'",
     "remote": "npm run build-remote && CCBOT_REMOTE=1 electron .",
     "remote-url": "node scripts/remote-url.js",
     "postinstall": "electron-rebuild && (node scripts/download-models.js || true)"
