@@ -19,11 +19,26 @@
  *
  * SSH is the system `ssh` binary (spawn with an args array — no local shell),
  * so the user's ~/.ssh/config, keys, agent and known_hosts all apply.
- * BatchMode=yes means we NEVER prompt for a password — auth must come from
- * the user's existing keys/agent, and failures surface as clear UI messages.
+ *
+ * Auth is VS Code Remote-SSH style, keys first, password as the fallback:
+ *   - the FIRST attempt always runs with BatchMode=yes (keys/agent only, can
+ *     never hang on a prompt). If that fails with an AUTH failure
+ *     specifically (isAuthFailure — distinguished from unreachable hosts and
+ *     host-key problems), the error carries `needPassword: true` so the UI
+ *     can surface a password field and retry.
+ *   - a retry WITH a password runs every ssh operation (session-file read,
+ *     ensure/auto-start, settle re-reads, and the long-lived `ssh -N -L`
+ *     tunnel) through an SSH_ASKPASS helper: the password rides ONLY in the
+ *     child's environment (CCBOT_SSH_PASSWORD) and scripts/ssh-askpass.sh
+ *     echoes it back to ssh on demand. It is never in an argv (ps-safe),
+ *     never written to disk, never logged, and never leaves this process
+ *     except into the ssh children's env. `sshpass -e` (env mode, same
+ *     ps-safety) is the fallback when the helper can't be used; if neither
+ *     mechanism is usable a clear message says so.
  * Host keys: StrictHostKeyChecking=accept-new (first-seen hosts are recorded,
  * a CHANGED host key is a hard failure — same policy direction as OpenSSH's
- * own recommended default for automation).
+ * own recommended default for automation). accept-new never prompts, so the
+ * askpass helper only ever answers authentication prompts.
  *
  * Loopback-safe end to end: the tunnel binds 127.0.0.1 locally, the remote
  * RemoteServer binds 127.0.0.1 remotely, and the token is only ever presented
@@ -33,9 +48,14 @@
  * class is unit-testable with `node --test`.
  */
 
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
+const fs = require('fs');
 const net = require('net');
 const http = require('http');
+const path = require('path');
+
+// The secret-free askpass helper (see its header): echoes $CCBOT_SSH_PASSWORD.
+const ASKPASS_HELPER = path.join(__dirname, '..', '..', 'scripts', 'ssh-askpass.sh');
 
 // The remote command that prints the session file. ${...} is expanded by the
 // REMOTE login shell (we spawn ssh with an args array, so nothing expands
@@ -112,6 +132,12 @@ function normalizeConnectOptions(opts) {
         }
     }
 
+    // Optional: the remote's SSH password (the key→password fallback). NO
+    // charset restriction — it never touches an argv or a shell; it rides
+    // only in the ssh child's environment for the askpass helper. It must
+    // never be logged and never appear in status events.
+    const password = typeof o.password === 'string' ? o.password : '';
+
     return {
         host,
         username,
@@ -119,7 +145,97 @@ function normalizeConnectOptions(opts) {
         sessionPath,
         appDir,
         extraArgs,
+        password,
         dest: username ? username + '@' + host : host
+    };
+}
+
+/**
+ * Is this ssh stderr an AUTHENTICATION failure (as opposed to unreachable
+ * host, changed host key, missing remote file, …)? Only auth failures should
+ * trigger the password prompt in the UI.
+ */
+function isAuthFailure(stderr) {
+    const s = String(stderr || '');
+    if (/REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(s)) return false;
+    if (/Host key verification failed/i.test(s)) return false;
+    return /Permission denied|Too many authentication failures|No supported authentication methods/i.test(s);
+}
+
+/**
+ * Turn ssh stderr into the Error the UI needs: auth failures get
+ * `needPassword: true` (surface the password field / retry message —
+ * "wrong password" when a password WAS attempted, "enter the password" when
+ * the key-only first attempt failed); everything else goes through
+ * classifySshFailure.
+ */
+function sshFailureToError(stderr, conn) {
+    if (isAuthFailure(stderr)) {
+        const err = new Error(conn.password
+            ? 'Wrong password for ' + conn.dest + ' — check it and try again.'
+            : 'Key authentication failed for ' + conn.dest + ' — enter its SSH password to continue.');
+        err.needPassword = true;
+        return err;
+    }
+    return new Error(classifySshFailure(stderr, conn.dest));
+}
+
+/**
+ * Which password-feeding mechanism can we use?
+ *   { method: 'askpass', helper }  — preferred: our SSH_ASKPASS helper script
+ *   { method: 'sshpass' }          — fallback: sshpass -e (env mode, ps-safe)
+ *   null                           — neither usable
+ * Cached after the first probe (fs checks + a PATH probe are not free).
+ */
+let cachedPasswordMechanism; // undefined = not probed yet
+function resolvePasswordMechanism() {
+    if (cachedPasswordMechanism !== undefined) return cachedPasswordMechanism;
+    cachedPasswordMechanism = null;
+    try {
+        // Ensure the exec bit survived whatever packaging/copy got us here.
+        try { fs.chmodSync(ASKPASS_HELPER, 0o755); } catch (_) { /* may already be fine */ }
+        fs.accessSync(ASKPASS_HELPER, fs.constants.X_OK);
+        cachedPasswordMechanism = { method: 'askpass', helper: ASKPASS_HELPER };
+        return cachedPasswordMechanism;
+    } catch (_) { /* fall through to sshpass */ }
+    try {
+        const r = spawnSync('sshpass', ['-V'], { stdio: 'ignore' });
+        if (!r.error) cachedPasswordMechanism = { method: 'sshpass' };
+    } catch (_) { /* neither */ }
+    return cachedPasswordMechanism;
+}
+
+/**
+ * Build { command, argsPrefix, env } for one ssh invocation under `conn`.
+ * Without a password: plain `ssh`, inherited env. With one: the askpass env
+ * (password ONLY in the child env — never argv), or `sshpass -e ssh …`.
+ * Exported for unit tests.
+ */
+function buildSshInvocation(conn, baseEnv) {
+    const env = baseEnv || process.env;
+    if (!conn.password) return { command: 'ssh', argsPrefix: [], env: undefined };
+    const mech = resolvePasswordMechanism();
+    if (!mech) {
+        throw new Error('Password login needs the bundled askpass helper (scripts/ssh-askpass.sh) ' +
+            'or sshpass installed, and neither is usable on this machine.');
+    }
+    if (mech.method === 'askpass') {
+        return {
+            command: 'ssh',
+            argsPrefix: [],
+            env: Object.assign({}, env, {
+                SSH_ASKPASS: mech.helper,
+                SSH_ASKPASS_REQUIRE: 'force',       // OpenSSH >= 8.4: always use askpass
+                DISPLAY: env.DISPLAY || 'ccbot:0',  // older ssh insists on DISPLAY being set
+                CCBOT_SSH_PASSWORD: conn.password
+            })
+        };
+    }
+    // sshpass -e reads the password from $SSHPASS — same no-argv guarantee.
+    return {
+        command: 'sshpass',
+        argsPrefix: ['-e', 'ssh'],
+        env: Object.assign({}, env, { SSHPASS: conn.password })
     };
 }
 
@@ -265,7 +381,7 @@ function classifySshFailure(stderr, dest) {
         return 'Host key verification failed for ' + dest + '. Connect once from a terminal (ssh ' + dest + ') to accept the host key, then retry.';
     }
     if (/Permission denied/i.test(s)) {
-        return 'SSH authentication failed for ' + dest + '. Password prompts are disabled — set up key/agent auth for this host (ssh-copy-id ' + dest + ').';
+        return 'SSH authentication failed for ' + dest + '.';
     }
     if (/No such file or directory/i.test(s)) {
         return 'No ccbot session file on ' + dest + ' — the Auto-Injector app is not running there (or is not in Remote Mode). Start it with CCBOT_REMOTE=1.';
@@ -320,19 +436,46 @@ class RemoteClient {
     }
 
     _baseSshArgs(conn) {
-        return [
+        const args = [
             '-p', String(conn.sshPort),
-            '-o', 'BatchMode=yes',                     // never prompt for a password
             '-o', 'ConnectTimeout=' + CONNECT_TIMEOUT_S,
-            '-o', 'StrictHostKeyChecking=accept-new',  // record new hosts; FAIL on changed keys
-            ...conn.extraArgs
+            '-o', 'StrictHostKeyChecking=accept-new'   // record new hosts; FAIL on changed keys
         ];
+        if (conn.password) {
+            // Password retry: keys already failed (or the user opted into
+            // password auth), so go straight to the password methods. ONE
+            // prompt only — a wrong password must fail fast with a clear
+            // message, not silently re-ask the askpass for the same value.
+            args.push('-o', 'NumberOfPasswordPrompts=1');
+            args.push('-o', 'PreferredAuthentications=password,keyboard-interactive');
+        } else {
+            args.push('-o', 'BatchMode=yes');          // keys/agent only; never prompt
+        }
+        args.push(...conn.extraArgs);
+        return args;
+    }
+
+    /**
+     * spawn() one ssh invocation honoring conn's auth mode. With a password
+     * the child gets the askpass env (or sshpass -e) and its own session
+     * (detached = setsid: no controlling tty, so even an old ssh that
+     * predates SSH_ASKPASS_REQUIRE takes the askpass path instead of trying
+     * /dev/tty). The password is ONLY in the child env — never in the argv
+     * we build or log.
+     */
+    _spawnSsh(conn, args, stdio) {
+        const inv = buildSshInvocation(conn);
+        return spawn(inv.command, [...inv.argsPrefix, ...args], {
+            stdio,
+            env: inv.env,               // undefined = inherit (no-password mode)
+            detached: !!conn.password
+        });
     }
 
     /** Run ssh once, capture output. Resolves { code, stdout, stderr }. */
-    _execSsh(args, timeoutMs) {
+    _execSsh(conn, args, timeoutMs) {
         return new Promise((resolve) => {
-            const child = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+            const child = this._spawnSsh(conn, args, ['ignore', 'pipe', 'pipe']);
             let stdout = '';
             let stderr = '';
             let done = false;
@@ -365,11 +508,12 @@ class RemoteClient {
     async _readRemoteSession(conn) {
         const catCmd = conn.sessionPath ? 'cat ' + conn.sessionPath : DEFAULT_SESSION_CMD;
         const sshArgs = [...this._baseSshArgs(conn), conn.dest, catCmd];
+        // NOTE: args never contain the password (env-only), so this log is safe.
         this.log('[RemoteClient] reading session: ssh ' + sshArgs.slice(0, -1).join(' ') + ' <cat>');
-        const res = await this._execSsh(sshArgs, SESSION_READ_TIMEOUT_MS);
+        const res = await this._execSsh(conn, sshArgs, SESSION_READ_TIMEOUT_MS);
         if (res.code !== 0) {
             if (/No such file or directory/i.test(res.stderr)) return { state: 'not-running' };
-            throw new Error(classifySshFailure(res.stderr, conn.dest));
+            throw sshFailureToError(res.stderr, conn);
         }
         const info = inspectRemoteSession(res.stdout);
         if (info.state === 'unreadable') {
@@ -395,7 +539,7 @@ class RemoteClient {
 
         const ensureArgs = [...this._baseSshArgs(conn), conn.dest, buildEnsureCommand(conn)];
         this.log('[RemoteClient] ensuring Remote Mode on ' + conn.dest + ' (state: ' + state + ')');
-        const res = await this._execSsh(ensureArgs, ENSURE_TIMEOUT_MS);
+        const res = await this._execSsh(conn, ensureArgs, ENSURE_TIMEOUT_MS);
         const result = parseEnsureResult(res.stdout);
         if (res.code !== 0 || !result || !result.ok) {
             throw new Error(explainEnsureFailure(res.stdout, res.stderr, conn.dest));
@@ -499,8 +643,11 @@ class RemoteClient {
                 '-L', '127.0.0.1:' + localPort + ':127.0.0.1:' + remotePort,
                 conn.dest
             ];
+            // NOTE: args never contain the password (env-only), so this log is safe.
             this.log('[RemoteClient] tunnel: ssh ' + tunnelArgs.join(' '));
-            const child = spawn('ssh', tunnelArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
+            // The long-lived -N tunnel honors the same auth mode: with a
+            // password, the askpass env feeds it to THIS child too.
+            const child = this._spawnSsh(conn, tunnelArgs, ['ignore', 'ignore', 'pipe']);
             let tunnelStderr = '';
             child.stderr.on('data', (d) => { tunnelStderr += d; });
             this.tunnelChild = child;
@@ -524,7 +671,7 @@ class RemoteClient {
                 this._killChild(child);
                 if (this.tunnelChild === child) this.tunnelChild = null;
                 if (err && err.message === '__TUNNEL_EXITED__') {
-                    throw new Error(classifySshFailure(tunnelStderr, conn.dest));
+                    throw sshFailureToError(tunnelStderr, conn);
                 }
                 throw err;
             }
@@ -550,7 +697,14 @@ class RemoteClient {
                 url: 'http://127.0.0.1:' + localPort + '/#k=' + token
             };
         } catch (err) {
-            this._setState(Object.assign({ phase: 'error', error: (err && err.message) || 'Connection failed' }, pub));
+            // needPassword rides the status event AND the thrown error so the
+            // UI can surface the password field. The password itself is never
+            // part of any state/status/log.
+            this._setState(Object.assign({
+                phase: 'error',
+                error: (err && err.message) || 'Connection failed',
+                needPassword: !!(err && err.needPassword)
+            }, pub));
             throw err;
         }
     }
@@ -586,4 +740,8 @@ module.exports.buildEnsureCommand = buildEnsureCommand;
 module.exports.explainEnsureFailure = explainEnsureFailure;
 module.exports.parseEnsureResult = parseEnsureResult;
 module.exports.classifySshFailure = classifySshFailure;
+module.exports.isAuthFailure = isAuthFailure;
+module.exports.sshFailureToError = sshFailureToError;
+module.exports.buildSshInvocation = buildSshInvocation;
+module.exports.resolvePasswordMechanism = resolvePasswordMechanism;
 module.exports.findFreeLocalPort = findFreeLocalPort;
