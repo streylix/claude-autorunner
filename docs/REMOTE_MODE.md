@@ -560,21 +560,70 @@ discovery essentially unchanged — not a rewrite.
 
 ---
 
-## 8. The CLIENT — in-app Remote-SSH style connect (IMPLEMENTED)
+## 8. The CLIENT — in-app Remote-SSH style connect + AUTO-START (IMPLEMENTED)
 
 Everything above describes (and the code now implements) the SERVER half. The
 CLIENT half is the VS Code Remote-SSH analog *inside the app*: a user sitting
-at their own machine clicks the **bottom-left corner indicator**, enters
-host / SSH port / username, and the app does the whole attach dance itself —
-no browser, no manual tunnel, no token handling.
+at their own machine clicks the **bottom-left corner indicator**, and a
+**command bar drops in at the TOP-MIDDLE of the interface**. They type the
+actual ssh command as real, editable text — `ssh ethan@pop-os`,
+`ssh host -p 2222`, or just `user@host` — hit Connect, and the app does the
+whole attach dance itself: no browser, no manual tunnel, no token handling,
+and — the key part — **no requirement that the remote is already serving
+Remote Mode**: the client brings it up over SSH if it isn't.
+
+### The command bar (primary connect input)
+
+- Parsing lives in `src/features/ssh-command-parse.js` (pure, unit-tested):
+  `ssh user@host`, `ssh host` (user from ssh config), `user@host`, `host`,
+  `-p`/`-l` in any position (incl. `-p2222`), `ssh://user@host:port`, and any
+  other ssh flags (`-i`, `-o`, …) pass through and merge with the Advanced
+  options. Every parsed value is re-validated against remote-client's strict
+  charsets before it can reach an ssh argv.
+- The most recent command is pre-filled as real text (editable, Enter to
+  reconnect); recents are one click. **Advanced…** folds out: remote session
+  file path override, extra ssh options, and *remote app directory* (only
+  needed for auto-start when the app has never run on that machine).
+- The bottom-left panel remains as the *management* popover while connected
+  (connection info + Disconnect).
 
 ### What happens on Connect (all automated)
 
-1. **Token + port discovery over SSH** — main spawns the system `ssh` binary
+1. **State detection over SSH** — main spawns the system `ssh` binary
    (`BatchMode=yes`, so the user's keys/agent/`~/.ssh/config` apply and it can
    never hang on a password prompt) and reads the remote's
    `${XDG_CONFIG_HOME:-$HOME/.config}/ccbot/session.json`. The token only ever
-   travels inside the SSH channel.
+   travels inside the SSH channel. Three remote states:
+   - **Remote Mode already on** (`remote.port` present) → straight to step 2.
+   - **App running, Remote Mode OFF** (session file exists, no `remote`
+     block) → the client runs `scripts/remote-autostart.js` on the remote
+     (same SSH channel), which POSTs **`/remote/enable`** on the remote's
+     loopback Control API (token read from the 0600 session file *on that
+     machine* — it never crosses the wire). Main starts the RemoteServer
+     **live, with NO restart**, persists `remoteServerEnabled=true`, and
+     rewrites session.json with the remote port. The script waits for that,
+     then the client re-reads the session and continues.
+   - **App NOT running** (no session file) → the same script cold-starts the
+     app headless and detached with `CCBOT_REMOTE=1`: on display-less Linux
+     under `xvfb-run -a` (with `--no-sandbox --disable-gpu`; xvfb missing is a
+     clear error telling the user to install it), on macOS by launching the
+     binary directly (needs an active login session). It then polls for a
+     FRESH session.json advertising `remote.port` (45s budget). How the client
+     finds the app on a machine where nothing is running: the app writes a
+     persistent sh-sourceable **`app-root` file** (app dir + its Electron
+     binary path) next to session.json on every startup — deliberately NOT
+     removed on shutdown. The script itself runs under `ELECTRON_RUN_AS_NODE`
+     on the app's own Electron binary, so no `node` is needed on the remote's
+     non-interactive PATH. The Advanced "remote app directory" field overrides
+     the app-root file.
+   Every phase is narrated in the command bar's status line via
+   `remote-client-status` pushes ("…enabling it now (no restart)…",
+   "…starting it in Remote Mode (this can take up to a minute)…"), and every
+   failure mode has a specific message: app never ran there (set the app
+   dir), recorded dir gone, checkout too old for auto-start, no node/electron,
+   xvfb missing, start timeout (with the remote log tail), stale session
+   (token mismatch), plus the usual ssh auth/host-key/unreachable classes.
+   Nothing ever silently hangs — the whole ensure step has a 90s hard kill.
 2. **Tunnel** — a second `ssh -N -o ExitOnForwardFailure=yes -L
    127.0.0.1:<freeLocalPort>:127.0.0.1:<remotePort> user@host` child is
    spawned and owned by main (killed on disconnect and on app quit).
@@ -591,14 +640,28 @@ no browser, no manual tunnel, no token handling.
 
 - `src/main/remote-client.js` — RemoteClient (main process; pure Node,
   unit-tested in `remote-client.test.js`): input validation (strict charsets
-  so form values can never be parsed as ssh options), session parsing (incl.
-  the "app running but Remote Mode OFF → enable CCBOT_REMOTE=1" message),
-  ssh stderr classification (auth / host key / unreachable / no session
-  file), free-port pick, tunnel lifecycle, HTTP probe.
-- `src/features/RemoteConnectionUI.js` — renderer UI: indicator, connect
-  panel (with recent connections in localStorage and an Advanced section:
-  session-file path override + extra ssh options like `-i`), the iframe.
-  Skipped when `window.__CCBOT_REMOTE__` (no nested remote hops).
+  so no value can be parsed as an ssh option or shell syntax), session
+  inspection (`inspectRemoteSession` → remote-on / remote-off / unreadable),
+  the auto-start orchestration (`buildEnsureCommand` — a single-quote-free
+  POSIX command that locates the app via the app-root file and execs
+  `remote-autostart.js` under ELECTRON_RUN_AS_NODE; `explainEnsureFailure`
+  maps its marker exit paths to user-facing messages), ssh stderr
+  classification, free-port pick, tunnel lifecycle, HTTP probe.
+- `scripts/remote-autostart.js` — runs ON the remote over SSH: detects the
+  three states, POSTs `/remote/enable` (running) or spawns the app headless/
+  detached (not running), polls session.json, and reports
+  `CCBOT_AUTOSTART_RESULT:{json}` lines the client parses.
+- `main.js` — `startRemoteMode()` (idempotent server bring-up, shared by boot
+  and live enable), `enableRemoteModeLive()` behind the new Control API route
+  **`POST /remote/enable`** (HookServer; respects `CCBOT_REMOTE=0` as force
+  off), on-demand esbuild of the renderer bundle when missing (so plain
+  `CCBOT_REMOTE=1 electron .` / auto-start never serve a 404 bundle), and the
+  persistent app-root file write (session-file.js).
+- `src/features/ssh-command-parse.js` — the command-bar parser (pure).
+- `src/features/RemoteConnectionUI.js` — renderer UI: indicator, TOP-MIDDLE
+  command bar (recents in localStorage; Advanced: session-file path, extra
+  ssh options, remote app dir), progress narration, the iframe. Skipped when
+  `window.__CCBOT_REMOTE__` (no nested remote hops).
 - IPC: `remote-client-connect` / `remote-client-disconnect` /
   `remote-client-status` (invoke) + `remote-client-status` push (main.js).
 
@@ -607,27 +670,39 @@ no browser, no manual tunnel, no token handling.
 Identical trust model to the rest of Remote Mode: SSH is the transport, both
 tunnel ends bind 127.0.0.1, the token is fetched over SSH and appears only in
 the loopback iframe URL *fragment* (never logged, never in status events).
-Host keys: `StrictHostKeyChecking=accept-new` — first contact is recorded,
-a CHANGED host key is a hard, surfaced failure.
+The auto-start path adds nothing new: `/remote/enable` is a loopback-only,
+token-gated Control API route, the enable POST happens *on the remote itself*
+(the token is read from the remote's own 0600 session file and presented to
+127.0.0.1 there), and the app-root file contains paths only — no secrets.
+No password auth anywhere (`BatchMode=yes` stays). Host keys:
+`StrictHostKeyChecking=accept-new` — first contact is recorded, a CHANGED
+host key is a hard, surfaced failure.
 
 ### Requirements on the remote machine
 
-The app must be running there with `CCBOT_REMOTE=1` (or the
-`remoteServerEnabled` setting). If it isn't, the client says exactly that.
-v1 does not try to start it remotely.
+sshd + the user's key auth, and an app checkout with `node_modules`
+installed. That's it — if the app is not running (or running without Remote
+Mode), the client brings it up itself. Headless Linux additionally needs
+`xvfb` for the cold-start path (surfaced as a clear error when missing);
+macOS cold-start needs an active login session.
 
 ### End-to-end verification
 
 `xvfb-run -a node tests/integration/remote-client-e2e.js` — spins up a
-throwaway sshd (own keys, high port, nothing in `~/.ssh` touched) plus TWO
-isolated app instances (separate `XDG_CONFIG_HOME`s: one CCBOT_REMOTE=1
-"remote", one client), then drives the real UI: opens the panel from the
-corner button, proves a clear error on a bad session path, connects, asserts
-the embedded view WS-authenticates through the tunnel, types a marker command
-into the embedded remote terminal and asserts the output echoes back in BOTH
-the embedded view and the remote instance's own xterm, then disconnects and
-asserts the forwarded port is closed and no `ssh -L` child remains.
-Screenshots + transcript land in `.e2e-remote-client/evidence`.
+throwaway sshd (own keys, high port, nothing in `~/.ssh` touched; work dir on
+a POSIX fs under tmp) plus isolated app instances (separate
+`XDG_CONFIG_HOME`s), then drives the real UI through ALL THREE remote states:
+(1) corner button → command bar at the top-middle, ssh command as real
+editable text; (2) clear errors for an unreachable host and for a remote the
+app never ran on; (3) remote app running WITHOUT Remote Mode → Connect
+live-ENABLES it (session.json gains `remote.port`, SAME pid — proven no
+restart), embeds, and a typed marker echoes in BOTH the embedded view and the
+remote instance's own xterm; (4) disconnect tears the tunnel down (port
+closed, no `ssh -L` child); (5) remote app CLOSED → Connect auto-STARTS it
+headless (fresh session.json + NEW live pid spawned by the client's action),
+embeds, marker echoes through the tunnel; (6) reconnect fast path shows no
+enable/start phase and the pid is unchanged. Screenshots + transcript land in
+the work dir's `evidence/`.
 
 ## 9. Voice notifications play on the device SHOWING the interface (IMPLEMENTED)
 

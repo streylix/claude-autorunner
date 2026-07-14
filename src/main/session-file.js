@@ -90,6 +90,48 @@ function removeSessionFile() {
   }
 }
 
+// ---- app-root file (Remote Mode auto-start discovery) ----
+//
+// session.json is removed on shutdown, so when the app is NOT running there is
+// nothing on disk saying where it lives. The Remote Mode CLIENT needs exactly
+// that to auto-START the app on a remote machine over SSH: the app directory
+// and a Node-capable runtime (the app's own Electron binary). We record both
+// in a tiny sh-sourceable file, written at every startup and deliberately NOT
+// removed on shutdown. It contains paths only — no secrets — but keeps the
+// same 0600/0700 hygiene as the session file.
+
+function appRootFilePath() {
+  return path.join(sessionDir(), 'app-root');
+}
+
+// Single-quote for sh: close, escape, reopen ( ' -> '\'' ).
+function shQuote(v) {
+  return "'" + String(v).replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Write the app-root file. Best-effort: never throws. Returns the path or null.
+ * @param {{appRoot:string, electronPath:string}} info
+ */
+function writeAppRootFile(info) {
+  try {
+    if (!info || !info.appRoot) return null;
+    const dir = sessionDir();
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const content =
+      '# Written by Auto-Injector on startup (src/main/session-file.js).\n' +
+      '# Used by the Remote Mode client to auto-start the app over SSH.\n' +
+      'CCBOT_APP_ROOT=' + shQuote(info.appRoot) + '\n' +
+      (info.electronPath ? 'CCBOT_ELECTRON=' + shQuote(info.electronPath) + '\n' : '');
+    const file = appRootFilePath();
+    fs.writeFileSync(file, content, { mode: 0o600 });
+    try { fs.chmodSync(file, 0o600); } catch (_) { /* best effort */ }
+    return file;
+  } catch (_) {
+    return null;
+  }
+}
+
 /**
  * Read + parse the session file. Returns the parsed object or null if missing/
  * unreadable/invalid. Used by the ssh-view CLI for API discovery.
@@ -110,5 +152,7 @@ module.exports = {
   sessionFilePath,
   writeSessionFile,
   removeSessionFile,
-  readSessionFile
+  readSessionFile,
+  appRootFilePath,
+  writeAppRootFile
 };
