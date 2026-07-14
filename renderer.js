@@ -27,6 +27,7 @@ const ActionLogManager = require('./src/features/ActionLogManager');
 const ManagerInstance = require('./src/features/ManagerInstance');
 const PromptWatchManager = require('./src/features/PromptWatchManager');
 const WakeWordManager = require('./src/features/WakeWordManager');
+const RemoteMicSink = require('./src/features/RemoteMicSink');
 const DiscordLinkKeyManager = require('./src/features/DiscordLinkKeyManager');
 const RemoteConnectionUI = require('./src/features/RemoteConnectionUI');
 const UIFocusManager = require('./src/ui/UIFocusManager');
@@ -174,6 +175,15 @@ class TerminalGUI {
         // Always-on "Hey Claude" wake word → records a command → routes it to
         // the manager (999) as a voice memo. Off until enabled in settings.
         this.wakeWordManager = new WakeWordManager(this.eventBus, this.appStateStore, this);
+
+        // Remote client microphone forwarding (docs/REMOTE_MODE.md §10): a
+        // Remote Mode viewer's mic streams over the WS into THIS renderer's
+        // wake-word + Whisper pipeline. LOCAL renderer only — a remote view
+        // has no pipeline of its own (it is the microphone, not the brain).
+        if (!IS_REMOTE) {
+            this.remoteMicSink = new RemoteMicSink(this.eventBus, this);
+            this.remoteMicSink.initialize();
+        }
 
         // The injection gate (R3) blocks while a countdown is armed, so the
         // queue needs a handle on the timer to call isRunning().
