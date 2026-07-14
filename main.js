@@ -714,7 +714,13 @@ app.whenReady().then(async () => {
       try {
         return await remoteClient.connect(opts);
       } catch (error) {
-        return { ok: false, error: (error && error.message) || 'Connection failed' };
+        return {
+          ok: false,
+          error: (error && error.message) || 'Connection failed',
+          // Key auth failed (or the typed password was wrong): tells the UI to
+          // surface the password field and retry. Never carries the password.
+          needPassword: !!(error && error.needPassword)
+        };
       }
     });
     ipcMain.handle('remote-client-disconnect', async () => {

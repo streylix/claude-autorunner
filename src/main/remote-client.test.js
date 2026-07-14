@@ -7,6 +7,8 @@
 // Run: node --test src/main/remote-client.test.js
 const { test } = require('node:test');
 const assert = require('node:assert');
+const path = require('node:path');
+const RemoteClient = require('./remote-client');
 const {
     normalizeConnectOptions,
     parseRemoteSession,
@@ -14,7 +16,10 @@ const {
     buildEnsureCommand,
     explainEnsureFailure,
     parseEnsureResult,
-    classifySshFailure
+    classifySshFailure,
+    isAuthFailure,
+    sshFailureToError,
+    buildSshInvocation
 } = require('./remote-client');
 
 // ---- normalizeConnectOptions ----
@@ -178,4 +183,79 @@ test('classifies auth, host-key, missing-file, dns and refused failures', () => 
 test('unknown stderr falls back to the first meaningful line', () => {
     const msg = classifySshFailure('Warning: Permanently added x\nsome odd failure', 'h');
     assert.match(msg, /some odd failure/);
+});
+
+// ---- key→password fallback (isAuthFailure / sshFailureToError) ----
+
+test('isAuthFailure: auth failures yes; unreachable/host-key problems no', () => {
+    assert.strictEqual(isAuthFailure('ethan@h: Permission denied (publickey,password).'), true);
+    assert.strictEqual(isAuthFailure('Too many authentication failures'), true);
+    assert.strictEqual(isAuthFailure('@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @\nPermission denied'), false);
+    assert.strictEqual(isAuthFailure('Host key verification failed.'), false);
+    assert.strictEqual(isAuthFailure('connect to host h port 22: Connection refused'), false);
+    assert.strictEqual(isAuthFailure('ssh: Could not resolve hostname h'), false);
+    assert.strictEqual(isAuthFailure(''), false);
+});
+
+test('sshFailureToError: key-only auth failure asks for the password (needPassword)', () => {
+    const conn = normalizeConnectOptions({ host: 'h', username: 'e' });
+    const err = sshFailureToError('e@h: Permission denied (publickey).', conn);
+    assert.strictEqual(err.needPassword, true);
+    assert.match(err.message, /Key authentication failed for e@h/);
+    assert.match(err.message, /password/i);
+});
+
+test('sshFailureToError: wrong password says so and allows retry (needPassword)', () => {
+    const conn = normalizeConnectOptions({ host: 'h', username: 'e', password: 'nope' });
+    const err = sshFailureToError('e@h: Permission denied (password).', conn);
+    assert.strictEqual(err.needPassword, true);
+    assert.match(err.message, /Wrong password for e@h/);
+});
+
+test('sshFailureToError: non-auth failures never ask for a password', () => {
+    const conn = normalizeConnectOptions({ host: 'h' });
+    const err = sshFailureToError('connect to host h port 22: Connection refused', conn);
+    assert.ok(!err.needPassword);
+    assert.match(err.message, /refused/);
+});
+
+// ---- password plumbing (argv/env separation) ----
+
+test('normalizeConnectOptions passes the password through untouched (any chars)', () => {
+    const pw = 'sp aces "quotes" $(sub) \'單\' -leading';
+    const c = normalizeConnectOptions({ host: 'h', username: 'e', password: pw });
+    assert.strictEqual(c.password, pw);
+    // and its absence normalizes to ''
+    assert.strictEqual(normalizeConnectOptions({ host: 'h' }).password, '');
+});
+
+test('_baseSshArgs: BatchMode without a password; password mode swaps in one-prompt password auth', () => {
+    const client = new RemoteClient();
+    const keyArgs = client._baseSshArgs(normalizeConnectOptions({ host: 'h' }));
+    assert.ok(keyArgs.includes('BatchMode=yes'));
+    assert.ok(!keyArgs.join(' ').includes('PreferredAuthentications'));
+
+    const pwArgs = client._baseSshArgs(normalizeConnectOptions({ host: 'h', password: 's3cret' }));
+    assert.ok(!pwArgs.includes('BatchMode=yes'), 'password mode must not set BatchMode');
+    assert.ok(pwArgs.includes('NumberOfPasswordPrompts=1'), 'wrong password must fail fast');
+    assert.ok(pwArgs.includes('PreferredAuthentications=password,keyboard-interactive'));
+    assert.ok(!pwArgs.join(' ').includes('s3cret'), 'the password must NEVER be in the argv');
+});
+
+test('buildSshInvocation: askpass env carries the password; argv stays clean', () => {
+    const conn = normalizeConnectOptions({ host: 'h', password: 'p@ss w0rd' });
+    const inv = buildSshInvocation(conn, { PATH: '/usr/bin' });
+    // On this machine the bundled helper exists → askpass is the mechanism.
+    assert.strictEqual(inv.command, 'ssh');
+    assert.deepStrictEqual(inv.argsPrefix, []);
+    assert.strictEqual(inv.env.CCBOT_SSH_PASSWORD, 'p@ss w0rd');
+    assert.strictEqual(inv.env.SSH_ASKPASS_REQUIRE, 'force');
+    assert.ok(inv.env.DISPLAY, 'DISPLAY must be set for older ssh');
+    assert.strictEqual(path.basename(inv.env.SSH_ASKPASS), 'ssh-askpass.sh');
+});
+
+test('buildSshInvocation: no password → plain ssh with inherited env', () => {
+    const inv = buildSshInvocation(normalizeConnectOptions({ host: 'h' }));
+    assert.strictEqual(inv.command, 'ssh');
+    assert.strictEqual(inv.env, undefined);
 });

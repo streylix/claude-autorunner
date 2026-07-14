@@ -254,6 +254,9 @@ scripts/*
 !scripts/download-models.js
 # …and the read-only SSH mirror CLI (npm run ssh-view) must ship with the repo.
 !scripts/ssh-view.js
+# …and the Remote Mode askpass helper (secret-free; echoes $CCBOT_SSH_PASSWORD
+# back to ssh) must ship, or password auth in the client can't work.
+!scripts/ssh-askpass.sh
 playwright-report
 hive-mind-*
 
