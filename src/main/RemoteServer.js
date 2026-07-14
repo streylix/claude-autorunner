@@ -79,6 +79,8 @@ class RemoteServer {
      *   dispatchSend(channel, args, ev)  → run the ipcMain.on handler
      *   dispatchInvoke(channel, args, ev)→ Promise (runs the ipcMain.handle handler)
      *   broadcastAll(channel, ...args)   → push to local window + every WS client
+     *   onClientsChanged(count)          → (optional) attach/detach notification
+     *                                      (drives the TTS audio-sink routing)
      *   log(...)                         → safe logger
      */
     constructor({ appRoot, token, deps }) {
@@ -224,6 +226,7 @@ class RemoteServer {
                     try { snapshot = this.deps.getState(); } catch (_) { /* not ready yet */ }
                     this.sendTo(ws, { t: 'welcome', snapshot });
                     this.deps.log('[Remote] browser client authenticated (' + this.clients.size + ' attached)');
+                    this._notifyClientsChanged();
                 } else {
                     this.sendTo(ws, { t: 'error', code: 'auth', error: 'invalid token' });
                     ws.close(4403, 'invalid token');
@@ -243,6 +246,7 @@ class RemoteServer {
             clearTimeout(authTimer);
             if (this.clients.delete(ws)) {
                 this.deps.log('[Remote] browser client detached (' + this.clients.size + ' attached)');
+                this._notifyClientsChanged();
             }
         });
         ws.on('error', () => { /* close fires next */ });
@@ -327,6 +331,13 @@ class RemoteServer {
         } catch (_) { /* no replay is better than no attach */ }
     }
 
+    /** Attach/detach hook (audio-sink routing etc.). Count changes only. */
+    _notifyClientsChanged() {
+        if (typeof this.deps.onClientsChanged === 'function') {
+            try { this.deps.onClientsChanged(this.clients.size); } catch (_) { /* never break the socket path */ }
+        }
+    }
+
     sendTo(ws, frame) {
         try {
             if (ws.readyState === 1 /* OPEN */) ws.send(JSON.stringify(frame));
@@ -347,6 +358,7 @@ class RemoteServer {
             try { ws.close(1001, 'server shutting down'); } catch (_) { /* ignore */ }
         }
         this.clients.clear();
+        this._notifyClientsChanged();
         if (this.wss) { try { this.wss.close(); } catch (_) { /* ignore */ } this.wss = null; }
         if (this.server) { try { this.server.close(); } catch (_) { /* ignore */ } this.server = null; }
         this.port = null;

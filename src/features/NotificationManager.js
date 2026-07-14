@@ -9,9 +9,28 @@
  *
  * Playback speed is applied client-side via HTMLAudioElement.playbackRate, so the
  * "Playback Speed" setting affects existing notifications too (no re-synthesis).
+ *
+ * Remote Mode (docs/REMOTE_MODE.md §9): in a browser / embedded remote client the
+ * Django backend is NOT reachable (it lives on the app host's loopback), so there
+ * is no polling there. Instead main forwards each fresh notification — metadata
+ * plus the synthesized audio bytes — over the authenticated WebSocket as a
+ * 'remote-tts-notification' push, and playback happens on the device actually
+ * showing the interface (see initializeRemote). Conversely, while ≥1 remote
+ * client is attached, the LOCAL renderer suppresses auto playback so the sound
+ * doesn't double-play on the (usually headless) app host.
  */
 
 const { BACKEND_URL: BASE_URL } = require('../utils/backend-url');
+
+// True when this renderer is a Remote Mode client (browser tab or the client
+// GUI's embedded iframe). Set by remote-bootstrap.js before any bundle code runs.
+const IS_REMOTE = typeof window !== 'undefined' && !!window.__CCBOT_REMOTE__;
+
+// ipcRenderer, lazily: the real one in the local Electron renderer, the wsIpc
+// WebSocket shim in a remote client (remote-bootstrap.js), null in unit tests.
+function getIpcRenderer() {
+    try { return require('electron').ipcRenderer; } catch (_) { return null; }
+}
 const POLL_INTERVAL_MS = 3000;
 // After every speaking source clears, wait this long before releasing held
 // notifications. Combined with WakeWordManager's SPEECH_IDLE_MS (~600ms) trailing
@@ -61,6 +80,15 @@ class NotificationManager {
         // the user knows one is about to read out.
         this.headsUp = new Audio('assets/soundeffects/click2.wav');
         this.headsUp.volume = 0.5;
+
+        // ---- Remote Mode audio routing (docs/REMOTE_MODE.md §9) --------------
+        // Local renderer: while ≥1 remote client is attached, the client(s) are
+        // the audio sink — suppress local AUTO playback (rows still render; an
+        // explicit ▶ replay is always honored locally). Remote renderer: audio
+        // arrives as bytes over the WS and plays here on the viewing device.
+        this.remoteSinkActive = false;      // local only: ≥1 remote client attached
+        this._remoteBlobUrls = new Map();   // remote only: id -> blob: URL
+        this._gestureArmed = false;         // remote only: awaiting a user gesture to unlock audio
 
         // ---- talk-over prevention ------------------------------------------
         // Hold spoken notifications while the user is talking and resume after a
@@ -231,7 +259,15 @@ class NotificationManager {
         if (id == null) return;
         this._holdCounts.delete(id);
         this._playThrough.delete(id);
-        fetch(`${BASE_URL}/api/tts/notifications/${id}/played/`, { method: 'POST' }).catch(() => {});
+        if (IS_REMOTE) {
+            // The backend lives on the app host's loopback — unreachable from a
+            // remote client. Route the played-mark through the WS bridge; main
+            // POSTs it to the backend on our behalf (see 'remote-tts-played').
+            const ipc = getIpcRenderer();
+            if (ipc) { try { ipc.send('remote-tts-played', { id }); } catch (_) { /* ignore */ } }
+        } else {
+            fetch(`${BASE_URL}/api/tts/notifications/${id}/played/`, { method: 'POST' }).catch(() => {});
+        }
         try {
             const row = document.querySelector(`.notification-item[data-id="${id}"]`);
             if (row) row.classList.add('played');
@@ -260,6 +296,85 @@ class NotificationManager {
         await this.loadHistory();
         this.startPolling();
         this._wireToolbar();
+        this._wireRemoteSinkSignal();
+    }
+
+    /**
+     * Remote Mode boot (browser tab / embedded client iframe) — used INSTEAD of
+     * initialize(). No backend polling here: main pushes each fresh notification
+     * (metadata + synthesized audio bytes, base64) over the authenticated
+     * WebSocket, and playback happens HERE — on the device showing the interface.
+     */
+    initializeRemote() {
+        this._wireToolbar();
+        const ipc = getIpcRenderer();
+        if (!ipc) return;
+        ipc.on('remote-tts-notification', (_event, payload) => {
+            try {
+                this._onRemoteTtsPush(payload);
+            } catch (err) {
+                console.error('[remote-tts] failed to handle pushed notification:', err);
+            }
+        });
+        console.log('[remote-tts] client sink ready (voice notifications will play on this device)');
+    }
+
+    /** A notification (with its audio bytes) pushed to this remote client. */
+    _onRemoteTtsPush(payload) {
+        const n = payload && payload.notification;
+        if (!n || n.id == null || this.items.has(n.id)) return;
+        let url = null;
+        if (payload.audioBase64) {
+            const bin = atob(payload.audioBase64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            url = URL.createObjectURL(new Blob([bytes], { type: payload.mime || 'audio/wav' }));
+            this._remoteBlobUrls.set(n.id, url);
+            console.log(`[remote-tts] notification ${n.id} received over WS (${bytes.length} audio bytes)`);
+        }
+        const item = Object.assign({}, n, { audio_url: url });
+        this._renderItem(item, { prepend: true });
+        this.lastSeenId = Math.max(this.lastSeenId, n.id);
+        if (this.autoplay) this._enqueuePlay(item);
+    }
+
+    /**
+     * LOCAL renderer only: track whether any Remote Mode client is attached.
+     * Main pushes 'remote-clients-changed' on every attach/detach and answers
+     * the 'remote-clients-count' invoke for the boot-time state. While ≥1 is
+     * attached, the client(s) are the audio sink and local autoplay holds.
+     */
+    _wireRemoteSinkSignal() {
+        const ipc = getIpcRenderer();
+        if (!ipc) return;
+        try {
+            let pushSeen = false; // a live push always beats the boot-time invoke
+            ipc.on('remote-clients-changed', (_event, payload) => {
+                pushSeen = true;
+                this._setRemoteSinkActive(!!(payload && payload.count > 0));
+            });
+            if (typeof ipc.invoke === 'function') {
+                ipc.invoke('remote-clients-count')
+                    .then((r) => {
+                        // Stale-guard: if an attach/detach push already arrived,
+                        // this snapshot is older than what we know — drop it.
+                        if (pushSeen) return;
+                        if (r && typeof r.count === 'number') this._setRemoteSinkActive(r.count > 0);
+                    })
+                    .catch(() => {});
+            }
+        } catch (_) { /* non-Electron host (unit tests) */ }
+    }
+
+    _setRemoteSinkActive(active) {
+        if (this.remoteSinkActive === !!active) return;
+        this.remoteSinkActive = !!active;
+        this._log(
+            `notifications: audio sink → ${this.remoteSinkActive ? 'remote viewer(s) — playback on the device showing the interface' : 'this machine'}`,
+            'info'
+        );
+        // Sink came back to us: drain anything that queued up while remote played.
+        if (!this.remoteSinkActive) this._drainQueue();
     }
 
     // ---- backend I/O ---------------------------------------------------------
@@ -305,7 +420,9 @@ class NotificationManager {
         for (const n of fresh) {
             this._renderItem(n, { prepend: true });
             this.lastSeenId = Math.max(this.lastSeenId, n.id);
-            if (this.autoplay) this._enqueuePlay(n);
+            // With remote viewer(s) attached, they play the audio — don't queue
+            // it here too (the row still renders; replay stays available).
+            if (this.autoplay && !this.remoteSinkActive) this._enqueuePlay(n);
         }
     }
 
@@ -323,6 +440,10 @@ class NotificationManager {
 
     _drainQueue() {
         if (this.playing || this.muted) return;
+        // Local renderer with remote viewer(s) attached: the client(s) are the
+        // audio sink — hold auto playback here. (An explicit ▶ replay bypasses
+        // this queue on purpose, so a person AT the machine can still listen.)
+        if (this.remoteSinkActive) return;
         // Hold while the user is speaking (or within the trailing-silence window):
         // the queue keeps its items and drains once _removeSpeakingSource's release
         // timer fires. Never talk over the user; never drop the notification.
@@ -361,13 +482,51 @@ class NotificationManager {
 
     _startAudio(url) {
         try {
-            this.audio.src = BASE_URL + url;
+            // blob:/data: URLs (Remote Mode pushes raw bytes) and absolute URLs
+            // play as-is; backend-relative paths get the backend origin.
+            this.audio.src = /^(blob:|data:|https?:)/.test(url) ? url : BASE_URL + url;
             this.audio.playbackRate = this.playbackRate;
             const p = this.audio.play();
-            if (p && p.catch) p.catch(() => this._onPlaybackEnded());
+            if (p && p.then) {
+                p.then(() => {
+                    if (IS_REMOTE && this._currentId != null) {
+                        console.log(`[remote-tts] playback started on this device for notification ${this._currentId}`);
+                    }
+                }).catch((err) => this._onPlayRejected(err));
+            }
             this._emitPlaybackState(true);
         } catch (err) {
             this._onPlaybackEnded();
+        }
+    }
+
+    /**
+     * play() rejected. In a plain-browser remote client the FIRST play can be
+     * blocked by the autoplay policy until the user interacts with the page —
+     * don't consume the clip: requeue it at the front and retry on the first
+     * gesture. Any other rejection falls through to the normal ended path.
+     */
+    _onPlayRejected(err) {
+        const blocked = IS_REMOTE && err && err.name === 'NotAllowedError';
+        if (!blocked) return this._onPlaybackEnded();
+        const id = this._currentId;
+        const n = id != null ? this.items.get(id) : null;
+        this.playing = false;
+        this._currentId = null;
+        this._currentIsReplay = false;
+        this._emitPlaybackState(false);
+        if (n && n.audio_url) this.playQueue.unshift(n);
+        console.log('[remote-tts] autoplay blocked by the browser — will play on the first click/keypress');
+        if (!this._gestureArmed) {
+            this._gestureArmed = true;
+            const unlock = () => {
+                this._gestureArmed = false;
+                document.removeEventListener('pointerdown', unlock, true);
+                document.removeEventListener('keydown', unlock, true);
+                this._drainQueue();
+            };
+            document.addEventListener('pointerdown', unlock, true);
+            document.addEventListener('keydown', unlock, true);
         }
     }
 
@@ -467,6 +626,7 @@ class NotificationManager {
 
     /** Persist the user's preferred default voice to the backend config. */
     async setPreferredVoice(voice) {
+        if (IS_REMOTE) return; // backend unreachable from a remote client (and localhost = the WRONG machine)
         try {
             await fetch(`${BASE_URL}/api/tts/config/`, {
                 method: 'PUT',
@@ -480,6 +640,7 @@ class NotificationManager {
 
     /** Synthesize a short sample in `voice` and play it (settings "Test" button). */
     async testVoice(voice) {
+        if (IS_REMOTE) return; // backend unreachable from a remote client
         try {
             const res = await fetch(`${BASE_URL}/api/tts/speak/`, {
                 method: 'POST',
@@ -499,9 +660,17 @@ class NotificationManager {
     }
 
     async clearAll() {
-        try {
-            await fetch(`${BASE_URL}/api/tts/notifications/`, { method: 'DELETE' });
-        } catch (_) {}
+        // Remote client: never fetch localhost from the viewer's machine (that
+        // is the CLIENT's loopback, not the backend). Clear the local view only.
+        if (!IS_REMOTE) {
+            try {
+                await fetch(`${BASE_URL}/api/tts/notifications/`, { method: 'DELETE' });
+            } catch (_) {}
+        }
+        for (const u of this._remoteBlobUrls.values()) {
+            try { URL.revokeObjectURL(u); } catch (_) { /* ignore */ }
+        }
+        this._remoteBlobUrls.clear();
         this.items.clear();
         const list = document.getElementById('todo-list');
         if (list) list.innerHTML = '';
