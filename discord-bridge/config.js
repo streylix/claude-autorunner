@@ -57,6 +57,26 @@ const config = {
   systemAudioDevice: (process.env.SYSTEM_AUDIO_DEVICE || '').trim(),
   systemAudioKeepalive: bool(process.env.SYSTEM_AUDIO_KEEPALIVE, true),
   systemAudioWarmupMs: int(process.env.SYSTEM_AUDIO_WARMUP_MS, 1200),
+  // BURST GATE (system mode): don't transmit the monitor 24/7. The keepalive
+  // makes the sink's monitor produce CONTINUOUS PCM (mostly digital zeros), so a
+  // single eternal Opus stream never gives Discord a silence gap — the client's
+  // adaptive jitter buffer only ever grows, and every hiccup becomes PERMANENT
+  // added delay (measured multi-second after minutes in-call). Instead, detect
+  // sound onsets and stream each burst as its own short resource: speaking
+  // starts/stops like a human talking, and the receive buffer resets per burst.
+  systemGateEnabled: bool(process.env.SYSTEM_GATE_ENABLED, true),
+  systemGateThreshold: int(process.env.SYSTEM_GATE_THRESHOLD, 300),   // s16 peak ≈ -41 dBFS
+  systemGateHangoverMs: int(process.env.SYSTEM_GATE_HANGOVER_MS, 500), // trailing silence that ends a burst
+  systemGatePrerollMs: int(process.env.SYSTEM_GATE_PREROLL_MS, 120),   // pre-onset audio kept so starts aren't clipped
+  // TTS → SINK (system mode): while a Remote Mode viewer is attached the app's
+  // LOCAL renderer suppresses TTS playback (the double-play rule), so nothing
+  // reaches the sink monitor and Discord goes silent. The bridge fills that gap:
+  // it fetches each new TTS clip and paplays it into the sink itself.
+  //   'auto' (default): play only while a remote viewer is attached (mirrors the
+  //           app's own suppression rule, so exactly one player owns the sink);
+  //   'always' / 'off': force or disable regardless of viewers.
+  ttsToSink: (process.env.TTS_TO_SINK || 'auto').trim().toLowerCase(),
+  remoteViewPort: int(process.env.REMOTE_VIEW_PORT, 8130),             // app's Remote Mode port (attach detection)
   // How long the speaker stays "armed" after the wake word fires alone, waiting
   // for the command utterance. Generous so the user can react to the wake sound
   // and then speak without the arm expiring.
