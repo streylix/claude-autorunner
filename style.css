@@ -6,6 +6,8 @@
 
 /* Theme Variables */
 :root {
+    --app-footer-height: 24px;
+
     /* Dark theme (default) — cool graphite.
        Depth from lightness steps, not shadows:
        bg-secondary (deepest chrome) < bg-primary (panels) < bg-tertiary (cards) < bg-quaternary (hover).
@@ -204,7 +206,7 @@ body {
 }
 
 .app-container {
-    height: 100vh;
+    height: calc(100vh - var(--app-footer-height));
     display: flex;
     flex-direction: column;
 }
@@ -4468,25 +4470,37 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     color: #f4f4f5;
 }
 
-/* ==== Remote connection (VS Code Remote-SSH style corner control) ====
-   Bottom-left indicator + connect panel + the embedded remote view
-   (src/features/RemoteConnectionUI.js). Stacking: view (9000) < indicator
-   (9100) < panel (9200) — the indicator always floats above the embedded
+/* ==== Remote connection (VS Code Remote-SSH style status bar) ====
+   A full-width footer bar, docked to the bottom of the window like VS
+   Code's status bar, whose leftmost segment is the remote indicator +
+   connect panel + the embedded remote view
+   (src/features/RemoteConnectionUI.js). Stacking: view (9000) < footer bar
+   (9100) < panel (9200) — the footer bar always floats above the embedded
    remote view so there is always a way back to the local interface. */
 
-.remote-indicator {
+.app-footer-bar {
     position: fixed;
     left: 0;
+    right: 0;
     bottom: 0;
+    height: var(--app-footer-height);
     z-index: 9100;
+    display: flex;
+    align-items: stretch;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-primary);
+    -webkit-app-region: drag;
+}
+
+.remote-indicator {
+    -webkit-app-region: no-drag;
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 10px;
+    padding: 0 10px;
     background: var(--accent-secondary);
     color: #ffffff;
     border: none;
-    border-top-right-radius: 6px;
     font-size: 11.5px;
     font-weight: 600;
     line-height: 1;
@@ -4519,7 +4533,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .remote-panel {
     position: fixed;
     left: 10px;
-    bottom: 34px;
+    bottom: calc(var(--app-footer-height) + 10px);
     z-index: 9200;
     width: 340px;
     background: var(--bg-tertiary);
@@ -4909,11 +4923,14 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     color: var(--text-primary);
 }
 
-/* The embedded remote view: covers the whole app while connected. The local
-   interface stays alive underneath; the indicator floats above. */
+/* The embedded remote view: covers the whole app while connected, but stops
+   short of the footer bar so the local footer stays visible underneath. */
 .remote-view-container {
     position: fixed;
-    inset: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: var(--app-footer-height);
     z-index: 9000;
     background: var(--bg-secondary);
 }
