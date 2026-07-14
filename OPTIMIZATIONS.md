@@ -3568,3 +3568,59 @@ the remote app is not running or not serving Remote Mode.
   `src/main/session-file.js`, `src/main/HookServer.js`, `main.js`,
   `tests/integration/remote-client-e2e.js`, `docs/REMOTE_MODE.md`,
   `.gitignore`.
+
+## 2026-07-14 — Remote Mode: CLIENT MICROPHONE FORWARDING — full remote voice, desktop-processed (branch `ssh-view`)
+
+The INPUT mirror of the §9 voice-output forwarding (docs/REMOTE_MODE.md §10).
+A user viewing the interface remotely (browser tab / embedded client iframe)
+can now TALK to the manager: their device's microphone is captured locally and
+streamed to the desktop, where the EXISTING voice pipeline — Vosk wake-word
+spotting and Whisper transcription, both unchanged and both on the desktop —
+processes it. Combined with §9's output forwarding the loop is fully remote:
+say "hey claude …" into the laptop, the desktop detects + transcribes + routes
+the memo to the manager (999), and the answer plays back on the laptop.
+
+- **Client capture** (`src/remote/remote-mic.js`, served + injected by
+  `RemoteServer` for browser clients only): floating mic toggle button →
+  `getUserMedia` → AudioWorklet tap (ScriptProcessor fallback) → 16 kHz mono
+  PCM16 in ~85 ms frames (matching the desktop's own frame cadence so the VAD
+  tuning holds) → `remote-mic-frame`/`remote-mic-state` frames over the SAME
+  authenticated WebSocket. ~32 KB/s; no new ports, no new auth surface.
+  Permission denial and disconnects are handled; the button mirrors the
+  desktop pipeline state (listening/capturing/transcribing) via
+  `remote-wake-state` pushes and plays the configured activation/stop chimes
+  on the viewing device.
+- **Single-owner rule + relay** (`src/main/RemoteServer.js`, `main.js`): at
+  most one client streams at a time (first-come; later starters get
+  `remote-mic-denied`; owner disconnect dispatches a synthetic detach so the
+  pipeline never hangs). Main relays the owner's frames to the LOCAL renderer
+  only — never re-broadcast to other viewers.
+- **Desktop routing** (`src/features/RemoteMicSink.js` + a remote-source mode
+  in `src/features/WakeWordManager.js`): frames feed the SAME recognizer, VAD,
+  capture, Whisper POST (`/api/voice/transcribe/`) and voice-memo framing as
+  local mic audio. Which-mic rule (mirror of §9's no-double-play rule): while
+  a remote mic streams, IT is the input and the local mic is ignored; with the
+  local wake word off (or a mic-less headless host) the pipeline runs in
+  REMOTE-ONLY mode — no local `getUserMedia` is ever opened; with no remote
+  client attached, local behavior is byte-identical to before.
+- **Verified end-to-end headless** (`xvfb-run -a node
+  tests/integration/remote-mic-e2e.js`): isolated XDG_CONFIG_HOME, stand-in
+  Django-shaped Whisper endpoint (full faster-whisper impractical in-sandbox;
+  the audio still flows the real app path and the stand-in byte-compares it).
+  Proven: real fake-device getUserMedia+worklet capture delivers frames
+  BYTE-FAITHFULLY (client vs server rolling hash over the identical Int16
+  stream); canned SYNTHESIZED SPEECH (piper, committed as
+  tests/fixtures/*.wav) injected through the same send path is detected by
+  the desktop's REAL Vosk engine ("hey claude" → capturing); the VAD stops
+  the capture; the POSTed 16 kHz WAV CONTAINS the injected utterance
+  byte-for-byte; the known transcript comes back and lands in the manager
+  queue (999, urgent, verbatim voice-memo framing); a second client is
+  denied; disconnect releases the mic and the pipeline returns to idle.
+  Unit tests: `src/features/WakeWordManager.remote-source.test.js`,
+  `src/main/RemoteServer.mic.test.js` (suite: 174/175 pass; the one failure
+  is the pre-existing untracked `tests/unit/usage-limit-and-gate.test.js`).
+- Files: `src/remote/remote-mic.js`, `src/features/RemoteMicSink.js`,
+  `src/features/WakeWordManager.js`, `src/main/RemoteServer.js` (+
+  `RemoteServer.mic.test.js`), `main.js`, `renderer.js`,
+  `tests/integration/remote-mic-e2e.js`, `tests/fixtures/hey-claude-16k.wav`,
+  `tests/fixtures/command-16k.wav`, `.gitignore`, `docs/REMOTE_MODE.md`.

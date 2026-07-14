@@ -821,3 +821,92 @@ delivery + playback-invocation chain is what's asserted. Unit tests:
 `src/main/tts-remote-forwarder.test.js`,
 `src/features/NotificationManager.remote.test.js`,
 `src/features/NotificationManager.local-sink.test.js`.
+
+## 10. Client microphone forwarding — talk to the manager from the viewing device (IMPLEMENTED)
+
+### The problem
+
+§9 made the desktop's voice OUTPUT follow the viewer; the INPUT was still
+host-locked. The wake word ("hey claude") and the follow-up command capture
+run on the app host's microphone (`WakeWordManager`, local renderer), and the
+Whisper transcription POSTs to the backend's loopback — so a person watching
+remotely could HEAR the manager but had no way to TALK to it. Their machine
+has the microphone; the host (often headless, often mic-less) has the whole
+voice brain.
+
+### How it works now
+
+The remote viewer's microphone is captured on THEIR device and streamed to the
+desktop, where the EXISTING pipeline — Vosk wake-word spotting AND Whisper
+transcription — processes it unchanged. Nothing voice-related runs in the
+browser beyond capture; the desktop stays the single voice brain.
+
+- **Client side** — `src/remote/remote-mic.js`, served by `RemoteServer` and
+  injected into the transformed `index.html` right after
+  `remote-bootstrap.js` (browser clients only; the local app never loads it).
+  A floating mic button (bottom-left) toggles capture: `getUserMedia` →
+  `AudioWorklet` tap (ScriptProcessor fallback) → downsample to 16 kHz mono →
+  PCM16 → ~85 ms frames over the EXISTING authenticated WebSocket:
+  `{t:'send', channel:'remote-mic-frame', args:[{seq, rate, pcm16:<base64>}]}`
+  plus `remote-mic-state {active}` on start/stop. ~32 KB/s raw (~43 KB/s as
+  base64) — negligible, tunnel-safe, no new ports or auth surface. Frames are
+  85 ms to match the desktop's own ScriptProcessor cadence so the VAD's
+  sustained-run tuning behaves identically. The browser's mic-permission
+  prompt is handled (denial = red button, click to retry); capture stops
+  cleanly on toggle-off and on disconnect.
+- **Server side (main)** — `RemoteServer` enforces SINGLE OWNERSHIP (first
+  client to start streaming owns the mic; later starters get a
+  `remote-mic-denied` push; an owner's disconnect dispatches a synthetic
+  `remote-mic-state{active:false}` so the pipeline never waits on a dead
+  stream). `main.js` relays the owner's state/frames to the LOCAL window ONLY
+  — never re-broadcast to other remote clients.
+- **Local renderer** — `src/features/RemoteMicSink.js` decodes each frame and
+  feeds `WakeWordManager` through its new remote-source mode:
+  `attachRemoteSource()` / `pushRemotePcm(float32, rate)` /
+  `detachRemoteSource()`. Remote frames run the SAME stages as local mic
+  audio: continuous speech signal, Vosk recognizer while listening, the same
+  sustained-run VAD + trailing-silence stop while capturing. A remote-sourced
+  capture accumulates PCM16 (MediaRecorder needs a MediaStream a network
+  source doesn't have), encodes a 16 kHz mono WAV, and goes through the very
+  same `VoiceManager.transcribeBlob` → `POST /api/voice/transcribe/` → framed
+  "🎙️ Voice memo" → manager (999, urgent) path as a local wake command.
+- **Feedback to the speaker** — while a remote mic is the source, the wake
+  pipeline's state (`wake:state`) is mirrored back to the streaming client as
+  `remote-wake-state` pushes; the client colors the mic button (green
+  listening / yellow capturing / blue transcribing) and plays the SAME
+  configured activation/stop chimes on the viewing device. Combined with §9,
+  the full loop — speak on the Mac, desktop detects + transcribes, manager
+  answers, answer plays on the Mac — never needs the host's audio hardware.
+
+### Which mic feeds the pipeline (the mirror of §9's no-double-play rule)
+
+- **A remote client is streaming its mic** → THAT stream is the pipeline's
+  input; local microphone frames are ignored (an already-running LOCAL capture
+  is allowed to finish first). If the local wake word was OFF (or the host has
+  no mic at all), the pipeline spins up in REMOTE-ONLY mode — model +
+  recognizer, no local `getUserMedia` ever opened.
+- **No remote mic attached** → local behavior exactly as before this change.
+- At most ONE remote client can stream at a time (interleaving two streams
+  into one recognizer would be garbage); ownership is first-come and frees on
+  stop or disconnect.
+
+### End-to-end verification
+
+`xvfb-run -a node tests/integration/remote-mic-e2e.js` — isolated
+`XDG_CONFIG_HOME` + own ports, a Django-shaped stand-in Whisper backend (the
+full faster-whisper stack is impractical in a sandbox; the audio still flows
+through the same app code path and the stand-in byte-compares what it
+receives), one CCBOT_REMOTE=1 Electron app and headless Chromium clients.
+Proves: the REAL capture path (fake-device `getUserMedia` + worklet) delivers
+frames byte-faithfully (client vs server rolling hash over the identical
+Int16 stream); known synthesized speech injected through the same send path is
+detected by the desktop's REAL Vosk engine ("hey claude" → capturing); the VAD
+closes the capture and the desktop POSTs a 16 kHz mono WAV whose PCM contains
+the injected utterance byte-for-byte; the stand-in's transcript comes back and
+is queued to the manager (999, urgent, verbatim voice-memo framing); the
+client receives `remote-wake-state` pushes; a second client is denied; and a
+disconnect releases the mic and returns the pipeline to idle. Being headless,
+real acoustic capture isn't possible — the delivery + pipeline-invocation
+chain is what's asserted. Unit tests:
+`src/features/WakeWordManager.remote-source.test.js`,
+`src/main/RemoteServer.mic.test.js`.
