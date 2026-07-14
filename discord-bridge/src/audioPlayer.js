@@ -5,7 +5,7 @@
 // (StreamType.Arbitrary -> ffmpeg-static), so whatever sample rate Kokoro emits
 // just works.
 
-const { Readable } = require('stream');
+const { Readable, Transform } = require('stream');
 const {
   createAudioPlayer,
   createAudioResource,
@@ -29,6 +29,7 @@ class VoicePlayer {
     this._holdCheck = null;   // BARGE-IN: () => bool — true while the user is talking
     this._holdSince = 0;
     this._holdTimer = null;
+    this.liveMuted = false;   // BARGE-IN (system mode): zero-fill the live stream
 
     this.player.on('error', (err) => log.error('audio player error:', err.message));
     this.player.on(AudioPlayerStatus.Idle, () => {
@@ -55,13 +56,41 @@ class VoicePlayer {
   playLive(readable, label = 'system-audio') {
     this.live = true;
     try {
-      const resource = createAudioResource(readable, { inputType: StreamType.Raw });
+      // BARGE-IN mute point: zero-fill payload while muted so the stream keeps
+      // real-time pace (no lag build-up) and unmute is instant.
+      const self = this;
+      const muteable = new Transform({
+        transform(chunk, _enc, cb) {
+          cb(null, self.liveMuted ? Buffer.alloc(chunk.length) : chunk);
+        },
+      });
+      readable.on('error', () => {}); // parec restart destroys it; player gets 'end'
+      readable.pipe(muteable);
+      const resource = createAudioResource(muteable, { inputType: StreamType.Raw });
       this.player.play(resource);
       this.playing = true;
       log.info(`live system-audio stream attached (${label}).`);
     } catch (err) {
       log.error('failed to attach live stream:', err.message);
     }
+  }
+
+  // BARGE-IN (system mode): silence the forwarded live stream (the desktop keeps
+  // playing — we just stop relaying it). Logged on every transition.
+  setLiveMuted(muted) {
+    muted = !!muted;
+    if (this.liveMuted === muted) return;
+    this.liveMuted = muted;
+    log.info(muted
+      ? '🤫 live stream muted — user barged in over the bot.'
+      : '🔊 live stream unmuted — bot audio flows again.');
+  }
+
+  // BARGE-IN (tts mode): stop ONLY the active clip. The queue is kept — the
+  // hold-check gate already delays the next clip until the user stops talking.
+  interrupt() {
+    if (!this.playing) return;
+    this.player.stop(true);
   }
 
   // BARGE-IN: gate the START of a clip while the user is still talking. Only

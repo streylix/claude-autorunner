@@ -80,6 +80,9 @@ async function main() {
   // Echo gate: the receiver asks the session whether the bot is currently
   // playing audio (TTS/SFX) so it can ignore self-voice/echo.
   receiver.isBotSpeaking = () => session.isBotSpeaking();
+  // BARGE-IN: sustained real speech from the user during bot playback cuts the
+  // bot's audio (tts: stop the clip; system: mute the forwarded live stream).
+  receiver.onBargeIn = (meta) => session.interruptPlayback(meta);
 
   // Plain image/video drops need the privileged Message Content intent. Probe for
   // it first so the real client never fails to start if it isn't enabled in the
@@ -101,11 +104,27 @@ async function main() {
   // Track each speaker's mute state so the receiver can treat MUTE as the off
   // switch for always-listen (criterion 2). selfMute = the user muted their mic;
   // serverMute = an admin muted them. Either stops capture.
+  //
+  // AUTO-FOLLOW: when an AUTHORIZED user joins (or moves into) a voice channel
+  // while the bridge is linked but idle, join them automatically — so voice
+  // recovers after a service restart without anyone typing /resume. Debounced so
+  // overlapping voice events can't double-join; every step is best-effort.
+  let followJoinInFlight = false;
   client.on('voiceStateUpdate', (oldState, newState) => {
     try {
       if (newState.guild?.id !== config.guildId) return;
       if (newState.id === client.user?.id) return; // ignore the bot itself
       receiver.setMute(newState.id, !!(newState.selfMute || newState.serverMute));
+      if (followJoinInFlight) return;
+      if (!newState.channelId || oldState.channelId === newState.channelId) return; // joins/moves only
+      if (!auth.isAuthorized(newState.id)) return;
+      if (!linkManager.isLinked() || session.isActive()) return;
+      followJoinInFlight = true;
+      log.info(`auto-follow: authorized user joined voice ${newState.channelId} — joining them (linked, idle).`);
+      session.join(newState.guild, newState.channelId)
+        .then(() => log.success('auto-follow: joined — bridge audio is live.'))
+        .catch((e) => log.warn('auto-follow join failed (use /resume):', e.message))
+        .finally(() => { followJoinInFlight = false; });
     } catch (err) {
       log.warn('voiceStateUpdate handler error:', err.message);
     }
@@ -184,6 +203,30 @@ async function main() {
       const guild = client.guilds.cache.get(config.guildId) || await client.guilds.fetch(config.guildId);
       if (guild) await textMirror.resolve(guild);
     } catch (e) { log.warn('text mirror resolve at login failed:', e.message); }
+    // AUTO-RESUME: after a service restart, re-link the last saved session and —
+    // if that user is sitting in a voice channel right now — rejoin it, so a
+    // restart never strands the bridge IDLE mid-conversation. Every step is
+    // best-effort: any failure just falls back to the manual /resume flow.
+    try {
+      const saved = require('./resumeStore').latest();
+      if (saved) {
+        const linked = await linkManager.link(saved.key);
+        if (linked.ok) {
+          log.success(`auto-resumed link for ${saved.tag || saved.userId} — ${linked.message}`);
+          const guild = client.guilds.cache.get(config.guildId) || await client.guilds.fetch(config.guildId);
+          const member = await guild.members.fetch(saved.userId).catch(() => null);
+          const channelId = member?.voice?.channelId || config.voiceChannelId;
+          if (channelId) {
+            await session.join(guild, channelId);
+            log.success(`auto-rejoined voice channel ${channelId} after restart.`);
+          } else {
+            log.info('auto-resume: linked, but the user is not in a voice channel — voice starts when they /resume or re-link.');
+          }
+        } else {
+          log.info(`auto-resume skipped: saved key no longer valid (${linked.message}) — run /link with a fresh key.`);
+        }
+      }
+    } catch (e) { log.warn('auto-resume failed (run /resume manually):', e.message); }
     log.info('IDLE and ready. In Discord: run /link <key> to connect (text + images work right away; join a voice channel too for voice).');
   };
   client.once('clientReady', onReady);

@@ -67,4 +67,17 @@ function wake() {
   };
 }
 
-module.exports = { readSettings, wake, storePath };
+// In-call ALWAYS-LISTEN end-of-speech silence, mirrored LIVE from the app's
+// "Stop after silence" slider (wakeSilenceMs) so changing it in the app changes
+// how fast a Discord voice memo cuts. When the app has no persisted value we use
+// a snappier default than the app's own 5000ms (that suits across-the-room
+// dictation; an in-call memo wants ~1.2s). Floor 600ms so it can never be 0.
+// IN_CALL_SILENCE_MS env pins it (testing / emergency override only).
+function inCallSilenceMs() {
+  const env = Number(process.env.IN_CALL_SILENCE_MS);
+  if (Number.isFinite(env) && env > 0) return Math.max(600, env);
+  const v = Number(readSettings().wakeSilenceMs);
+  return Math.max(600, Number.isFinite(v) && v > 0 ? v : 1200);
+}
+
+module.exports = { readSettings, wake, inCallSilenceMs, storePath };

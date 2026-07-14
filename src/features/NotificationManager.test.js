@@ -54,12 +54,16 @@ function makeBus() {
   };
 }
 
-function makeEnv() {
+function makeEnv({ bargeIn = false } = {}) {
   fetchCalls = [];
   const eventBus = makeBus();
   const appStateStore = { getState: () => undefined };
   const mgr = new NotificationManager(eventBus, appStateStore);
   mgr.autoplay = true;
+  // Default here is LEGACY hold-and-resume so the long-standing hold tests keep
+  // exercising that path; pass { bargeIn: true } for the interrupt behaviour
+  // (which is the manager's real-world default).
+  mgr.bargeInInterrupt = bargeIn;
   return { mgr, eventBus, fetchCalls };
 }
 
@@ -134,6 +138,52 @@ test('a clip held while the user keeps talking is force-resumed (watchdog) and p
   if (mgr._speakingReleaseTimer) { clearTimeout(mgr._speakingReleaseTimer); mgr._speakingReleaseTimer = null; }
   eventBus.emit('speech:active');
   assert.strictEqual(mgr.audio.paused, false, 'play-through clip is never paused again');
+});
+
+test('BARGE-IN: speech onset mid-readout STOPS the message for good (no hold, no resume, finalized played)', () => {
+  const { mgr, eventBus, fetchCalls } = makeEnv({ bargeIn: true });
+  startClip(mgr, 1, '/audio/1.wav', 3.5);
+
+  eventBus.emit('speech:active'); // user cuts in
+  assert.strictEqual(mgr.audio.paused, true, 'readout must stop immediately');
+  assert.strictEqual(mgr._held, null, 'clip must NOT be held for resume');
+  assert.strictEqual(mgr.playing, false);
+  assert.strictEqual(mgr._currentId, null);
+  assert.ok(fetchCalls.some((c) => c.url === `${BASE_URL}/api/tts/notifications/1/played/`),
+    'interrupted clip is finalized as played so it never reads out again');
+
+  eventBus.emit('speech:idle');   // user goes quiet
+  flushRelease(mgr);
+  assert.strictEqual(mgr.audio.paused, true, 'the interrupted clip must NOT resume');
+  assert.strictEqual(mgr.playing, false);
+});
+
+test('BARGE-IN: the next queued notification still plays after the user goes quiet', () => {
+  const { mgr, eventBus } = makeEnv({ bargeIn: true });
+  startClip(mgr, 1, '/audio/1.wav', 2.0);
+  mgr.items.set(2, { id: 2, audio_url: '/audio/2.wav' });
+  mgr._enqueuePlay(mgr.items.get(2)); // waiting behind the current clip
+
+  eventBus.emit('speech:active');
+  assert.strictEqual(mgr.playing, false, 'current readout stopped');
+  assert.strictEqual(mgr.playQueue.length, 1, 'queued clip must survive the interrupt');
+
+  eventBus.emit('speech:idle');
+  flushRelease(mgr);
+  assert.strictEqual(mgr.playing, true, 'next notification plays once the user is quiet');
+  assert.strictEqual(mgr._currentId, 2);
+});
+
+test('BARGE-IN: interrupting a user-requested replay stops it but does NOT re-mark it played', () => {
+  const { mgr, eventBus, fetchCalls } = makeEnv({ bargeIn: true });
+  mgr.items.set(3, { id: 3, audio_url: '/audio/3.wav' });
+  mgr.replay(3);
+  fetchCalls.length = 0; // ignore any calls so far
+
+  eventBus.emit('speech:active');
+  assert.strictEqual(mgr.audio.paused, true, 'replay stops on barge-in');
+  assert.ok(!fetchCalls.some((c) => String(c.url).includes('/played/')),
+    'a replay was already played — no duplicate played POST');
 });
 
 test('the same notification is not enqueued twice', () => {

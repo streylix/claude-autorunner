@@ -74,7 +74,6 @@ const config = {
   // switch). Each utterance is buffered to a file and transcribed once at its
   // end-of-speech silence boundary (deferred Whisper, never streaming).
   alwaysListenInCall: bool(process.env.ALWAYS_LISTEN_IN_CALL, true),
-  inCallSilenceMs: int(process.env.IN_CALL_SILENCE_MS, 1500),
   // Absolute backstop on a single CONTINUOUS capture (no silence gap). High
   // enough that real speech — including long monologues — is never cut; the
   // AfterSilence VAD already segments normal speech at pauses well below this.
@@ -116,6 +115,16 @@ const config = {
   bargeInEnabled: bool(process.env.BARGE_IN_ENABLED, true),
   userSpeakingGraceMs: int(process.env.USER_SPEAKING_GRACE_MS, 600), // treat user as "still talking" this long after last audio
   bargeInMaxHoldMs: int(process.env.BARGE_IN_MAX_HOLD_MS, 8000),     // safety: play anyway after holding this long
+  // BARGE-IN INTERRUPT: when the user starts speaking WHILE the bot is playing a
+  // reply, cut the bot's audio so the user can talk over it naturally. Detection
+  // requires SUSTAINED audio (minSpeechMs) at real speech energy (minLevelDb,
+  // RMS dBFS of the user's own receive stream) so echo bleed and short noises
+  // can't trip it. tts mode stops the active clip; system mode mutes the live
+  // forwarded stream for the rest of the reply (the desktop audio can't be
+  // stopped from here, but the remote user only hears the Discord stream).
+  bargeInInterruptEnabled: bool(process.env.BARGE_IN_INTERRUPT_ENABLED, true),
+  bargeInMinSpeechMs: int(process.env.BARGE_IN_MIN_SPEECH_MS, 350),
+  bargeInMinLevelDb: int(process.env.BARGE_IN_MIN_LEVEL_DB, -40),
   // Mirror voice activity into a Discord TEXT channel ("Heard:" what you said,
   // "Replied:" the manager's response). Channel resolves: DISCORD_TEXT_CHANNEL_ID
   // → an existing channel named textChannelName → create it (needs Manage
@@ -181,6 +190,12 @@ const config = {
 // the app's settings file when it changes, so changing your wake word in the app
 // just works here too.
 config.wake = () => appSettings.wake();
+
+// Live ALWAYS-LISTEN end-of-speech silence, mirrored from the app's "Stop after
+// silence" slider (wakeSilenceMs). Read PER CAPTURE so a slider change applies to
+// the very next utterance — no restart. Floor 600ms, default 1200ms when the app
+// value is unset; IN_CALL_SILENCE_MS env pins it for testing.
+config.inCallSilence = () => appSettings.inCallSilenceMs();
 
 // Framing markers so the manager can tell HOW the input arrived. Voice keeps the
 // original wording (the manager's CLAUDE.md watches for it). Typed = verbatim text

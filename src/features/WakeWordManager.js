@@ -197,7 +197,9 @@ class WakeWordManager {
             this.phrase = String(prefs.wakeWordPhrase).trim().toLowerCase() || 'hey claude';
             phraseChanged = true;
         }
-        if (prefs.wakeSilenceMs != null) this.silenceMs = Math.max(1000, Number(prefs.wakeSilenceMs) || 5000);
+        // Floor 600ms — matches the slider minimum and the Discord bridge's clamp,
+        // so the ONE wakeSilenceMs setting behaves identically on both voice paths.
+        if (prefs.wakeSilenceMs != null) this.silenceMs = Math.max(600, Number(prefs.wakeSilenceMs) || 5000);
         if (prefs.wakeMatchThreshold != null) {
             const t = Number(prefs.wakeMatchThreshold);
             if (Number.isFinite(t)) this.matchThreshold = Math.min(0.95, Math.max(0, t));
