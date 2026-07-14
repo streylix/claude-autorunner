@@ -628,3 +628,70 @@ into the embedded remote terminal and asserts the output echoes back in BOTH
 the embedded view and the remote instance's own xterm, then disconnects and
 asserts the forwarded port is closed and no `ssh -L` child remains.
 Screenshots + transcript land in `.e2e-remote-client/evidence`.
+
+## 9. Voice notifications play on the device SHOWING the interface (IMPLEMENTED)
+
+### The problem
+
+Spoken notifications were host-locked: the manager POSTs `/api/tts/speak/` to
+the Django backend (loopback :8123), and the LOCAL renderer's
+`NotificationManager` polls `/api/tts/notifications/` and plays the WAV — so
+the sound comes out of the app host. In Remote Mode that host is usually a
+headless box nobody is sitting at, while the person actually watching the
+interface (browser tab or the §8 embedded iframe — same renderer path) heard
+nothing: the backend's loopback is unreachable from the viewer's machine, and
+`http://localhost:8123` there is the *viewer's* localhost, i.e. the wrong
+machine entirely.
+
+### How it works now
+
+- **Server side** — `src/main/tts-remote-forwarder.js` (`TtsRemoteForwarder`,
+  main process, where the backend loopback IS reachable). Activated by
+  `RemoteServer`'s new `onClientsChanged(count)` hook: while ≥1 client is
+  attached it polls the same notifications endpoint (2s), fetches each fresh
+  notification's WAV, and broadcasts it to every attached client over the
+  existing token-gated WebSocket:
+  `{t:'push', channel:'remote-tts-notification', args:[{notification, audioBase64, mime}]}`.
+  No new port, no new auth surface — the audio rides the tunnel-safe WS that
+  already carries the whole interface.
+- **Client side** — `NotificationManager.initializeRemote()` (called instead
+  of `initialize()` when `window.__CCBOT_REMOTE__`): no HTTP polling; the WS
+  push becomes a `Blob`/`blob:` URL, the row renders in the Notifications tab,
+  and the SAME queue/chime/playback machinery drives an `HTMLAudioElement` —
+  the sound comes out of the viewing device. Works identically in a plain
+  browser tab and in the client GUI's embedded iframe (one renderer path).
+  If a plain browser blocks the first autoplay (`NotAllowedError`), the clip
+  is requeued — never consumed silently — and plays on the first
+  click/keypress.
+- **Played-marks** — a remote client can't POST `/played/` to the backend, so
+  it sends `remote-tts-played` over the WS and main POSTs on its behalf.
+
+### Which device plays (the no-double-play rule)
+
+- **≥1 remote client attached** → every attached client plays; the LOCAL
+  renderer is told (push `remote-clients-changed`, boot-time invoke
+  `remote-clients-count`) to hold AUTO playback. Rows still render locally and
+  an explicit ▶ replay is always honored locally, so a person physically at
+  the machine can still listen on demand.
+- **0 remote clients** → local playback exactly as before this change.
+- The forwarder re-baselines its watermark on every 0→N attach, so history is
+  never replayed into a client that just connected; notifications created
+  while nobody was attached play locally (clips queued locally just before an
+  attach stay held and drain on detach — v1 tradeoff).
+
+### End-to-end verification
+
+`xvfb-run -a node tests/integration/remote-tts-e2e.js` — isolated
+`XDG_CONFIG_HOME` + own ports, a Django-shaped stand-in TTS backend serving
+REAL WAV bytes (the full Kokoro stack is impractical in a sandbox; every byte
+still flows through the same app code path), one CCBOT_REMOTE=1 Electron app
+and one headless Chromium client. Proves: sink flip on attach; the pushed
+audio arrives byte-for-byte over the WS; the client renders the row and DRIVES
+playback (blob src, `play()` resolved, `playing` state, console markers); the
+played-mark round-trips client → WS → main → backend; the local renderer never
+touched its audio element; detach flips the sink back and a later notification
+plays locally. Being headless, acoustic output itself isn't captured — the
+delivery + playback-invocation chain is what's asserted. Unit tests:
+`src/main/tts-remote-forwarder.test.js`,
+`src/features/NotificationManager.remote.test.js`,
+`src/features/NotificationManager.local-sink.test.js`.
