@@ -806,8 +806,8 @@
                    placeholder="ssh user@host" spellcheck="false" autocomplete="off"
                    aria-label="SSH command, e.g. ssh ethan@pop-os">
             <button type="button" id="remote-connect-btn" class="remote-command-connect" data-test-id="remote-connect-btn">Connect</button>
-            <button type="button" id="remote-command-close-btn" class="remote-command-close" data-test-id="remote-command-close-btn" title="Close (Esc)">&times;</button>
         </div>
+        <!-- No close button: the bar dismisses on Esc or a click anywhere outside it. -->
         <!-- Key→password fallback (VS Code Remote-SSH style): hidden until key
              auth fails (or the Advanced "use password" box is ticked). The
              value is sent ONLY in the connect IPC call — never stored in
@@ -849,7 +849,7 @@
     <div id="remote-panel" class="remote-panel hidden" data-test-id="remote-panel">
         <div class="remote-panel-header">
             <span class="remote-panel-title">Remote connection</span>
-            <button id="remote-panel-close-btn" class="remote-panel-close" data-test-id="remote-panel-close-btn" title="Close">&times;</button>
+            <!-- No close button: the popover dismisses on Esc or a click anywhere outside it. -->
         </div>
         <div id="remote-connected-box" class="remote-connected-box hidden">
             <p id="remote-connected-text" class="remote-connected-text" data-test-id="remote-connected-text"></p>

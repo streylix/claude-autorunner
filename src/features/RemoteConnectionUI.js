@@ -65,7 +65,6 @@ class RemoteConnectionUI {
             bar: $('remote-command-bar'),
             command: $('remote-command-input'),
             connectBtn: $('remote-connect-btn'),
-            barCloseBtn: $('remote-command-close-btn'),
             advancedToggle: $('remote-advanced-toggle'),
             advancedBox: $('remote-advanced-box'),
             sessionPath: $('remote-session-path-input'),
@@ -84,7 +83,6 @@ class RemoteConnectionUI {
             connectedBox: $('remote-connected-box'),
             connectedText: $('remote-connected-text'),
             disconnectBtn: $('remote-disconnect-btn'),
-            panelCloseBtn: $('remote-panel-close-btn'),
             panelStatus: $('remote-panel-status'),
             // embedded remote view
             viewContainer: $('remote-view-container'),
@@ -100,8 +98,6 @@ class RemoteConnectionUI {
             if (this.connection) this.togglePanel();
             else this.toggleCommandBar();
         });
-        this.el.barCloseBtn.addEventListener('click', () => this.hideCommandBar());
-        this.el.panelCloseBtn.addEventListener('click', () => this.hidePanel());
         this.el.connectBtn.addEventListener('click', () => this.connect());
         this.el.disconnectBtn.addEventListener('click', () => this.disconnect());
         this.el.advancedToggle.addEventListener('click', () => {
@@ -122,6 +118,23 @@ class RemoteConnectionUI {
             if (e.key !== 'Escape') return;
             if (!this.el.bar.classList.contains('hidden')) this.hideCommandBar();
             if (!this.el.panel.classList.contains('hidden')) this.hidePanel();
+        });
+        // Click-outside dismiss (there is no X button): a pointerdown anywhere
+        // outside the open bar/popover closes it. The corner indicator is
+        // excluded — its own click handler owns the toggle, and hiding here
+        // first would make that click reopen what it just closed. A connect
+        // in flight keeps the bar up so its status line (and a possible
+        // password prompt) can't vanish mid-attempt.
+        document.addEventListener('pointerdown', (e) => {
+            const t = e.target;
+            if (this.el.indicator.contains(t)) return;
+            if (!this.el.bar.classList.contains('hidden')
+                && !this.el.bar.contains(t) && !this.connecting) {
+                this.hideCommandBar();
+            }
+            if (!this.el.panel.classList.contains('hidden') && !this.el.panel.contains(t)) {
+                this.hidePanel();
+            }
         });
 
         // Progress + unexpected tunnel state changes pushed from main. During

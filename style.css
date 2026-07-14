@@ -4560,20 +4560,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     color: var(--text-primary);
 }
 
-.remote-panel-close {
-    background: none;
-    border: none;
-    color: var(--text-tertiary);
-    font-size: 16px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 0 2px;
-}
-
-.remote-panel-close:hover {
-    color: var(--text-primary);
-}
-
 .remote-panel-hint {
     font-size: 11px;
     color: var(--text-tertiary);
@@ -4760,21 +4746,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .remote-command-connect:disabled {
     opacity: 0.6;
     cursor: wait;
-}
-
-.remote-command-close {
-    background: none;
-    border: none;
-    color: var(--text-tertiary);
-    font-size: 18px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 0 2px;
-    flex-shrink: 0;
-}
-
-.remote-command-close:hover {
-    color: var(--text-primary);
 }
 
 /* Key→password fallback row (hidden until key auth fails or the Advanced

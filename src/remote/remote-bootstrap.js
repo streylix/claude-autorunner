@@ -25,6 +25,15 @@
 
     window.__CCBOT_REMOTE__ = true;
 
+    // The footer's "connect to a remote" indicator belongs to the DESKTOP app
+    // only (no nested remote hops): RemoteConnectionUI never initializes here,
+    // so its index.html markup would paint as a dead <> button — stacked right
+    // under the client GUI's own live indicator when viewed in the embedded
+    // iframe. Hide it before first paint.
+    const hideStyle = document.createElement('style');
+    hideStyle.textContent = '#remote-indicator { display: none !important; }';
+    (document.head || document.documentElement).appendChild(hideStyle);
+
     // ---- token: URL fragment -> sessionStorage ----
     let token = '';
     const m = /[#&]k=([A-Za-z0-9]+)/.exec(window.location.hash || '');

@@ -8,7 +8,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const BASE_URL = 'http://localhost:8123';
+// Must match the module's own resolution (127.0.0.1, not localhost — see
+// src/utils/backend-url.js on Electron's ::1-only localhost lookup).
+const { BACKEND_URL: BASE_URL } = require('../utils/backend-url');
 
 // ---- minimal DOM/host stubs (set before requiring the module's consumers) ----
 let fetchCalls = [];
