@@ -28,6 +28,7 @@ const ManagerInstance = require('./src/features/ManagerInstance');
 const PromptWatchManager = require('./src/features/PromptWatchManager');
 const WakeWordManager = require('./src/features/WakeWordManager');
 const DiscordLinkKeyManager = require('./src/features/DiscordLinkKeyManager');
+const RemoteConnectionUI = require('./src/features/RemoteConnectionUI');
 const UIFocusManager = require('./src/ui/UIFocusManager');
 
 // Import utilities
@@ -195,6 +196,15 @@ class TerminalGUI {
 
         // Wire centralized event processors onto the EventBus (fix 8).
         this.setupEventProcessors();
+
+        // Remote-SSH style client (the bottom-left corner indicator): connect
+        // to another machine's Remote Mode over the user's own ssh and embed
+        // its full interface in-app. LOCAL desktop app only — a remote browser
+        // view must not offer a nested remote hop.
+        if (!IS_REMOTE) {
+            this.remoteConnectionUI = new RemoteConnectionUI(this.ipcHandler);
+            this.remoteConnectionUI.initialize();
+        }
 
         console.log('🎨 Feature managers initialized');
     }
