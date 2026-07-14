@@ -267,8 +267,86 @@ function startBackend() {
             () => window.__ccbotRemote && window.__ccbotRemote.authed
         ).catch(() => false), 20000, 'browser WS-authenticated');
         ok(true, 'headless Chromium attached as a Remote Mode client (authenticated WS)');
-        await page.waitForSelector('#remote-mic-btn', { timeout: 10000, state: 'attached' });
-        ok(true, 'mic on/off affordance rendered in the remote client (floating mic button)');
+        // 1b. UI cleanup: the floating mic button is GONE (it used to overlap
+        // the message input) — the single mic control is Settings → Microphone.
+        const floatBtn = await page.evaluate(() => !!document.getElementById('remote-mic-btn'));
+        ok(floatBtn === false, 'no floating mic button in the remote client (removed; Settings → Microphone is the control)');
+
+        // 1b'. UI cleanup: the remote view's own (dead) connect indicator is
+        // hidden — only the outer desktop app shows a connect control, so no
+        // more two stacked <> buttons bottom-left.
+        const innerIndicator = await page.evaluate(() => {
+            const el = document.getElementById('remote-indicator');
+            return el ? getComputedStyle(el).display : 'absent';
+        });
+        ok(innerIndicator === 'none' || innerIndicator === 'absent',
+            `remote view's own connect indicator is hidden (display: ${innerIndicator})`);
+
+        // 1b''. UI cleanup on the DESKTOP side (this isolated app's local
+        // window): the connect bar has no X button and dismisses on a click
+        // anywhere outside it.
+        const dismiss = await appPage.evaluate(async () => {
+            const ui = window.terminalGUI && window.terminalGUI.remoteConnectionUI;
+            if (!ui || !ui.el || !ui.el.bar) return { skipped: 'no RemoteConnectionUI' };
+            const bar = ui.el.bar;
+            const noX = !document.getElementById('remote-command-close-btn')
+                && !document.getElementById('remote-panel-close-btn');
+            ui.showCommandBar();
+            const openedVisible = !bar.classList.contains('hidden');
+            document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            const closedAfterOutside = bar.classList.contains('hidden');
+            ui.showCommandBar();
+            bar.querySelector('#remote-command-input')
+                .dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            const stayedOpenOnInside = !bar.classList.contains('hidden');
+            ui.hideCommandBar();
+            return { noX, openedVisible, closedAfterOutside, stayedOpenOnInside };
+        });
+        ok(dismiss.noX === true, 'no X buttons on the connect bar / management popover');
+        ok(dismiss.openedVisible === true && dismiss.closedAfterOutside === true,
+            'connect bar dismisses on a click anywhere outside it');
+        ok(dismiss.stayedOpenOnInside === true, 'clicking inside the bar does NOT dismiss it');
+
+        // 1c. SETTINGS MIC PICKER lists THIS BROWSER's inputs (the fake devices),
+        // offers an explicit Off, and defaults to Off for a first-time viewer.
+        await waitFor(() => page.evaluate(() => !!(window.terminalGUI && window.terminalGUI.populateMicrophoneSelect)), 15000, 'remote renderer booted');
+        const picker = await page.evaluate(async () => {
+            await window.terminalGUI.populateMicrophoneSelect();
+            const sel = document.getElementById('microphone-select');
+            return {
+                options: [...sel.options].map((o) => ({ value: o.value, label: o.textContent })),
+                selected: sel.value
+            };
+        });
+        ok(picker.options.some((o) => o.value === 'off'), 'picker offers an explicit Off row');
+        const fakeDev = picker.options.find((o) => /fake/i.test(o.label) && o.value !== 'off' && o.value !== 'default');
+        ok(!!fakeDev, `picker lists the VIEWING browser's inputs (found "${fakeDev && fakeDev.label}") — not the desktop's`);
+        ok(picker.selected === 'off', 'first-time viewer defaults to Off (no un-opted-in mic streaming)');
+
+        // 1d. Selecting a device in the picker STARTS the stream on it and the
+        // app's voice button carries the streaming glow; Off stops it again.
+        await page.evaluate((devId) => {
+            const sel = document.getElementById('microphone-select');
+            sel.value = devId;
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }, fakeDev.value);
+        await waitFor(() => page.evaluate(() => window.__ccbotRemoteMic.isStreaming()), 15000, 'picker selection started the mic stream');
+        const pickState = await page.evaluate(() => ({
+            device: window.__ccbotRemoteMic.getDevice(),
+            label: window.__ccbotRemoteMic.activeLabel(),
+            glow: (document.getElementById('voice-btn') || { classList: { contains: () => false } }).classList.contains('remote-wake-on')
+        }));
+        ok(pickState.device === fakeDev.value, `stream runs on the PICKED device (${pickState.device.slice(0, 12)}…)`);
+        ok(!!pickState.label, `captured track label: "${pickState.label}"`);
+        ok(pickState.glow === true, 'voice button carries the streaming glow (consolidated mic state indicator)');
+        await page.evaluate(() => {
+            const sel = document.getElementById('microphone-select');
+            sel.value = 'off';
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        await waitFor(() => page.evaluate(() => !window.__ccbotRemoteMic.isStreaming()), 10000, 'Off stopped the stream');
+        ok(true, 'picker Off row stops the stream (and persists — no auto-resume next connect)');
+        await page.evaluate(() => { try { window.localStorage.removeItem('ccbotRemoteMicDeviceId'); } catch (_) {} });
 
         // 2. REAL capture path: getUserMedia + AudioWorklet + downsampler.
         const started = await page.evaluate(() => window.__ccbotRemoteMic.start());

@@ -12,6 +12,10 @@
  * Verifies, in order:
  *   1. a Remote Mode client attaching flips the LOCAL renderer's audio sink to
  *      "remote" (remoteSinkActive true — no local double-play);
+ *   1b. the notifications PANEL mirrors the desktop's: a notification created
+ *      BEFORE the viewer attached renders via the /api reverse-proxy history
+ *      load (the WS forwarder baselines past it, so the proxy is the only
+ *      possible source);
  *   2. a TTS notification fired on the server host is pushed over the
  *      authenticated WebSocket WITH its real audio bytes (byte length checked
  *      against the exact WAV the backend served);
@@ -229,6 +233,17 @@ function startBackend() {
         );
         ok((await localSink()) === false, 'no client attached yet → local renderer is the audio sink');
 
+        // A notification created BEFORE any viewer attaches: the WS forwarder
+        // baselines PAST it on attach, so if it shows up in the client's panel
+        // it can only have come through the /api reverse proxy history load —
+        // that is the "notifications panel is no longer empty over SSH" proof.
+        const preAttach = await fetch(`http://127.0.0.1:${BACKEND_PORT}/api/tts/speak/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: 'History row from before the viewer attached.', source: 'manager' })
+        }).then((r) => r.json());
+        ok(Number.isInteger(preAttach.id), `pre-attach notification ${preAttach.id} created (panel-history probe)`);
+
         // ---- the "viewer" device: plain headless Chromium over the WS ----
         browser = await playwright.chromium.launch({
             headless: true,
@@ -253,6 +268,14 @@ function startBackend() {
         // 1. the LOCAL renderer flips its audio sink to the remote viewer(s)
         await waitFor(async () => (await localSink()) === true, 10000, 'local remoteSinkActive=true');
         ok(true, 'LOCAL renderer suppresses auto playback while the viewer is attached (no double-play)');
+
+        // 1b. NOTIFICATIONS PANEL MIRROR: the pre-attach row loads into the
+        // client's panel via the /api reverse proxy (loadHistory) — the WS
+        // forwarder never pushed it (watermark baselined past it on attach).
+        await page.waitForSelector(`.notification-item[data-id="${preAttach.id}"]`, { timeout: 15000, state: 'attached' });
+        const preAttachPushed = consoleLines.some((l) => l.includes(`[remote-tts] notification ${preAttach.id} received over WS`));
+        ok(!preAttachPushed, 'pre-attach row was NOT WS-pushed — it can only have come through the /api proxy');
+        ok(true, `NOTIFICATIONS PANEL: pre-attach notification ${preAttach.id} rendered in the remote client via the proxied history load`);
 
         // 2-4. fire a TTS notification on the "server" (what the manager does)
         const speakRes = await fetch(`http://127.0.0.1:${BACKEND_PORT}/api/tts/speak/`, {
@@ -319,12 +342,14 @@ function startBackend() {
                 hasRow: nm.items.size > 0,
                 playing: nm.playing,
                 queued: nm.playQueue.length,
-                playCount: (nm.audio && nm.audio.played && nm.audio.played.length) || 0,
                 src: nm.audio.src || ''
             };
         });
-        ok(localState.playing === false && localState.queued === 0 && localState.src === '',
-            'LOCAL renderer did not touch its audio element (no double-play on the app host)');
+        // (the PRE-attach notification legitimately played locally — only the
+        // post-attach one must have been kept off the local audio element)
+        ok(localState.playing === false && localState.queued === 0
+            && !localState.src.includes(`/api/tts/audio/${nid}/`),
+            'LOCAL renderer did not play the forwarded notification (no double-play on the app host)');
         await appPage.screenshot({ path: path.join(EVID, '02-local-app-suppressed.png') });
 
         // 6. detach → sink flips back local; later notifications are NOT forwarded
