@@ -753,6 +753,35 @@ app.whenReady().then(async () => {
       count: remoteServer ? remoteServer.clients.size : 0
     }));
 
+    // ---- Remote client microphone forwarding (docs/REMOTE_MODE.md §10) ----
+    // The INPUT mirror of the TTS output forwarder: the streaming viewer's mic
+    // frames arrive over the authenticated WS (RemoteServer enforces single
+    // ownership) and are relayed to the LOCAL renderer ONLY — that renderer
+    // hosts the wake-word engine + Whisper client that consume them. They are
+    // never re-broadcast to remote clients.
+    ipcMain.on('remote-mic-state', (event, payload) => {
+      const active = !!(payload && payload.active);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('remote-mic-state', {
+          active,
+          reason: (payload && payload.reason) || undefined
+        });
+      }
+      safeLog('[Remote] client mic ' + (active ? 'ATTACHED — desktop voice pipeline now fed by the remote viewer' : 'DETACHED — local mic behavior restored'));
+    });
+    ipcMain.on('remote-mic-frame', (event, payload) => {
+      // ~85ms of 16kHz PCM16 is ~3.6KB base64; anything huge is not a mic frame.
+      if (!payload || typeof payload.pcm16 !== 'string' || payload.pcm16.length > 262144) return;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('remote-mic-frame', payload);
+      }
+    });
+    // Wake-pipeline state, LOCAL renderer → the streaming client (button
+    // feedback + activation/stop chimes on the device the user talks into).
+    ipcMain.on('remote-wake-state', (event, payload) => {
+      if (remoteServer) remoteServer.broadcast('remote-wake-state', [payload || {}]);
+    });
+
     // Advertise the loopback Control API (port + token) in a tight-perms session
     // file so a same-user local process — notably the read-only `npm run ssh-view`
     // mirror over SSH — can discover it without inheriting CCBOT_* env vars. The
