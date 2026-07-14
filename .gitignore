@@ -376,6 +376,7 @@ tests/integration/*
 !tests/integration/remote-client-reload-e2e.js
 !tests/integration/remote-tts-e2e.js
 !tests/integration/remote-mic-e2e.js
+!tests/integration/remote-meta-e2e.js
 # Canned synthesized-speech fixtures for the mic-forwarding e2e (small WAVs)
 !tests/fixtures/
 tests/fixtures/*
@@ -386,3 +387,4 @@ tests/fixtures/*
 .e2e-remote-client/
 .e2e-remote-tts/
 .e2e-remote-mic/
+.e2e-remote-meta/
