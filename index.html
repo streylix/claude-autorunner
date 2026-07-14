@@ -803,8 +803,17 @@
             <button type="button" id="remote-connect-btn" class="remote-command-connect" data-test-id="remote-connect-btn">Connect</button>
             <button type="button" id="remote-command-close-btn" class="remote-command-close" data-test-id="remote-command-close-btn" title="Close (Esc)">&times;</button>
         </div>
+        <!-- Key→password fallback (VS Code Remote-SSH style): hidden until key
+             auth fails (or the Advanced "use password" box is ticked). The
+             value is sent ONLY in the connect IPC call — never stored in
+             recents/localStorage, never logged. -->
+        <div id="remote-password-row" class="remote-password-row hidden" data-test-id="remote-password-row">
+            <label for="remote-password-input" id="remote-password-label" class="remote-password-label">SSH password</label>
+            <input type="password" id="remote-password-input" data-test-id="remote-password-input"
+                   autocomplete="off" spellcheck="false" aria-label="SSH password for the remote machine">
+        </div>
         <div class="remote-command-hintline">
-            <span class="remote-command-hint">ssh user@host · ssh host -p 2222 · user@host — your own ssh keys/config, no passwords. If the remote isn't serving Remote Mode yet, it gets started for you.</span>
+            <span class="remote-command-hint">ssh user@host · ssh host -p 2222 · user@host — your own ssh keys/config; if no key works you'll be asked for the machine's SSH password. If the remote isn't serving Remote Mode yet, it gets started for you.</span>
             <button type="button" id="remote-advanced-toggle" class="remote-advanced-toggle" data-test-id="remote-advanced-toggle">Advanced…</button>
         </div>
         <div id="remote-advanced-box" class="remote-advanced-box hidden">
@@ -820,6 +829,10 @@
                 <label for="remote-app-dir-input">Remote app directory <span class="remote-label-soft">(only for auto-start when the app never ran there)</span></label>
                 <input type="text" id="remote-app-dir-input" data-test-id="remote-app-dir-input" placeholder="~/claude-autorunner" spellcheck="false" autocomplete="off">
             </div>
+            <label class="remote-check-row" for="remote-use-password-check">
+                <input type="checkbox" id="remote-use-password-check" data-test-id="remote-use-password-check">
+                Use password authentication <span class="remote-label-soft">(ask up front instead of trying keys)</span>
+            </label>
         </div>
         <div id="remote-recents-list" class="remote-recents-list hidden" data-test-id="remote-recents-list"></div>
         <div id="remote-command-status" class="remote-panel-status" data-test-id="remote-command-status"></div>

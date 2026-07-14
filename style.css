@@ -4763,6 +4763,63 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     color: var(--text-primary);
 }
 
+/* Key→password fallback row (hidden until key auth fails or the Advanced
+   "use password" box is ticked) */
+.remote-password-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.remote-password-row.hidden {
+    display: none;
+}
+
+.remote-password-label {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+#remote-password-input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 13px;
+    padding: 7px 10px;
+    outline: none;
+}
+
+#remote-password-input:focus {
+    border-color: var(--accent-secondary);
+}
+
+#remote-password-input:disabled {
+    opacity: 0.6;
+}
+
+/* "Use password authentication" opt-in inside the Advanced fold-out */
+.remote-check-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.remote-check-row input[type="checkbox"] {
+    margin: 0;
+    accent-color: var(--accent-primary);
+}
+
 .remote-command-hintline {
     display: flex;
     align-items: baseline;
