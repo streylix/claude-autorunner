@@ -48,14 +48,25 @@ class VoiceManager {
 
         // Pick up the persisted microphone choice on load and live changes
         // from the settings modal (PreferenceManager events).
+        //
+        // NOT in Remote Mode: the shared preference names a device on the
+        // DESKTOP, which doesn't exist in the viewing browser. There the picker
+        // calls setMicrophoneDevice() directly with one of THIS browser's
+        // devices (renderer.js keeps it in localStorage, per-viewer).
         this.eventBus.on('preferences:applied', (prefs) => {
+            if (this._isRemote()) return;
             if (prefs && prefs.microphoneDeviceId) {
                 this.setMicrophoneDevice(prefs.microphoneDeviceId);
             }
         });
         this.eventBus.on('preference:changed', ({ key, value }) => {
+            if (this._isRemote()) return;
             if (key === 'microphoneDeviceId') this.setMicrophoneDevice(value);
         });
+    }
+
+    _isRemote() {
+        return typeof window !== 'undefined' && !!window.__CCBOT_REMOTE__;
     }
 
     setMicrophoneDevice(deviceId) {

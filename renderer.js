@@ -1192,11 +1192,39 @@ class TerminalGUI {
         // ---- Microphone picker (settings modal) ----
         // Options are (re)enumerated on every settings open; the choice persists
         // as the 'microphoneDeviceId' preference, which VoiceManager listens for.
+        //
+        // REMOTE view: the picker lists the VIEWING browser's inputs, so the
+        // choice is per-device — persisted in this browser's localStorage and fed
+        // to the remote-mic forwarder + the local VoiceManager instance. It must
+        // NEVER be written to the shared 'microphoneDeviceId' preference: that
+        // would clobber the desktop's own mic choice with a device id that only
+        // exists on the viewer's machine.
         const micSelect = document.getElementById('microphone-select');
         if (micSelect) {
             micSelect.addEventListener('change', () => {
+                if (IS_REMOTE) {
+                    const v = micSelect.value;
+                    if (this.voiceManager) this.voiceManager.setMicrophoneDevice(v);
+                    const rm = window.__ccbotRemoteMic;
+                    if (rm && typeof rm.setDevice === 'function') {
+                        // (Re)starts the mic stream on that device — wake word +
+                        // voice pipeline now listen to THIS machine's mic.
+                        rm.setDevice(v).catch(() => {});
+                    } else {
+                        try { window.localStorage.setItem('ccbotRemoteMicDeviceId', v); } catch (_) { /* ignore */ }
+                    }
+                    return;
+                }
                 this.preferenceManager.updatePreference('microphoneDeviceId', micSelect.value);
             });
+        }
+        if (IS_REMOTE && this.voiceManager) {
+            // Boot: restore this browser's saved input so the voice button
+            // records from the right mic without reopening Settings.
+            try {
+                const savedRemoteMic = window.localStorage.getItem('ccbotRemoteMicDeviceId');
+                if (savedRemoteMic) this.voiceManager.setMicrophoneDevice(savedRemoteMic);
+            } catch (_) { /* private mode */ }
         }
 
         // ---- Queue send delay (injectionDelayMs) ----
@@ -1460,7 +1488,16 @@ class TerminalGUI {
 
             const devices = await navigator.mediaDevices.enumerateDevices();
             const mics = devices.filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default');
-            const saved = this.preferenceManager.getPreference('microphoneDeviceId') || 'default';
+            // enumerateDevices always describes the machine RUNNING this code —
+            // the desktop locally, the viewer's own browser in Remote Mode. The
+            // saved selection must come from the matching store: the shared
+            // preference locally, this browser's localStorage remotely.
+            let saved = 'default';
+            if (IS_REMOTE) {
+                try { saved = window.localStorage.getItem('ccbotRemoteMicDeviceId') || 'default'; } catch (_) { /* ignore */ }
+            } else {
+                saved = this.preferenceManager.getPreference('microphoneDeviceId') || 'default';
+            }
 
             micSelect.innerHTML = '';
             const defOpt = document.createElement('option');
@@ -2791,11 +2828,22 @@ class TerminalGUI {
         // Load notification history and start polling the TTS backend for new
         // spoken notifications (the manager produces them; this just plays/shows).
         // Local: the TTS backend lives on the app host's loopback — poll it.
-        // Remote: that loopback is unreachable from the viewer's machine, so
-        // main pushes each fresh notification's audio over the WS instead and
-        // it PLAYS HERE, on the device showing the interface (REMOTE_MODE.md §9).
-        if (!IS_REMOTE) this.notificationManager.initialize();
-        else this.notificationManager.initializeRemote();
+        // Remote: audio pushes over the WS and PLAYS HERE, on the device showing
+        // the interface (REMOTE_MODE.md §9) — and since /api/* is reverse-proxied
+        // by the RemoteServer, the list itself loads + polls same-origin too, so
+        // the Notifications panel mirrors the desktop's instead of sitting empty.
+        // The id watermark (lastSeenId) + items map dedupe the two feeds: whoever
+        // delivers a notification first wins, the other skips it.
+        if (!IS_REMOTE) {
+            this.notificationManager.initialize();
+        } else {
+            this.notificationManager.initializeRemote();
+            // History FIRST (it sets the id watermark), polling after — else the
+            // first poll would see the whole backlog as "fresh" and read it out.
+            this.notificationManager.loadHistory()
+                .then(() => this.notificationManager.startPolling())
+                .catch(() => this.notificationManager.startPolling());
+        }
 
         // Boot the manager instance if the user configured a directory for it
         this.managerInstance.startIfConfigured();

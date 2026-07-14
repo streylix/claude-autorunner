@@ -136,6 +136,16 @@ class RemoteServer {
 
     // ======= static assets =======
     handleHttp(req, res) {
+        // Backend reverse proxy: the browser renderer's `${BACKEND_URL}/api/...`
+        // fetches (Whisper transcription, TTS notifications/audio, frontend
+        // logs) resolve to '' in Remote Mode (see src/utils/backend-url.js), so
+        // they arrive here same-origin. Forward them — any method, streamed —
+        // to the desktop's loopback backend, which the viewer's machine cannot
+        // reach directly (and CORS would block anyway). Same trust boundary as
+        // the static assets: loopback bind + the user's SSH tunnel.
+        if (req.url === '/api' || (req.url && req.url.startsWith('/api/'))) {
+            return this.proxyBackend(req, res);
+        }
         if (req.method !== 'GET') {
             res.writeHead(405);
             res.end();
@@ -204,6 +214,31 @@ class RemoteServer {
             res.writeHead(200, { 'Content-Type': CONTENT_TYPES['.html'], 'Cache-Control': 'no-store' });
             res.end(out);
         });
+    }
+
+    /** Stream one /api/* request to the Django backend and the response back. */
+    proxyBackend(req, res) {
+        const { BACKEND_URL } = require('../utils/backend-url');
+        let target;
+        try {
+            target = new URL(req.url, BACKEND_URL);
+        } catch (_) {
+            res.writeHead(400);
+            res.end();
+            return;
+        }
+        const headers = Object.assign({}, req.headers, { host: target.host });
+        const upstream = http.request(target, { method: req.method, headers }, (up) => {
+            res.writeHead(up.statusCode || 502, up.headers);
+            up.pipe(res);
+        });
+        upstream.on('error', () => {
+            try {
+                res.writeHead(502, { 'Content-Type': 'text/plain' });
+                res.end('backend unavailable');
+            } catch (_) { /* headers already sent — drop */ }
+        });
+        req.pipe(upstream);
     }
 
     serveFile(res, filePath) {
