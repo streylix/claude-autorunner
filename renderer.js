@@ -2780,9 +2780,12 @@ class TerminalGUI {
 
         // Load notification history and start polling the TTS backend for new
         // spoken notifications (the manager produces them; this just plays/shows).
-        // Local only: the TTS backend lives on the app host's loopback — a remote
-        // browser can't reach it, and double-polling would double-consume items.
+        // Local: the TTS backend lives on the app host's loopback — poll it.
+        // Remote: that loopback is unreachable from the viewer's machine, so
+        // main pushes each fresh notification's audio over the WS instead and
+        // it PLAYS HERE, on the device showing the interface (REMOTE_MODE.md §9).
         if (!IS_REMOTE) this.notificationManager.initialize();
+        else this.notificationManager.initializeRemote();
 
         // Boot the manager instance if the user configured a directory for it
         this.managerInstance.startIfConfigured();

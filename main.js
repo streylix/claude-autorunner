@@ -19,11 +19,14 @@ const { runCcusage } = require('./src/main/ccusage');
 const { writeSessionFile, removeSessionFile } = require('./src/main/session-file');
 const RemoteServer = require('./src/main/RemoteServer');
 const RemoteClient = require('./src/main/remote-client');
+const TtsRemoteForwarder = require('./src/main/tts-remote-forwarder');
+const { BACKEND_URL } = require('./src/utils/backend-url');
 
 let mainWindow;
 let hookServer = null;
 let remoteServer = null;
 let remoteClient = null; // outbound Remote-SSH-style client (bottom-left indicator)
+let ttsRemoteForwarder = null; // pushes TTS audio to attached remote viewers (REMOTE_MODE.md §9)
 
 // ---- Remote Mode plumbing (docs/REMOTE_MODE.md) ----
 // Capture every ipcMain.handle / ipcMain.on registration in Maps so the
@@ -579,6 +582,15 @@ app.whenReady().then(async () => {
         } catch (_) { /* setting unavailable = stay off */ }
       }
       if (remoteEnabled) {
+        // Voice notifications follow the viewer: while ≥1 remote client is
+        // attached, this forwarder pushes each fresh TTS notification's audio
+        // over the WS so it PLAYS on the device showing the interface, and the
+        // local renderer is told to hold auto playback (no double-play).
+        ttsRemoteForwarder = new TtsRemoteForwarder({
+          backendUrl: BACKEND_URL,
+          broadcast: (channel, args) => { if (remoteServer) remoteServer.broadcast(channel, args); },
+          log: safeLog
+        });
         remoteServer = new RemoteServer({
           appRoot: __dirname,
           token: hookServer.token,
@@ -597,6 +609,15 @@ app.whenReady().then(async () => {
               return handler(fakeEvent, ...args);
             },
             broadcastAll: broadcastToRenderers,
+            onClientsChanged: (count) => {
+              // Audio-sink routing: the forwarder activates while any client is
+              // attached; the LOCAL window (only) is told so it suppresses auto
+              // playback. Remote clients don't get this push — they always play.
+              if (ttsRemoteForwarder) ttsRemoteForwarder.setClientCount(count);
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('remote-clients-changed', { count });
+              }
+            },
             log: safeLog
           }
         });
@@ -607,6 +628,7 @@ app.whenReady().then(async () => {
     } catch (error) {
       try { console.error('[Main] Remote server failed to start:', error); } catch (e) { /* ignore */ }
       remoteServer = null;
+      if (ttsRemoteForwarder) { ttsRemoteForwarder.stop(); ttsRemoteForwarder = null; }
     }
 
     // ---- Remote Mode CLIENT (the other half of the VS Code Remote-SSH analog) ----
@@ -640,6 +662,27 @@ app.whenReady().then(async () => {
       }
     });
     ipcMain.handle('remote-client-status', async () => remoteClient.getStatus());
+
+    // Remote viewers can't reach the backend's loopback, so after playing a
+    // notification they mark it played through the WS bridge; main POSTs it to
+    // the backend on their behalf (mirror of NotificationManager._finalizePlayed).
+    ipcMain.on('remote-tts-played', (event, payload) => {
+      const id = payload && payload.id;
+      if (id == null || !/^\d+$/.test(String(id))) return;
+      try {
+        const url = `${BACKEND_URL}/api/tts/notifications/${id}/played/`;
+        const lib = url.startsWith('https:') ? require('https') : require('http');
+        const req = lib.request(url, { method: 'POST' }, (res) => res.resume());
+        req.on('error', () => { /* best effort */ });
+        req.end();
+      } catch (_) { /* best effort */ }
+    });
+
+    // Boot-time audio-sink state for the local renderer ('remote-clients-changed'
+    // pushes cover every later attach/detach; this answers a fresh reload).
+    ipcMain.handle('remote-clients-count', async () => ({
+      count: remoteServer ? remoteServer.clients.size : 0
+    }));
 
     // Advertise the loopback Control API (port + token) in a tight-perms session
     // file so a same-user local process — notably the read-only `npm run ssh-view`
@@ -1947,6 +1990,10 @@ app.on('before-quit', async (event) => {
     }
 
     // Stop the Remote Mode web server (closes every attached browser socket)
+    if (ttsRemoteForwarder) {
+      ttsRemoteForwarder.stop();
+      ttsRemoteForwarder = null;
+    }
     if (remoteServer) {
       remoteServer.close();
       remoteServer = null;
