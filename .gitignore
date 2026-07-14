@@ -360,3 +360,11 @@ data/
 assets/models/
 dist-remote/
 !scripts/remote-url.js  # Remote Mode URL helper (npm run remote-url)
+
+# tests/ is ignored above, but the Remote Mode CLIENT end-to-end harness must
+# ship with the repo (run: xvfb-run -a node tests/integration/remote-client-e2e.js).
+!tests/
+tests/*
+!tests/integration/
+tests/integration/*
+!tests/integration/remote-client-e2e.js
