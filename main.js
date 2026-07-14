@@ -411,6 +411,35 @@ function createWindow() {
     shell.openExternal(navigationUrl);
   });
 
+  // ---- Remote Mode CLIENT hygiene on renderer reload/crash ----
+  // A hard refresh (or a crashed/replaced renderer) resets the UI's connection
+  // state, but the outbound remote tunnel (`ssh -N -L` child) lives in THIS
+  // process. Without this hook it survives the reload orphaned: the app still
+  // "believes" it is connected and the next connect used to dead-end on
+  // "already connected" until a full app restart. Tear the client connection
+  // down whenever the main frame really navigates (a reload of index.html —
+  // NOT the embedded remote iframe, which is a subframe) or the renderer
+  // process dies. disconnect() is idempotent, so this is always safe.
+  const dropRemoteClientTunnel = (why) => {
+    try {
+      if (remoteClient && remoteClient.getStatus().phase !== 'idle') {
+        safeLog('[Main] Renderer ' + why + ' — tearing down the outbound remote tunnel');
+        remoteClient.disconnect();
+      }
+    } catch (e) { /* best effort */ }
+  };
+  mainWindow.webContents.on('did-start-navigation', (event, legacyUrl, legacyIsInPlace, legacyIsMainFrame) => {
+    // Electron 26+ puts the details on the event object; older versions pass
+    // positional (url, isInPlace, isMainFrame) args. Support both shapes.
+    const isMainFrame = (event && typeof event.isMainFrame === 'boolean')
+      ? event.isMainFrame : !!legacyIsMainFrame;
+    const isSameDocument = (event && typeof event.isSameDocument === 'boolean')
+      ? event.isSameDocument : !!legacyIsInPlace;
+    if (isMainFrame && !isSameDocument) dropRemoteClientTunnel('navigated/reloaded');
+  });
+  mainWindow.webContents.on('render-process-gone', () => dropRemoteClientTunnel('process gone'));
+  mainWindow.webContents.on('destroyed', () => dropRemoteClientTunnel('destroyed'));
+
   mainWindow.loadFile('index.html');
   
   // Open DevTools in development
