@@ -6,6 +6,56 @@ project's current git branch.
 
 ---
 
+## 2026-07-13 — Remote Mode: voice notifications play on the device SHOWING the interface (branch `ssh-view`)
+
+**Goal.** When the user watches the interface remotely (browser tab or the
+in-app embedded client), spoken notifications must come out of THAT device —
+not only out of the (usually headless) app host where nobody is listening.
+
+**The path as found.** TTS was host-locked end to end: the manager POSTs
+`/api/tts/speak/` to the Django backend (loopback :8123, Kokoro synthesizes a
+WAV + persists a Notification row); the LOCAL renderer's NotificationManager
+polls `/api/tts/notifications/` every 3s and plays `audio_url` through an
+HTMLAudioElement — audio on the app host only. In Remote Mode the browser
+renderer was simply not initialized for notifications (the backend loopback is
+unreachable from the viewer's machine — `localhost:8123` there is the WRONG
+machine). `discord-bridge/src/audioPlayer.js` is the separate Discord-voice
+playback path — untouched and orthogonal.
+
+**What changed.** New `src/main/tts-remote-forwarder.js`: while ≥1 remote
+client is attached (RemoteServer's new `onClientsChanged` hook), main — where
+the backend loopback IS reachable — polls the same endpoint, fetches each
+fresh notification's WAV, and pushes it (base64, with metadata) to every
+attached client over the EXISTING token-gated WebSocket
+(`remote-tts-notification`). The remote renderer
+(`NotificationManager.initializeRemote`) turns the bytes into a `blob:` URL,
+renders the row, and plays it with the same queue/chime machinery — sound on
+the viewing device, both for a plain browser and the embedded iframe (one
+renderer path). Played-marks ride back over the WS (`remote-tts-played` →
+main POSTs `/played/`). No new ports, no re-implemented TTS.
+
+**Which device plays (no double-play).** ≥1 remote client attached → the
+client(s) play; the local renderer holds AUTO playback (push
+`remote-clients-changed` + boot invoke `remote-clients-count`; rows still
+render and an explicit ▶ replay is always honored locally). 0 clients → local
+playback exactly as before. The forwarder re-baselines on every attach so
+history never replays into a fresh client. A plain browser blocking the first
+autoplay requeues the clip and plays it on the first click/keypress.
+
+**Verified** (headless: Xvfb Electron + headless Chromium + a Django-shaped
+stand-in TTS backend serving real WAV bytes through the same code path —
+`xvfb-run -a node tests/integration/remote-tts-e2e.js`): the pushed audio
+arrived at the client byte-for-byte (19244 === 19244), the client drove
+playback (blob src, `play()` resolved, `playing=true`, currentTime advancing),
+the played-mark round-tripped client → WS → main → backend, the local renderer
+never touched its audio element, and after detach a new notification played
+locally again. Acoustic output itself can't be captured headless; the full
+delivery + playback-invocation chain is what's proven. Plus 11 unit tests
+(`tts-remote-forwarder.test.js`, `NotificationManager.remote.test.js`,
+`NotificationManager.local-sink.test.js`) and a clean re-run of
+`remote-client-e2e.js` (embedded-client regression).
+
+
 ## 2026-07-13 — Remote Mode CLIENT: in-app "Connect to a remote machine" (VS Code Remote-SSH style; branch `ssh-view`)
 
 **Goal.** The other half of Remote Mode: a corner control IN the app so a user
