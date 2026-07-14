@@ -582,16 +582,29 @@ Remote Mode**: the client brings it up over SSH if it isn't.
   charsets before it can reach an ssh argv.
 - The most recent command is pre-filled as real text (editable, Enter to
   reconnect); recents are one click. **Advanced…** folds out: remote session
-  file path override, extra ssh options, and *remote app directory* (only
-  needed for auto-start when the app has never run on that machine).
+  file path override, extra ssh options, *remote app directory* (only
+  needed for auto-start when the app has never run on that machine), and a
+  *use password authentication* opt-in (ask up front instead of trying keys).
+- **Key→password fallback (VS Code Remote-SSH style).** Keys/agent are tried
+  first, silently. If — and only if — that fails with an AUTHENTICATION
+  failure (unreachable hosts and host-key problems keep their own specific
+  errors), a password field drops into the bar, labelled with the
+  destination and focused; typing the password and hitting Enter retries in
+  place. A wrong password says "Wrong password for …" and leaves the field
+  up for another try. The password is for the SSH transport only: it goes to
+  main once per connect attempt, is never saved to recents/localStorage,
+  never logged, and is cleared whenever the bar closes.
 - The bottom-left panel remains as the *management* popover while connected
   (connection info + Disconnect).
 
 ### What happens on Connect (all automated)
 
-1. **State detection over SSH** — main spawns the system `ssh` binary
-   (`BatchMode=yes`, so the user's keys/agent/`~/.ssh/config` apply and it can
-   never hang on a password prompt) and reads the remote's
+1. **State detection over SSH** — main spawns the system `ssh` binary (first
+   attempt always `BatchMode=yes`, so the user's keys/agent/`~/.ssh/config`
+   apply and it can never hang on a prompt; a password retry — see below —
+   switches that connect to `PreferredAuthentications=password,keyboard-
+   interactive` + `NumberOfPasswordPrompts=1` fed via askpass) and reads the
+   remote's
    `${XDG_CONFIG_HOME:-$HOME/.config}/ccbot/session.json`. The token only ever
    travels inside the SSH channel. Three remote states:
    - **Remote Mode already on** (`remote.port` present) → straight to step 2.
@@ -674,15 +687,33 @@ The auto-start path adds nothing new: `/remote/enable` is a loopback-only,
 token-gated Control API route, the enable POST happens *on the remote itself*
 (the token is read from the remote's own 0600 session file and presented to
 127.0.0.1 there), and the app-root file contains paths only — no secrets.
-No password auth anywhere (`BatchMode=yes` stays). Host keys:
-`StrictHostKeyChecking=accept-new` — first contact is recorded, a CHANGED
-host key is a hard, surfaced failure.
+
+**Password auth (the key→password fallback) changes none of that.** The
+first attempt is still key-only (`BatchMode=yes`); only an authentication
+failure surfaces the password prompt, and the retry feeds the password to
+ssh through the secret-free `scripts/ssh-askpass.sh` helper:
+`SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` (+ a detached/`setsid` spawn so
+even a pre-8.4 OpenSSH without SSH_ASKPASS_REQUIRE has no tty and takes the
+askpass path), with the password riding ONLY in that ssh child's environment
+(`CCBOT_SSH_PASSWORD`; `/proc/<pid>/environ` is owner-only). It is never in
+an argv — the `ps`-visible exposure `sshpass -p` has — never written to
+disk, never logged, never in status events or recents, and it authenticates
+every ssh operation of the connect (session read, ensure/auto-start, settle
+re-reads, and the long-lived `-N -L` tunnel). `sshpass -e` (env mode) is the
+fallback mechanism when the helper is unusable; if neither works a clear
+message says so. A wrong password fails fast (`NumberOfPasswordPrompts=1`)
+with a retryable error. Host keys are unchanged either way:
+`StrictHostKeyChecking=accept-new` — first contact is recorded (works
+together with the password prompt), a CHANGED host key is a hard, surfaced
+failure — and it is never answered by the askpass helper (accept-new never
+prompts).
 
 ### Requirements on the remote machine
 
-sshd + the user's key auth, and an app checkout with `node_modules`
-installed. That's it — if the app is not running (or running without Remote
-Mode), the client brings it up itself. Headless Linux additionally needs
+sshd + the user's key auth **or the account's SSH password** (typed into the
+bar's fallback prompt), and an app checkout with `node_modules` installed.
+That's it — if the app is not running (or running without Remote Mode), the
+client brings it up itself. Headless Linux additionally needs
 `xvfb` for the cold-start path (surfaced as a clear error when missing);
 macOS cold-start needs an active login session.
 
@@ -703,6 +734,26 @@ headless (fresh session.json + NEW live pid spawned by the client's action),
 embeds, marker echoes through the tunnel; (6) reconnect fast path shows no
 enable/start phase and the pid is unchanged. Screenshots + transcript land in
 the work dir's `evidence/`.
+
+`xvfb-run -a node tests/integration/remote-client-password-e2e.js` — the
+key→PASSWORD fallback, end to end. A real-protocol SSH server that accepts
+ONLY a known password stands in for sshd (an unprivileged sshd cannot verify
+passwords — that needs /etc/shadow/PAM, i.e. root — so the server side is the
+`ssh2` package servicing exec + direct-tcpip; everything client-side is the
+real OpenSSH binary + the real askpass mechanism + the real UI). Proves: the
+silent BatchMode key attempt fails as an auth failure → the password field
+appears (destination-labelled, focused); a WRONG password → "Wrong password
+for …", field stays for retry; the RIGHT password (containing a space,
+quotes and `$`) → session read, live-ENABLE of Remote Mode (same pid), the
+`-N -L` tunnel, embedded view, marker echo on both sides — every one of
+those ssh connections re-authenticated by askpass, counted server-side. Then
+the secrecy sweep: the password is absent from every ssh argv
+(`/proc/<pid>/cmdline`, i.e. what `ps` shows), `ps auxww`, app stdout/stderr,
+the renderer console, the status line, localStorage/recents, and every file
+on disk (work-dir scan) — while the tunnel child's owner-only environment
+DOES carry it (the askpass design, same trust model as `sshpass -e`). The
+key-only silent path keeps its own real-sshd coverage in
+`remote-client-e2e.js`, which must still pass unchanged.
 
 ## 9. Voice notifications play on the device SHOWING the interface (IMPLEMENTED)
 

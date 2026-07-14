@@ -6,6 +6,48 @@ project's current git branch.
 
 ---
 
+## 2026-07-14 — Remote Mode client: SSH password fallback, VS Code style (branch `ssh-view`)
+
+**Goal.** Connecting to a remote previously required working key/agent auth
+(`BatchMode=yes`) and silently failed without it. Now it behaves like VS Code
+Remote-SSH: keys are tried first, silently; if — and only if — authentication
+fails, a password field appears in the top-middle command bar (labelled with
+the destination, focused), and the typed password authenticates the retry. A
+wrong password gives a clear "Wrong password for …" and an in-place retry.
+Advanced also offers a "use password authentication" opt-in that asks up
+front. Working keys keep connecting exactly as before, with no prompt.
+
+**How the password reaches ssh (and where it never goes).** The retry runs
+every ssh operation of the connect — the session-file read, the
+ensure/auto-start step, the settle re-reads, and the long-lived `ssh -N -L`
+tunnel — through the new secret-free `scripts/ssh-askpass.sh` helper:
+`SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` plus a detached (`setsid`) spawn,
+with the password riding only in that ssh child's environment
+(`CCBOT_SSH_PASSWORD`). It is never in an argv (the `ps` exposure
+`sshpass -p` has), never on disk, never logged, never in status events,
+never saved to recents, and cleared from the UI whenever the bar closes.
+`sshpass -e` (env mode) is the fallback mechanism; a clear message appears if
+neither is usable. Wrong passwords fail fast (`NumberOfPasswordPrompts=1`);
+auth failures are distinguished from unreachable-host and host-key errors,
+which keep their specific messages; host keys stay `accept-new`.
+
+**Files.** `src/main/remote-client.js` (auth modes, isAuthFailure/
+sshFailureToError, askpass invocation), `scripts/ssh-askpass.sh` (new),
+`main.js` (needPassword over IPC), `src/features/RemoteConnectionUI.js` +
+`index.html` + `style.css` (password row + opt-in checkbox), docs
+(`docs/REMOTE_MODE.md` §8).
+
+**Verified.** Unit tests (`src/main/remote-client.test.js`, 30 pass) cover
+auth classification and argv/env separation. New end-to-end
+`tests/integration/remote-client-password-e2e.js` (headless, real OpenSSH +
+real askpass against a real-protocol password-only SSH server — an
+unprivileged sshd cannot verify passwords, so the server side is the `ssh2`
+dev dependency): key attempt fails → prompt appears → wrong password →
+clear retry → right password → live-enable + tunnel + embedded terminal
+echo, then a secrecy sweep proving the password appears in no argv/`ps`
+output, no log, no localStorage, and no file on disk. The key-only path is
+still covered by `remote-client-e2e.js` against a real sshd, unchanged.
+
 ## 2026-07-13 — Remote Mode: voice notifications play on the device SHOWING the interface (branch `ssh-view`)
 
 **Goal.** When the user watches the interface remotely (browser tab or the
