@@ -17,9 +17,38 @@ const { enrichSnapshot, detectRuntime } = require('./src/main/terminal-runtime')
 const { handlePtyControl } = require('./src/main/pty-control');
 const { runCcusage } = require('./src/main/ccusage');
 const { writeSessionFile, removeSessionFile } = require('./src/main/session-file');
+const RemoteServer = require('./src/main/RemoteServer');
 
 let mainWindow;
 let hookServer = null;
+let remoteServer = null;
+
+// ---- Remote Mode plumbing (docs/REMOTE_MODE.md) ----
+// Capture every ipcMain.handle / ipcMain.on registration in Maps so the
+// RemoteServer can dispatch WebSocket `invoke`/`send` frames to the exact same
+// handlers the local renderer uses — zero per-channel bridging code, and the
+// two surfaces can never drift. Registered handlers still reach Electron
+// unchanged (the originals are called through).
+const rendererInvokeHandlers = new Map(); // channel -> handler(event, ...args)
+const rendererSendHandlers = new Map();   // channel -> handler(event, payload)
+{
+    const origHandle = ipcMain.handle.bind(ipcMain);
+    ipcMain.handle = (channel, fn) => { rendererInvokeHandlers.set(channel, fn); return origHandle(channel, fn); };
+    const origOn = ipcMain.on.bind(ipcMain);
+    ipcMain.on = (channel, fn) => { rendererSendHandlers.set(channel, fn); return origOn(channel, fn); };
+}
+
+/**
+ * Send a main→renderer push to the local window AND every attached remote
+ * browser. This is the single fan-out point that makes a browser client see
+ * the same stream the local renderer sees (terminal-data, hook events, ...).
+ */
+function broadcastToRenderers(channel, ...args) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(channel, ...args);
+    }
+    if (remoteServer) remoteServer.broadcast(channel, args);
+}
 let ptyProcess; // Legacy single process support
 const ptyProcesses = new Map(); // Map of terminal ID to pty process
 let dataFilePath;
@@ -474,6 +503,34 @@ app.whenReady().then(async () => {
       }, 5000);
     });
 
+    // Snapshot + control dispatch, shared by the HookServer (HTTP control API)
+    // and the RemoteServer (WebSocket bridge) so both surfaces behave
+    // identically. Hoisted out of the HookServer config for exactly that reuse.
+    const getStateSnapshot = () => enrichSnapshot(
+      rendererStateCache,
+      (id) => {
+        const p = ptyProcesses.get(id);
+        return p ? p.pid : undefined;
+      }
+    );
+    const controlDispatch = (action, payload) => {
+      if (action === 'terminal-keys' || action === 'terminal-claude') {
+        const ptyFor = (id) => ptyProcesses.get(id) || ptyProcesses.get(Number(id));
+        const runtimeFor = (id) => {
+          const p = ptyFor(id);
+          return detectRuntime(p ? p.pid : undefined);
+        };
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        return handlePtyControl(action, payload, { ptyFor, runtimeFor, sleep });
+      }
+      // Read the last N parsed conversation turns for a terminal, resolving its
+      // transcript path from the cached state snapshot. Pure file read in main.
+      if (action === 'terminal-transcript') {
+        return Promise.resolve(buildTranscriptResponse(payload, rendererStateCache));
+      }
+      return sendControlRequest(action, payload);
+    };
+
     hookServer = new HookServer({
       onEvent: (payload) => {
         // Stop events: enrich with Claude's last message from the session
@@ -481,46 +538,20 @@ app.whenReady().then(async () => {
         if (payload.event === 'stop' && payload.hook && payload.hook.transcript_path) {
           payload.lastAssistantText = readLastAssistantText(payload.hook.transcript_path);
         }
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('claude-hook-event', payload);
-        }
+        broadcastToRenderers('claude-hook-event', payload);
       },
       onQueueAdd: (payload) => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('queue-add-request', payload);
-        }
+        broadcastToRenderers('queue-add-request', payload);
       },
       // Enrich the renderer's cached snapshot with a ground-truth `runtime`
       // (claude | shell | unknown) and live `directory` per terminal, derived
       // from each PTY's process tree in /proc. Computed fresh on every /state
       // GET, in main (where the PTYs live), so it is never stale.
-      getState: () => enrichSnapshot(
-        rendererStateCache,
-        (id) => {
-          const p = ptyProcesses.get(id);
-          return p ? p.pid : undefined;
-        }
-      ),
+      getState: getStateSnapshot,
       // PTY-level control (raw keys, Claude start/resume/restart) is handled
       // here in main — it writes to the PTY directly and uses the /proc runtime
       // signal as a safety guard. Everything else round-trips to the renderer.
-      onControl: (action, payload) => {
-        if (action === 'terminal-keys' || action === 'terminal-claude') {
-          const ptyFor = (id) => ptyProcesses.get(id) || ptyProcesses.get(Number(id));
-          const runtimeFor = (id) => {
-            const p = ptyFor(id);
-            return detectRuntime(p ? p.pid : undefined);
-          };
-          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-          return handlePtyControl(action, payload, { ptyFor, runtimeFor, sleep });
-        }
-        // Read the last N parsed conversation turns for a terminal, resolving its
-        // transcript path from the cached state snapshot. Pure file read in main.
-        if (action === 'terminal-transcript') {
-          return Promise.resolve(buildTranscriptResponse(payload, rendererStateCache));
-        }
-        return sendControlRequest(action, payload);
-      }
+      onControl: controlDispatch
     });
     const port = await hookServer.start();
     safeLog('[Main] Hook server listening on 127.0.0.1:' + port);
@@ -531,12 +562,63 @@ app.whenReady().then(async () => {
     // detection path end-to-end. Same info already lives in each PTY's env.
     global.__ccbotHook = { port, token: hookServer.token };
 
+    // ---- Remote Mode (web-served interactive replica; docs/REMOTE_MODE.md) ----
+    // Opt-in and OFF by default. Enable with CCBOT_REMOTE=1 (env) or the
+    // persisted `remoteServerEnabled` setting; CCBOT_REMOTE=0 force-disables.
+    // Binds 127.0.0.1 ONLY — reach it via `ssh -L` or Tailscale, exactly like
+    // ssh-view. Shares the HookServer session token for the WS `hello` auth.
+    try {
+      const envFlag = process.env.CCBOT_REMOTE;
+      let remoteEnabled = envFlag === '1' || envFlag === 'true';
+      if (!remoteEnabled && envFlag !== '0' && envFlag !== 'false') {
+        try {
+          const saved = await unifiedStore.getSetting('remoteServerEnabled');
+          remoteEnabled = saved === true || saved === 'true' || saved === '"true"';
+        } catch (_) { /* setting unavailable = stay off */ }
+      }
+      if (remoteEnabled) {
+        remoteServer = new RemoteServer({
+          appRoot: __dirname,
+          token: hookServer.token,
+          deps: {
+            getState: getStateSnapshot,
+            getScreen: (terminalId) => controlDispatch('terminal-screen', { terminalId, scrollback: true }),
+            hasPty: (id) => ptyProcesses.has(id) || ptyProcesses.has(Number(id)),
+            dispatchSend: (channel, args, fakeEvent) => {
+              const handler = rendererSendHandlers.get(channel);
+              if (!handler) throw new Error('no send handler for channel: ' + channel);
+              return handler(fakeEvent, ...args);
+            },
+            dispatchInvoke: async (channel, args, fakeEvent) => {
+              const handler = rendererInvokeHandlers.get(channel);
+              if (!handler) throw new Error('no invoke handler for channel: ' + channel);
+              return handler(fakeEvent, ...args);
+            },
+            broadcastAll: broadcastToRenderers,
+            log: safeLog
+          }
+        });
+        const remotePort = await remoteServer.start(process.env.CCBOT_REMOTE_PORT);
+        safeLog('[Main] Remote Mode web server listening on 127.0.0.1:' + remotePort);
+        safeLog('[Main] Remote access URL (via tunnel): http://127.0.0.1:' + remotePort + '/#k=' + hookServer.token);
+      }
+    } catch (error) {
+      try { console.error('[Main] Remote server failed to start:', error); } catch (e) { /* ignore */ }
+      remoteServer = null;
+    }
+
     // Advertise the loopback Control API (port + token) in a tight-perms session
     // file so a same-user local process — notably the read-only `npm run ssh-view`
     // mirror over SSH — can discover it without inheriting CCBOT_* env vars. The
     // token stays loopback-only; the file is 0600 and removed on shutdown.
+    // Remote Mode's port rides along (`remote.port`) so `npm run remote-url`
+    // can print the browser access URL.
     try {
-      const written = writeSessionFile({ port, token: hookServer.token });
+      const written = writeSessionFile({
+        port,
+        token: hookServer.token,
+        remote: remoteServer ? { port: remoteServer.port } : null
+      });
       if (written) safeLog('[Main] Wrote Control API session file to ' + written);
     } catch (e) { /* advertising the API must never break startup */ }
 
@@ -557,7 +639,7 @@ app.whenReady().then(async () => {
         const rt = detectRuntime(p ? p.pid : undefined);
         if (lastRuntimeByTerminal.get(id) !== rt) {
           lastRuntimeByTerminal.set(id, rt);
-          mainWindow.webContents.send('terminal-runtime', { terminalId: id, runtime: rt });
+          broadcastToRenderers('terminal-runtime', { terminalId: id, runtime: rt });
         }
       }
       for (const id of lastRuntimeByTerminal.keys()) {
@@ -659,9 +741,20 @@ function setupIpcHandlers() {
   ipcMain.on('terminal-start', (event, options = {}) => {
     const terminalId = options.terminalId || 1;
     const startDirectory = options.directory || null;
-    
+
     safeLog('Received terminal-start request, terminalId:', terminalId, 'directory:', startDirectory);
-    
+
+    // Attach-not-respawn guard (Remote Mode): when a second renderer (a remote
+    // browser, or the local window echoing a remote-created terminal) asks to
+    // start an id whose PTY already lives, do NOT spawn again — that would
+    // orphan the existing process and clobber the ptyProcesses entry. Just
+    // confirm readiness; output fan-out already reaches every renderer.
+    if (ptyProcesses.has(terminalId)) {
+      safeLog('Terminal', terminalId, 'already running — attaching, not respawning');
+      broadcastToRenderers('terminal-ready', { terminalId });
+      return;
+    }
+
     // Validate directory exists and is accessible
     let validatedCwd = process.cwd();
     let directoryValidationResult = 'default';
@@ -749,26 +842,33 @@ function setupIpcHandlers() {
         ptyProcess = terminalProcess;
       }
 
+      // PTY output fans out to the LOCAL window and every remote browser —
+      // identical bytes, same xterm write path on every attached renderer.
       terminalProcess.onData((data) => {
-        event.reply('terminal-data', { terminalId, content: data });
+        broadcastToRenderers('terminal-data', { terminalId, content: data });
       });
 
       terminalProcess.onExit((exitCode, signal) => {
         safeLog('Terminal', terminalId, 'process exited with code:', exitCode, 'signal:', signal);
-        event.reply('terminal-exit', { terminalId, exitCode, signal });
+        broadcastToRenderers('terminal-exit', { terminalId, exitCode, signal });
         ptyProcesses.delete(terminalId);
         if (terminalId === 1) {
           ptyProcess = null;
         }
       });
-      
+
+      // Cross-renderer topology sync: tell every OTHER attached renderer a
+      // terminal now exists so it can build a matching view (receivers skip
+      // ids they already have, so the originator's echo is harmless).
+      broadcastToRenderers('remote-terminal-created', { terminalId, directory: validatedCwd });
+
       // Windows-specific: send initial ready signal after short delay
       if (os.platform() === 'win32') {
         setTimeout(() => {
-          event.reply('terminal-ready', { terminalId });
+          broadcastToRenderers('terminal-ready', { terminalId });
         }, 500); // Give Windows terminal time to fully initialize
       } else {
-        event.reply('terminal-ready', { terminalId });
+        broadcastToRenderers('terminal-ready', { terminalId });
       }
     } catch (error) {
       safeLog('Failed to spawn terminal', terminalId, 'Error:', error.message);
@@ -820,31 +920,33 @@ function setupIpcHandlers() {
           ptyProcess = terminalProcess;
         }
         terminalProcess.onData((data) => {
-          event.reply('terminal-data', { terminalId, content: data });
+          broadcastToRenderers('terminal-data', { terminalId, content: data });
         });
         terminalProcess.onExit((exitCode, signal) => {
           safeLog('Terminal', terminalId, 'fallback process exited with code:', exitCode, 'signal:', signal);
-          event.reply('terminal-exit', { terminalId, exitCode, signal });
+          broadcastToRenderers('terminal-exit', { terminalId, exitCode, signal });
           ptyProcesses.delete(terminalId);
           if (terminalId === 1) {
             ptyProcess = null;
           }
         });
-        
+
+        broadcastToRenderers('remote-terminal-created', { terminalId, directory: validatedCwd });
+
         // Send ready signal for fallback terminal too
         if (os.platform() === 'win32') {
           setTimeout(() => {
-            event.reply('terminal-ready', { terminalId });
+            broadcastToRenderers('terminal-ready', { terminalId });
           }, 500);
         } else {
-          event.reply('terminal-ready', { terminalId });
+          broadcastToRenderers('terminal-ready', { terminalId });
         }
       } catch (fallbackError) {
         safeLog('Fallback terminal spawn also failed:', fallbackError.message);
         safeLog('Terminal', terminalId, 'exhausted all spawn attempts');
-        
+
         // Send enhanced error with recovery information
-        event.reply('terminal-error', { 
+        broadcastToRenderers('terminal-error', {
           terminalId, 
           error: fallbackError.message,
           directoryValidation: directoryValidationResult,
@@ -897,13 +999,18 @@ function setupIpcHandlers() {
     if (terminalProcess) {
       terminalProcess.kill();
       ptyProcesses.delete(terminalId);
-      
+
       // Clear legacy reference if it's terminal 1
       if (terminalId === 1) {
         ptyProcess = null;
       }
-      
+
       safeLog('Terminal', terminalId, 'process closed');
+
+      // Cross-renderer topology sync: other attached renderers drop their view
+      // for this terminal. Guarded to fire only when a PTY actually died, so
+      // the receivers' own close echoes terminate instead of looping.
+      broadcastToRenderers('remote-terminal-closed', { terminalId });
     }
   });
 
@@ -1803,6 +1910,12 @@ app.on('before-quit', async (event) => {
     if (hookServer) {
       hookServer.close();
       hookServer = null;
+    }
+
+    // Stop the Remote Mode web server (closes every attached browser socket)
+    if (remoteServer) {
+      remoteServer.close();
+      remoteServer = null;
     }
 
     // Remove the Control API session file so a stale port/token isn't left

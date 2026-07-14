@@ -34,6 +34,14 @@ const UIFocusManager = require('./src/ui/UIFocusManager');
 const { parseUsageLimitMessage } = require('./src/utils/usage-limit-parser');
 const { BACKEND_URL } = require('./src/utils/backend-url');
 
+// Remote Mode (docs/REMOTE_MODE.md): when this same renderer runs in a browser
+// tab served by RemoteServer, remote-bootstrap.js sets this flag. A remote
+// renderer is a fully interactive VIEW — it renders everything and sends
+// inputs — but must NOT re-run the authoritative singletons that exist once in
+// the local Electron window (injection engine, manager scheduler, state
+// snapshot mirror, DB persistence), or it would double-drive them.
+const IS_REMOTE = typeof window !== 'undefined' && !!window.__CCBOT_REMOTE__;
+
 /**
  * Main application controller that orchestrates all modules
  */
@@ -411,8 +419,10 @@ class TerminalGUI {
                 this.eventBus.emit('completion:recorded', completionData);
 
                 // Opt-in plain-English mode: headless Claude compresses the
-                // message to 1-2 sentences (costs quota - off by default)
-                if (this.appStateStore.getState('summarizeCompletions') && completionData.sessionId) {
+                // message to 1-2 sentences (costs quota - off by default).
+                // Local renderer only: a remote browser invoking this too
+                // would run (and bill) the summarizer twice per completion.
+                if (!IS_REMOTE && this.appStateStore.getState('summarizeCompletions') && completionData.sessionId) {
                     this.ipcHandler.invoke('summarize-completion', payload.lastAssistantText)
                         .then((summary) => {
                             if (summary) {
@@ -512,11 +522,29 @@ class TerminalGUI {
         // External queue-add requests arriving via the HookServer API
         // (POST /queue/add - e.g. the manager instance steering a terminal)
         ipcRenderer.on('queue-add-request', (event, { terminalId, content, type }) => {
-            this.messageQueueManager.addMessage({ content, terminalId, type });
+            // fromBroadcast: in a remote renderer this add is display-only (the
+            // local renderer owns injection/persistence); in the local renderer
+            // the flag is inert and this behaves exactly as before.
+            this.messageQueueManager.addMessageToQueue(content, terminalId, type, { fromBroadcast: true });
             this.eventBus.emit('log:action', {
                 message: `Queued ${type === 'urgent' ? 'URGENT ' : ''}message for Terminal ${terminalId} via control API`,
                 type: 'info'
             });
+        });
+
+        // Cross-renderer topology sync (Remote Mode): another attached renderer
+        // (local window or a remote browser) created/closed a terminal in main.
+        // Build/drop a matching view here. The originator's own echo is skipped
+        // by the has-check; closeTerminal's redundant terminal-close send is a
+        // harmless no-op in main (the PTY is already gone).
+        ipcRenderer.on('remote-terminal-created', (event, { terminalId, directory }) => {
+            if (this.terminals.has(terminalId)) return;
+            if (terminalId === ManagerInstance.TERMINAL_ID) return; // manager mounts via its own tab
+            this.createTerminal({ id: terminalId, directory: directory || undefined, skipActive: true });
+        });
+        ipcRenderer.on('remote-terminal-closed', (event, { terminalId }) => {
+            if (!this.terminals.has(terminalId)) return;
+            this.closeTerminal(terminalId);
         });
 
         // Control requests needing a response (terminal create/update/delete
@@ -533,7 +561,11 @@ class TerminalGUI {
 
         // Mirror terminal state to main so the HookServer's GET /state can
         // answer external controllers without a renderer round trip.
+        // LOCAL renderer only: the local window owns the snapshot; a remote
+        // browser pushing its (partial) view would corrupt main's cache. The
+        // RemoteServer drops the channel server-side too (defense in depth).
         const sendStateSnapshot = () => {
+            if (IS_REMOTE) return;
             const terminals = [];
             this.terminalStateManager.getAllTerminals().forEach((data, id) => {
                 terminals.push({
@@ -1954,6 +1986,7 @@ class TerminalGUI {
      * The manager (999) is excluded; it boots from its own configuration.
      */
     persistTerminalMetadata() {
+        if (IS_REMOTE) return; // the local renderer owns workspace persistence
         if (this._restoringTerminals) return; // don't clobber mid-restore
         const meta = [];
         this.terminals.forEach((data, id) => {
@@ -2737,7 +2770,9 @@ class TerminalGUI {
 
         // Load notification history and start polling the TTS backend for new
         // spoken notifications (the manager produces them; this just plays/shows).
-        this.notificationManager.initialize();
+        // Local only: the TTS backend lives on the app host's loopback — a remote
+        // browser can't reach it, and double-polling would double-consume items.
+        if (!IS_REMOTE) this.notificationManager.initialize();
 
         // Boot the manager instance if the user configured a directory for it
         this.managerInstance.startIfConfigured();
