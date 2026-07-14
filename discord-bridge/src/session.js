@@ -394,24 +394,58 @@ class BridgeSession {
         log.info(`tts→sink: #${row.id} skipped — ${verdict.why}.`);
         return;
       }
-      // ECHO GATE: manager (999) rows are already gated by onManagerSpeech; gate
-      // the rest here so a non-manager clip isn't transcribed as the user.
-      if (String(row.terminal_id) !== '999') this.markBotSpeaking(row.duration_ms, 'tts clip');
+      // TURN-TAKING HOLD: never START a readout while the user is still talking
+      // (mirrors the tts-mode player's bargeInEnabled gate, which this sink path
+      // bypasses). Once started it plays through — interrupt is disabled via the
+      // BARGE_IN_INTERRUPT_ENABLED=false drop-in.
+      if (config.bargeInEnabled && this.receiver) {
+        const t0 = Date.now();
+        while (this.receiver.isUserSpeaking() && Date.now() - t0 < config.bargeInMaxHoldMs) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        const held = Date.now() - t0;
+        if (held >= 200) log.info(`tts→sink: held #${row.id} for ${held}ms until the user finished talking.`);
+      }
+      // ECHO GATE: (re)mark right before actual playback so the capture gate
+      // covers the REAL cue+clip window even after a long hold. (onManagerSpeech
+      // already marked at row-detection time; this re-aligns it.)
+      this.markBotSpeaking((row.duration_ms || config.defaultTtsMs) + 500, 'tts cue+clip');
+      const rowAgeMs = row.created_at ? Math.max(0, Date.now() - new Date(row.created_at).getTime()) : null;
+      log.success(`🗣️ tts→sink: cue + clip #${row.id} into the sink (${verdict.why})${rowAgeMs != null ? ` — ${rowAgeMs}ms after synthesis` : ''}.`);
+      // PRE-TTS CUE, then the voice — the same click-then-speech every other
+      // surface plays (the renderer's heads-up chime), as ONE burst: the click
+      // lands in the gate's pre-roll cushion, the voice follows within the
+      // hangover so Discord hears click → voice with no gap.
+      const cue = path.join(SFX_DIR, 'click2.wav');
+      if (fs.existsSync(cue)) await this._paplayToSink(cue, `cue for #${row.id}`);
       const tmp = path.join(require('os').tmpdir(), `ccbot-tts-${row.id}.wav`);
       fs.writeFileSync(tmp, wav);
-      const startedAt = Date.now();
-      const p = spawn('paplay', [tmp], {
-        env: { ...process.env, PULSE_SERVER: config.pulseServer },
-        stdio: 'ignore',
-      });
-      p.on('error', (e) => { log.warn('tts→sink: paplay failed:', e.message); try { fs.unlinkSync(tmp); } catch (_) {} });
-      p.on('exit', () => { try { fs.unlinkSync(tmp); } catch (_) {} });
-      const rowAgeMs = row.created_at ? Math.max(0, Date.now() - new Date(row.created_at).getTime()) : null;
-      log.success(`🗣️ tts→sink: playing #${row.id} into the sink (${verdict.why})${rowAgeMs != null ? ` — ${rowAgeMs}ms after synthesis` : ''}.`);
-      void startedAt;
+      // Await completion so back-to-back rows play in order, never overlapped
+      // (the poller awaits onClip per row — this IS the FIFO).
+      await this._paplayToSink(tmp, `clip #${row.id}`);
+      try { fs.unlinkSync(tmp); } catch (_) {}
     } catch (e) {
       log.warn('tts→sink error:', e.message);
     }
+  }
+
+  // paplay a file into the sink and resolve when it finishes (never rejects).
+  _paplayToSink(file, label) {
+    return new Promise((resolve) => {
+      let done = false;
+      const fin = () => { if (!done) { done = true; resolve(); } };
+      try {
+        const p = spawn('paplay', [file], {
+          env: { ...process.env, PULSE_SERVER: config.pulseServer },
+          stdio: 'ignore',
+        });
+        p.on('error', (e) => { log.warn(`tts→sink: paplay ${label} failed:`, e.message); fin(); });
+        p.on('exit', fin);
+      } catch (e) {
+        log.warn(`tts→sink: paplay ${label} spawn error:`, e.message);
+        fin();
+      }
+    });
   }
 
   // Cached (10s) decision for the 'auto' mode.

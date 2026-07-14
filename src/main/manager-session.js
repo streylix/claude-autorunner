@@ -272,6 +272,10 @@ Rules for the spoken text:
 - **Omit \`"voice"\`** to use the user's preferred voice. You MAY override with a
   voice id from \`GET ${BACKEND_URL}/api/tts/voices/\` (e.g. \`"bm_george"\`)
   to differentiate terminals, but default to omitting it.
+- **Always pass \`"speed"\`** set to the user's \`ttsPlaybackSpeed\` from
+  \`~/.config/auto-injector/auto-injector.json\` (single-file model: the
+  generated WAV carries the user's speed; every player — desktop, remote
+  viewers, the Discord bridge — plays that same file unmodified).
 - The notification is read aloud automatically and shown in the user's
   Notifications tab — so this is your primary way to keep the user informed.
 - One notification per meaningful completion. Don't announce your own internal

@@ -6,6 +6,43 @@ project's current git branch.
 
 ---
 
+## 2026-07-14 — Single-file TTS model: speed/voice honored everywhere, pre-TTS cue on Discord, turn-taking hold restored (branch `ssh-view`)
+
+**User reports (follow-ups to the burst-gate/TTS→sink work, live in-call).**
+(1) TTS played at 1.0× instead of the configured `ttsPlaybackSpeed=1.25`.
+(2) The short pre-TTS cue click (the renderer's heads-up chime) no longer
+reached Discord. (3) TTS started playing OVER the user while still talking.
+
+**Architecture (user's directive).** The backend generator (`/api/tts/speak/`,
+untouched) is the single source of truth: it synthesizes ONE file at the user's
+`ttsPlaybackSpeed` + `ttsPreferredVoice` (callers pass speed — the manager
+already does; voice defaults from the backend's own preferred-voice config,
+which the app syncs). Every consumer — desktop renderer, remote viewers, the
+Discord bridge — plays that same file UNMODIFIED.
+
+**Changes.**
+- `NotificationManager._startAudio` no longer applies `playbackRate` to a clip
+  that carries its own synthesis speed (prevents the Mac playing 1.25×-files at
+  ~1.56×); legacy speed-1.0 rows keep the client rate so history sounds right.
+  The Test button now bakes the speed into the sample. `manager-session.js`
+  codifies "always pass speed". Remote bundle rebuilt (`npm run build-remote`)
+  so attached viewers pick this up on refresh — no app restart.
+- Bridge shim now plays the SAME cue click (`click2.wav`) immediately before
+  each clip, and the gate pre-roll deepened 120→400ms: the click was being
+  swallowed by the Discord client's stream-start ramp when it sat at the very
+  head of a fresh burst; behind a 400ms silent lead-in it survives. Cue+voice
+  ride one burst (gap ≪ 500ms hangover): click → voice, no gap.
+- Turn-taking restored on the sink path: the shim holds each readout while
+  `receiver.isUserSpeaking()` (up to `bargeInMaxHoldMs`), then plays the FULL
+  reply — playback is serialized per row (awaited paplay) so clips never
+  overlap, and the echo gate is re-marked at actual playback time so a held
+  clip can't be transcribed as the user. Interrupt stays OFF via the existing
+  `BARGE_IN_INTERRUPT_ENABLED=false` systemd drop-in.
+
+**Verified live** (#1461, speed 1.25 bf_emma, duration 3925ms): cue+clip on the
+sink 218ms after synthesis, one burst of 4410ms (400 preroll + ~130 click +
+3925 voice), 4021ms wall vs 3980ms played — zero steady-state drift.
+
 ## 2026-07-14 — Discord voice round-trip: TTS restored on Discord, output latency made flat (burst gate), silence slider verified live (branch `ssh-view`)
 
 **User reports (live in a Discord call, viewing from the Mac over SSH).**
