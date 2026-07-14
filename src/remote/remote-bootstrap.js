@@ -169,6 +169,11 @@
         throw new Error('[remote] module not available in the browser: ' + name);
     };
 
+    // A few modules (PreferenceManager) reference `ipcRenderer` as a bare
+    // identifier without requiring it — in the browser that resolves via the
+    // global scope, so point it at the same WS-backed shim.
+    window.ipcRenderer = wsIpc;
+
     // Handy for debugging from the browser console.
     window.__ccbotRemote = { wsIpc, get authed() { return authed; } };
 })();
