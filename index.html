@@ -772,22 +772,27 @@
         </div>
     </div>
 
-    <!-- ==== Remote connection (VS Code Remote-SSH style corner control) ====
-         Bottom-left indicator + connect panel + the embedded remote view.
+    <!-- ==== Remote connection (VS Code Remote-SSH style status bar) ====
+         Full-width footer bar (like VS Code's bottom status bar) whose
+         leftmost segment is the remote indicator + connect panel; the
+         embedded remote view sits above it, never covering it, so there's
+         always a way back to the local interface.
          Driven by src/features/RemoteConnectionUI.js (local desktop app only;
          a remote browser view skips it). -->
     <div id="remote-view-container" class="remote-view-container hidden" data-test-id="remote-view-container">
         <iframe id="remote-view-frame" data-test-id="remote-view-frame" title="Remote interface"
                 sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"></iframe>
     </div>
-    <button id="remote-indicator" class="remote-indicator" data-test-id="remote-indicator" title="Connect to a remote machine">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polyline points="6 8 2 12 6 16"></polyline>
-            <polyline points="18 8 22 12 18 16"></polyline>
-        </svg>
-        <span id="remote-indicator-label" data-test-id="remote-indicator-label"></span>
-    </button>
+    <footer id="app-footer-bar" class="app-footer-bar" data-test-id="app-footer-bar">
+        <button id="remote-indicator" class="remote-indicator" data-test-id="remote-indicator" title="Connect to a remote machine">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="6 8 2 12 6 16"></polyline>
+                <polyline points="18 8 22 12 18 16"></polyline>
+            </svg>
+            <span id="remote-indicator-label" data-test-id="remote-indicator-label"></span>
+        </button>
+    </footer>
     <!-- The PRIMARY connect input: a command bar at the TOP-MIDDLE of the
          interface. The user types a real, editable ssh command
          (e.g. `ssh ethan@pop-os`, `ssh host -p 2222`, `user@host`); parsing
