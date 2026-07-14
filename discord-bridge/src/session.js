@@ -25,6 +25,60 @@ const ReceiverHealthMonitor = require('./receiverHealth');
 const SFX_DIR = path.join(__dirname, '..', '..', 'assets', 'soundeffects');
 const _sfxCache = new Map();
 
+// ---- TTS→sink shim helpers -------------------------------------------------
+
+// Is a Remote Mode viewer attached? Ground truth (RemoteServer.clients.size)
+// isn't exposed over HTTP, so use the observable proxy: any ESTABLISHED TCP
+// connection on the app's Remote Mode port. (HTTP keep-alives on that port only
+// exist while a viewer is open, so this tracks attach state closely enough for
+// a 10s-cached audio-routing decision.)
+function remoteViewerAttached() {
+  return new Promise((resolve) => {
+    const { execFile } = require('child_process');
+    execFile('ss', ['-Htn', 'state', 'established', `( sport = :${config.remoteViewPort} )`],
+      { timeout: 2000 }, (err, stdout) => {
+        if (err) return resolve(true); // can't tell → assume attached (the case the shim exists for)
+        resolve(String(stdout).trim().length > 0);
+      });
+  });
+}
+
+// Does the RUNNING app already have the TTS dual-output patch (renderer keeps
+// feeding the sink with viewers attached)? Inferred: the app's main process
+// started AFTER the patched renderer source's mtime. Pre-restart the file is
+// newer than the process (patch just landed) → false → shim plays. After the
+// app's next restart the process is newer → true → shim steps aside.
+const DUAL_OUTPUT_SENTINEL = path.resolve(__dirname, '..', '..', 'src', 'features', 'NotificationManager.js');
+function appHasDualOutput() {
+  try {
+    const src = fs.readFileSync(DUAL_OUTPUT_SENTINEL, 'utf8');
+    if (!src.includes('DUAL OUTPUT')) return false;       // patch not in the tree at all
+    const mtimeMs = fs.statSync(DUAL_OUTPUT_SENTINEL).mtimeMs;
+    const pidLine = fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d));
+    // Find the electron process that owns the Remote Mode port via /proc/net?
+    // Simpler: use the oldest "electron" process cmdline-matching the app path.
+    let appStartMs = null;
+    const btime = Number((fs.readFileSync('/proc/stat', 'utf8').match(/^btime (\d+)$/m) || [])[1]) * 1000;
+    for (const pid of pidLine) {
+      let cmd = '';
+      try { cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8'); } catch (_) { continue; }
+      if (!cmd.includes('electron') || !cmd.includes('claude-autorunner')) continue;
+      try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        const startTicks = Number(fields[19]); // starttime, field 22 overall
+        const hz = 100; // USER_HZ on Linux x86
+        const startMs = btime + (startTicks / hz) * 1000;
+        if (appStartMs == null || startMs < appStartMs) appStartMs = startMs;
+      } catch (_) { /* raced exit */ }
+    }
+    if (appStartMs == null) return false; // app not found → keep shimming
+    return appStartMs > mtimeMs;
+  } catch (_) {
+    return false; // can't tell → keep shimming (worst case is a brief double-play post-restart, fixed by TTS_TO_SINK=off)
+  }
+}
+
 class BridgeSession {
   constructor({ receiver, textMirror }) {
     this.receiver = receiver;     // shared VoiceReceiver
@@ -260,14 +314,25 @@ class BridgeSession {
     };
 
     if (config.audioSource === 'system') {
-      log.info('AUDIO_SOURCE=system — streaming the whole machine output (TTS + sound effects + wake-up alarm). TTS polling disabled to avoid doubling.');
+      log.info('AUDIO_SOURCE=system — streaming the whole machine output (TTS + sound effects + wake-up alarm).');
       this.capture = new SystemAudioCapture({ onStream: (s) => this.player.playLive(s) });
       this.capture.start();
-      // Watch-only poller: detects manager replies (for the auto-reply window)
-      // without downloading/playing them (the monitor already relays the audio).
-      this.poller = new TtsPoller({ watchOnly: true, onNotification: onManagerSpeech });
+      // TTS → SINK shim (config.ttsToSink): with a Remote Mode viewer attached,
+      // the RUNNING app's renderer suppresses local TTS playback (v1 double-play
+      // rule), so nothing hits the sink monitor and Discord goes silent. Fetch
+      // each clip and paplay it into the sink ourselves. 'auto' also detects
+      // when a DUAL-OUTPUT app build is running (renderer feeds the sink again)
+      // and steps aside, so this never doubles after the app's next restart.
+      this.poller = new TtsPoller({
+        watchOnly: config.ttsToSink === 'off',
+        onClip: async (wav, row) => this._playTtsToSink(wav, row),
+        onNotification: onManagerSpeech,
+      });
       await this.poller.seed();
       this.poller.start();
+      if (config.ttsToSink !== 'off') {
+        log.info(`TTS→sink shim active (mode=${config.ttsToSink}) — bridge paplays TTS clips the app's renderer suppresses.`);
+      }
     } else {
       this.poller = new TtsPoller({
         onClip: async (wav, row) => this.player.enqueue(wav, `#${row.id}`),
@@ -312,6 +377,61 @@ class BridgeSession {
 
   playWakeAck() { this.playSound(config.wake().activationSound, 'wake-sound'); }
   playCommandAck() { this.playSound(config.wake().stopSound, 'command-sound'); }
+
+  // TTS → SINK shim (system mode). Decide whether the BRIDGE must paplay this
+  // clip into the sink because the app's renderer won't:
+  //   'always' → play; 'off' → never reached (poller is watch-only);
+  //   'auto'   → play only while (a) a Remote Mode viewer is attached (that is
+  //              when the v1 renderer suppresses local playback) AND (b) the
+  //              RUNNING app predates the dual-output patch. (b) is inferred by
+  //              comparing the app process's start time against the patched
+  //              renderer file's mtime — self-corrects at the app's next restart
+  //              with no manual step.
+  async _playTtsToSink(wav, row) {
+    try {
+      const verdict = await this._ttsSinkVerdict();
+      if (!verdict.play) {
+        log.info(`tts→sink: #${row.id} skipped — ${verdict.why}.`);
+        return;
+      }
+      // ECHO GATE: manager (999) rows are already gated by onManagerSpeech; gate
+      // the rest here so a non-manager clip isn't transcribed as the user.
+      if (String(row.terminal_id) !== '999') this.markBotSpeaking(row.duration_ms, 'tts clip');
+      const tmp = path.join(require('os').tmpdir(), `ccbot-tts-${row.id}.wav`);
+      fs.writeFileSync(tmp, wav);
+      const startedAt = Date.now();
+      const p = spawn('paplay', [tmp], {
+        env: { ...process.env, PULSE_SERVER: config.pulseServer },
+        stdio: 'ignore',
+      });
+      p.on('error', (e) => { log.warn('tts→sink: paplay failed:', e.message); try { fs.unlinkSync(tmp); } catch (_) {} });
+      p.on('exit', () => { try { fs.unlinkSync(tmp); } catch (_) {} });
+      const rowAgeMs = row.created_at ? Math.max(0, Date.now() - new Date(row.created_at).getTime()) : null;
+      log.success(`🗣️ tts→sink: playing #${row.id} into the sink (${verdict.why})${rowAgeMs != null ? ` — ${rowAgeMs}ms after synthesis` : ''}.`);
+      void startedAt;
+    } catch (e) {
+      log.warn('tts→sink error:', e.message);
+    }
+  }
+
+  // Cached (10s) decision for the 'auto' mode.
+  async _ttsSinkVerdict() {
+    if (config.ttsToSink === 'always') return { play: true, why: 'TTS_TO_SINK=always' };
+    if (config.ttsToSink !== 'auto') return { play: false, why: `TTS_TO_SINK=${config.ttsToSink}` };
+    const now = Date.now();
+    if (this._sinkVerdictCache && now - this._sinkVerdictCache.at < 10000) return this._sinkVerdictCache.v;
+    let v;
+    const attached = await remoteViewerAttached();
+    if (!attached) {
+      v = { play: false, why: 'no remote viewer attached — the app renderer plays the sink itself' };
+    } else if (appHasDualOutput()) {
+      v = { play: false, why: 'dual-output app build is running — its renderer feeds the sink even with viewers attached' };
+    } else {
+      v = { play: true, why: 'remote viewer attached and the running app suppresses local playback' };
+    }
+    this._sinkVerdictCache = { at: now, v };
+    return v;
+  }
 
   // Cleanly leave the call and stop listening. FORCE-destroys the connection even
   // if it's wedged/deaf (the scenario that left the bot stuck), and suppresses the

@@ -6,6 +6,56 @@ project's current git branch.
 
 ---
 
+## 2026-07-14 — Discord voice round-trip: TTS restored on Discord, output latency made flat (burst gate), silence slider verified live (branch `ssh-view`)
+
+**User reports (live in a Discord call, viewing from the Mac over SSH).**
+(1) The manager's TTS voice was completely inaudible on Discord while it played
+perfectly on the Mac. (2) Sounds that did reach Discord (the hud4 "sent" chime)
+arrived ~5 s late, so the whole ask→answer loop felt ~5 s slow. (3) The "Stop
+after silence" slider seemed to have no effect on in-call capture.
+
+**Where the seconds actually went (measured, journalctl timestamps).**
+- *Input path was honest:* last-audio → capture cut tracked the slider exactly
+  (802 ms at 1000 ms, 2288–2305 ms at 2500 ms), Whisper 90–950 ms, then
+  `/terminal/keys` writes straight to the manager PTY (no queue, no gates) with
+  a 180 ms text→Enter delay. Stop→injected ≈ 1.1–2 s at the 1000 ms setting.
+- *The slider works and always did:* today's log shows applied silence moving
+  5000→3000→2500→1000→2500 as it was dragged; the remote panel's writes go over
+  the WS (`db-set-setting`, no allowlist) into `auto-injector.json`, which the
+  bridge re-reads per capture. The value had been left at 2500 (each renderer
+  caches prefs independently — a second stale panel can silently rewrite it);
+  set back to the intended 1000 via the app's own WS invoke.
+- *TTS silent on Discord — root cause:* the v1 "no-double-play" rule. With a
+  Remote Mode viewer attached, the local renderer suppressed TTS playback, so
+  nothing reached the `auto_null` sink whose monitor the bridge streams
+  (`AUDIO_SOURCE=system`). Discord went silent precisely because the Mac was
+  watching. Fixed app-side by terminal 1's verified DUAL-OUTPUT patch (applied,
+  tests 11/11, commit `74a376b`): renderer keeps playing with viewers attached.
+  Until the app's next restart picks that up, the bridge runs a TTS→sink shim:
+  it fetches each clip and paplays it into the sink itself — `auto` mode plays
+  only while a viewer is attached AND the running app predates the patch
+  (process start time vs patched-file mtime), so it steps aside automatically
+  after the restart. Verified live: synthesis → audible on Discord in ~1.4 s
+  (poll ≤1.5 s + 0.3 s sink→channel), Mac copy via the WS forwarder in ≤2 s.
+- *The ~5 s everything-late feeling — root cause:* the bridge streamed the sink
+  monitor as ONE eternal Opus stream. The keepalive keeps the monitor producing
+  continuous PCM, so the bot "spoke" 24/7 and Discord's adaptive jitter buffer
+  never got a silence gap to reset on — every hiccup became permanent added
+  delay that only grew with call time. Fixed with a **burst gate** in the
+  bridge player: watch the PCM for sound (s16 peak > 300 ≈ −41 dBFS), stream
+  each burst as its own resource seeded with 120 ms pre-roll, end it after
+  500 ms trailing silence. The bot now starts/stops speaking like a human,
+  the receive buffer resets per burst, and latency stays flat. Measured after
+  restart: chime = 720 ms burst, sender backlog 10–140 ms; a 14 s TTS clip
+  split naturally across a sentence pause into 6.9 s + 4.1 s bursts. Barge-in
+  mute now zero-fills inside the hangover so muting cuts the relay instantly.
+
+**Knobs** (bridge `.env`): `SYSTEM_GATE_ENABLED/THRESHOLD/HANGOVER_MS/PREROLL_MS`,
+`TTS_TO_SINK=auto|always|off`, `REMOTE_VIEW_PORT`. Expected stop-talking →
+manager-injected ≈ 1.1–2 s at the 1000 ms slider; sounds → user's ear well
+under 1 s plus Discord's own transport (~0.2 s), instead of an ever-growing
+multi-second buffer.
+
 ## 2026-07-14 — Remote Mode: live terminal-metadata sync — renames, colors, create/close reach every attached view in milliseconds (branch `ssh-view`)
 
 **User report.** Terminal title/color changes and add/remove didn't show up in
