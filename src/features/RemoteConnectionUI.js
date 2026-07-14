@@ -11,7 +11,13 @@
  *     src/features/ssh-command-parse.js. Advanced options (remote session
  *     file path, extra ssh options like -i, and the remote app directory
  *     for auto-start) fold out under the bar.
- *   - Connect invokes `remote-client-connect`; main reads the remote's
+ *   - Connect invokes `remote-client-connect`; main tries the user's ssh
+ *     keys/agent first, and when AUTH specifically fails (needPassword on
+ *     the result/status), a password field appears under the command input
+ *     (VS Code Remote-SSH style) and the retry carries the password — which
+ *     travels only in the IPC call and the ssh child's env (never recents,
+ *     never logs, never argv). Advanced also offers "use password" up front.
+ *     Main then reads the remote's
  *     ~/.config/ccbot/session.json over ssh and — if the remote is NOT
  *     already serving Remote Mode — AUTO-STARTS it there (live-enable via
  *     the remote's Control API when the app is running, headless
@@ -65,6 +71,12 @@ class RemoteConnectionUI {
             sessionPath: $('remote-session-path-input'),
             sshOptions: $('remote-ssh-options-input'),
             appDir: $('remote-app-dir-input'),
+            // key→password fallback: hidden until main reports needPassword
+            // (or the Advanced "use password" box is ticked)
+            passwordRow: $('remote-password-row'),
+            passwordLabel: $('remote-password-label'),
+            password: $('remote-password-input'),
+            usePasswordCheck: $('remote-use-password-check'),
             recents: $('remote-recents-list'),
             barStatus: $('remote-command-status'),
             // bottom-left management popover (connected state)
@@ -94,6 +106,11 @@ class RemoteConnectionUI {
         this.el.disconnectBtn.addEventListener('click', () => this.disconnect());
         this.el.advancedToggle.addEventListener('click', () => {
             this.el.advancedBox.classList.toggle('hidden');
+        });
+        // Opt into password auth up front (VS Code also lets you skip keys).
+        this.el.usePasswordCheck.addEventListener('change', () => {
+            if (this.el.usePasswordCheck.checked) this.showPasswordRow();
+            else this.hidePasswordRow();
         });
         this.el.bar.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && e.target && e.target.tagName === 'INPUT') {
@@ -140,6 +157,27 @@ class RemoteConnectionUI {
 
     hideCommandBar() {
         this.el.bar.classList.add('hidden');
+        // Hygiene: a typed password never outlives the bar.
+        this.el.password.value = '';
+    }
+
+    // ---------- key→password fallback ----------
+
+    /**
+     * Reveal the password field (key auth failed, wrong password, or the
+     * user ticked "use password"). The label names the destination so it is
+     * unambiguous WHOSE password is being asked for.
+     */
+    showPasswordRow(dest) {
+        this.el.passwordLabel.textContent = 'SSH password' + (dest ? ' for ' + dest : '');
+        this.el.passwordRow.classList.remove('hidden');
+        this.el.password.focus();
+        this.el.password.select();
+    }
+
+    hidePasswordRow() {
+        this.el.passwordRow.classList.add('hidden');
+        this.el.password.value = '';
     }
 
     setStatus(message, isError) {
@@ -276,23 +314,35 @@ class RemoteConnectionUI {
         }
 
         const advancedOptions = this.el.sshOptions.value.trim();
+        const dest = (parsed.username ? parsed.username + '@' : '') + parsed.host;
+        // The password (only when its field is visible) goes into the IPC
+        // call and NOWHERE else: not in recents, not in status text, not in
+        // logs. Raw value on purpose — passwords may contain spaces.
+        const passwordVisible = !this.el.passwordRow.classList.contains('hidden');
         const opts = {
             host: parsed.host,
             username: parsed.username,
             sshPort: parsed.sshPort === null ? '' : parsed.sshPort, // '' = default 22
             sessionPath: this.el.sessionPath.value.trim(),
             appDir: this.el.appDir.value.trim(),
-            sshOptions: (parsed.extraArgs.join(' ') + ' ' + advancedOptions).trim()
+            sshOptions: (parsed.extraArgs.join(' ') + ' ' + advancedOptions).trim(),
+            password: passwordVisible ? this.el.password.value : ''
         };
 
         this.connecting = true;
         this.el.connectBtn.disabled = true;
         this.el.command.disabled = true;
+        this.el.password.disabled = true;
         this.setStatus('Connecting to ' + parsed.host + ' — reading remote session over SSH…', false);
         this.renderConnecting(parsed.host);
+        let authRetry = false; // set on a needPassword failure (used in finally)
         try {
             const result = await this.ipc.invoke('remote-client-connect', opts);
-            if (!result || !result.ok) throw new Error((result && result.error) || 'Connection failed');
+            if (!result || !result.ok) {
+                const err = new Error((result && result.error) || 'Connection failed');
+                err.needPassword = !!(result && result.needPassword);
+                throw err;
+            }
 
             this.connection = {
                 host: result.host,
@@ -313,15 +363,29 @@ class RemoteConnectionUI {
             this.el.viewContainer.classList.remove('hidden');
             this.renderConnected();
             this.setStatus('', false);
+            this.hidePasswordRow();
+            this.el.usePasswordCheck.checked = false;
             this.hideCommandBar();
         } catch (err) {
             this.setStatus((err && err.message) || 'Connection failed', true);
+            // Auth failure specifically (no usable key / wrong password):
+            // surface the password field and let the user retry in place.
+            authRetry = !!(err && err.needPassword);
+            if (authRetry) this.showPasswordRow(dest);
             this.renderError();
             setTimeout(() => { if (!this.connection && !this.connecting) this.renderIdle(); }, 4000);
         } finally {
             this.connecting = false;
             this.el.connectBtn.disabled = false;
             this.el.command.disabled = false;
+            this.el.password.disabled = false;
+            // Re-focus the password box after a needPassword failure so the
+            // user can just type and hit Enter (focus() while it was disabled
+            // in showPasswordRow is a no-op in some engines).
+            if (authRetry && !this.connection) {
+                this.el.password.focus();
+                this.el.password.select();
+            }
         }
     }
 
