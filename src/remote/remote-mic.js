@@ -28,13 +28,16 @@
  *   'remote-mic-denied'  — another client already streams its mic; turn off.
  *   'remote-wake-state'  — the desktop wake pipeline's state while OUR mic is
  *                          the source (listening/capturing/transcribing);
- *                          drives the button UI + activation/stop chimes so
- *                          the remote speaker gets the same audible feedback
- *                          a local user would.
+ *                          drives the voice-button glow + activation/stop
+ *                          chimes so the remote speaker gets the same audible
+ *                          feedback a local user would.
  *
- * UI: a floating mic button (bottom-left). Grey = off, green pulse = streaming
- * (wake listening), yellow = capturing a command, blue = transcribing,
- * red ring = mic permission denied / mic taken by another client.
+ * UI: NO floating button (it used to overlap the message input). The single
+ * mic control is Settings → Microphone: picking one of THIS device's inputs
+ * starts the stream (and persists, so it auto-resumes on the next connect);
+ * picking "Off" stops it. While streaming, the app's own voice button
+ * (#voice-btn) carries a colored glow: green = wake listening, yellow =
+ * capturing a command, blue = transcribing, red = denied.
  */
 (() => {
     'use strict';
@@ -49,15 +52,18 @@
     // desktop's) and persisted per-browser — it is meaningless to any other
     // machine, so it never touches the desktop's microphoneDeviceId preference.
     const DEVICE_KEY = 'ccbotRemoteMicDeviceId';
+    // null = the viewer never chose (no auto-start — streaming a mic without an
+    // explicit opt-in would be wrong); 'off' = explicitly off; 'default' or a
+    // real deviceId = stream that input, and auto-resume it on reconnect.
     function loadDeviceId() {
-        try { return window.localStorage.getItem(DEVICE_KEY) || 'default'; } catch (_) { return 'default'; }
+        try { return window.localStorage.getItem(DEVICE_KEY); } catch (_) { return null; }
     }
 
     const state = {
         streaming: false,     // mic on (either real capture or test mode)
         testMode: false,      // streaming via the test hook, no real audio graph
         denied: false,        // getUserMedia refused or server denied ownership
-        deviceId: loadDeviceId(), // 'default' = browser default input
+        deviceId: loadDeviceId() || 'default', // 'default' = browser default input
         activeLabel: null,    // label of the track actually captured (evidence/UI)
         stream: null,
         ctx: null,
@@ -170,7 +176,7 @@
 
     function buildAudioConstraints() {
         const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
-        if (state.deviceId && state.deviceId !== 'default') {
+        if (state.deviceId && state.deviceId !== 'default' && state.deviceId !== 'off') {
             return Object.assign({ deviceId: { exact: state.deviceId } }, base);
         }
         return base;
@@ -320,64 +326,62 @@
     }
 
     // ---- UI ----------------------------------------------------------------
-
-    const MIC_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>';
-
-    let btn = null;
+    // No floating button (it overlapped the message input). The stream is
+    // controlled from Settings → Microphone; the app's own voice button just
+    // carries a colored glow so the viewer can see the wake pipeline's state.
 
     function injectUi() {
-        if (btn || !document.body) return;
+        if (!document.body || document.getElementById('ccbot-remote-mic-style')) return;
         const style = document.createElement('style');
+        style.id = 'ccbot-remote-mic-style';
         style.textContent = `
-            #remote-mic-btn {
-                position: fixed; left: 14px; bottom: 14px; z-index: 10050;
-                width: 40px; height: 40px; border-radius: 50%;
-                border: 1px solid rgba(128,128,128,.45);
-                background: rgba(30,30,30,.85); color: #bbb;
-                display: flex; align-items: center; justify-content: center;
-                cursor: pointer; transition: background .15s, color .15s, box-shadow .15s;
-            }
-            #remote-mic-btn:hover { color: #fff; }
-            #remote-mic-btn.on { color: #28ca42; border-color: #28ca42; animation: ccbot-mic-pulse 1.6s ease-in-out infinite; }
-            #remote-mic-btn.capturing { color: #f6c945; border-color: #f6c945; animation: none; box-shadow: 0 0 10px rgba(246,201,69,.7); }
-            #remote-mic-btn.transcribing { color: #4aa3ff; border-color: #4aa3ff; animation: none; box-shadow: 0 0 10px rgba(74,163,255,.7); }
-            #remote-mic-btn.denied { color: #ff5f57; border-color: #ff5f57; animation: none; }
+            #voice-btn.remote-wake-on { color: #28ca42 !important; animation: ccbot-mic-pulse 1.6s ease-in-out infinite; border-radius: 6px; }
+            #voice-btn.remote-wake-capturing { color: #f6c945 !important; animation: none; box-shadow: 0 0 10px rgba(246,201,69,.7); border-radius: 6px; }
+            #voice-btn.remote-wake-transcribing { color: #4aa3ff !important; animation: none; box-shadow: 0 0 10px rgba(74,163,255,.7); border-radius: 6px; }
+            #voice-btn.remote-wake-denied { color: #ff5f57 !important; animation: none; }
             @keyframes ccbot-mic-pulse {
                 0%, 100% { box-shadow: 0 0 4px rgba(40,202,66,.5); }
-                50% { box-shadow: 0 0 14px rgba(40,202,66,.9); }
+                50% { box-shadow: 0 0 12px rgba(40,202,66,.9); }
             }
         `;
         document.head.appendChild(style);
-        btn = document.createElement('button');
-        btn.id = 'remote-mic-btn';
-        btn.type = 'button';
-        btn.innerHTML = MIC_SVG;
-        btn.addEventListener('click', () => {
-            if (state.streaming) stop('user toggled off');
-            else start();
-        });
-        document.body.appendChild(btn);
         renderButton();
     }
 
+    /** Reflect streaming/wake state as a glow on the app's own voice button. */
     function renderButton() {
+        const btn = document.getElementById('voice-btn');
         if (!btn) return;
-        btn.classList.toggle('on', state.streaming && state.wakeState !== 'capturing' && state.wakeState !== 'transcribing');
-        btn.classList.toggle('capturing', state.streaming && state.wakeState === 'capturing');
-        btn.classList.toggle('transcribing', state.streaming && state.wakeState === 'transcribing');
-        btn.classList.toggle('denied', !state.streaming && state.denied);
-        btn.title = state.streaming
-            ? (state.wakeState === 'capturing' ? 'Desktop is capturing your command — click to stop the mic'
+        btn.classList.toggle('remote-wake-on', state.streaming && state.wakeState !== 'capturing' && state.wakeState !== 'transcribing');
+        btn.classList.toggle('remote-wake-capturing', state.streaming && state.wakeState === 'capturing');
+        btn.classList.toggle('remote-wake-transcribing', state.streaming && state.wakeState === 'transcribing');
+        btn.classList.toggle('remote-wake-denied', !state.streaming && state.denied);
+        if (state.streaming) {
+            btn.title = state.wakeState === 'capturing' ? 'Desktop is capturing your command…'
                 : state.wakeState === 'transcribing' ? 'Desktop is transcribing…'
-                    : 'Mic is streaming to the desktop voice pipeline (say the wake phrase) — click to stop')
-            : (state.denied ? 'Mic unavailable (permission denied or another viewer owns it) — click to retry'
-                : 'Send this device\'s microphone to the desktop voice pipeline');
+                    : 'This device\'s mic feeds the desktop voice pipeline (say the wake phrase). Turn off in Settings → Microphone.';
+        } else if (state.denied) {
+            btn.title = 'Remote mic unavailable (permission denied or another viewer owns it) — reselect it in Settings → Microphone to retry';
+        }
+    }
+
+    /**
+     * Auto-resume: the mic choice is an explicit, persisted opt-in — if this
+     * browser picked an input before (and didn't pick "Off"), start streaming
+     * as soon as the page is up so the wake word works without reopening
+     * Settings on every connect. Never auto-starts for a first-time viewer.
+     */
+    function autoResume() {
+        const saved = loadDeviceId();
+        if (!saved || saved === 'off') return;
+        start().catch(() => { /* denied/unavailable — state.denied already set */ });
     }
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', injectUi);
+        document.addEventListener('DOMContentLoaded', () => { injectUi(); autoResume(); });
     } else {
         injectUi();
+        autoResume();
     }
     wirePushes();
 
@@ -395,11 +399,20 @@
          * Streaming already? Restart the capture on the new device. Not
          * streaming yet? Start it — picking a mic IS the intent to use it,
          * which also arms wake-word listening on the desktop pipeline.
+         * 'off' stops the stream (and stays off across reconnects).
          */
         async setDevice(deviceId) {
-            state.deviceId = (deviceId && deviceId !== 'default') ? String(deviceId) : 'default';
-            try { window.localStorage.setItem(DEVICE_KEY, state.deviceId); } catch (_) { /* private mode */ }
+            const v = deviceId === 'off' ? 'off'
+                : (deviceId && deviceId !== 'default') ? String(deviceId) : 'default';
+            state.deviceId = v;
+            try { window.localStorage.setItem(DEVICE_KEY, v); } catch (_) { /* private mode */ }
             if (state.testMode) return true; // tests drive frames directly — nothing to recapture
+            if (v === 'off') {
+                stop('turned off in settings');
+                state.denied = false;
+                renderButton();
+                return false;
+            }
             if (state.streaming) stop('switching input device');
             return start();
         },

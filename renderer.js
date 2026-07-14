@@ -1204,7 +1204,10 @@ class TerminalGUI {
             micSelect.addEventListener('change', () => {
                 if (IS_REMOTE) {
                     const v = micSelect.value;
-                    if (this.voiceManager) this.voiceManager.setMicrophoneDevice(v);
+                    // 'off' only stops the wake stream; the manual voice button
+                    // keeps recording from the browser default (never 'off' as
+                    // a device id — that would OverconstrainedError getUserMedia).
+                    if (this.voiceManager) this.voiceManager.setMicrophoneDevice(v === 'off' ? 'default' : v);
                     const rm = window.__ccbotRemoteMic;
                     if (rm && typeof rm.setDevice === 'function') {
                         // (Re)starts the mic stream on that device — wake word +
@@ -1223,7 +1226,7 @@ class TerminalGUI {
             // records from the right mic without reopening Settings.
             try {
                 const savedRemoteMic = window.localStorage.getItem('ccbotRemoteMicDeviceId');
-                if (savedRemoteMic) this.voiceManager.setMicrophoneDevice(savedRemoteMic);
+                if (savedRemoteMic && savedRemoteMic !== 'off') this.voiceManager.setMicrophoneDevice(savedRemoteMic);
             } catch (_) { /* private mode */ }
         }
 
@@ -1494,12 +1497,22 @@ class TerminalGUI {
             // preference locally, this browser's localStorage remotely.
             let saved = 'default';
             if (IS_REMOTE) {
-                try { saved = window.localStorage.getItem('ccbotRemoteMicDeviceId') || 'default'; } catch (_) { /* ignore */ }
+                // Unset = never opted in = not streaming — show that as Off.
+                try { saved = window.localStorage.getItem('ccbotRemoteMicDeviceId') || 'off'; } catch (_) { saved = 'off'; }
             } else {
                 saved = this.preferenceManager.getPreference('microphoneDeviceId') || 'default';
             }
 
             micSelect.innerHTML = '';
+            if (IS_REMOTE) {
+                // Remote view: picking a mic STARTS streaming it to the desktop
+                // pipeline, so the picker needs an explicit way to stop — the
+                // "Off" row (persisted; also blocks the auto-resume on reconnect).
+                const offOpt = document.createElement('option');
+                offOpt.value = 'off';
+                offOpt.textContent = 'Off — don\'t stream this device\'s mic';
+                micSelect.appendChild(offOpt);
+            }
             const defOpt = document.createElement('option');
             defOpt.value = 'default';
             defOpt.textContent = 'System default';

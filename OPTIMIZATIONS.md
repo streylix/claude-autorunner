@@ -6,6 +6,55 @@ project's current git branch.
 
 ---
 
+## 2026-07-14 — Remote Mode UI cleanup + mic-picker polish: one connect button, no floating mic, click-away dismiss, explicit Off + auto-resume (branch `ssh-view`)
+
+**User reports (viewing from the Mac over SSH).** (1) Two stacked `<>` buttons
+bottom-left: the embedded remote view renders the same `index.html` as the
+desktop, so the footer's connect indicator painted as a DEAD blue button right
+under the outer app's live green "Remote: host" pill (RemoteConnectionUI
+deliberately never initializes in a remote view — the markup still did).
+(2) A large floating circular mic button (injected by `remote-mic.js`) sat
+bottom-left overlapping the message input. (3) The connect/SSH panel only
+closed via a tiny X.
+
+**Fixes.**
+
+1. *One connect button (`src/remote/remote-bootstrap.js`).* The bootstrap now
+   hides `#remote-indicator` before first paint in every remote client — only
+   the outer desktop app offers a connect control (no nested remote hops
+   anyway).
+2. *Floating mic button removed (`src/remote/remote-mic.js`, `renderer.js`).*
+   Settings → Microphone is now the single mic control in the remote view: it
+   gained an explicit **"Off — don't stream this device's mic"** row (also the
+   default for a first-time viewer — never streams without an opt-in), picking
+   a device starts/re-targets the stream, and the choice persists per-browser
+   and **auto-resumes on the next connect**, so the wake word works over SSH
+   without reopening Settings every time. While streaming, the app's own voice
+   button carries the wake-state glow (green listening / yellow capturing /
+   blue transcribing) instead of a second floating control. Picking "Off" (or
+   never opting in) leaves the manual voice button on the browser-default mic.
+3. *Click-away dismiss (`RemoteConnectionUI.js`, `index.html`, `style.css`).*
+   The X buttons on the connect bar and the management popover are gone; a
+   pointerdown anywhere outside the open panel dismisses it (Esc still works).
+   The corner indicator keeps its toggle, and a connect in flight pins the bar
+   open so the status line / password prompt can't vanish mid-attempt.
+
+**Verified headlessly** (isolated app + headless Chromium, own ports/config —
+the production instance untouched): `remote-mic-e2e` now additionally asserts
+no `#remote-mic-btn`, hidden inner indicator (`display:none` computed), no X
+buttons, outside-click dismiss + inside-click survival, the picker listing the
+BROWSER's fake devices with Off first/selected, selection starting the stream
+on the exact picked device (track label echoed), the voice-button glow, and
+Off stopping the stream — all before the unchanged wake-word/Whisper pipeline
+phases, which still pass (real Vosk detection, byte-exact WAV, memo to 999).
+`remote-tts-e2e` gained a panel-mirror probe: a notification created BEFORE
+the viewer attaches renders in the client's Notifications panel via the /api
+reverse-proxy history load (provably not WS-pushed). NOTE: TTS dual-output
+(desktop sink + viewer simultaneously) was implemented and e2e-verified here,
+then handed to terminal 2 with the Discord-audio workstream — the verified
+patch is preserved for T2; this tree reverted to the ship-state suppression
+behavior to avoid concurrent edits.
+
 ## 2026-07-14 — Remote Mode: the mic picker now selects the VIEWER's microphone; voice button, TTS read-aloud and the notifications list now work over SSH (branch `ssh-view`)
 
 **Bugs (reported by the user, viewing from his Mac over SSH).** (1) Settings →
