@@ -3268,3 +3268,30 @@ using the neutral demo phrase, exactly as the plan intended.
   and not worth a fix mid-audit, but noting it — a one-line guard
   (`if (savedQueue)` already exists; the empty-string case slips through) would
   silence it.
+
+## SSH View — read-only remote mirror of the interface (ssh-view branch)
+
+Added a read-only way to watch the whole Auto-Injector interface from an SSH
+session, so a headless machine (no monitor) running the app can still be observed
+live.
+
+- New CLI `npm run ssh-view` (`scripts/ssh-view.js`): a terminal UI that lists
+  every terminal (id, title, runtime/status) from `GET /state` and shows the
+  selected terminal's live screen from `POST /terminal/screen`, auto-refreshing
+  about every 1.5s. Arrow/j-k keys and number keys switch terminals; the manager
+  (terminal 999) is always shown; `g` toggles a condensed grid of all terminals;
+  `s` toggles scrollback; `q`/Ctrl-C quits. It is read-only by construction — it
+  only ever calls those two non-mutating endpoints and never queues, injects,
+  creates, deletes, or steers. Built on Node built-ins only (no new dependencies).
+- Auth/discovery: an SSH login shell does not inherit the app's CCBOT_PORT/
+  CCBOT_TOKEN, so on startup the app now writes a `0600` session file at
+  `~/.config/ccbot/session.json` (via `src/main/session-file.js`) containing the
+  loopback port + token; `ssh-view` reads it. `--port`/`--token` flags and the
+  CCBOT_* env vars override it. The file is removed on clean shutdown. The token
+  is only ever sent to 127.0.0.1.
+- Resilient: if the Control API is unreachable it shows a "waiting for app…"
+  screen and keeps retrying (re-resolving the port/token each time), never
+  crashing.
+- Docs: `docs/SSH_VIEW.md`. Files touched: `main.js` (write/remove the session
+  file around the hook-server lifecycle), `package.json` (script), `.gitignore`
+  (un-ignore the new script).

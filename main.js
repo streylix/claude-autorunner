@@ -16,6 +16,7 @@ const { readLastAssistantText, buildTranscriptResponse } = require('./src/main/t
 const { enrichSnapshot, detectRuntime } = require('./src/main/terminal-runtime');
 const { handlePtyControl } = require('./src/main/pty-control');
 const { runCcusage } = require('./src/main/ccusage');
+const { writeSessionFile, removeSessionFile } = require('./src/main/session-file');
 
 let mainWindow;
 let hookServer = null;
@@ -529,6 +530,15 @@ app.whenReady().then(async () => {
     // Lets an integration test POST a real hook-event to verify the full
     // detection path end-to-end. Same info already lives in each PTY's env.
     global.__ccbotHook = { port, token: hookServer.token };
+
+    // Advertise the loopback Control API (port + token) in a tight-perms session
+    // file so a same-user local process — notably the read-only `npm run ssh-view`
+    // mirror over SSH — can discover it without inheriting CCBOT_* env vars. The
+    // token stays loopback-only; the file is 0600 and removed on shutdown.
+    try {
+      const written = writeSessionFile({ port, token: hookServer.token });
+      if (written) safeLog('[Main] Wrote Control API session file to ' + written);
+    } catch (e) { /* advertising the API must never break startup */ }
 
     // Idempotently install guarded hooks into ~/.claude/settings.json
     const hookResult = ensureClaudeHooks();
@@ -1794,6 +1804,10 @@ app.on('before-quit', async (event) => {
       hookServer.close();
       hookServer = null;
     }
+
+    // Remove the Control API session file so a stale port/token isn't left
+    // advertised after the API is gone.
+    try { removeSessionFile(); } catch (e) { /* best effort */ }
 
     // Clean up power save blocker
     if (powerSaveBlockerId !== null) {
