@@ -910,3 +910,37 @@ real acoustic capture isn't possible — the delivery + pipeline-invocation
 chain is what's asserted. Unit tests:
 `src/features/WakeWordManager.remote-source.test.js`,
 `src/main/RemoteServer.mic.test.js`.
+
+## 11. Live terminal-metadata sync — rename/recolor/create/close, no reconnect (IMPLEMENTED)
+
+### The problem
+
+A remote viewer's terminal set was a snapshot: titles and colors came from the
+boot-time state, and a rename or recolor on the desktop (or the reverse) was
+invisible until the viewer reconnected. Create/close already broadcast
+(`remote-terminal-created` / `remote-terminal-closed`), but metadata had no
+channel at all.
+
+### How it works now
+
+`setTerminalMetadata` (renderer.js) is the single funnel every title/color
+commit goes through — the inline rename editor, the color-picker modal, and
+the Control API's `terminal-update`. It now ends by sending
+`terminal-meta-changed {terminalId, title?, color?}` to main, which fans it
+out to EVERY attached renderer (the desktop window + all WS clients) as a
+`remote-terminal-meta` push — the same `broadcastToRenderers` fan-out the
+create/close events ride. Receivers apply it through the very same
+`setTerminalMetadata`, with a `fromSync` flag that suppresses the re-send:
+the originator's own echo is an idempotent no-op apply, never a loop. Works
+in BOTH directions — a rename in the remote view lands on the desktop (and
+persists there; the local renderer owns persistence), and vice versa, within
+push latency. The renderer also re-pushes its `/state` snapshot on
+`terminal:metadata`, so external controllers (the manager) see fresh titles.
+
+### End-to-end verification
+
+`xvfb-run -a node tests/integration/remote-meta-e2e.js` — isolated app +
+headless Chromium viewer. Measured latencies (loopback): desktop→remote
+title+color 3 ms, remote→desktop rename 4 ms (color survives the partial
+update), create→view 50 ms, close→drop 6 ms — all within the 2 s budget, no
+reconnect, no polling.

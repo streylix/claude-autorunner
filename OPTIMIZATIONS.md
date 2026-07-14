@@ -6,6 +6,27 @@ project's current git branch.
 
 ---
 
+## 2026-07-14 — Remote Mode: live terminal-metadata sync — renames, colors, create/close reach every attached view in milliseconds (branch `ssh-view`)
+
+**User report.** Terminal title/color changes and add/remove didn't show up in
+the SSH remote view without reconnecting.
+
+**Fix.** `setTerminalMetadata` (the one funnel behind the inline rename
+editor, the color picker, and the Control API's `terminal-update`) now sends
+`terminal-meta-changed` to main, which fans it out to every attached renderer
+as a `remote-terminal-meta` push over the existing WS — event-driven, no
+polling. Receivers apply through the same method with a `fromSync` guard so
+the originator's echo can't loop. Bidirectional: a rename in the remote view
+lands on the desktop (where it persists) and vice versa. Create/close already
+broadcast; verified they ride the same fan-out. The `/state` snapshot also
+refreshes on metadata changes so the manager sees current titles.
+
+**Verified headlessly** (`tests/integration/remote-meta-e2e.js`, isolated
+instance): desktop→remote title+color 3 ms, remote→desktop rename 4 ms (color
+survives partial updates), create→view 50 ms, close→drop 6 ms — all far inside
+the 2 s budget, without reconnecting. Full unit suite: 174/174 pass.
+See docs/REMOTE_MODE.md §11.
+
 ## 2026-07-14 — Remote Mode UI cleanup + mic-picker polish: one connect button, no floating mic, click-away dismiss, explicit Off + auto-resume (branch `ssh-view`)
 
 **User reports (viewing from the Mac over SSH).** (1) Two stacked `<>` buttons
