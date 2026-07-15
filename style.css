@@ -4916,3 +4916,52 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     border: none;
     display: block;
 }
+
+/* ---- Interrupt stop words (settings): editable chip list ---- */
+.stop-words-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 6px 0;
+}
+
+.stop-word-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px 2px 10px;
+    border-radius: 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.stop-word-remove {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 0 2px;
+}
+
+.stop-word-remove:hover {
+    color: var(--accent-danger, #ff5f57);
+}
+
+.stop-words-add-row {
+    display: flex;
+    gap: 6px;
+}
+
+.stop-words-add-row .setting-input {
+    flex: 1;
+}
+
+.stop-words-empty {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-style: italic;
+}

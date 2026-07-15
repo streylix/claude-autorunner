@@ -80,4 +80,21 @@ function inCallSilenceMs() {
   return Math.max(600, Number.isFinite(v) && v > 0 ? v : 1200);
 }
 
-module.exports = { readSettings, wake, inCallSilenceMs, storePath };
+// STOP WORDS for the voice interrupt: when a transcribed message BEGINS with
+// one of these (case-insensitive, punctuation-trimmed first token), the bridge
+// sends ESC to the manager terminal BEFORE injecting, aborting its current
+// turn so the newest message becomes the freshest input. Mirrored LIVE from
+// the app's `interruptStopWords` setting (Settings → Voice); the app persists
+// it as a JSON array. Default ["no"] — deliberately conservative; the user
+// adds/removes words in the app UI. Accepts a comma-separated string too, so
+// a hand-edited store still works.
+function interruptStopWords() {
+  const raw = readSettings().interruptStopWords;
+  const list = Array.isArray(raw)
+    ? raw
+    : (typeof raw === 'string' && raw.trim() ? raw.split(',') : ['no']);
+  const words = list.map((w) => String(w).trim().toLowerCase()).filter(Boolean);
+  return words.length ? words : ['no'];
+}
+
+module.exports = { readSettings, wake, inCallSilenceMs, interruptStopWords, storePath };
