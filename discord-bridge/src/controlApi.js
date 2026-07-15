@@ -69,6 +69,50 @@ async function sendKeys(target, keys) {
   return data;
 }
 
+// Pending app-queue snapshot (GET /queue): [{ id, terminalId, content, type }].
+async function getQueue(target) {
+  const res = await fetch(`${baseUrl(target)}/queue`, {
+    headers: { 'X-CCBOT-Token': target.token },
+  });
+  if (!res.ok) throw new Error(`GET /queue returned HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data.queue) ? data.queue : [];
+}
+
+// Drop ONE pending queued message (POST /queue/update {remove:true}).
+async function removeQueuedMessage(target, messageId) {
+  const res = await fetch(`${baseUrl(target)}/queue/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CCBOT-Token': target.token },
+    body: JSON.stringify({ messageId, remove: true }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    throw new Error(`HTTP ${res.status} ${JSON.stringify(data)}`);
+  }
+}
+
+// Jump-the-line prep for a stop-word interrupt: drop every message still
+// pending for the manager in the app's queue. Must run BEFORE the ESC — the
+// instant the ESC idles the manager, the app auto-injects whatever is queued
+// for it, so any stale entry left behind would be processed AHEAD of the
+// interrupting message. A message the app is already mid-injecting can't be
+// removed (the app refuses) — that one has already left the queue race anyway.
+// Returns how many were removed.
+async function purgeManagerQueue(target, mgrId) {
+  const stale = (await getQueue(target)).filter((m) => Number(m.terminalId) === Number(mgrId));
+  let removed = 0;
+  for (const m of stale) {
+    try {
+      await removeQueuedMessage(target, m.id);
+      removed++;
+    } catch (err) {
+      log.warn(`stop-word purge: could not remove queued message ${m.id}: ${err.message}`);
+    }
+  }
+  return removed;
+}
+
 // Read-only health check used to validate a link before accepting it.
 async function checkState(target) {
   const res = await fetch(`${baseUrl(target)}/state`, {
@@ -96,15 +140,30 @@ async function sendVoiceMemo(target, text, opts = {}) {
   const mgrId = target.managerId || 999;
 
   // STOP-WORD INTERRUPT (voice only): a spoken message that BEGINS with a
-  // configured stop word means "cut off whatever you're doing and take THIS".
-  // Send ESC first (aborts the manager's in-flight turn), settle briefly,
-  // then inject the WHOLE message below — the stop word is not stripped, so
-  // the manager also sees the user's phrasing. The word list mirrors the
-  // app's interruptStopWords setting LIVE (appSettings.js). ESC failure is
+  // configured stop word means "cut off whatever you're doing and take THIS —
+  // NOW, ahead of anything else queued". Ordering is load-bearing:
+  //   1. PURGE the manager's pending app-queue messages (purgeManagerQueue) —
+  //      once the ESC idles the manager, the app auto-injects whatever is
+  //      queued for it, and those stale messages would beat this one.
+  //   2. ESC — aborts the manager's in-flight turn.
+  //   3. Settle, then type + submit below. /terminal/keys is direct input
+  //      (the manager-safe path; /queue/add refuses 999), so with the queue
+  //      emptied this message is the very next thing the manager processes.
+  // The WHOLE message is injected — the stop word is not stripped, so the
+  // manager also sees the user's phrasing. The word list mirrors the app's
+  // interruptStopWords setting LIVE (appSettings.js). Every interrupt step is
   // non-fatal: the message must still be delivered.
   if (source === 'voice') {
     const token = firstToken(clean);
     if (token && interruptStopWords().includes(token)) {
+      try {
+        const removed = await purgeManagerQueue(target, mgrId);
+        if (removed) {
+          log.warn(`stop-word "${token}" → dropped ${removed} stale queued message(s) for terminal ${mgrId}`);
+        }
+      } catch (err) {
+        log.error('stop-word queue purge failed (continuing with ESC + inject):', err.message);
+      }
       try {
         await sendKeys(target, ['esc']);
         log.warn(`stop-word "${token}" → ESC sent to terminal ${mgrId}; injecting the interrupting message next`);
