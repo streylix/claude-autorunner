@@ -2,8 +2,10 @@
 
 // Stop-word interrupt (voice barge-in): a transcribed message whose FIRST word
 // (case-insensitive, punctuation-trimmed) matches the app's interruptStopWords
-// setting sends ESC to the manager BEFORE injecting, so the newest message
-// preempts the in-flight turn. The list is mirrored LIVE from the app store.
+// setting JUMPS THE LINE — the bridge purges the manager's pending app-queue
+// messages, sends ESC, then injects, so the newest message preempts both the
+// in-flight turn AND anything queued behind it. The word list is mirrored LIVE
+// from the app store.
 // Run: node --test src/controlApi.stopword.test.js
 
 process.env.DISCORD_TOKEN = process.env.DISCORD_TOKEN || 'test-token';
@@ -32,8 +34,9 @@ function writeStore(settings) {
 const { firstToken, sendVoiceMemo } = require('./controlApi');
 const { interruptStopWords } = require('./appSettings');
 
-// ---- stub control API: records every /terminal/keys body ----
+// ---- stub control API: records every request, serves a settable queue ----
 let received = [];
+let queueSnapshot = []; // what GET /queue returns; /queue/update {remove} edits it
 let server;
 let target;
 
@@ -42,8 +45,16 @@ before(async () => {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
-      received.push({ url: req.url, body: JSON.parse(body || '{}') });
+      const parsed = JSON.parse(body || '{}');
+      received.push({ method: req.method, url: req.url, body: parsed });
       res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.method === 'GET' && req.url === '/queue') {
+        res.end(JSON.stringify({ queue: queueSnapshot }));
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/queue/update' && parsed.remove === true) {
+        queueSnapshot = queueSnapshot.filter((m) => String(m.id) !== String(parsed.messageId));
+      }
       res.end('{"ok":true}');
     });
   });
@@ -53,7 +64,7 @@ before(async () => {
 
 after(() => server.close());
 
-beforeEach(() => { received = []; });
+beforeEach(() => { received = []; queueSnapshot = []; });
 
 const keysOf = () => received.filter((r) => r.url === '/terminal/keys').map((r) => r.body.keys);
 
@@ -111,6 +122,64 @@ test('LIVE settings change: adding "wait" takes effect on the next message', asy
   await sendVoiceMemo(target, 'Wait, use the other branch', { source: 'voice' });
   const keys = keysOf();
   assert.strictEqual(keys.length, 3, '"wait" now configured — ESC fires');
+  assert.deepStrictEqual(keys[0], ['esc']);
+});
+
+test('JUMP THE LINE: stale queued 999 messages purged BEFORE the ESC, then text; other terminals untouched', async () => {
+  writeStore({ interruptStopWords: '["no"]' });
+  queueSnapshot = [
+    { id: 11, terminalId: 999, content: 'stale manager pass A', type: 'normal' },
+    { id: 12, terminalId: 2, content: 'unrelated work for terminal 2', type: 'normal' },
+    { id: 13, terminalId: 999, content: 'stale manager pass B', type: 'urgent' },
+  ];
+  const r = await sendVoiceMemo(target, 'No, do THIS instead', { source: 'voice' });
+  assert.strictEqual(r.ok, true);
+
+  // Full call sequence, compacted: the purge (queue read + removes) must come
+  // BEFORE the ESC, and the interrupting text is the very next injection.
+  const trace = received.map((x) => {
+    if (x.url === '/queue') return 'read-queue';
+    if (x.url === '/queue/update') return `remove:${x.body.messageId}`;
+    if (x.url === '/terminal/keys') {
+      const k = x.body.keys[0];
+      return k === 'esc' || k === 'enter' ? k : 'text';
+    }
+    return x.url;
+  });
+  assert.deepStrictEqual(
+    trace,
+    ['read-queue', 'remove:11', 'remove:13', 'esc', 'text', 'enter'],
+    'purge stale 999 queue → ESC → inject, and terminal 2\'s message is NOT removed'
+  );
+  assert.deepStrictEqual(queueSnapshot.map((m) => m.id), [12], 'only the 999 messages left the queue');
+  const text = received.find((x) => x.url === '/terminal/keys' && x.body.keys[0] !== 'esc');
+  assert.ok(String(text.body.keys[0]).includes('No, do THIS instead'), 'interrupting message injected intact');
+});
+
+test('queue purge failure is non-fatal: ESC + message still delivered', async () => {
+  writeStore({ interruptStopWords: '["no"]' });
+  const origListeners = server.listeners('request');
+  server.removeAllListeners('request');
+  server.on('request', (req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      if (req.method === 'GET' && req.url === '/queue') {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end('{"error":"boom"}');
+        return;
+      }
+      received.push({ method: req.method, url: req.url, body: JSON.parse(body || '{}') });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+  });
+  const r = await sendVoiceMemo(target, 'no, abort that', { source: 'voice' });
+  server.removeAllListeners('request');
+  origListeners.forEach((l) => server.on('request', l));
+  assert.strictEqual(r.ok, true, 'delivery succeeds despite the purge failing');
+  const keys = keysOf();
+  assert.strictEqual(keys.length, 3, 'esc + text + enter still sent');
   assert.deepStrictEqual(keys[0], ['esc']);
 });
 
