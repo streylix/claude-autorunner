@@ -6,6 +6,39 @@ project's current git branch.
 
 ---
 
+## 2026-07-15 — Remote Mode: live MESSAGE-QUEUE mirror — the SSH view stops showing already-delivered messages (branch `ssh-view`)
+
+**User report.** The message-queue panel in the SSH remote view was stale:
+messages already injected into terminals kept showing as queued until a
+reconnect.
+
+**Fix (same fan-out pattern as the terminal-metadata sync).** The local
+renderer already ships its full queue in every `ccbot-state-snapshot` (sent
+on each `message:queue-updated`, i.e. on every add / inject / remove /
+update / clear). Main now diffs the snapshot's queue (JSON compare, so
+status-only snapshots don't spam the socket) and pushes `remote-queue-sync`
+to every attached WS client; the remote's `MessageQueueManager` applies it
+via a new `applyRemoteQueueMirror` — pure state+display, no persistence, no
+injection, guarded to remote renderers only. Boot catch-up: a welcome-time
+push would race the bundle's listener registration, so the remote sends
+`remote-queue-request` once its handlers are wired and the RemoteServer
+answers that one client from main's snapshot cache.
+
+**Debugging worth remembering.** The first e2e "failure" was the mirror
+working perfectly: in a freshly-booted isolated app the runtime probe hasn't
+classified terminals yet, the injection gates deliberately fail OPEN on
+unknown runtime, and an idle bare-shell terminal swallowed the fixtures
+immediately — the "wiped" queue was a genuine delivery (stack trace:
+`_finishInjection`). The e2e now pauses auto-injection for the queued phases
+and uses mark-urgent + `injectMessageNow` as the delivery probe.
+
+**Verified headlessly** (`tests/integration/remote-queue-e2e.js`, isolated
+instance): boot catch-up for a pre-attach message; live add → remote 23 ms;
+Send-now delivery → panel settled without the delivered message 257 ms
+(incl. typing); remove → 19 ms; clear (re-populated first) → 20 ms — all
+within the 2 s budget, no reconnect, no polling. Regressions: unit suite
+174/174; remote-meta-e2e still green (meta 15/21 ms, create 127 ms).
+
 ## 2026-07-14 — Single-file TTS model: speed/voice honored everywhere, pre-TTS cue on Discord, turn-taking hold restored (branch `ssh-view`)
 
 **User reports (follow-ups to the burst-gate/TTS→sink work, live in-call).**

@@ -509,6 +509,25 @@ class MessageQueueManager {
     }
 
     /**
+     * REMOTE VIEWS ONLY: replace this renderer's queue with the authoritative
+     * one pushed by main ('remote-queue-sync' — fed from the local renderer's
+     * state snapshots, which fire on every queue mutation). This is a pure
+     * mirror: no persistence, no injection, no re-broadcast — just state +
+     * display, so the remote panel reflects add / inject / remove / clear
+     * within push latency instead of showing already-delivered messages.
+     */
+    applyRemoteQueueMirror(queue) {
+        if (!this.isRemote) return; // the local renderer OWNS the queue
+        this.messageQueue = (Array.isArray(queue) ? queue : []).map((m) => ({
+            id: m.id,
+            content: typeof m.content === 'string' ? m.content : '',
+            terminalId: m.terminalId,
+            type: m.type === 'urgent' ? 'urgent' : 'normal'
+        }));
+        this.eventBus.emit('message:queue-updated', { queue: this.messageQueue });
+    }
+
+    /**
      * Inject the next message in the queue immediately.
      */
     injectNextMessage() {

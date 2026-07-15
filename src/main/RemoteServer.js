@@ -338,6 +338,18 @@ class RemoteServer {
             return;
         }
 
+        // A remote renderer asking for the CURRENT queue (boot-time catch-up:
+        // a welcome-time push would race the bundle's listener registration
+        // and be dropped, so the client asks once its handlers are wired).
+        // Answered from main's snapshot cache — the authoritative queue.
+        if (channel === 'remote-queue-request') {
+            let snapshot = null;
+            try { snapshot = this.deps.getState(); } catch (_) { /* not ready yet */ }
+            const queue = (snapshot && Array.isArray(snapshot.queue)) ? snapshot.queue : [];
+            this.sendTo(ws, { t: 'push', channel: 'remote-queue-sync', args: [{ queue }] });
+            return;
+        }
+
         // Remote-added queue messages route through the authoritative local
         // queue via the same push the HookServer /queue/add path uses.
         if (channel === 'remote-queue-add') {
