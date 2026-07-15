@@ -6,6 +6,48 @@ project's current git branch.
 
 ---
 
+## 2026-07-15 — Voice STOP-WORD INTERRUPT: saying "no …" (or "wait …") cuts off the manager's current turn and takes over (branch `ssh-view`)
+
+**Feature (user request).** The manager sometimes keeps over-processing an
+earlier message. Now, when a transcribed Discord voice message BEGINS with a
+configured stop word, the bridge sends ESC to the manager terminal (999) —
+aborting its in-flight turn — and then injects the whole message (stop word
+not stripped), making it the freshest input.
+
+**How it works.**
+
+- *Bridge (`discord-bridge/src/controlApi.js`).* `sendVoiceMemo` (the single
+  inject sink) checks the message's first token — lowercased, punctuation
+  trimmed, so Whisper's "No," matches — against the stop-word list for
+  `source === 'voice'` only (typed/file messages never interrupt). On match:
+  `/terminal/keys ["esc"]` first, a 250 ms settle, then the normal
+  text + enter injection. An ESC failure is non-fatal — the message is
+  always delivered.
+- *Live config (`discord-bridge/src/appSettings.js`).* `interruptStopWords()`
+  mirrors the app's persisted `interruptStopWords` setting from
+  `~/.config/auto-injector/auto-injector.json` on every call (mtime-cached,
+  same pattern as `wakeSilenceMs`) — edits apply to the NEXT voice message
+  with no bridge restart. Code default `["no"]`; the user's active config is
+  set to `["no","wait"]` per his request (he can remove "wait" in the UI if
+  it false-triggers).
+- *Settings UI (`index.html` + `renderer.js` + `style.css`).* "Interrupt stop
+  words" in Settings → voice section: a chip list with per-word remove and an
+  add box (input normalized like the bridge's matcher). Persists through
+  PreferenceManager → `db-set-setting` → the same store the bridge mirrors.
+
+**Verified.** Bridge unit suite (`controlApi.stopword.test.js`, 8/8, stub
+control API): ESC fires FIRST then text+enter; normal/mid-sentence/typed
+messages don't trigger; a LIVE list change flips behavior on the very next
+message; ESC failure still injects. Headless UI probe on an isolated app:
+default chip "no", adding "Wait!" normalizes to `wait`, removing works, and
+the bridge's own mirror function read the edited store as the UI left it.
+Production bridge restarted on the new code and auto-resumed: "linked to
+session — manager 999 … reachable". Caveat noted: the running (pre-UI) app
+serializes its settings cache on write, so an app-side settings save before
+its next restart could drop the hand-seeded `interruptStopWords` — the
+bridge then falls back to `["no"]`, and the value is durable once the app
+picks up this commit.
+
 ## 2026-07-15 — Remote Mode: live MESSAGE-QUEUE mirror — the SSH view stops showing already-delivered messages (branch `ssh-view`)
 
 **User report.** The message-queue panel in the SSH remote view was stale:

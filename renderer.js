@@ -1340,6 +1340,67 @@ class TerminalGUI {
             if (wakeSilenceVal) wakeSilenceVal.textContent = `${(wakeSilence.value / 1000).toFixed(1)}s`;
             this.preferenceManager.updatePreference('wakeSilenceMs', parseInt(wakeSilence.value, 10));
         });
+
+        // ---- Interrupt stop words (voice barge-in → ESC to the manager) ----
+        // Editable chip list persisted as the `interruptStopWords` array. The
+        // Discord bridge mirrors the persisted value LIVE (appSettings.js), so
+        // edits here change its behavior without a bridge restart. Default
+        // ["no"]; the trailing normalization mirrors the bridge's first-token
+        // matching (lowercase, no punctuation).
+        const stopWordsList = document.getElementById('stop-words-list');
+        const stopWordInput = document.getElementById('stop-word-input');
+        const stopWordAddBtn = document.getElementById('stop-word-add-btn');
+        const getStopWords = () => {
+            const v = this.preferenceManager.preferences.interruptStopWords;
+            const list = Array.isArray(v) ? v : ['no'];
+            return list.map((w) => String(w).trim().toLowerCase()).filter(Boolean);
+        };
+        const saveStopWords = (words) => {
+            this.preferenceManager.updatePreference('interruptStopWords', words);
+            renderStopWords();
+        };
+        const renderStopWords = () => {
+            if (!stopWordsList) return;
+            const words = getStopWords();
+            stopWordsList.innerHTML = '';
+            if (!words.length) {
+                const empty = document.createElement('span');
+                empty.className = 'stop-words-empty';
+                empty.textContent = 'none — voice interrupt disabled';
+                stopWordsList.appendChild(empty);
+                return;
+            }
+            words.forEach((w) => {
+                const chip = document.createElement('span');
+                chip.className = 'stop-word-chip';
+                chip.dataset.word = w;
+                const label = document.createElement('span');
+                label.textContent = w;
+                const del = document.createElement('button');
+                del.type = 'button';
+                del.className = 'stop-word-remove';
+                del.title = `Remove "${w}"`;
+                del.textContent = '×';
+                del.addEventListener('click', () => saveStopWords(getStopWords().filter((x) => x !== w)));
+                chip.appendChild(label);
+                chip.appendChild(del);
+                stopWordsList.appendChild(chip);
+            });
+        };
+        const addStopWord = () => {
+            if (!stopWordInput) return;
+            const w = stopWordInput.value.trim().toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+            stopWordInput.value = '';
+            if (!w) return;
+            const words = getStopWords();
+            if (!words.includes(w)) saveStopWords([...words, w]);
+        };
+        if (stopWordAddBtn) stopWordAddBtn.addEventListener('click', addStopWord);
+        if (stopWordInput) stopWordInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); addStopWord(); }
+        });
+        renderStopWords();
+        this.eventBus.on('preferences:applied', renderStopWords);
         if (wakeThreshold) wakeThreshold.addEventListener('input', () => {
             const v = parseFloat(wakeThreshold.value);
             if (wakeThresholdVal) wakeThresholdVal.textContent = `${Math.round(v * 100)}%`;

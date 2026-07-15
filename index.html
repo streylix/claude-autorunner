@@ -552,6 +552,16 @@
                     </div>
 
                     <div class="sound-category">
+                        <label class="sound-category-label">Interrupt stop words</label>
+                        <div id="stop-words-list" class="stop-words-list" data-test-id="stop-words-list"></div>
+                        <div class="stop-words-add-row">
+                            <input type="text" id="stop-word-input" class="setting-input" placeholder="Add a word (e.g. wait)" data-test-id="stop-word-input">
+                            <button type="button" id="stop-word-add-btn" class="setting-btn setting-btn-small" data-test-id="stop-word-add-btn">Add</button>
+                        </div>
+                        <p class="setting-help">If a voice message STARTS with one of these words, the assistant's current turn is cut off (ESC to the manager) and your new message takes over. Takes effect immediately, including for the Discord bridge.</p>
+                    </div>
+
+                    <div class="sound-category">
                         <label class="sound-category-label">Wake-word strictness: <span id="wake-threshold-value">75%</span></label>
                         <input type="range" id="wake-threshold" min="0" max="0.95" step="0.05" value="0.75" class="setting-range">
                         <p class="setting-help">Higher = stricter matching and fewer false activations (the spotter must be more confident it heard the phrase). Lower it if your real wake word stops being detected.</p>

@@ -13,9 +13,21 @@
 // treats an embedded newline as submit — and the trailing "enter" key submits.
 
 const { config } = require('../config');
+const { interruptStopWords } = require('./appSettings');
 const log = require('./log');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// After an ESC interrupt, give the manager's TUI a beat to abort the turn and
+// return to its prompt before the new message is typed in.
+const INTERRUPT_SETTLE_MS = 250;
+
+/** First word of a message, lowercased with surrounding punctuation trimmed —
+ *  Whisper renders "No, stop." so the raw first token is usually "No,". */
+function firstToken(text) {
+  const t = String(text || '').trim().split(/\s+/)[0] || '';
+  return t.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '').toLowerCase();
+}
 
 // SINGLE-LINE framing, branched by SOURCE so the manager can tell how the input
 // arrived (spoken / typed / a file). Everything stays on ONE line — Claude's TUI
@@ -82,6 +94,27 @@ async function sendVoiceMemo(target, text, opts = {}) {
 
   const framed = frameMemo(clean, source, paths);
   const mgrId = target.managerId || 999;
+
+  // STOP-WORD INTERRUPT (voice only): a spoken message that BEGINS with a
+  // configured stop word means "cut off whatever you're doing and take THIS".
+  // Send ESC first (aborts the manager's in-flight turn), settle briefly,
+  // then inject the WHOLE message below — the stop word is not stripped, so
+  // the manager also sees the user's phrasing. The word list mirrors the
+  // app's interruptStopWords setting LIVE (appSettings.js). ESC failure is
+  // non-fatal: the message must still be delivered.
+  if (source === 'voice') {
+    const token = firstToken(clean);
+    if (token && interruptStopWords().includes(token)) {
+      try {
+        await sendKeys(target, ['esc']);
+        log.warn(`stop-word "${token}" → ESC sent to terminal ${mgrId}; injecting the interrupting message next`);
+        await sleep(INTERRUPT_SETTLE_MS);
+      } catch (err) {
+        log.error('stop-word ESC failed (message still injected):', err.message);
+      }
+    }
+  }
+
   try {
     // Mirror the app's MessageQueueManager.typeMessageToTerminal: write the TEXT
     // first, then send the Enter (carriage return) as a SEPARATE keystroke after
@@ -98,4 +131,4 @@ async function sendVoiceMemo(target, text, opts = {}) {
   }
 }
 
-module.exports = { frameMemo, checkState, sendVoiceMemo };
+module.exports = { frameMemo, firstToken, checkState, sendVoiceMemo };
