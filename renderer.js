@@ -571,6 +571,21 @@ class TerminalGUI {
         ipcRenderer.on('remote-terminal-meta', (event, { terminalId, title, color } = {}) => {
             this.setTerminalMetadata(terminalId, { title, color }, { fromSync: true });
         });
+        // Live message-queue mirror (remote views only): main pushes the
+        // authoritative queue whenever it changes (add / inject / remove /
+        // clear), so the panel never shows already-delivered messages. The
+        // local renderer is the source and must ignore any echo.
+        ipcRenderer.on('remote-queue-sync', (event, payload) => {
+            if (!IS_REMOTE) return;
+            const queue = payload && Array.isArray(payload.queue) ? payload.queue : [];
+            this.messageQueueManager.applyRemoteQueueMirror(queue);
+        });
+        if (IS_REMOTE) {
+            // Boot-time catch-up: ask for the current queue now that the
+            // listener above exists (a welcome-time push would have raced
+            // this registration and been lost).
+            ipcRenderer.send('remote-queue-request');
+        }
 
         // Control requests needing a response (terminal create/update/delete
         // via the HookServer) - correlated back to main by requestId

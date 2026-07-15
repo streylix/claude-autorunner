@@ -507,8 +507,25 @@ app.whenReady().then(async () => {
     // without a round trip (consumed by external controllers, e.g. the
     // manager Claude instance reading "what terminals exist + their sessions").
     let rendererStateCache = null;
+    // Live message-queue mirror (Remote Mode): the LOCAL renderer owns the
+    // queue and already ships it in every state snapshot (sent on each
+    // 'message:queue-updated'). Diff it here and push 'remote-queue-sync' to
+    // attached remote viewers, so their queue panel reflects add / inject /
+    // remove / clear within push latency — same fan-out idea as
+    // 'remote-terminal-meta'. Diffing by JSON keeps status-only snapshots
+    // (no queue change) from spamming the socket.
+    let lastRemoteQueueJson = null;
     ipcMain.on('ccbot-state-snapshot', (event, snapshot) => {
       rendererStateCache = snapshot;
+      try {
+        if (remoteServer && snapshot && Array.isArray(snapshot.queue)) {
+          const j = JSON.stringify(snapshot.queue);
+          if (j !== lastRemoteQueueJson) {
+            lastRemoteQueueJson = j;
+            remoteServer.broadcast('remote-queue-sync', [{ queue: snapshot.queue }]);
+          }
+        }
+      } catch (_) { /* never break the snapshot cache path */ }
     });
 
     // Live terminal-metadata sync (Remote Mode): any renderer — the desktop
