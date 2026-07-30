@@ -10,9 +10,11 @@
 const { config } = require('../config');
 const log = require('./log');
 
-// Transcribe a WAV buffer. `model` defaults to 'base' (balanced). Returns the
-// transcript string, or '' on failure / empty result.
-async function transcribeWav(wavBuffer, { model = 'base', language } = {}) {
+// Transcribe a WAV buffer. `model` defaults to 'large-v3' (quantized
+// faster-whisper on the backend — the server forces large-v3 + English
+// regardless, this just keeps the request honest). Returns the transcript
+// string, or '' on failure / empty result.
+async function transcribeWav(wavBuffer, { model = 'large-v3', language = 'en' } = {}) {
   if (!wavBuffer || !wavBuffer.length) return '';
 
   const form = new FormData();

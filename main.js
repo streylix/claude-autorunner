@@ -1064,6 +1064,12 @@ function setupIpcHandlers() {
     // the terminal and reach the app's hook server (no-ops if server is down)
     const ccbotEnv = {
       ...process.env,
+      // xterm.js supports 256-color/truecolor; advertising the legacy
+      // 'xterm-color' terminfo entry starves remote SSH sessions of that
+      // capability (they negotiate colors off $TERM), producing washed-out
+      // or wrong ANSI colors once you've SSH'd into another host.
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
       CCBOT_TERMINAL_ID: String(terminalId),
       CCBOT_PORT: hookServer ? String(hookServer.port) : '',
       CCBOT_TOKEN: hookServer ? hookServer.token : ''
@@ -1071,7 +1077,7 @@ function setupIpcHandlers() {
 
     try {
       const terminalProcess = pty.spawn(shell, shellArgs, {
-        name: 'xterm-color',
+        name: 'xterm-256color',
         cols: 80,
         rows: 24,
         cwd: validatedCwd,
@@ -1148,12 +1154,14 @@ function setupIpcHandlers() {
         }
 
         // Hook detection env vars must survive the fallback path too
+        fallbackEnv.TERM = 'xterm-256color';
+        fallbackEnv.COLORTERM = 'truecolor';
         fallbackEnv.CCBOT_TERMINAL_ID = String(terminalId);
         fallbackEnv.CCBOT_PORT = hookServer ? String(hookServer.port) : '';
         fallbackEnv.CCBOT_TOKEN = hookServer ? hookServer.token : '';
-        
+
         const terminalProcess = pty.spawn(fallbackShell, fallbackArgs, {
-          name: 'xterm-color',
+          name: 'xterm-256color',
           cols: 80,
           rows: 24,
           cwd: validatedCwd,
@@ -1282,11 +1290,11 @@ function setupIpcHandlers() {
       const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/zsh';
       
       ptyProcess = pty.spawn(shell, [], {
-        name: 'xterm-color',
+        name: 'xterm-256color',
         cols: cols,
         rows: rows,
         cwd: newPath,
-        env: process.env
+        env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' }
       });
 
       ptyProcess.onData((data) => {

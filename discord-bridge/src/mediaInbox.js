@@ -15,21 +15,23 @@ const log = require('./log');
 
 const IMAGE_EXT = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic', '.tiff'];
 const VIDEO_EXT = ['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.gifv'];
+const DOC_EXT = ['.txt', '.md', '.markdown'];
 
 function kindOf(att) {
   const ct = (att.contentType || '').toLowerCase();
   const ext = (path.extname(att.name || '') || '').toLowerCase();
   if (ct.startsWith('image/') || IMAGE_EXT.includes(ext)) return 'image';
   if (ct.startsWith('video/') || VIDEO_EXT.includes(ext)) return 'video';
+  if (ct.startsWith('text/plain') || ct.startsWith('text/markdown') || DOC_EXT.includes(ext)) return 'text';
   return null;
 }
 
-// Is this attachment an image or video we accept?
+// Is this attachment an image, video, or text/markdown doc we accept?
 function isMedia(att) { return kindOf(att) !== null; }
 
 async function _saveOne(att, destDir) {
   const kind = kindOf(att);
-  if (!kind) return { ok: false, name: att.name, reason: 'not an image/video' };
+  if (!kind) return { ok: false, name: att.name, reason: 'not an image/video/text file' };
   if (att.size && att.size > config.inboundMediaMaxBytes) {
     return { ok: false, name: att.name, reason: `too large to download (${(att.size / 1e6).toFixed(1)}MB > ${(config.inboundMediaMaxBytes / 1e6).toFixed(0)}MB)` };
   }
@@ -41,8 +43,15 @@ async function _saveOne(att, destDir) {
 
   fs.mkdirSync(destDir, { recursive: true });
   const rawName = (att.name || `${kind}`).replace(/[^\w.\-]/g, '_').slice(0, 60);
-  let ext = (path.extname(rawName) || '').toLowerCase();
-  if (!ext) ext = '.' + ((att.contentType || `${kind}/bin`).split('/')[1] || 'bin');
+  // Prefer the ORIGINAL name's extension (the 60-char slice can chop it off);
+  // only fall back to contentType, and never trust either blindly — a valid
+  // ext is dot + alphanumerics, nothing else ("; charset=utf-8" is not an ext).
+  let ext = (path.extname(att.name || '') || path.extname(rawName) || '').toLowerCase();
+  if (!/^\.[a-z0-9]+$/.test(ext)) {
+    const sub = ((att.contentType || '').split(/[;\s]/)[0].split('/')[1] || '')
+      .toLowerCase().replace(/[^a-z0-9]/g, '');
+    ext = sub ? `.${sub}` : (kind === 'text' ? '.txt' : '.bin');
+  }
   const stem = rawName.replace(/\.[^.]*$/, '') || kind;
   const file = path.join(destDir, `${Date.now()}-${crypto.randomBytes(3).toString('hex')}-${stem}${ext}`);
   fs.writeFileSync(file, buf);

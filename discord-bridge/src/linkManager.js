@@ -88,13 +88,19 @@ class LinkManager {
 
   // Forward a message to the linked manager. opts.source ∈ 'voice'|'typed'|'file'
   // (default 'voice'); opts.paths carries saved file paths for 'file'. No-op if
-  // unlinked.
+  // unlinked. Every inbound path (typed auto-forward, /prompt, voice memos)
+  // funnels through here — onForwarded (optional, set by index.js) fires after
+  // a successful submit so the mirror can show the typing indicator.
   async forward(text, opts = {}) {
     if (!this.target) {
       log.warn('message received but bot is not linked — ignoring. Paste a /link key to connect.');
       return { ok: false, error: 'not linked' };
     }
-    return sendVoiceMemo(this.target, text, opts);
+    const res = await sendVoiceMemo(this.target, text, opts);
+    if (res && res.ok && typeof this.onForwarded === 'function') {
+      try { this.onForwarded(); } catch (_) { /* indicator must never break delivery */ }
+    }
+    return res;
   }
 }
 

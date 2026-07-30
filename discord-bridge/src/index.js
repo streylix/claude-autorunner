@@ -77,6 +77,12 @@ async function main() {
   receiver.onCommandAck = () => session.playCommandAck();
   // Mirror each heard utterance into the text channel ("Heard:").
   receiver.onHeard = (text) => textMirror.postHeard(text);
+  // "Claude is typing…" while the manager works: every inbound user message
+  // (typed, /prompt, or voice memo) funnels through linkManager.forward — on a
+  // successful submit to 999, light the typing indicator in the mirror channel.
+  // It clears when a reply posts (postText/postImage/postVideo/postReplied) or
+  // after the 90s cap in textMirror.
+  linkManager.onForwarded = () => textMirror.startTyping();
   // Echo gate: the receiver asks the session whether the bot is currently
   // playing audio (TTS/SFX) so it can ignore self-voice/echo.
   receiver.isBotSpeaking = () => session.isBotSpeaking();
@@ -115,6 +121,7 @@ async function main() {
       if (newState.guild?.id !== config.guildId) return;
       if (newState.id === client.user?.id) return; // ignore the bot itself
       receiver.setMute(newState.id, !!(newState.selfMute || newState.serverMute));
+      if (process.env.DISABLE_VOICE_AUTOFOLLOW === '1') return; // voice auto-join disabled (was churning + starving text posts)
       if (followJoinInFlight) return;
       if (!newState.channelId || oldState.channelId === newState.channelId) return; // joins/moves only
       if (!auth.isAuthorized(newState.id)) return;

@@ -70,8 +70,16 @@ def transcribe_audio(request):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         audio_file = serializer.validated_data['audio_file']
-        model_name = serializer.validated_data.get('model', 'base')
-        language = serializer.validated_data.get('language')
+        # The server is authoritative about the model: quantized large-v3 is
+        # both more accurate AND faster/smaller than 'base', and callers (the
+        # app, and a Discord bridge that can run stale code for weeks) still
+        # hardcode 'base' in old builds. The request's `model` field is
+        # accepted for compatibility but ignored.
+        model_name = 'large-v3'
+        # Default to English instead of auto-detect — short memos made
+        # auto-detect hallucinate other languages. An explicit language from
+        # the caller still wins.
+        language = serializer.validated_data.get('language') or 'en'
 
         # Reject oversized uploads before reading them into memory.
         if audio_file.size is not None and audio_file.size > MAX_AUDIO_UPLOAD_BYTES:
@@ -224,13 +232,14 @@ def health_check(request):
     Health check endpoint for voice transcription service
     """
     try:
-        # Test if Whisper can be loaded
-        test_model = transcription_service._get_model('base')
-        
+        # Test if Whisper can be loaded. Uses large-v3 (what transcribe_audio
+        # actually runs), so hitting this endpoint doubles as the warm-up load.
+        test_model = transcription_service._get_model('large-v3')
+
         return Response({
             'success': True,
             'status': 'Voice transcription service is running',
-            'available_models': ['tiny', 'base', 'small', 'medium'],
+            'available_models': ['tiny', 'base', 'small', 'medium', 'large-v3'],
             'device': transcription_service.device,
             'whisper_loaded': test_model is not None
         }, status=status.HTTP_200_OK)

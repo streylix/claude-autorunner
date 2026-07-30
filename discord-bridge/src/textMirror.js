@@ -23,10 +23,15 @@ const log = require('./log');
 
 const MAX_LEN = 1900; // Discord hard limit is 2000; leave headroom for the label.
 
+const TYPING_REFRESH_MS = 7000;  // Discord expires a typing ping after ~10s
+const TYPING_MAX_MS = 90000;     // safety cap: never type forever on a lost reply
+
 class TextMirror {
   constructor() {
     this.channel = null;
     this._resolving = null;
+    this._typingInterval = null;
+    this._typingTimeout = null;
   }
 
   enabled() {
@@ -101,13 +106,43 @@ class TextMirror {
   }
 
   postHeard(text) { this._post('🎙️ **Heard:**', text); }
-  postReplied(text) { this._post('💬 **Replied:**', text); }
+  postReplied(text) { this.stopTyping(); this._post('💬 **Replied:**', text); }
+
+  // ---- typing indicator ------------------------------------------------
+  // Shows "… is typing" in the mirror channel while the manager (999) works
+  // on a submitted message, so the user isn't left guessing. Discord expires
+  // a typing ping after ~10s, so it's refreshed every TYPING_REFRESH_MS until
+  // stopTyping() — a reply going out — or the TYPING_MAX_MS cap, whichever
+  // comes first. Fire-and-forget like the rest of the mirror: a typing
+  // failure never disrupts delivery. Both methods are idempotent.
+  startTyping() {
+    if (!this.enabled() || !this.channel) return;
+    this.stopTyping(); // fresh submit → restart the clock
+    const ping = () => {
+      Promise.resolve().then(() => this.channel.sendTyping())
+        .catch((e) => log.warn('⌨️ sendTyping failed:', e && e.message));
+    };
+    ping();
+    this._typingInterval = setInterval(ping, TYPING_REFRESH_MS);
+    this._typingTimeout = setTimeout(() => this.stopTyping(), TYPING_MAX_MS);
+    log.info('⌨️  typing indicator on (message submitted to manager).');
+  }
+
+  stopTyping() {
+    if (!this._typingInterval && !this._typingTimeout) return;
+    clearInterval(this._typingInterval);
+    clearTimeout(this._typingTimeout);
+    this._typingInterval = null;
+    this._typingTimeout = null;
+    log.info('⌨️  typing indicator off.');
+  }
 
   // Post an arbitrary TEXT message straight into the channel AS THE BOT — NOT
   // read aloud by TTS (it's a plain Discord post, never touches the notification/
   // TTS path). Lets the manager share links/text the user can see and click.
   // Chunks over Discord's 2000-char limit. Awaitable; returns true on success.
   async postText(text) {
+    this.stopTyping(); // a reply is going out
     if (!this.enabled() || !this.channel) { log.warn('manager text post skipped — no text channel.'); return false; }
     const body = String(text || '').trim();
     if (!body) return false;
@@ -128,6 +163,7 @@ class TextMirror {
   // still too big, it errors gracefully (logged) rather than failing the send.
   // Returns true on a successful post. Awaitable (unlike the fire-and-forget text).
   async postImage(imagePath, caption) {
+    this.stopTyping(); // a reply is going out
     if (!this.enabled() || !this.channel) { log.warn('image post skipped — no text channel resolved.'); return false; }
     if (!imagePath || !fs.existsSync(imagePath)) { log.warn(`image post skipped — file not found: ${imagePath}`); return false; }
 
@@ -167,6 +203,7 @@ class TextMirror {
   // the cap it is sent as-is (no re-encode). Errors gracefully (logged) rather than
   // failing the send. Returns true on a successful post. Awaitable.
   async postVideo(videoPath, caption, maxBytesOverride) {
+    this.stopTyping(); // a reply is going out
     if (!this.enabled() || !this.channel) { log.warn('video post skipped — no text channel resolved.'); return false; }
     if (!videoPath || !fs.existsSync(videoPath)) { log.warn(`video post skipped — file not found: ${videoPath}`); return false; }
 
@@ -343,7 +380,7 @@ class TextMirror {
     });
   }
 
-  reset() { this.channel = null; }
+  reset() { this.stopTyping(); this.channel = null; }
 }
 
 module.exports = TextMirror;

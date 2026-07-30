@@ -288,6 +288,10 @@ class VoiceManager {
         const formData = new FormData();
         // Field name must match the backend serializer (audio_file = FileField()).
         formData.append('audio_file', audioBlob, `recording.${ext}`);
+        // The server forces large-v3 + English anyway; sent explicitly so the
+        // request documents what it gets.
+        formData.append('model', 'large-v3');
+        formData.append('language', 'en');
 
         const response = await fetch(`${BACKEND_URL}/api/voice/transcribe/`, {
             method: 'POST',

@@ -40,13 +40,30 @@ class ManagerInstance {
         // work autonomously. Set from the managerCompletionWatchEnabled setting
         // in start(); the subscription is wired once here and gated at fire time.
         this.completionWatchEnabled = true;
+        // terminalId -> bounded history (array, oldest first) of recently pushed
+        // completion texts (now the tail of the terminal's live screen buffer -
+        // see renderer.js's 'stop' hook handling - not a transcript extraction).
+        // Claude Code can fire several genuine Stop hooks in quick succession for
+        // what looks like one logical turn, so consecutive pushes can repeat.
+        // Comparing only against the LAST push let an intermediate text
+        // re-surface and re-queue after a different/newer completion had already
+        // superseded it (A, B, A all passed) — a stale, already-delivered message
+        // could sit duplicated and unsent in the manager's queue. Keeping a short
+        // history so any recently-seen text is deduped, not just the latest.
+        this._lastCompletionText = new Map();
+        this._completionHistoryLimit = 5;
         this.eventBus.on('completion:recorded', (data) => this.onTerminalCompletion(data));
     }
 
     /**
-     * React to another terminal finishing a Claude turn. The Stop hook's
-     * last-assistant text (captured in main, emitted as completion:recorded)
-     * is pushed into the manager's queue so it can decide whether the work is
+     * React to another terminal finishing a Claude turn. On a Stop hook,
+     * renderer.js captures the TAIL of that terminal's live screen buffer
+     * (same capture as /terminal/screen, length set by the
+     * managerCompletionTailChars setting, default 1500 chars) and emits it as
+     * completion:recorded — the screen buffer is always the terminal's actual
+     * current state, so unlike a transcript "last assistant message" lookup
+     * there's no "which Stop hook / which message" staleness. That tail is
+     * pushed into the manager's queue so it can decide whether the work is
      * done or needs a follow-up. By design there is NO mechanical loop cap -
      * the manager's own judgment ("this terminal's work is complete, do
      * nothing") is the only brake. Self-exclusion (999) prevents the manager
@@ -60,6 +77,18 @@ class ManagerInstance {
         const title = (terminal && terminal.title) || `Terminal ${data.terminalId}`;
         const dir = data.directory ? ` in ${data.directory}` : '';
         const text = (data.text || '').trim() || '(no message text)';
+        // Legacy safety net: a bare "[tool_use: …]" marker (the old transcript
+        // extraction's shape for a tool-only turn) carries nothing worth a
+        // manager turn. The screen-buffer tail won't produce this shape, but
+        // it's a harmless no-op check to leave in place.
+        if (/^\[tool_use:.*\]$/.test(text)) return;
+        // Drop a re-push identical to any recently-seen text from this terminal
+        // (not just the immediately-previous one — see the field comment above).
+        const history = this._lastCompletionText.get(data.terminalId) || [];
+        if (history.includes(text)) return;
+        history.push(text);
+        if (history.length > this._completionHistoryLimit) history.shift();
+        this._lastCompletionText.set(data.terminalId, history);
         // Dynamic facts only — how to announce/decide is standing guidance in the
         // manager's CLAUDE.md (the "Completions are pushed to you" and "Spoken
         // notifications" sections), so it is NOT repeated per message.
@@ -96,7 +125,11 @@ class ManagerInstance {
      * @param {number} [intervalMs] - override (tests); defaults to the setting
      */
     async startPassLoop(intervalMs) {
+        // Disabled permanently — see OPTIMIZATIONS.md. Left in place (dead)
+        // rather than deleted so the interval-scheduling logic isn't lost.
         this.stopPassLoop();
+        return;
+        // eslint-disable-next-line no-unreachable
         let ms = intervalMs;
         if (ms == null) {
             let mins = this.appStateStore.getState('managerPassIntervalMinutes');
@@ -308,14 +341,10 @@ class ManagerInstance {
             type: 'success'
         });
 
-        // Arm the recurring optimization-pass loop unless explicitly disabled.
-        let autoPass = this.appStateStore.getState('managerAutoPassEnabled');
-        if (autoPass == null) {
-            try { autoPass = await this.ipc.invoke('db-get-setting', 'managerAutoPassEnabled'); } catch { /* default on */ }
-        }
-        if (autoPass !== false && autoPass !== 'false') {
-            this.startPassLoop();
-        }
+        // Recurring optimization-pass loop permanently disabled — see
+        // OPTIMIZATIONS.md. startPassLoop()/dispatchPass() are kept as dead
+        // code but never called; stopPassLoop() guards against any stray timer.
+        this.stopPassLoop();
 
         // Completion watching (autonomous work-loop): default on. When enabled,
         // every other terminal's finish is pushed into the manager's queue.

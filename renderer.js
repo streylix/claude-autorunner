@@ -26,6 +26,7 @@ const TimerManager = require('./src/features/TimerManager');
 const ActionLogManager = require('./src/features/ActionLogManager');
 const ManagerInstance = require('./src/features/ManagerInstance');
 const PromptWatchManager = require('./src/features/PromptWatchManager');
+const StuckWatchManager = require('./src/features/StuckWatchManager');
 const WakeWordManager = require('./src/features/WakeWordManager');
 const RemoteMicSink = require('./src/features/RemoteMicSink');
 const DiscordLinkKeyManager = require('./src/features/DiscordLinkKeyManager');
@@ -171,6 +172,14 @@ class TerminalGUI {
         // and pushes an "awaiting input" note to the manager (999). Subscribes
         // to terminal:status:changed on construction.
         this.promptWatchManager = new PromptWatchManager(this.eventBus, this.appStateStore, this);
+
+        // Periodic stuck-terminal sweep: pushes one compact "T<id> appears
+        // stuck" line to the manager (999) for terminals that need attention
+        // but will never fire a completion (prompted too long, running but
+        // silent, queued message held by the gate). The sweep itself no-ops
+        // until the manager is running, so arming it here is safe.
+        this.stuckWatchManager = new StuckWatchManager(this.eventBus, this.appStateStore, this);
+        this.stuckWatchManager.start();
 
         // Always-on "Hey Claude" wake word → records a command → routes it to
         // the manager (999) as a voice memo. Off until enabled in settings.
@@ -427,12 +436,20 @@ class TerminalGUI {
                 }
             }
 
-            // Stop events arrive enriched with Claude's last message (read
-            // from the session transcript in main) - record it as a completion
-            if (payload.event === 'stop' && payload.lastAssistantText) {
+            // Stop events record a completion. The pushed text is the TAIL of the
+            // terminal's live screen buffer (same capture as /terminal/screen),
+            // not the transcript's "last assistant message" - the transcript
+            // extraction could pick up a mid-turn message from an earlier Stop
+            // hook (Claude Code can fire several for one logical turn), producing
+            // a stale/wrong-turn completion push. The screen buffer is always the
+            // terminal's actual CURRENT state, so there's no "which message" bug.
+            if (payload.event === 'stop') {
+                const tailChars = Number(this.appStateStore.getState('managerCompletionTailChars')) || 1500;
+                const screenResult = this.readTerminalScreen(payload.terminalId, { scrollback: true });
+                const tailText = (screenResult && screenResult.ok && screenResult.screen) || '';
                 const completionData = {
                     terminalId: payload.terminalId,
-                    text: payload.lastAssistantText,
+                    text: tailText.slice(-tailChars),
                     directory: cwd || null,
                     sessionId: (payload.hook && payload.hook.session_id) || null
                 };
@@ -442,7 +459,7 @@ class TerminalGUI {
                 // message to 1-2 sentences (costs quota - off by default).
                 // Local renderer only: a remote browser invoking this too
                 // would run (and bill) the summarizer twice per completion.
-                if (!IS_REMOTE && this.appStateStore.getState('summarizeCompletions') && completionData.sessionId) {
+                if (!IS_REMOTE && this.appStateStore.getState('summarizeCompletions') && completionData.sessionId && payload.lastAssistantText) {
                     this.ipcHandler.invoke('summarize-completion', payload.lastAssistantText)
                         .then((summary) => {
                             if (summary) {
@@ -936,6 +953,40 @@ class TerminalGUI {
             });
             dropZone.addEventListener('drop', (e) => {
                 e.preventDefault(); dragDepth = 0; showOverlay(false);
+                attachFiles(e.dataTransfer && e.dataTransfer.files);
+            });
+        }
+
+        // Drop onto any terminal pane: the whole .terminal-wrapper is the
+        // target (not just the flaky input container), and the image
+        // attaches to whichever terminal it landed on, not just the active one.
+        const terminalsContainer = document.getElementById('terminals-container');
+        if (terminalsContainer) {
+            const getWrapper = (e) => e.target.closest && e.target.closest('.terminal-wrapper');
+            terminalsContainer.addEventListener('dragenter', (e) => {
+                const wrapper = getWrapper(e);
+                if (!wrapper) return;
+                e.preventDefault();
+                wrapper.classList.add('terminal-drag-active');
+            });
+            terminalsContainer.addEventListener('dragover', (e) => {
+                if (getWrapper(e)) e.preventDefault();
+            });
+            terminalsContainer.addEventListener('dragleave', (e) => {
+                const wrapper = getWrapper(e);
+                if (!wrapper || wrapper.contains(e.relatedTarget)) return;
+                wrapper.classList.remove('terminal-drag-active');
+            });
+            terminalsContainer.addEventListener('drop', (e) => {
+                const wrapper = getWrapper(e);
+                if (!wrapper) return;
+                e.preventDefault();
+                wrapper.classList.remove('terminal-drag-active');
+                const terminalId = parseInt(wrapper.dataset.terminalId, 10);
+                if (!Number.isNaN(terminalId)) {
+                    if (terminalId !== this.activeTerminalId) this.setActiveTerminal(terminalId);
+                    else this.queueTargetTerminalId = terminalId;
+                }
                 attachFiles(e.dataTransfer && e.dataTransfer.files);
             });
         }
@@ -1768,7 +1819,13 @@ class TerminalGUI {
             fontSize: 14,
             fontFamily: 'Menlo, Monaco, "Courier New", monospace',
             cursorBlink: true,
-            allowProposedApi: true
+            allowProposedApi: true,
+            // xterm.js already lets Shift+drag bypass a remote program's mouse
+            // tracking (e.g. an SSH'd TUI) to force local text selection — that's
+            // Shift on Linux/Windows, but on Mac it checks Option+drag AND this
+            // flag, which defaults false. Without it Mac users have no drag-based
+            // way to select/copy through an SSH'd mouse-tracking program.
+            macOptionClickForcesSelection: true
         });
 
         // Add addons
@@ -2595,7 +2652,7 @@ class TerminalGUI {
             terminalsPerChunk, chunkOrientation, theme,
             ttsPreferredVoice, ttsPlaybackSpeed, ttsAutoplayEnabled, managerInputEnabled,
             managerPromptWatchEnabled, managerAutoPassEnabled, managerPassIntervalMinutes,
-            terminalScrollBehavior, keepScreenAwake, promptedKeywordsOnly,
+            terminalScrollBehavior, keepScreenAwake, promptedKeywordsOnly, managerCompletionTailChars,
         ] = await Promise.all([
             this.getPersistedSetting('soundEffectsEnabled', false),
             this.getPersistedSetting('completionSound', 'completion.mp3'),
@@ -2614,6 +2671,7 @@ class TerminalGUI {
             this.getPersistedSetting('terminalScrollBehavior', 'smart'),
             this.getPersistedSetting('keepScreenAwake', false),
             this.getPersistedSetting('promptedSoundKeywordsOnly', false),
+            this.getPersistedSetting('managerCompletionTailChars', 1500),
         ]);
 
         // Apply TTS prefs to the NotificationManager immediately (it may already
@@ -2634,6 +2692,7 @@ class TerminalGUI {
         this.appStateStore.setState('managerPromptWatchEnabled', !!managerPromptWatchEnabled);
         this.appStateStore.setState('managerAutoPassEnabled', !!managerAutoPassEnabled);
         this.appStateStore.setState('managerPassIntervalMinutes', Number(managerPassIntervalMinutes) || 60);
+        this.appStateStore.setState('managerCompletionTailChars', Number(managerCompletionTailChars) || 1500);
         this.appStateStore.setState('settings.terminalScrollBehavior', terminalScrollBehavior);
         this.appStateStore.setState('settings.sound.promptedKeywordsOnly', !!promptedKeywordsOnly);
 

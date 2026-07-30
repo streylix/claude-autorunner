@@ -6,6 +6,388 @@ project's current git branch.
 
 ---
 
+## 2026-07-30 — Completion push now sends the live screen-buffer tail, not a transcript lookup (branch `ssh-view`, uncommitted)
+
+**Request (Ethan).** Replace the completion-push text source. Instead of
+`readLastAssistantText` extracting the "last assistant message" from the
+session transcript (the cause of the earlier stale-message bug — the
+wrong Stop hook's message could get picked), fetch the last N chars of
+the terminal's actual SCREEN BUFFER — the same capture `/terminal/screen`
+already returns — since that's always the terminal's true current state,
+with no "which Stop hook / which message" ambiguity. N configurable via
+`managerCompletionTailChars`, default 1500.
+
+**Investigation.** The screen-capture path already exists and is reused
+as-is: `renderer.js`'s `readTerminalScreen(terminalId, opts)` (~line
+2518) reads the live xterm buffer (`term.buffer.active`), trims trailing
+blank lines, and is the exact function backing the `/terminal/screen`
+control endpoint (`handleControlRequest` ~line 2591 calls it directly).
+The completion-push source was the `payload.event === 'stop'` handler in
+renderer.js's hook-event listener (~line 439), which previously only
+fired `completion:recorded` `if (payload.lastAssistantText)` — a field
+`main.js` computes by calling `readLastAssistantText(transcript_path)`
+(`src/main/transcript-reader.js:110`) synchronously when the Stop hook
+lands.
+
+**Fix.** The `'stop'` branch (`renderer.js` ~439-473) now triggers on
+`payload.event === 'stop'` alone and builds `completionData.text` from
+`this.readTerminalScreen(payload.terminalId, { scrollback: true }).screen`,
+tail-sliced to `managerCompletionTailChars` chars (read from
+`appStateStore`, falling back to 1500). `main.js`'s
+`readLastAssistantText` call and `payload.lastAssistantText` are left in
+place — untouched — because the opt-in `summarizeCompletions` path
+(~462) still uses it for its own separate plain-English compression, now
+guarded with an explicit `payload.lastAssistantText` truthiness check
+since the outer condition no longer implies it. `managerCompletionTailChars`
+was added to the persisted-settings load/mirror block in `setupSettings()`
+(~2646, ~2666, ~2686), following the same `getPersistedSetting` → 
+`appStateStore.setState` pattern as `managerPassIntervalMinutes` — it's
+persisted/tunable via the same settings storage, though (per "minimal
+change") no dedicated UI slider was added for it.
+`src/features/ManagerInstance.js`'s bounded-history dedup (added in the
+prior fix) needed **no code changes** — `onTerminalCompletion()` already
+dedups on whatever `data.text` contains, so it now naturally keys on
+screen-tail content instead of transcript text. Updated its comments
+(~43-66) to describe the new source instead of the transcript one, and
+left the `[tool_use: …]` marker check in as a harmless no-op (that shape
+was transcript-specific and won't occur in raw screen text).
+
+**Heads-up (Ethan asked this be called out):** the terminal tail is raw
+TUI text — line-wrapped to the pane's column width, may include
+box-drawing/prompt-decoration characters, spinner frames, partial
+in-progress lines — messier than the old clean transcript prose. Accepted
+tradeoff for always-current, no-staleness content.
+
+**Tests.** `src/features/ManagerInstance.dedup.test.js`: existing dedup
+tests needed no changes (they exercise `onTerminalCompletion` at the
+`completion:recorded` event level, agnostic to where `text` comes from).
+Added two tests documenting the new content shape: one confirming
+box-drawing/wrapped-line screen text pushes and dedups correctly
+verbatim, and one confirming near-duplicate frames (e.g. a spinner
+character differing) are correctly treated as distinct, not falsely
+deduped. All 10 tests pass: `node --test
+src/features/ManagerInstance.dedup.test.js`. The renderer-side capture/
+slice logic (`readTerminalScreen` + tail-slice in the hook-event handler)
+has no isolated unit-test harness in this repo (renderer.js is the GUI
+orchestrator, not an independently `require`-able module elsewhere) —
+verified via `node --check` and code inspection only, same as the
+Fix 1-3 changes.
+
+**Remote bundle.** Re-ran `npm run build-remote` since `renderer.js`
+changed again — succeeded, `dist-remote/renderer.bundle.js` timestamp
+updated.
+
+**Needs an app restart** — `setupSettings()` (loads
+`managerCompletionTailChars`) and the hook-event listener changes only
+take effect for a freshly-started renderer; Remote Mode also needs a
+restart to serve the freshly rebuilt bundle.
+
+---
+
+## 2026-07-30 — SSH-view coloring, per-pane image drop, SSH copy/paste (branch `ssh-view`, uncommitted)
+
+**Request (Ethan).** Three UI bugs: (1) terminal colors render wrong once
+a pane has SSH'd into another machine, (2) dropping an image only reliably
+attaches when dropped on the tiny message-input box rather than the
+terminal pane itself, (3) drag-select-to-copy (and paste) doesn't work in
+an SSH'd pane the way it does locally.
+
+**1. SSH-view coloring.** Root cause: every PTY is spawned with the
+terminfo name `xterm-color` (`main.js`, three spawn sites — the primary
+spawn ~line 1074, the Unix/Windows fallback spawn ~line 1156, and the
+legacy `change-terminal-directory` handler ~line 1293) and no `TERM`/
+`COLORTERM` was set in the child environment. `xterm-color` is a very
+limited legacy terminfo entry (effectively 8/16 colors, no 256-color or
+truecolor). Locally this mostly goes unnoticed because many CLI tools
+either don't probe capabilities hard or fall back gracefully; but `ssh`
+re-negotiates color support against `$TERM` on the *remote* host, so a
+remote shell/TUI sees `xterm-color` and renders a degraded/wrong palette
+even though xterm.js (the renderer here) fully supports 256-color and
+truecolor. Fix: all three PTY spawns now request `name: 'xterm-256color'`
+and set `TERM=xterm-256color` + `COLORTERM=truecolor` in the child env
+(`main.js` ~1065-1082, ~1150-1162, ~1289-1298). No xterm.js theme changes
+needed — the local color theme (`src/core/terminal-manager.js`) was
+already correct, it's the *remote* negotiation that was starved.
+**Needs an app restart** — this only affects newly-spawned PTYs, not
+terminals already running.
+
+**2. Drag-and-drop images onto any terminal pane.** Root cause: drop
+listeners were only bound to `#drop-zone` (the message-input box,
+`index.html:328`), so a drop anywhere else on the terminal grid did
+nothing. Fix: added a second, delegated set of `dragenter`/`dragover`/
+`dragleave`/`drop` listeners on `#terminals-container` in
+`renderer.js` (`setupFileAttachments()`, ~line 952) that resolve the
+`.terminal-wrapper` under the cursor via `closest()`, read its
+`data-terminal-id`, and make that terminal the active/queue target
+(`setActiveTerminal()` or `queueTargetTerminalId`) before running the
+same `attachFiles()` path the input box already used — so the image
+lands as an attachment on whichever pane it was dropped on, not just
+the currently-focused one. Visual feedback reuses `.terminal-drag-active`,
+CSS that already existed in `style.css` (~2762) but was dead/unwired
+until now. **Needs an app restart** — it's a renderer script, so a
+plain window reload (Ctrl/Cmd+R) is enough, a full app restart isn't
+required for this one.
+
+**3. Copy/paste in an SSH'd terminal.** Investigation: xterm.js already
+has the "common pattern" fix built in — holding Shift while dragging
+(Linux/Windows) forces local text selection even when the remote program
+(e.g. Claude Code's TUI running over the far end of the SSH session) has
+turned on mouse-tracking and would otherwise intercept the drag as mouse
+input. Paste already works unmodified in both local and SSH'd terminals,
+since it goes through xterm's built-in hidden-textarea paste handling and
+gets written straight to the PTY's stdin — SSH just forwards those bytes,
+there's no app-side gap there. The one real gap: the Shift-drag override
+only checks `e.shiftKey` on Linux/Windows; on Mac it instead requires
+Option+drag *and* xterm's `macOptionClickForcesSelection` option, which
+defaults to `false` — so Mac users had no drag-based way to force local
+selection through an SSH'd mouse-tracking program at all. Fixed by adding
+`macOptionClickForcesSelection: true` to the actual `new Terminal(...)`
+construction used by the app in `renderer.js` (~line 1809 — this is the
+live pane-creation path; `src/core/terminal-manager.js`'s own
+`createTerminal()` carries the same option for consistency but is dead
+code, not what actually builds panes). The existing right-click "Copy"
+menu (`renderer.js` `showTerminalContextMenu`/`copyTerminalText`, ~2043)
+remains the sure-fire fallback regardless of mouse-tracking state, since
+it reads xterm's selection/buffer directly rather than relying on native
+browser drag-select. **Needs an app restart** (or window reload) — same
+as above, this only affects newly-created terminal panes.
+
+---
+
+## 2026-07-30 — Completion-push dedup fix + remote-bundle rebuild (branch `ssh-view`, uncommitted)
+
+**Request (Ethan).** Two live bugs in the manager's completion-watch push
+(the notification 999 gets when another terminal finishes a turn): (1) a
+push showed a stale, intermediate assistant message instead of the
+terminal's real final output, and (2) a duplicate of that stale push was
+sitting unsent in the live queue (id=4), identical to one already
+delivered — dedup didn't catch it. Also asked to rebuild the stale
+Remote-Mode bundle once the renderer.js UI fixes above were final.
+
+**Investigation.** `src/features/ManagerInstance.js`'s
+`onTerminalCompletion()` (~line 59) dedups by comparing the new completion
+text to `_lastCompletionText.get(terminalId)` — a single last-value cache.
+Claude Code can legitimately fire several Stop hooks in quick succession
+for what looks like one logical turn (an intermediate response, more tool
+calls, then the true final one), each producing its own completion push
+with whatever `readLastAssistantText` (`src/main/transcript-reader.js:110`)
+finds as the latest complete assistant text at that instant. That part
+works correctly — the text captured per event is genuinely accurate for
+its moment. The bug is downstream: with only a single-value cache, a
+sequence like **A** (pushed), **B** (different, pushed), **A** again
+(re-surfacing, e.g. a duplicate/nested Stop firing) sailed straight past
+the `=== ` check because it only compares against **B**, not **A** — so
+the OLD text **A** gets queued a second time. This is exactly what
+produced both symptoms Ethan saw: the "stale intermediate message" and
+the "duplicate stuck unsent in queue" are the same root cause, since the
+re-queued old push sits behind newer traffic and gets delivered later,
+reading as if the manager were told the wrong/non-final result. This
+buggy A,B,A-passes-all-three behavior was actually already codified as
+intentional in `ManagerInstance.dedup.test.js` (pre-existing test now
+rewritten below). Checked the live queue via
+`GET 127.0.0.1:$CCBOT_PORT/queue` — it's currently empty, so the specific
+stuck id=4 message had already drained/been delivered by the time this
+was fixed; nothing needed manual cleanup.
+
+**Fix.** `_lastCompletionText` (`ManagerInstance.js` ~46-53) is now a
+`Map<terminalId, string[]>` — a bounded history (`_completionHistoryLimit
+= 5`) of recently-pushed texts per terminal, instead of a single string.
+`onTerminalCompletion()` (~76-84) checks `history.includes(text)` before
+pushing and dedups against any recently-seen text, not just the
+immediately-previous one; the array evicts its oldest entry past the
+5-deep cap so memory doesn't grow unbounded over a long session.
+
+**Tests.** `src/features/ManagerInstance.dedup.test.js`: replaced the test
+that asserted the buggy "A, B, A pushes all three" behavior with one
+asserting the fixed "A, B, A pushes only A and B" (dedup catches the
+re-surfaced A), and added a bounded-history test confirming a text that's
+aged out past the 5-entry cap is treated as new again while one still
+inside the window stays deduped. All 8 tests pass:
+`node --test src/features/ManagerInstance.dedup.test.js`. **Needs an app
+restart** — `ManagerInstance` is instantiated once at renderer startup.
+
+**Remote bundle rebuild.** Ran `npm run build-remote`
+(`esbuild renderer.js --bundle --outfile=dist-remote/renderer.bundle.js
+...`) after the drag-drop (Fix 2) and copy/paste (Fix 3) renderer.js
+changes above landed. Succeeded (`⚡ Done in 34ms`, `dist-remote/
+renderer.bundle.js` 1.0mb). Bundle mtime moved from Jul 15 → Jul 30;
+spot-checked with `grep -c "macOptionClickForcesSelection\|
+terminal-drag-active" dist-remote/renderer.bundle.js` (8 hits) to confirm
+both new behaviors made it into the bundle. This bundle is what Remote
+Mode serves to a browser over SSH (e.g. Ethan's Mac) — **needs the app
+(or at least Remote Mode) restarted** to actually serve the freshly built
+file instead of a cached one.
+
+---
+
+## 2026-07-30 — Recurring "Scheduled optimization pass" disabled for good (branch `ssh-view`)
+
+**Request (Ethan).** The manager (999) kept getting a standing
+"Scheduled optimization pass..." instruction dispatched to it on a timer
+(default every 60 min). Ethan wants that gone permanently.
+
+**How it works.** `src/features/ManagerInstance.js`'s `start()` no longer
+arms the pass loop — the block that read `managerAutoPassEnabled` and
+called `startPassLoop()` was replaced with an unconditional
+`this.stopPassLoop()` (~line 320). `startPassLoop()` itself (~line 107)
+now returns immediately after clearing any existing timer, so nothing can
+re-arm it even if called directly. `PASS_INSTRUCTION`, `dispatchPass()`,
+and the rest of the interval-scheduling code are left in place as dead
+code rather than deleted, in case this is ever revisited.
+
+**Untouched.** The completion-watch push (`onTerminalCompletion`,
+`completionWatchEnabled`, the dedup-by-terminal map) is a separate
+feature and was not touched — the manager still gets notified when other
+terminals finish.
+
+ — Discord "typing…" indicator while the manager works (branch `ssh-view`)
+
+**Feature (user request).** The user couldn't tell whether the manager (999)
+was working on his Discord message. The bridge now shows the bot's typing
+indicator in #claude-voice from the moment an inbound message is submitted
+to 999 until a reply posts.
+
+**How it works.**
+- *`discord-bridge/src/textMirror.js`*: `startTyping()` (immediate
+  `channel.sendTyping()` + refresh every 7s — Discord expires at ~10s — +
+  90s max-timeout auto-stop) and `stopTyping()`; both idempotent, a fresh
+  start restarts the clock, ping failures are logged but never disrupt
+  delivery. `stopTyping()` fires at the top of `postText`/`postImage`/
+  `postVideo`/`postReplied` (any reply going out) and in `reset()`.
+- *`src/linkManager.js`*: single choke point — every inbound path (typed
+  auto-forward, `/prompt`, all voice-memo paths) funnels through
+  `forward()`; a new optional `onForwarded` hook fires only on successful
+  submit, try/caught so the indicator can never break delivery.
+- *`src/index.js`*: `linkManager.onForwarded = () => textMirror.startTyping()`.
+- New `src/textMirror.typing.test.js` (7 tests, mock timers); full bridge
+  suite 21/21. controlApi submit sequencing untouched; systemd drop-ins
+  (DISABLE_VOICE_AUTOFOLLOW=1, IN_CALL_SILENCE_MS=4000, barge-in off) intact.
+
+**Verified / incident finding.** Lifecycle proven on live traffic (on at
+submit, clock-restart on a second message, off exactly when the manager's
+reply posted). BUT the user saw no indicator — diagnosed to a **Discord-side
+outage**: `POST /channels/*/typing` returned HTTP 500 on all 43 guild
+channels (REST-probed with the bot token; GET/channel + message posting fine)
+during discordstatus.com's unresolved "API Errors" incident (started
+2026-07-16 17:49 PDT, "upstream latency issue"). After the sendTyping catch
+was switched from swallow to log.warn and the bridge restarted, discord.js
+itself logged `sendTyping failed: Internal Server Error` on both the
+immediate ping and the 7s refresh — conclusive. No code fix warranted
+(retrying a cosmetic signal against a degraded endpoint is churn); the
+indicator becomes visible on its own when Discord resolves the incident.
+**Resolved 2026-07-17:** Discord's typing endpoint recovered (~23:40 EDT,
+verified 204 via REST); the first post-recovery user message (01:42:47)
+produced a clean cycle — typing on, refreshed, zero failures, off on the
+next submit — i.e. the indicator is now user-visible end-to-end.
+
+---
+
+## 2026-07-15 — Whisper transcription: faster-whisper large-v3 (int8_float16), forced English — large-model accuracy at ~2GB VRAM (branch `ssh-view`)
+
+**Change (user request, pivoted mid-task).** Discord voice memos and in-app
+voice garbled on Whisper 'base' and auto-detect hallucinated other languages.
+Original ask was openai-whisper large-v3, pivoted to **faster-whisper**
+(CTranslate2) 'large-v3' at `compute_type='int8_float16'` on CUDA: large-v3
+accuracy, ~2.1GB resident VRAM (vs ~10GB fp16), and decodes FASTER than the
+old 'base'. Language now defaults to `'en'` everywhere.
+
+**How it works.**
+
+- *`backend/voice_transcription/transcription_service.py`* rewritten from
+  `openai-whisper` to `faster_whisper.WhisperModel`. Same public contract
+  (return-dict keys unchanged; segments materialized as dicts). Defaults:
+  `model_name='large-v3'`, `language='en'`. Load path degrades gracefully:
+  cuda/int8_float16 → cuda/int8 → cpu/int8, plus the existing fallback-to-
+  'base' and thread-safe model cache. A `_preload_cuda12_libs()` shim
+  ctypes-preloads `libcublas.so.12`/`libcudnn*.so.9` from the
+  `nvidia-*-cu12` pip wheels — the image's torch is cu13-only and CT2
+  dlopens the CUDA-12 sonames at inference (this was a real failure,
+  caught in staging: "Library libcublas.so.12 is not found").
+- *Server is authoritative:* `views.py` transcribe endpoint now ignores the
+  request's `model` field and always runs large-v3 (old app builds and a
+  possibly-stale Discord bridge still send 'base'); missing language coerces
+  to 'en' (explicit language still wins). Voice `health/` endpoint now
+  warm-loads large-v3 instead of base.
+- *Callers made consistent anyway:* `src/state/AppStateStore.js`
+  (`whisperModel: 'large-v3'` ×2), `src/features/VoiceManager.js` (sends
+  explicit `model`/`language` fields now), `discord-bridge/src/transcribe.js`
+  (defaults `large-v3`/`en`). `backend/requirements.txt`: `openai-whisper` →
+  `faster-whisper` + `nvidia-cublas-cu12`/`nvidia-cudnn-cu12`.
+
+**Verified LIVE (999-approved `docker compose restart backend`; only that
+container touched).** First staged + exercised standalone via `docker compose
+exec` (which caught the libcublas.so.12 failure), weights pre-downloaded to
+the container's HF cache so the restart blip was seconds. After restart:
+container healthy; `/api/voice/health/` reports device cuda +
+whisper_loaded; a real POST to `/api/voice/transcribe/` — deliberately
+sending `model=base` and no language — came back `model_used: 'large-v3'`,
+`language: 'en'`, byte-perfect transcript of an espeak-generated 5.7s WAV in
+**0.40s** (server-side override proven, so the stale bridge is covered).
+nvidia-smi: the backend process holds **2162 MiB** resident (target 2-3GB;
+fp16 openai-whisper would have been ~10GB). Manager TTS confirmed after the
+restart: `POST /api/tts/speak/` synthesized fine (id 1565, bf_emma, 2875ms).
+Note for later: the HF model cache lives in the container's writable layer,
+so a future container RE-CREATION re-downloads ~3GB on first use — consider
+a named volume for `/root/.cache/huggingface`.
+
+**Follow-up fix 3 (2026-07-16): tightened anti-hallucination for noisy-car
+use, WITHOUT breaking the 1-word interrupt commands.** Still too many
+confident phantoms on ambient/car audio. Measured the voice-interrupt
+stop-words ("Yes."/"No."/"Wait.", clean AND mixed over a synthetic car-noise
+bed) before touching thresholds — critical finding: short real commands
+legitimately score LOW avg_logprob (−0.61 to −0.80; "Wait." over car noise
+= −0.802), so the commonly-suggested −0.6/−0.7 logprob floor would have
+dropped real stop-words. Their no_speech_prob stays ≤0.29 though. Changes:
+`NO_SPEECH_PROB_MAX` 0.6 → **0.5** (mid-gap: real ≤0.35, phantoms ≥0.68),
+`AVG_LOGPROB_MIN` −1.0 → **−0.9** (below the −0.802 worst real command,
+degenerate-output net only), Silero VAD `threshold=0.6` (default 0.5; road
+blips don't register, commands verified to still pass; min_speech_duration
+left at 250ms so a bare "no" is never clipped), plus a tiny exact-whole-
+transcript blocklist of never-real artifacts only ("thanks for watching",
+"thank you for watching", "please subscribe", "[music]" — NOT "thank you",
+NOT stop-words). Verified live after backend-only restart: full sentence
+byte-perfect; "Yes." clean and "No."/"Wait." OVER CAR NOISE all transcribe;
+car-noise/pink-noise/music clips → `""`. Gate + blocklist unit-checked
+against all measured values in-container; image rebuilt with the changes;
+TTS healthy; still 2162 MiB resident.
+
+**Follow-up fix 2 (same day): cross-talk hallucination — CONFIDENCE-based
+post-filter (user chose this over a phrase blocklist).** On a live call,
+real background/cross-talk audio passed the VAD (there IS voice activity)
+and still came back as the canned "Thank you." / "Thanks for watching"
+artifact. Measured on this box (large-v3 int8_float16): hallucinated
+segments arrive with `no_speech_prob` ≈ 0.68–0.70, while ALL genuine speech
+— clear (0.009), a real spoken bare "Thank you." (0.066), even faint badly
+garbled speech (0.36) — stays ≤ 0.36. `avg_logprob` does NOT separate the
+classes (hallucination −0.26 vs faint-real −0.62), which is also why
+faster-whisper's own `no_speech_threshold` never fired (its suppression
+additionally requires logprob < −1.0). Fix in `transcription_service.py`:
+`_drop_low_confidence_segments()` drops any segment with
+`no_speech_prob > 0.6` OR `avg_logprob < −1.0` (the latter purely as a
+degenerate-output safety net), logging each drop with its stats for audit;
+empty result ⇒ empty transcript. No phrase blocklist (a briefly-staged one
+was reverted per user preference). Verified live after a backend-only
+restart: noise and music-like WAVs → `""`; a genuine spoken "Thank you." →
+survives (conf 0.93); the full test sentence → byte-perfect (conf 0.99,
+0.39s); TTS healthy; backend still 2162 MiB resident; image rebuilt with
+the filter baked in. Known residual: *reversed/nonsense speech-shaped*
+audio transcribes as gibberish with GOOD confidence (no_speech 0.018) —
+no filter at this layer can catch that class.
+
+**Follow-up fix (same day): silence hallucination.** In the wild, large-v3
+returned phantom "Thank you" / "Thanks for watching" on silent memos (the
+classic Whisper YouTube-caption artifact). Added to the `model.transcribe()`
+call: `vad_filter=True` (built-in Silero VAD skips non-speech; onnxruntime
+was already present from the faster-whisper install),
+`vad_parameters=dict(min_silence_duration_ms=500)`,
+`condition_on_previous_text=False` (no repeating prior text into quiet
+gaps), explicit `no_speech_threshold=0.6`. Verified live after another
+backend-only restart: a 6s all-silence WAV → `text: ""` in 0.09s (no
+"Thank you"), the speech WAV still transcribes byte-perfect in 0.37s,
+backend process still 2162 MiB resident, TTS still healthy.
+
+---
+
 ## 2026-07-15 — Voice STOP-WORD INTERRUPT: saying "no …" (or "wait …") cuts off the manager's current turn and takes over (branch `ssh-view`)
 
 **Feature (user request).** The manager sometimes keeps over-processing an
@@ -4084,3 +4466,36 @@ the memo to the manager (999), and the answer plays back on the laptop.
   `RemoteServer.mic.test.js`), `main.js`, `renderer.js`,
   `tests/integration/remote-mic-e2e.js`, `tests/fixtures/hey-claude-16k.wav`,
   `tests/fixtures/command-16k.wav`, `.gitignore`, `docs/REMOTE_MODE.md`.
+
+## 2026-07-24 — Manager monitoring: stuck-terminal watchdog + completion-push dedup (CODE READY, NOT YET APPLIED — needs app restart)
+
+Two token-efficiency/reliability fixes for manager (999) monitoring, greenlit
+from the monitoring diagnosis. **The running app has NOT been restarted** — a
+restart kills every PTY (all workers AND the manager, per the `before-quit`
+cleanup in main.js), and T11 is mid-flight; the manager will coordinate the
+restart window.
+
+- **Stuck-terminal watchdog** (`src/features/StuckWatchManager.js`, NEW): a
+  30s renderer-side sweep that pushes ONE compact line to 999 (e.g.
+  `T3 ("api") appears stuck: prompted 6m`) when a terminal needs attention
+  but will never fire a completion: prompted > 5 min (menu or not — covers
+  the no-menu idle-prompt gap PromptWatch deliberately suppresses), running
+  with no PTY output > 4 min (silent hang), or a queued message held by the
+  injection gate > 5 min (includes the gate's reason string). Fed entirely
+  from existing bus events (`terminal:status:changed`, `terminal:data`) — no
+  new plumbing. De-dupes per stuck-episode (a cleared condition resets it; a
+  NEW condition joining re-notifies with both facts). Thresholds are
+  constants at the top of the file; opt-out via the
+  `managerStuckWatchEnabled` setting (default on). Wired in `renderer.js`
+  beside PromptWatchManager.
+- **Completion-push dedup** (`src/features/ManagerInstance.js`): per-terminal
+  last-pushed-text memory; a re-push identical to the previous one from the
+  same terminal is dropped — this kills the 3-4x stale-duplicate flood caused
+  by `readLastAssistantText` walking back past tool-only turns. Pushes whose
+  text is only a `[tool_use: …]` marker are skipped outright. Only
+  consecutive duplicates dedup (A, B, A still pushes all three).
+- TDD: `src/features/StuckWatchManager.test.js` (15 tests) +
+  `src/features/ManagerInstance.dedup.test.js` (7 tests), red first, then
+  green; full suite `node --test src/features/ src/main/` = 184/184 pass.
+- Files: `src/features/StuckWatchManager.js` (+ test),
+  `src/features/ManagerInstance.js` (+ dedup test), `renderer.js`.
