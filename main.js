@@ -18,6 +18,9 @@ const { handlePtyControl } = require('./src/main/pty-control');
 const { runCcusage } = require('./src/main/ccusage');
 const { writeSessionFile, removeSessionFile, writeAppRootFile } = require('./src/main/session-file');
 const GamesLibrary = require('./src/main/games-library');
+const MoonlightService = require('./src/main/moonlight');
+const { registerMoonlightIpc } = require('./src/main/moonlight');
+const { setupBrowserGame, guardWebviewAttach } = require('./src/main/browser-game');
 const RemoteServer = require('./src/main/RemoteServer');
 const RemoteClient = require('./src/main/remote-client');
 const TtsRemoteForwarder = require('./src/main/tts-remote-forwarder');
@@ -26,6 +29,7 @@ const { BACKEND_URL } = require('./src/utils/backend-url');
 let mainWindow;
 let hookServer = null;
 let gamesLibrary = null;
+let moonlightService = null;
 let remoteServer = null;
 let remoteClient = null; // outbound Remote-SSH-style client (bottom-left indicator)
 let ttsRemoteForwarder = null; // pushes TTS audio to attached remote viewers (REMOTE_MODE.md §9)
@@ -382,13 +386,24 @@ function createWindow() {
       nodeIntegration: true,
       contextIsolation: false,
       enableRemoteModule: true,
-      backgroundThrottling: false
+      backgroundThrottling: false,
+      // The Browser "game" (browser.html) renders the open web, which an iframe
+      // cannot do — every site worth scrolling sends X-Frame-Options. A <webview>
+      // is a separate process with its own session, so it loads them and keeps
+      // its cookies in its own `persist:` partition, never the app's. Nothing
+      // else in the app uses it, and a webview does NOT inherit the settings
+      // above: it runs sandboxed with node disabled unless asked otherwise.
+      webviewTag: true
     },
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#121214',
     show: false,
     icon: getIcon(),
   });
+
+  // Any <webview> this renderer attaches (only the Browser card does) gets its
+  // preferences rewritten first — no preload, no Node, our partition or nothing.
+  guardWebviewAttach(mainWindow.webContents);
 
   // Prevent new windows from opening - instead open links in default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -981,6 +996,17 @@ function setupIpcHandlers() {
       return [];
     }
   });
+
+  // ---- Moonlight (the game-streaming card) ----
+  // Registered eagerly: the constructor only computes paths, and the client
+  // certificate is not generated until something actually contacts a host.
+  moonlightService = new MoonlightService(app.getPath('userData'), broadcastToRenderers);
+  registerMoonlightIpc(ipcMain, moonlightService);
+
+  // ---- Browser (the card that shows the open web) ----
+  // Session policy for the <webview> the card puts on the stage: its own
+  // cookie jar, permissions denied by default, popups followed in place.
+  setupBrowserGame(app, ipcMain, broadcastToRenderers);
 
   // Reveal the games folder so the user can drop a file in by hand.
   ipcMain.handle('games:open-folder', async () => {
