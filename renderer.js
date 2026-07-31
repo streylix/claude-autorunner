@@ -46,6 +46,8 @@ const DiscordLinkKeyManager = require('./src/features/DiscordLinkKeyManager');
 const RemoteConnectionUI = require('./src/features/RemoteConnectionUI');
 const VibeBlastManager = require('./src/features/VibeBlastManager');
 const GamesManager = require('./src/features/GamesManager');
+const MoonlightBridge = require('./src/features/MoonlightBridge');
+const BrowserBridge = require('./src/features/BrowserBridge');
 const UIFocusManager = require('./src/ui/UIFocusManager');
 
 // Import utilities
@@ -189,6 +191,20 @@ class TerminalGUI {
             this.eventBus, this.appStateStore, this.ipcHandler, this.vibeBlastManager
         );
         this.gamesManager.initialize();
+
+        // The Moonlight card's only route to the machine. Answers the stage
+        // frame alone, and only for a fixed list of moonlight:* channels.
+        this.moonlightBridge = new MoonlightBridge(
+            this.eventBus, this.ipcHandler, this.vibeBlastManager
+        );
+        this.moonlightBridge.initialize();
+
+        // The Browser card's page. A <webview> only exists in the main frame,
+        // so the card draws the chrome and this owns the view floated over it.
+        this.browserBridge = new BrowserBridge(
+            this.eventBus, this.ipcHandler, this.vibeBlastManager
+        );
+        this.browserBridge.initialize();
 
         // Hidden manager Claude instance (terminal 999) - steers the interface
         this.managerInstance = new ManagerInstance(this.eventBus, this.appStateStore, this.ipcHandler, this);

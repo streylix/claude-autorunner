@@ -5407,3 +5407,27 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         transition-duration: 1ms;
     }
 }
+
+/* ---------- the Browser card's page ---------- */
+/* A <webview> only exists in the main frame, so the Browser card cannot hold
+   its own page — the card draws chrome around an empty well and BrowserBridge
+   floats this element over it, in page coordinates it recomputes each frame.
+   Hence position: fixed with no geometry here; the JS writes all four numbers.
+
+   z-index sits above the panel (60) and its resize handle (100) but below the
+   app's modals (1000+), so a dialog still covers the page rather than losing to
+   a guest process that paints on its own layer. */
+.browser-game-view {
+    position: fixed;
+    z-index: 500;
+    border: none;
+    background: var(--bg-primary);
+}
+
+/* Hidden, never removed: detaching a webview tears down the guest, which would
+   mean losing the scroll position and the session on every panel close.
+   visibility keeps it alive and silent (BrowserBridge also mutes it). */
+.browser-game-view.hidden {
+    visibility: hidden;
+    pointer-events: none;
+}

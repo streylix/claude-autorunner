@@ -1,0 +1,1928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Moonlight</title>
+<meta name="game-description" content="Stream games from your PC.">
+<style>
+/* ============================================================================
+   Moonlight card.
+
+   Lives at the app root rather than in games/ because games/ is gitignored —
+   the shelf's library is per-machine, but this file is source, and it is only
+   half the feature: the other half is src/main/moonlight/ in the main process.
+   GamesManager registers it as a built-in alongside Vibe Blast.
+
+   The palette mirrors the app's own tokens so the card reads as part of the
+   app rather than as a game. Dark is the base; light is stated twice, once for
+   "the OS says light and the host has not pinned a theme" and once for "the
+   host pinned light" — same convention vibe-blast.html uses, and the host's
+   "system" value deliberately matches neither pinned selector so it falls
+   through to the media query.
+   ========================================================================= */
+:root{
+  --bg-primary:#1a1a1e;
+  --bg-secondary:#121214;
+  --bg-tertiary:#222228;
+  --bg-hover:#2a2a32;
+  --text-primary:#e8e8ed;
+  --text-secondary:#a0a0ab;
+  --text-tertiary:#70707c;
+  --border-primary:#33333c;
+  --border-secondary:#44444f;
+  --accent:#4f8ff7;
+  --accent-dim:#3a6fd0;
+  --success:#34d399;
+  --warning:#fbbf24;
+  --error:#f87171;
+  --radius:8px;
+}
+
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="light"]):not([data-theme="dark"]){
+    --bg-primary:#eff1f5;
+    --bg-secondary:#e6e9ef;
+    --bg-tertiary:#dce0e8;
+    --bg-hover:#ccd0da;
+    --text-primary:#4c4f69;
+    --text-secondary:#5c5f77;
+    --text-tertiary:#8c8fa1;
+    --border-primary:#dce0e8;
+    --border-secondary:#ccd0da;
+    --accent:#1e66f5;
+    --accent-dim:#04a5e5;
+    --success:#40a02b;
+    --warning:#df8e1d;
+    --error:#d20f39;
+  }
+}
+:root[data-theme="light"]{
+  --bg-primary:#eff1f5;
+  --bg-secondary:#e6e9ef;
+  --bg-tertiary:#dce0e8;
+  --bg-hover:#ccd0da;
+  --text-primary:#4c4f69;
+  --text-secondary:#5c5f77;
+  --text-tertiary:#8c8fa1;
+  --border-primary:#dce0e8;
+  --border-secondary:#ccd0da;
+  --accent:#1e66f5;
+  --accent-dim:#04a5e5;
+  --success:#40a02b;
+  --warning:#df8e1d;
+  --error:#d20f39;
+}
+
+*{box-sizing:border-box;}
+html,body{height:100%;margin:0;}
+body{
+  background:var(--bg-primary);
+  color:var(--text-primary);
+  font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ---------- chrome ---------- */
+
+header{
+  flex:0 0 auto;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:10px 12px;
+  border-bottom:1px solid var(--border-primary);
+  background:var(--bg-secondary);
+}
+.title{font-weight:600;font-size:13px;letter-spacing:.2px;}
+.subtitle{color:var(--text-tertiary);font-size:11px;}
+header .spacer{flex:1;}
+
+main{flex:1 1 auto;min-height:0;overflow-y:auto;padding:12px;}
+
+.view{display:none;}
+.view.active{display:block;}
+
+/* ---------- controls ---------- */
+
+button{
+  font:inherit;
+  color:var(--text-primary);
+  background:var(--bg-tertiary);
+  border:1px solid var(--border-primary);
+  border-radius:var(--radius);
+  padding:6px 11px;
+  cursor:pointer;
+  transition:background .12s,border-color .12s;
+}
+button:hover:not(:disabled){background:var(--bg-hover);border-color:var(--border-secondary);}
+button:disabled{opacity:.45;cursor:default;}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+button.primary:hover:not(:disabled){background:var(--accent-dim);border-color:var(--accent-dim);}
+button.danger{color:var(--error);}
+button.ghost{background:transparent;border-color:transparent;padding:4px 7px;color:var(--text-secondary);}
+button.ghost:hover:not(:disabled){background:var(--bg-tertiary);color:var(--text-primary);}
+button.tiny{padding:3px 8px;font-size:11px;}
+
+input,select{
+  font:inherit;
+  color:var(--text-primary);
+  background:var(--bg-secondary);
+  border:1px solid var(--border-primary);
+  border-radius:var(--radius);
+  padding:6px 9px;
+  width:100%;
+}
+input:focus,select:focus{outline:none;border-color:var(--accent);}
+input[type=checkbox]{width:auto;accent-color:var(--accent);}
+
+/* ---------- host list ---------- */
+
+.section-label{
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:.9px;
+  text-transform:uppercase;
+  color:var(--text-tertiary);
+  margin:0 0 8px;
+}
+.section + .section{margin-top:18px;}
+
+.host{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  width:100%;
+  text-align:left;
+  padding:10px 11px;
+  margin-bottom:6px;
+  background:var(--bg-secondary);
+  border:1px solid var(--border-primary);
+  border-radius:var(--radius);
+  cursor:pointer;
+}
+.host:hover{background:var(--bg-tertiary);}
+.dot{
+  flex:0 0 auto;
+  width:8px;height:8px;border-radius:50%;
+  background:var(--text-tertiary);
+}
+.dot.paired{background:var(--success);}
+.dot.unpaired{background:var(--warning);}
+.dot.offline{background:var(--error);}
+.host-text{flex:1;min-width:0;}
+.host-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.host-sub{font-size:11px;color:var(--text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+.add-row{display:flex;gap:6px;}
+.add-row input{flex:1;}
+
+.empty{
+  padding:22px 14px;
+  text-align:center;
+  color:var(--text-tertiary);
+  border:1px dashed var(--border-primary);
+  border-radius:var(--radius);
+  font-size:12px;
+}
+
+/* ---------- tabs ---------- */
+
+.tabs{
+  display:flex;
+  gap:2px;
+  padding:3px;
+  background:var(--bg-secondary);
+  border:1px solid var(--border-primary);
+  border-radius:var(--radius);
+  margin-bottom:14px;
+}
+.tabs button{
+  flex:1;
+  background:transparent;
+  border:none;
+  padding:5px 8px;
+  font-size:12px;
+  color:var(--text-secondary);
+  border-radius:6px;
+}
+.tabs button.active{background:var(--bg-hover);color:var(--text-primary);font-weight:600;}
+
+/* ---------- apps ---------- */
+
+.apps{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(112px,1fr));
+  gap:10px;
+}
+.app{
+  padding:0;
+  overflow:hidden;
+  background:var(--bg-secondary);
+  border:1px solid var(--border-primary);
+  border-radius:var(--radius);
+  text-align:left;
+}
+.app:hover{border-color:var(--accent);}
+.app-art{
+  aspect-ratio:600/800;
+  width:100%;
+  background:var(--bg-tertiary);
+  display:block;
+  object-fit:cover;
+}
+.app-art.placeholder{
+  display:flex;align-items:center;justify-content:center;
+  color:var(--text-tertiary);font-size:22px;
+}
+.app-name{
+  display:block;
+  padding:7px 8px;
+  font-size:11.5px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.app{position:relative;}
+.app-overlay{
+  position:absolute;
+  inset:0 0 auto 0;
+  aspect-ratio:600/800;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  background:rgba(0,0,0,.62);
+  backdrop-filter:blur(2px);
+}
+.app-overlay button{
+  min-width:86px;
+  padding:6px 10px;
+  font-size:12px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+}
+.app.running{border-color:var(--success);}
+.app-running-dot{
+  position:absolute;
+  top:6px;left:6px;
+  width:8px;height:8px;border-radius:50%;
+  background:var(--success);
+  box-shadow:0 0 0 2px rgba(0,0,0,.45);
+}
+
+.running-banner{
+  display:flex;align-items:center;gap:8px;
+  padding:9px 11px;margin-bottom:12px;
+  background:color-mix(in srgb,var(--success) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--success) 40%,transparent);
+  border-radius:var(--radius);
+  font-size:12px;
+}
+.running-banner .spacer{flex:1;}
+
+/* ---------- pairing ---------- */
+
+.pair-box{text-align:center;padding:20px 14px;}
+.pin{
+  font:700 40px/1.1 ui-monospace,SFMono-Regular,Menlo,monospace;
+  letter-spacing:9px;
+  padding-left:9px;      /* the tracking above leaves a phantom gap on the right */
+  margin:14px 0 10px;
+  color:var(--accent);
+}
+.pair-stage{color:var(--text-secondary);font-size:12px;min-height:18px;}
+
+/* ---------- settings ---------- */
+
+.field{margin-bottom:13px;}
+.field > label{
+  display:block;
+  font-size:11.5px;
+  color:var(--text-secondary);
+  margin-bottom:5px;
+}
+.row{display:flex;gap:8px;}
+.row > *{flex:1;}
+.check{
+  display:flex;align-items:center;gap:8px;
+  font-size:12.5px;
+  margin-bottom:9px;
+  cursor:pointer;
+}
+.check input{flex:0 0 auto;}
+.hint{font-size:11px;color:var(--text-tertiary);margin-top:4px;}
+
+.note{
+  padding:9px 11px;
+  background:var(--bg-secondary);
+  border:1px solid var(--border-primary);
+  border-left:2px solid var(--warning);
+  border-radius:var(--radius);
+  font-size:11.5px;
+  color:var(--text-secondary);
+  margin-bottom:14px;
+}
+
+/* ---------- the stream ---------- */
+
+.stage{
+  position:fixed;
+  inset:0;
+  background:#000;
+  display:none;
+  flex-direction:column;
+  z-index:20;
+}
+body.streaming .stage{display:flex;}
+body.streaming header,body.streaming main{display:none;}
+
+.stage canvas{
+  flex:1 1 auto;
+  min-height:0;
+  width:100%;
+  /* Letterboxed rather than cropped — a stream is not decoration. */
+  object-fit:contain;
+  background:#000;
+  display:block;
+}
+.stage-bar{
+  flex:0 0 auto;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:7px 10px;
+  background:var(--bg-secondary);
+  border-top:1px solid var(--border-primary);
+  font-size:11.5px;
+  color:var(--text-secondary);
+}
+.stage-bar .spacer{flex:1;}
+.stage-status{
+  position:absolute;
+  inset:0;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:12px;
+  color:var(--text-secondary);
+  font-size:13px;
+  pointer-events:none;
+}
+.stage-status.hidden{display:none;}
+
+.toast{
+  position:fixed;
+  left:12px;right:12px;bottom:12px;
+  padding:9px 12px;
+  border-radius:var(--radius);
+  font-size:12px;
+  background:var(--bg-tertiary);
+  border:1px solid var(--border-secondary);
+  box-shadow:0 6px 22px rgba(0,0,0,.32);
+  opacity:0;
+  transform:translateY(8px);
+  transition:opacity .18s,transform .18s;
+  pointer-events:none;
+}
+.toast.show{opacity:1;transform:none;}
+.toast.error{border-color:var(--error);color:var(--error);}
+
+.spin{
+  display:inline-block;width:12px;height:12px;
+  border:2px solid var(--border-secondary);
+  border-top-color:var(--accent);
+  border-radius:50%;
+  animation:spin .7s linear infinite;
+  vertical-align:-2px;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+@media (prefers-reduced-motion: reduce){
+  *{animation-duration:.01ms !important;transition-duration:.01ms !important;}
+}
+
+/* ---------- thumbnail mode ---------- */
+/* Every card in the rail renders its game in a miniature iframe. This card
+   must not run its network code there — and a shrunken settings form is
+   illegible anyway — so thumbnail mode paints a poster and stops. */
+body.thumb{align-items:center;justify-content:center;}
+body.thumb header,body.thumb main{display:none;}
+.poster{
+  display:none;
+  flex-direction:column;
+  align-items:center;
+  gap:10px;
+  color:var(--text-secondary);
+}
+body.thumb .poster{display:flex;}
+.poster .glyph{font-size:56px;line-height:1;}
+.poster .word{font-size:20px;font-weight:600;letter-spacing:.5px;color:var(--text-primary);}
+</style>
+</head>
+<body>
+
+<div class="poster" aria-hidden="true">
+  <div class="glyph">🌙</div>
+  <div class="word">Moonlight</div>
+</div>
+
+<header>
+  <button class="ghost" id="back" style="display:none" title="All hosts">←</button>
+  <div>
+    <div class="title" id="head-title">Moonlight</div>
+    <div class="subtitle" id="head-sub">Stream from your PC</div>
+  </div>
+  <div class="spacer"></div>
+  <button class="ghost tiny" id="refresh" title="Refresh">⟳</button>
+</header>
+
+<main>
+  <!-- ---------- hosts ---------- -->
+  <section class="view active" id="view-hosts">
+    <div class="section">
+      <div class="section-label">Known hosts</div>
+      <div id="host-list"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">Add a host</div>
+      <div class="add-row">
+        <input id="address" placeholder="IP address or hostname" spellcheck="false" autocomplete="off">
+        <button class="primary" id="add">Add</button>
+      </div>
+      <div class="hint">Sunshine or GeForce Experience must be running on it.</div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">Find hosts</div>
+      <button id="scan">Scan this network</button>
+      <div class="hint">Sweeps the local subnet. Hosts reached over a VPN or tailnet
+        will not appear — add those by address.</div>
+      <div id="scan-results" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- ---------- one host ---------- -->
+  <section class="view" id="view-host">
+    <div class="tabs">
+      <button data-tab="apps" class="active">Apps</button>
+      <button data-tab="settings">Stream settings</button>
+    </div>
+
+    <div id="tab-apps">
+      <div id="pair-panel" style="display:none">
+        <div class="pair-box">
+          <div>Enter this PIN on the host</div>
+          <div class="pin" id="pin">····</div>
+          <div class="pair-stage" id="pair-stage"></div>
+          <div class="hint" style="margin-top:14px">
+            Sunshine: open its web interface on the host (port 47990) and use the PIN tab.
+          </div>
+          <div style="margin-top:16px">
+            <button id="pair-cancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="pair-prompt" style="display:none">
+        <div class="empty" style="margin-bottom:12px">
+          This host has not been paired with yet.
+        </div>
+        <button class="primary" id="pair-start" style="width:100%">Pair with this host</button>
+      </div>
+
+      <div id="apps-panel" style="display:none">
+        <div class="running-banner" id="running" style="display:none">
+          <span>A session is running.</span>
+          <span class="spacer"></span>
+          <button class="tiny danger" id="quit">Stop it</button>
+        </div>
+        <div class="apps" id="app-list"></div>
+      </div>
+    </div>
+
+    <div id="tab-settings" style="display:none">
+      <div class="note">
+        These settings are sent to the host when a session starts. Video is not
+        decoded in this panel yet — starting a session hands the host its
+        instructions and reports back what it agreed to.
+      </div>
+
+      <div class="field">
+        <label>Applies to</label>
+        <select id="scope">
+          <option value="global">All hosts</option>
+          <option value="host">This host only</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Resolution</label>
+        <select id="resolution">
+          <option value="fit">Fit the panel — no letterboxing</option>
+          <optgroup label="Landscape">
+            <option value="1280x720">1280 × 720</option>
+            <option value="1920x1080">1920 × 1080</option>
+            <option value="2560x1440">2560 × 1440</option>
+            <option value="3840x2160">3840 × 2160</option>
+          </optgroup>
+          <optgroup label="Portrait">
+            <option value="720x1280">720 × 1280</option>
+            <option value="1080x1920">1080 × 1920</option>
+            <option value="1200x1920">1200 × 1920</option>
+          </optgroup>
+          <optgroup label="Square">
+            <option value="1080x1080">1080 × 1080</option>
+            <option value="1440x1440">1440 × 1440</option>
+          </optgroup>
+          <option value="custom">Custom…</option>
+        </select>
+        <div class="hint" id="fit-hint" style="display:none"></div>
+      </div>
+
+      <div class="field row" id="custom-res" style="display:none">
+        <div>
+          <label>Width</label>
+          <input id="width" type="number" min="320" max="7680" step="2">
+        </div>
+        <div>
+          <label>Height</label>
+          <input id="height" type="number" min="240" max="4320" step="2">
+        </div>
+      </div>
+
+      <div class="field row">
+        <div>
+          <label>Frame rate</label>
+          <select id="fps">
+            <option value="30">30 fps</option>
+            <option value="60">60 fps</option>
+            <option value="90">90 fps</option>
+            <option value="120">120 fps</option>
+            <option value="144">144 fps</option>
+          </select>
+        </div>
+        <div>
+          <label>Bitrate</label>
+          <input id="bitrate" type="number" min="1" max="500" step="1">
+          <div class="hint">Mbps</div>
+        </div>
+      </div>
+
+      <div class="field row">
+        <div>
+          <label>Video codec</label>
+          <select id="codec">
+            <option value="auto">Automatic</option>
+            <option value="h264">H.264</option>
+            <option value="hevc">HEVC</option>
+            <option value="av1">AV1</option>
+          </select>
+        </div>
+        <div>
+          <label>Audio</label>
+          <select id="audio">
+            <option value="stereo">Stereo</option>
+            <option value="5.1">5.1 surround</option>
+            <option value="7.1">7.1 surround</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Options</label>
+        <label class="check"><input type="checkbox" id="hdr"> HDR</label>
+        <label class="check"><input type="checkbox" id="vsync"> V-sync</label>
+        <label class="check"><input type="checkbox" id="fullscreen"> Allow full screen <span style="color:var(--text-tertiary)">— use the ⛶ button while streaming</span></label>
+        <label class="check"><input type="checkbox" id="mouseCapture"> Capture the mouse <span style="color:var(--text-tertiary)" id="capture-hint"></span></label>
+        <label class="check"><input type="checkbox" id="playAudioOnHost"> Also play audio on the host</label>
+        <label class="check"><input type="checkbox" id="optimizeGameSettings"> Let the host adjust game settings</label>
+      </div>
+
+      <div class="row" style="margin-top:16px">
+        <button class="primary" id="save">Save</button>
+        <button id="reset">Reset</button>
+      </div>
+
+      <div class="section" style="margin-top:22px">
+        <div class="section-label">This host</div>
+        <div class="row">
+          <button id="unpair">Unpair</button>
+          <button class="danger" id="forget">Forget</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="stage" id="stage">
+  <div style="position:relative;flex:1 1 auto;min-height:0;display:flex">
+    <canvas id="screen"></canvas>
+    <div class="stage-status" id="stage-status">
+      <span class="spin"></span>
+      <span id="stage-stage">Starting…</span>
+    </div>
+  </div>
+  <div class="stage-bar">
+    <span id="stage-app">—</span>
+    <span class="spacer"></span>
+    <span id="stage-hint"></span>
+    <span id="stage-stats"></span>
+    <button class="tiny" id="stage-fullscreen" title="Full screen">⛶</button>
+    <button class="tiny danger" id="stage-stop">Stop</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+
+/* ===========================================================================
+   Talking to the app.
+
+   This document has no Node and no ipcRenderer — it is a file:// page in an
+   iframe. Everything privileged goes through MoonlightBridge in the renderer,
+   which answers only the stage frame and only for a fixed list of ops. The
+   wire format matches the storage bridge Vibe Blast uses: post
+   {source:'moonlight', id, op, args}, get back {source:'moonlight-host', id,
+   ok, result, error} carrying the same id.
+   ======================================================================== */
+
+const PENDING = new Map();
+let nextId = 1;
+
+// Pairing blocks on a human walking to another machine, so it gets its own
+// budget; everything else should be quick and a hang means something is wrong.
+const TIMEOUT_MS = 30000;
+const PAIR_TIMEOUT_MS = 150000;
+const HANDSHAKE_TIMEOUT_MS = 6000;
+
+/* The bridge will not act without a token, and it never sends one back to
+   whoever asked — it posts it to whichever frame is on the stage. So asking is
+   only useful if that frame is this one, which is exactly the property that
+   keeps a thumbnail or another game from using the bridge. */
+let token = null;
+let waiting = null;
+
+function handshake(){
+  if (token) return Promise.resolve(token);
+  if (waiting) return waiting;
+
+  waiting = new Promise((resolve, reject) => {
+    let attempts = 0;
+
+    const ask = () => {
+      if (token){ finish(); return; }
+      if (++attempts > 3){
+        waiting = null;
+        reject(new Error("The app did not answer. Is this card open on the stage?"));
+        return;
+      }
+      parent.postMessage({ source: "moonlight", op: "handshake" }, "*");
+      timer = setTimeout(ask, HANDSHAKE_TIMEOUT_MS / 3);
+    };
+
+    const finish = () => { clearTimeout(timer); waiting = null; resolve(token); };
+    let timer = null;
+
+    onWelcome = finish;
+    ask();
+  });
+
+  return waiting;
+}
+
+// Replaced while a handshake is outstanding; a no-op the rest of the time.
+let onWelcome = () => {};
+
+async function call(op, args = {}, timeoutMs = TIMEOUT_MS){
+  await handshake();
+
+  const send = () => new Promise((resolve, reject) => {
+    const id = `m${nextId++}`;
+    const timer = setTimeout(() => {
+      PENDING.delete(id);
+      reject(new Error("The app did not answer."));
+    }, timeoutMs);
+
+    PENDING.set(id, { resolve, reject, timer });
+    parent.postMessage({ source: "moonlight", id, op, token, args }, "*");
+  });
+
+  try{
+    return await send();
+  }catch(err){
+    // The token rotates whenever the card reloads, so one stale reply is
+    // normal after a hot reload rather than an error worth showing.
+    if (!err.stale) throw err;
+    token = null;
+    await handshake();
+    return send();
+  }
+}
+
+window.addEventListener("message", (e) => {
+  const m = e.data;
+  if (!m) return;
+
+  if (m.source === "vibe-blast-host" && m.op === "theme"){ applyTheme(m.theme); return; }
+  if (m.source !== "moonlight-host") return;
+
+  if (m.op === "welcome"){ token = m.token; onWelcome(); return; }
+
+  // A push (pairing progress, scan lifecycle) rather than a reply.
+  if (!m.id){ onHostEvent(m.payload || {}); return; }
+
+  const pending = PENDING.get(m.id);
+  if (!pending) return;
+  PENDING.delete(m.id);
+  clearTimeout(pending.timer);
+
+  if (m.ok){
+    pending.resolve(m.result);
+  }else{
+    const err = new Error(m.error || "request failed");
+    err.stale = !!m.stale;
+    pending.reject(err);
+  }
+});
+
+function applyTheme(theme){
+  if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
+  else document.documentElement.removeAttribute("data-theme");  // "system" → follow the OS
+}
+
+/* ===========================================================================
+   State
+   ======================================================================== */
+
+const state = {
+  hosts: [],
+  current: null,     // { address, hostname, paired, currentGame, ... }
+  apps: [],
+  art: new Map(),      // appId -> data URL, so a re-render keeps the covers
+  settings: null,    // { defaults, global, effective, hasOverrides }
+  scope: "global",
+  pairing: false,
+};
+
+const $ = (id) => document.getElementById(id);
+
+/* ===========================================================================
+   Chrome
+   ======================================================================== */
+
+let toastTimer = null;
+function toast(message, isError = false){
+  const el = $("toast");
+  el.textContent = message;
+  el.classList.toggle("error", !!isError);
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), isError ? 5200 : 2600);
+}
+
+function showView(name){
+  document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
+  $("back").style.display = name === "host" ? "" : "none";
+}
+
+function showTab(name){
+  document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  $("tab-apps").style.display = name === "apps" ? "" : "none";
+  $("tab-settings").style.display = name === "settings" ? "" : "none";
+}
+
+/* ===========================================================================
+   Hosts
+   ======================================================================== */
+
+async function loadHosts(){
+  try{
+    state.hosts = await call("hosts");
+  }catch(err){
+    toast(err.message, true);
+    return;
+  }
+  renderHosts();
+}
+
+function renderHosts(){
+  const list = $("host-list");
+  list.textContent = "";
+
+  if (!state.hosts.length){
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No hosts yet. Add one below.";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const host of state.hosts){
+    list.appendChild(hostRow(host));
+  }
+}
+
+function hostRow(host){
+  const row = document.createElement("button");
+  row.className = "host";
+
+  const dot = document.createElement("span");
+  dot.className = `dot ${host.paired ? "paired" : "unpaired"}`;
+
+  const text = document.createElement("span");
+  text.className = "host-text";
+
+  const name = document.createElement("span");
+  name.className = "host-name";
+  name.textContent = host.hostname || host.address;
+
+  const sub = document.createElement("span");
+  sub.className = "host-sub";
+  sub.textContent = host.paired ? host.address : `${host.address} — not paired`;
+
+  text.append(name, sub);
+  row.append(dot, text);
+  row.addEventListener("click", () => openHost(host.address));
+  return row;
+}
+
+async function addHost(){
+  const address = $("address").value.trim();
+  if (!address) return;
+
+  $("add").disabled = true;
+  try{
+    const info = await call("add-host", { address });
+    $("address").value = "";
+    toast(`Found ${info.hostname}`);
+    await loadHosts();
+    openHost(address);
+  }catch(err){
+    toast(err.message, true);
+  }finally{
+    $("add").disabled = false;
+  }
+}
+
+async function scan(){
+  const button = $("scan");
+  const results = $("scan-results");
+  button.disabled = true;
+  button.textContent = "Scanning…";
+  results.textContent = "";
+
+  try{
+    const found = await call("discover", {}, 60000);
+    if (!found.length){
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "Nothing found on this subnet.";
+      results.appendChild(empty);
+    }else{
+      for (const host of found){
+        const row = hostRow({ address: host.address, hostname: host.hostname, paired: false });
+        row.querySelector(".host-sub").textContent = host.known ? `${host.address} — already added` : host.address;
+        row.addEventListener("click", async () => {
+          $("address").value = host.address;
+          await addHost();
+        }, { once: true });
+        results.appendChild(row);
+      }
+    }
+  }catch(err){
+    toast(err.message, true);
+  }finally{
+    button.disabled = false;
+    button.textContent = "Scan this network";
+  }
+}
+
+/* ===========================================================================
+   One host
+   ======================================================================== */
+
+async function openHost(address){
+  showView("host");
+  showTab("apps");
+  $("head-title").textContent = address;
+  $("head-sub").textContent = "Connecting…";
+  setPanels({ pairing: false, prompt: false, apps: false });
+
+  try{
+    state.current = await call("refresh-host", { address });
+  }catch(err){
+    $("head-sub").textContent = "Unreachable";
+    toast(err.message, true);
+    return;
+  }
+
+  $("head-title").textContent = state.current.hostname || address;
+  $("head-sub").textContent = state.current.paired ? "Paired" : "Not paired";
+
+  await loadSettings();
+
+  if (state.current.paired) await loadApps();
+  else setPanels({ pairing: false, prompt: true, apps: false });
+}
+
+function setPanels({ pairing, prompt, apps }){
+  $("pair-panel").style.display = pairing ? "" : "none";
+  $("pair-prompt").style.display = prompt ? "" : "none";
+  $("apps-panel").style.display = apps ? "" : "none";
+}
+
+async function loadApps(){
+  setPanels({ pairing: false, prompt: false, apps: true });
+  const list = $("app-list");
+  list.textContent = "";
+
+  $("running").style.display = state.current.currentGame ? "flex" : "none";
+
+  try{
+    state.apps = await call("apps", { address: state.current.address });
+  }catch(err){
+    toast(err.message, true);
+    return;
+  }
+
+  renderApps();
+  loadArt();
+}
+
+/** Redraw the app grid — cheap, and the running-state overlay depends on it. */
+function renderApps(){
+  const list = $("app-list");
+  if (!list) return;
+  list.textContent = "";
+
+  if (!state.apps.length){
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.style.gridColumn = "1/-1";
+    empty.textContent = "The host published no apps.";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const app of state.apps) list.appendChild(appCard(app));
+}
+
+function appCard(app){
+  const card = document.createElement("button");
+  card.className = "app";
+  card.dataset.appId = app.id;
+
+  let art;
+  const cached = state.art.get(app.id);
+  if (cached){
+    art = document.createElement("img");
+    art.className = "app-art";
+    art.alt = "";
+    art.src = cached;
+  }else{
+    art = document.createElement("div");
+    art.className = "app-art placeholder";
+    art.textContent = "🎮";
+  }
+
+  const name = document.createElement("span");
+  name.className = "app-name";
+  name.textContent = app.title;
+
+  card.append(art, name);
+
+  // Mirrors the real Moonlight client: the app that is currently running on the
+  // host gets Resume and Stop over its artwork instead of being just another
+  // thing to launch — starting it again would kill the session you already have.
+  if (state.current && String(state.current.currentGame) === String(app.id)){
+    card.classList.add("running");
+
+    const dot = document.createElement("span");
+    dot.className = "app-running-dot";
+
+    const overlay = document.createElement("span");
+    overlay.className = "app-overlay";
+
+    const resume = document.createElement("button");
+    resume.className = "primary";
+    resume.textContent = "▶  Resume";
+    resume.addEventListener("click", (e) => { e.stopPropagation(); launch(app, { resume: true }); });
+
+    const stop = document.createElement("button");
+    stop.className = "danger";
+    stop.textContent = "■  Stop";
+    stop.addEventListener("click", (e) => { e.stopPropagation(); quit(); });
+
+    overlay.append(resume, stop);
+    card.append(dot, overlay);
+    // The card itself resumes; the buttons above are the explicit affordance.
+    card.addEventListener("click", () => launch(app, { resume: true }));
+  }else{
+    card.addEventListener("click", () => launch(app));
+  }
+
+  return card;
+}
+
+/**
+ * Box art arrives one request per app over mTLS, so it is fetched after the
+ * grid is already on screen and filled in as it lands — a host with thirty
+ * apps should not show an empty panel while they download.
+ */
+async function loadArt(){
+  for (const app of state.apps){
+    let dataUrl = null;
+    try{
+      dataUrl = await call("app-asset", { address: state.current.address, appId: app.id });
+    }catch(_){ /* no art for this app; the placeholder stands */ }
+    if (!dataUrl) continue;
+    state.art.set(app.id, dataUrl);
+
+    const card = document.querySelector(`.app[data-app-id="${CSS.escape(app.id)}"]`);
+    if (!card) return;   // the view moved on while we were fetching
+
+    if (card.firstChild && card.firstChild.tagName === "IMG") continue;   // already set
+    const img = document.createElement("img");
+    img.className = "app-art";
+    img.alt = "";
+    img.src = dataUrl;
+    card.replaceChild(img, card.firstChild);
+  }
+}
+
+/* ===========================================================================
+   Streaming
+
+   The main process does the protocol and hands us finished H.264 frames over a
+   loopback WebSocket — the one transport a sandboxed file:// document can open
+   for itself. Decoding is WebCodecs, which gives hardware decode (VideoToolbox
+   on Apple silicon) straight to a canvas.
+   ======================================================================== */
+
+const stream = { ws: null, decoder: null, config: null, canvas: null, ctx: null, frames: 0, started: 0, waitingForKey: true, vsync: true, pendingPaint: null };
+
+async function launch(app, { resume = false } = {}){
+  toast(`${resume ? "Resuming" : "Starting"} ${app.title}…`);
+  $("stage-app").textContent = app.title;
+  $("stage-stage").textContent = "Starting…";
+  $("stage-status").classList.remove("hidden");
+  document.body.classList.add("streaming");
+
+  try{
+    const session = await call("launch", {
+      address: state.current.address,
+      appId: app.id,
+      resume,
+    }, 90000);
+
+    state.current.currentGame = app.id;
+    renderApps();
+    await openStream(session);
+  }catch(err){
+    document.body.classList.remove("streaming");
+    toast(err.message, true);
+  }
+}
+
+async function openStream(session){
+  closeStream();
+
+  stream.canvas = $("screen");
+  stream.ctx = stream.canvas.getContext("2d");
+  stream.frames = 0;
+  stream.started = performance.now();
+  stream.waitingForKey = true;
+
+  // Settings that only mean anything on the client side get applied here.
+  //
+  // Note what is deliberately NOT here: entering full screen. Streaming into
+  // the sidebar exists so the terminals stay visible alongside the game, and a
+  // client that takes the whole screen the moment you launch something has
+  // thrown that away. Full screen is a button on the stage bar instead.
+  const applied = session.settings || (state.settings && currentValues()) || {};
+  // With v-sync off, paint as frames arrive instead of waiting for a compositor
+  // tick — lower latency, at the cost of occasional tearing.
+  stream.vsync = applied.vsync !== false;
+
+  const ws = new WebSocket(`ws://127.0.0.1:${session.port}/?token=${session.token}`);
+  ws.binaryType = "arraybuffer";
+  stream.ws = ws;
+
+  ws.onmessage = (e) => {
+    if (typeof e.data === "string"){
+      const msg = JSON.parse(e.data);
+      if (msg.type === "config"){ setupDecoder(msg); setupAudio(msg); }
+      return;
+    }
+    const bytes = new Uint8Array(e.data);
+    // Byte 0 doubles as the stream tag: 2 = audio, 0/1 = video keyframe flag.
+    if (bytes[0] === 2) onEncodedAudio(bytes);
+    else onEncodedFrame(bytes);
+  };
+  ws.onerror = () => toast("Lost the video connection.", true);
+  ws.onclose = () => { if (document.body.classList.contains("streaming")) $("stage-stage").textContent = "Disconnected"; };
+}
+
+/**
+ * Watchdog for a codec the decoder claims to support but cannot actually keep
+ * running. HEVC reports `isConfigSupported: true` in this Chromium build and
+ * then stalls partway through a stream; rather than leave a black panel, notice
+ * that nothing is being decoded and come back on H.264, which is solid.
+ */
+function armCodecWatchdog(){
+  clearTimeout(stream.watchdog);
+  if (!state.settings || currentValues().codec !== 'hevc') return;
+
+  const startedAt = stream.frames;
+  stream.watchdog = setTimeout(async () => {
+    if (!document.body.classList.contains("streaming")) return;
+    if (stream.frames > startedAt + 30) { armCodecWatchdog(); return; }   // healthy
+
+    toast("HEVC stalled — falling back to H.264", true);
+    const appId = state.current && state.current.currentGame;
+    try{
+      await call("save-settings", { address: state.current.address, patch: { codec: "h264" }, scope: "global" });
+      await call("quit", { address: state.current.address }, 30000);
+      closeStream();
+      const app = state.apps.find((a) => a.id === appId) || state.apps[0];
+      if (app) await launch(app);
+    }catch(err){
+      toast(err.message, true);
+    }
+  }, 8000);
+}
+
+function setupDecoder(config){
+  stream.config = config;   // kept so a fatal error can rebuild the decoder
+  if (!("VideoDecoder" in window)){
+    toast("This build has no WebCodecs support.", true);
+    return;
+  }
+
+  stream.canvas.width = config.width;
+  stream.canvas.height = config.height;
+  bindInput();
+  startGamepads();
+  armCodecWatchdog();
+
+  const decoder = new VideoDecoder({
+    output: (frame) => {
+      stream.frames++;
+      if (stream.frames === 1){
+        $("stage-status").classList.add("hidden");
+        toast("Streaming");
+      }
+      // drawImage takes a VideoFrame directly; close it or the pool starves.
+      // With v-sync on, coalesce to one paint per compositor frame so a burst
+      // of decodes cannot queue up work the display will never show.
+      if (stream.vsync){
+        if (stream.pendingPaint) stream.pendingPaint.close();
+        stream.pendingPaint = frame;
+        requestAnimationFrame(() => {
+          const f = stream.pendingPaint;
+          stream.pendingPaint = null;
+          if (!f) return;
+          try { stream.ctx.drawImage(f, 0, 0, stream.canvas.width, stream.canvas.height); }
+          finally { f.close(); }
+        });
+        return;
+      }
+      try { stream.ctx.drawImage(frame, 0, 0, stream.canvas.width, stream.canvas.height); }
+      finally { frame.close(); }
+    },
+    error: (err) => {
+      console.warn("decoder", err.message);
+      // Entering the waiting state without asking for a keyframe is a deadlock:
+      // the host only sends one on request, so the picture would never return.
+      requestKeyframe();
+
+      // WebCodecs treats a decode error as FATAL: the decoder moves to
+      // "closed" and can never be reconfigured. Flagging for the next keyframe
+      // is therefore not enough — every later frame is fed to a dead object and
+      // the picture freezes while the stream behind it stays perfectly healthy.
+      // The only recovery is a brand new decoder plus a fresh keyframe.
+      if (!stream.decoder || stream.decoder.state === "closed"){
+        stream.decoder = null;
+        if (stream.config && document.body.classList.contains("streaming")){
+          setupDecoder(stream.config);
+          sendInput({ type: "idr" });
+        }
+      }
+    },
+  });
+
+  // No `description` means Annex B, which is exactly what the depacketizer emits.
+  decoder.configure({
+    codec: config.codec,
+    codedWidth: config.width,
+    codedHeight: config.height,
+    optimizeForLatency: true,
+  });
+  stream.decoder = decoder;
+}
+
+function onEncodedFrame(bytes){
+  const decoder = stream.decoder;
+  if (!decoder || decoder.state !== "configured") return;
+
+  const keyframe = bytes[0] === 1;
+  const data = bytes.subarray(4);
+
+  // Feeding a delta frame to a decoder that has not seen a keyframe throws.
+  if (stream.waitingForKey){
+    if (!keyframe) return;
+    stream.waitingForKey = false;
+  }
+
+  try{
+    decoder.decode(new EncodedVideoChunk({
+      type: keyframe ? "key" : "delta",
+      timestamp: performance.now() * 1000,
+      data,
+    }));
+  }catch(err){
+    console.warn("decode threw", err.name, err.message);
+    requestKeyframe();
+  }
+}
+
+/** Start waiting for a keyframe, and make sure one is actually coming. */
+function requestKeyframe(){
+  stream.waitingForKey = true;
+  // Rate-limited: a burst of failures should not become a burst of IDRs, each
+  // of which is an expensive full frame from the host.
+  const now = performance.now();
+  if (now - (stream.lastIdrRequest || 0) < 500) return;
+  stream.lastIdrRequest = now;
+  sendInput({ type: "idr" });
+}
+
+/* ---------------------------------------------------------------------------
+   Audio
+
+   Opus frames arrive already depacketized. WebCodecs decodes them and each
+   block is scheduled on a running clock rather than played on arrival — audio
+   is unforgiving about gaps, and "play it when it turns up" produces a click
+   between every packet at 5ms per frame.
+   ------------------------------------------------------------------------ */
+
+const audio = { ctx: null, decoder: null, nextTime: 0, frames: 0, muted: false };
+
+// How far ahead of the clock to schedule. Enough to absorb jitter, small
+// enough that it is not heard as lag against the picture.
+const AUDIO_LEAD_S = 0.06;
+
+function setupAudio(config){
+  if (!("AudioDecoder" in window)) return;
+  closeAudio();
+
+  audio.ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+  audio.nextTime = 0;
+  audio.frames = 0;
+
+  const decoder = new AudioDecoder({
+    output: (data) => {
+      try { playAudio(data); } finally { data.close(); }
+    },
+    error: (err) => {
+      console.warn("audio decoder", err.message);
+      // Same fatal-state rule as video: rebuild rather than keep feeding it.
+      if (!audio.decoder || audio.decoder.state === "closed"){
+        audio.decoder = null;
+        if (document.body.classList.contains("streaming")) setupAudio(config);
+      }
+    },
+  });
+
+  decoder.configure({
+    codec: "opus",
+    sampleRate: 48000,
+    numberOfChannels: config.channels || 2,
+  });
+  audio.decoder = decoder;
+}
+
+function onEncodedAudio(bytes){
+  const decoder = audio.decoder;
+  if (!decoder || decoder.state !== "configured") return;
+
+  const concealed = bytes[1] === 1;
+  if (concealed) return;   // libopus concealment needs the decoder; just skip
+
+  const data = bytes.subarray(4);
+  if (!data.length) return;
+
+  try{
+    decoder.decode(new EncodedAudioChunk({
+      type: "key",                       // every Opus frame stands alone
+      timestamp: audio.frames * 5000,    // 5ms packets, in microseconds
+      data,
+    }));
+    audio.frames++;
+  }catch(_){ /* decoder went away between the check and the call */ }
+}
+
+function playAudio(data){
+  if (!audio.ctx || audio.muted) return;
+
+  const channels = data.numberOfChannels;
+  const frames = data.numberOfFrames;
+  const buffer = audio.ctx.createBuffer(channels, frames, data.sampleRate);
+
+  for (let c = 0; c < channels; c++){
+    const plane = new Float32Array(frames);
+    data.copyTo(plane, { planeIndex: c, format: "f32-planar" });
+    buffer.copyToChannel(plane, c);
+  }
+
+  const source = audio.ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audio.ctx.destination);
+
+  // Keep a running cursor. If we have fallen behind the clock — a stall, or the
+  // tab was backgrounded — jump forward rather than trying to catch up, which
+  // would play a burst of stale audio.
+  const now = audio.ctx.currentTime;
+  if (audio.nextTime < now + 0.005) audio.nextTime = now + AUDIO_LEAD_S;
+  source.start(audio.nextTime);
+  audio.nextTime += buffer.duration;
+}
+
+function closeAudio(){
+  if (audio.decoder){
+    try { if (audio.decoder.state !== "closed") audio.decoder.close(); } catch (_) {}
+    audio.decoder = null;
+  }
+  if (audio.ctx){
+    try { audio.ctx.close(); } catch (_) {}
+    audio.ctx = null;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Gamepad
+
+   The browser exposes pads by polling, not events, so state is sampled each
+   frame and sent only when something actually changed — the host holds the
+   last snapshot, so resending an identical one is pure traffic.
+   ------------------------------------------------------------------------ */
+
+const pad = { raf: null, last: new Map() };
+
+// Standard-mapping button order → the host's flags.
+const PAD_BUTTONS = [
+  0x1000, 0x2000, 0x4000, 0x8000,   // A B X Y
+  0x0100, 0x0200,                   // LB RB
+  0, 0,                             // triggers are axes, not flags
+  0x0020, 0x0010,                   // Back, Play
+  0x0040, 0x0080,                   // LS click, RS click
+  0x0001, 0x0002, 0x0004, 0x0008,   // dpad up down left right
+  0x0400,                           // guide
+];
+
+function pollGamepads(){
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  let activeMask = 0;
+  for (let i = 0; i < pads.length && i < 4; i++) if (pads[i]) activeMask |= (1 << i);
+
+  for (let i = 0; i < pads.length && i < 4; i++){
+    const g = pads[i];
+    if (!g) { pad.last.delete(i); continue; }
+
+    let buttons = 0;
+    g.buttons.forEach((b, idx) => { if (b.pressed && PAD_BUTTONS[idx]) buttons |= PAD_BUTTONS[idx]; });
+
+    const axes = {
+      leftTrigger: Math.round((g.buttons[6] ? g.buttons[6].value : 0) * 255),
+      rightTrigger: Math.round((g.buttons[7] ? g.buttons[7].value : 0) * 255),
+      leftStickX: Math.round((g.axes[0] || 0) * 32767),
+      // Browsers report Y down-positive; the host wants up-positive.
+      leftStickY: Math.round(-(g.axes[1] || 0) * 32767),
+      rightStickX: Math.round((g.axes[2] || 0) * 32767),
+      rightStickY: Math.round(-(g.axes[3] || 0) * 32767),
+    };
+
+    const signature = `${buttons}|${axes.leftTrigger}|${axes.rightTrigger}|${axes.leftStickX}|${axes.leftStickY}|${axes.rightStickX}|${axes.rightStickY}|${activeMask}`;
+    if (pad.last.get(i) === signature) continue;
+    pad.last.set(i, signature);
+
+    sendInput({ type: "gamepad", index: i, buttons, axes, activeMask });
+  }
+
+  pad.raf = requestAnimationFrame(pollGamepads);
+}
+
+function startGamepads(){
+  if (pad.raf) return;
+  pad.raf = requestAnimationFrame(pollGamepads);
+}
+
+function stopGamepads(){
+  if (pad.raf) cancelAnimationFrame(pad.raf);
+  pad.raf = null;
+  pad.last.clear();
+}
+
+/* ---------------------------------------------------------------------------
+   Input
+
+   The host speaks Windows virtual-key codes whatever it actually runs on, so
+   browser `code` values are translated rather than passed through. `code` is
+   used rather than `key` deliberately: it reports the physical key, so WASD
+   stays WASD on a French keyboard and does not become ZQSD.
+   ------------------------------------------------------------------------ */
+
+const VK = {
+  Backspace:0x08, Tab:0x09, Enter:0x0D, Escape:0x1B, Space:0x20,
+  PageUp:0x21, PageDown:0x22, End:0x23, Home:0x24,
+  ArrowLeft:0x25, ArrowUp:0x26, ArrowRight:0x27, ArrowDown:0x28,
+  Insert:0x2D, Delete:0x2E,
+  ShiftLeft:0x10, ShiftRight:0x10, ControlLeft:0x11, ControlRight:0x11,
+  AltLeft:0x12, AltRight:0x12, MetaLeft:0x5B, MetaRight:0x5C,
+  CapsLock:0x14, Pause:0x13, NumLock:0x90, ScrollLock:0x91,
+  Semicolon:0xBA, Equal:0xBB, Comma:0xBC, Minus:0xBD, Period:0xBE, Slash:0xBF,
+  Backquote:0xC0, BracketLeft:0xDB, Backslash:0xDC, BracketRight:0xDD, Quote:0xDE,
+  NumpadMultiply:0x6A, NumpadAdd:0x6B, NumpadSubtract:0x6D,
+  NumpadDecimal:0x6E, NumpadDivide:0x6F, NumpadEnter:0x0D,
+};
+for (let i = 0; i < 26; i++) VK["Key" + String.fromCharCode(65 + i)] = 0x41 + i;
+for (let i = 0; i < 10; i++) VK["Digit" + i] = 0x30 + i;
+for (let i = 0; i < 10; i++) VK["Numpad" + i] = 0x60 + i;
+for (let i = 1; i <= 12; i++) VK["F" + i] = 0x6F + i;
+
+// The chord that hands the cursor back: Cmd+Escape on a Mac, Ctrl+Escape
+// elsewhere.
+//
+// Escape is the right key for this despite also being a key games want, because
+// the browser already treats it as an unconditional way out of pointer lock and
+// no page can override that outside full screen. Since the capture is going to
+// drop on Escape regardless, binding the release to Escape-with-a-modifier
+// costs nothing — whereas an unrelated chord left the two fighting.
+const RELEASE_KEY = "Escape";
+const IS_MAC = navigator.platform.startsWith("Mac");
+const RELEASE_CHORD = IS_MAC ? "⌘Esc" : "Ctrl+Esc";
+
+// Browser button numbers are not the host's button ids.
+const MOUSE_BUTTON = { 0:1, 1:2, 2:3, 3:4, 4:5 };
+
+function modifiersOf(e){
+  return (e.shiftKey ? 0x01 : 0) | (e.ctrlKey ? 0x02 : 0)
+       | (e.altKey ? 0x04 : 0) | (e.metaKey ? 0x08 : 0);
+}
+
+/**
+ * Hand the pointer back without disturbing the session.
+ *
+ * The modifiers held down to type the chord have already been sent to the host
+ * as keydowns; releasing the pointer means we will never see their keyups, so
+ * send those now or the game is left believing Ctrl, Alt and Shift are stuck
+ * down — which in most games means crouched, walking and menu-modified.
+ */
+function releasePointer(){
+  for (const keyCode of [0x11, 0x12, 0x10, 0x51]){   // Ctrl, Alt, Shift, Q
+    sendInput({ type: "keyup", keyCode, modifiers: 0 });
+  }
+  if (document.pointerLockElement) document.exitPointerLock();
+  toast(`Pointer released — click the picture to capture it again`);
+}
+
+function sendInput(event){
+  const ws = stream.ws;
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify(event));
+}
+
+/** Map a point on the canvas to a point in the video, accounting for letterboxing. */
+function toVideoCoords(e){
+  const c = stream.canvas;
+  const rect = c.getBoundingClientRect();
+  const scale = Math.min(rect.width / c.width, rect.height / c.height);
+  const drawnW = c.width * scale;
+  const drawnH = c.height * scale;
+  const offsetX = (rect.width - drawnW) / 2;
+  const offsetY = (rect.height - drawnH) / 2;
+
+  const x = (e.clientX - rect.left - offsetX) / scale;
+  const y = (e.clientY - rect.top - offsetY) / scale;
+  if (x < 0 || y < 0 || x > c.width || y > c.height) return null;   // in the bars
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
+function bindInput(){
+  const c = stream.canvas;
+  if (c.dataset.inputBound) return;
+  c.dataset.inputBound = "1";
+
+  c.addEventListener("mousemove", (e) => {
+    if (!document.body.classList.contains("streaming")) return;
+    if (document.pointerLockElement === c){
+      // Captured: the host wants deltas and moves its own cursor.
+      sendInput({ type: "mousemove", dx: e.movementX, dy: e.movementY });
+    }else{
+      const p = toVideoCoords(e);
+      if (p) sendInput({ type: "mouseposition", x: p.x, y: p.y });
+    }
+  });
+
+  c.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    // Capture on click only when the user asked for it in settings.
+    if (state.settings && currentValues().mouseCapture && document.pointerLockElement !== c){
+      c.requestPointerLock().catch(() => { /* denied; absolute mode still works */ });
+    }
+    sendInput({ type: "mousedown", button: MOUSE_BUTTON[e.button] || 1 });
+  });
+  c.addEventListener("mouseup", (e) => {
+    e.preventDefault();
+    sendInput({ type: "mouseup", button: MOUSE_BUTTON[e.button] || 1 });
+  });
+
+  // Right-click belongs to the game, not to a context menu.
+  c.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  // Keep the on-screen hint honest about whether the pointer is captured, and
+  // try to keep Escape for the game while it is.
+  document.addEventListener("pointerlockchange", () => {
+    const hint = document.getElementById("stage-hint");
+    const locked = !!document.pointerLockElement;
+    if (hint) hint.textContent = locked ? `${RELEASE_CHORD} to release the pointer` : "";
+
+    // The browser treats Escape as an unconditional way out of pointer lock and
+    // a page cannot override that — which is a problem when Escape is also the
+    // pause button of whatever is being streamed. Keyboard Lock is the one
+    // sanctioned exception, but it only applies in full screen, so in the
+    // sidebar Escape still drops the capture and the game has to be re-clicked.
+    if (!navigator.keyboard || !navigator.keyboard.lock) return;
+    if (locked && document.fullscreenElement){
+      navigator.keyboard.lock(["Escape"]).catch(() => { /* not permitted here */ });
+    }else{
+      try { navigator.keyboard.unlock(); } catch (_) { /* not supported */ }
+    }
+  });
+
+  c.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    sendInput({ type: "scroll", dy: -Math.sign(e.deltaY) * 120, dx: Math.sign(e.deltaX) * 120 });
+  }, { passive: false });
+
+  // Keys are taken at the document level: the canvas cannot hold focus while
+  // the pointer is locked, and a game expects keys either way.
+  const onKey = (down) => (e) => {
+    if (!document.body.classList.contains("streaming")) return;
+
+    // Cmd+Escape (Ctrl+Escape off a Mac) releases the pointer without touching
+    // the session — the stream keeps running, you just get the cursor back for
+    // the terminals.
+    //
+    // PLAIN Escape is still forwarded to the host: games lean on it for menus
+    // and pausing, and swallowing it made the stream feel broken.
+    if (down && e.code === RELEASE_KEY && (IS_MAC ? e.metaKey : e.ctrlKey)){
+      e.preventDefault();
+      releasePointer();
+      return;
+    }
+
+    const keyCode = VK[e.code];
+    if (!keyCode) return;
+    e.preventDefault();
+    sendInput({ type: down ? "keydown" : "keyup", keyCode, modifiers: modifiersOf(e) });
+  };
+  document.addEventListener("keydown", onKey(true));
+  document.addEventListener("keyup", onKey(false));
+}
+
+function closeStream(){
+  clearTimeout(stream.watchdog);
+  if (document.pointerLockElement) document.exitPointerLock();
+  stopGamepads();
+  closeAudio();
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  if (stream.pendingPaint){ try { stream.pendingPaint.close(); } catch (_) {} stream.pendingPaint = null; }
+  if (stream.ws){ try { stream.ws.close(); } catch (_) {} stream.ws = null; }
+  if (stream.decoder){
+    try { if (stream.decoder.state !== "closed") stream.decoder.close(); } catch (_) {}
+    stream.decoder = null;
+  }
+}
+
+async function quit(){
+  try{
+    closeStream();
+    document.body.classList.remove("streaming");
+    await call("quit", { address: state.current.address }, 30000);
+    state.current.currentGame = null;
+    $("running").style.display = "none";
+    renderApps();
+    toast("Session stopped");
+  }catch(err){
+    toast(err.message, true);
+  }
+}
+
+/* ===========================================================================
+   Pairing
+   ======================================================================== */
+
+async function startPair(){
+  setPanels({ pairing: true, prompt: false, apps: false });
+  $("pin").textContent = "····";
+  $("pair-stage").innerHTML = '<span class="spin"></span>';
+  state.pairing = true;
+
+  try{
+    const { pin } = await call("pair", { address: state.current.address }, PAIR_TIMEOUT_MS);
+    $("pin").textContent = pin;
+    $("pair-stage").textContent = "Waiting for the host…";
+  }catch(err){
+    state.pairing = false;
+    setPanels({ pairing: false, prompt: true, apps: false });
+    toast(err.message, true);
+  }
+}
+
+async function cancelPair(){
+  state.pairing = false;
+  try{ await call("pair-cancel", { address: state.current.address }); }catch(_){ /* nothing pending */ }
+  setPanels({ pairing: false, prompt: true, apps: false });
+}
+
+/** Pushes from main: pairing progress and completion. */
+function onHostEvent(payload){
+  if (!state.current || payload.address !== state.current.address) return;
+
+  if (payload.event === "pair-progress" && state.pairing){
+    $("pair-stage").textContent = payload.stage;
+    return;
+  }
+
+  if (payload.event === "pair-done"){
+    state.pairing = false;
+    if (payload.ok){
+      toast("Paired");
+      $("head-sub").textContent = "Paired";
+      state.current.paired = true;
+      loadHosts();
+      loadApps();
+    }else{
+      setPanels({ pairing: false, prompt: true, apps: false });
+      toast(payload.error || "Pairing failed", true);
+    }
+  }
+}
+
+async function unpair(){
+  try{
+    await call("unpair", { address: state.current.address });
+    state.current.paired = false;
+    $("head-sub").textContent = "Not paired";
+    setPanels({ pairing: false, prompt: true, apps: false });
+    showTab("apps");
+    loadHosts();
+    toast("Unpaired");
+  }catch(err){
+    toast(err.message, true);
+  }
+}
+
+async function forget(){
+  try{
+    await call("remove-host", { address: state.current.address });
+    await loadHosts();
+    showView("hosts");
+    $("head-title").textContent = "Moonlight";
+    $("head-sub").textContent = "Stream from your PC";
+  }catch(err){
+    toast(err.message, true);
+  }
+}
+
+/* ===========================================================================
+   Settings
+   ======================================================================== */
+
+async function loadSettings(){
+  try{
+    state.settings = await call("settings", { address: state.current.address });
+  }catch(err){
+    toast(err.message, true);
+    return;
+  }
+  // Land on whichever scope the host is actually using, so opening the tab
+  // shows the numbers that would apply rather than a hidden override.
+  state.scope = state.settings.hasOverrides ? "host" : "global";
+  $("scope").value = state.scope;
+  fillSettings();
+}
+
+function currentValues(){
+  return state.scope === "host" ? state.settings.effective : state.settings.global;
+}
+
+function fillSettings(){
+  const s = currentValues();
+
+  const preset = `${s.width}x${s.height}`;
+  const known = [...$("resolution").options].some((o) => o.value === preset);
+  $("resolution").value = known ? preset : "custom";
+  $("custom-res").style.display = known ? "none" : "flex";
+  $("width").value = s.width;
+  $("height").value = s.height;
+
+  $("fps").value = String(s.fps);
+  $("bitrate").value = Math.round(s.bitrateKbps / 1000);
+  $("codec").value = s.codec;
+  $("audio").value = s.audio;
+
+  for (const flag of ["hdr","vsync","fullscreen","mouseCapture","playAudioOnHost","optimizeGameSettings"]){
+    $(flag).checked = !!s[flag];
+  }
+}
+
+/**
+ * A resolution shaped like the panel it will be shown in.
+ *
+ * The sidebar is tall and narrow, so any 16:9 mode letterboxes away most of it.
+ * Matching the panel's own aspect means the host renders exactly what fits.
+ * Dimensions are rounded to multiples of 16: hardware encoders work in
+ * macroblocks and quietly round up, which would reintroduce the mismatch.
+ */
+function panelResolution(){
+  // The canvas's own container, not #stage — #stage also contains the control
+  // bar, and including that height skews the aspect enough to reintroduce a
+  // letterbox at the top and bottom.
+  const box = (stream.canvas && stream.canvas.parentElement) || document.getElementById("stage");
+  const rect = box.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+
+  // While nothing is streaming the stage is display:none, so it and its control
+  // bar both measure zero and this falls back to the document box — which is
+  // taller than the picture area will be by the height of that bar. Reveal the
+  // layout just long enough to measure it; without this the computed mode is
+  // too tall and letterboxes the very thing the option exists to avoid.
+  let boxWidth = rect.width;
+  let boxHeight = rect.height;
+  if (!boxWidth || !boxHeight){
+    const wasStreaming = document.body.classList.contains("streaming");
+    if (!wasStreaming) document.body.classList.add("streaming");
+    const bar = document.querySelector(".stage-bar");
+    const barHeight = bar ? bar.getBoundingClientRect().height : 0;
+    if (!wasStreaming) document.body.classList.remove("streaming");
+
+    boxWidth = document.documentElement.clientWidth;
+    boxHeight = document.documentElement.clientHeight - barHeight;
+  }
+
+  const w = Math.max(320, Math.round(boxWidth * dpr));
+  const h = Math.max(240, Math.round(boxHeight * dpr));
+
+  const round16 = (v) => Math.max(16, Math.round(v / 16) * 16);
+  return { width: round16(Math.min(w, 3840)), height: round16(Math.min(h, 2160)) };
+}
+
+function readSettings(){
+  const preset = $("resolution").value;
+  let width, height;
+  if (preset === "custom"){
+    width = parseInt($("width").value, 10);
+    height = parseInt($("height").value, 10);
+  }else if (preset === "fit"){
+    ({ width, height } = panelResolution());
+  }else{
+    [width, height] = preset.split("x").map(Number);
+  }
+
+  return {
+    width, height,
+    fps: parseInt($("fps").value, 10),
+    bitrateKbps: Math.round(parseFloat($("bitrate").value) * 1000),
+    codec: $("codec").value,
+    audio: $("audio").value,
+    hdr: $("hdr").checked,
+    vsync: $("vsync").checked,
+    fullscreen: $("fullscreen").checked,
+    mouseCapture: $("mouseCapture").checked,
+    playAudioOnHost: $("playAudioOnHost").checked,
+    optimizeGameSettings: $("optimizeGameSettings").checked,
+  };
+}
+
+async function saveSettings(){
+  // Until the store has answered, the form is showing whatever each <select>
+  // happened to list first — saving that would silently overwrite real
+  // settings with 1280x720/30fps.
+  if (!state.settings){
+    toast("Settings have not loaded yet.", true);
+    return;
+  }
+
+  const patch = readSettings();
+  if (!patch.width || !patch.height){
+    toast("Enter a width and a height.", true);
+    return;
+  }
+
+  try{
+    state.settings = await call("save-settings", {
+      address: state.current.address,
+      patch,
+      scope: state.scope,
+    });
+    fillSettings();
+    toast(state.scope === "host" ? "Saved for this host" : "Saved for all hosts");
+  }catch(err){
+    toast(err.message, true);
+  }
+}
+
+async function resetSettings(){
+  try{
+    state.settings = await call("reset-settings", {
+      address: state.current.address,
+      scope: state.scope,
+    });
+    fillSettings();
+    toast(state.scope === "host" ? "Overrides cleared" : "Defaults restored");
+  }catch(err){
+    toast(err.message, true);
+  }
+}
+
+/* ===========================================================================
+   Wiring
+   ======================================================================== */
+
+function bind(){
+  const captureHint = $("capture-hint");
+  if (captureHint) captureHint.textContent = `— ${RELEASE_CHORD} to release`;
+
+  $("add").addEventListener("click", addHost);
+  $("address").addEventListener("keydown", (e) => { if (e.key === "Enter") addHost(); });
+  $("scan").addEventListener("click", scan);
+
+  $("back").addEventListener("click", () => {
+    showView("hosts");
+    $("head-title").textContent = "Moonlight";
+    $("head-sub").textContent = "Stream from your PC";
+    loadHosts();
+  });
+
+  $("refresh").addEventListener("click", () => {
+    if (state.current && $("view-host").classList.contains("active")) openHost(state.current.address);
+    else loadHosts();
+  });
+
+  document.querySelectorAll(".tabs button").forEach((b) => {
+    b.addEventListener("click", () => showTab(b.dataset.tab));
+  });
+
+  $("pair-start").addEventListener("click", startPair);
+  $("pair-cancel").addEventListener("click", cancelPair);
+  $("quit").addEventListener("click", quit);
+  $("stage-stop").addEventListener("click", quit);
+  $("stage-fullscreen").addEventListener("click", () => {
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    else document.documentElement.requestFullscreen?.().catch(() => toast("Full screen was refused.", true));
+  });
+  $("unpair").addEventListener("click", unpair);
+  $("forget").addEventListener("click", forget);
+
+  $("scope").addEventListener("change", () => {
+    state.scope = $("scope").value;
+    fillSettings();
+  });
+  $("resolution").addEventListener("change", () => {
+    const preset = $("resolution").value;
+    $("custom-res").style.display = preset === "custom" ? "flex" : "none";
+    const hint = $("fit-hint");
+    if (preset === "fit"){
+      const r = panelResolution();
+      hint.textContent = `Currently ${r.width} × ${r.height} — recalculated each time you save.`;
+      hint.style.display = "";
+    }else{
+      hint.style.display = "none";
+    }
+  });
+  $("save").addEventListener("click", saveSettings);
+  $("reset").addEventListener("click", resetSettings);
+}
+
+/* Thumbnail frames get the poster and nothing else — no bridge, no requests.
+   GamesManager marks them with ?thumb=<mtime>; the stage gets ?v=<mtime>. */
+if (new URLSearchParams(location.search).has("thumb")){
+  document.body.classList.add("thumb");
+}else{
+  bind();
+  loadHosts();
+}
+</script>
+</body>
+</html>

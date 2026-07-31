@@ -39,6 +39,32 @@ const BUILT_IN = {
     builtIn: true,
 };
 
+// Moonlight is a card like any other, but unlike a game in `games/` it is half
+// main-process code (src/main/moonlight/), so it is tracked source and lives at
+// the app root next to Vibe Blast rather than in the gitignored library.
+const MOONLIGHT = {
+    id: 'moonlight.html',
+    url: 'moonlight.html',
+    title: 'Moonlight',
+    description: 'Stream games from your PC.',
+    mtime: 0,
+    builtIn: true,
+};
+
+// Same deal as Moonlight: half of the Browser card is main-process and renderer
+// code (src/main/browser-game.js, src/features/BrowserBridge.js), so the card
+// itself is tracked source at the app root rather than a file in games/.
+const BROWSER = {
+    id: 'browser.html',
+    url: 'browser.html',
+    title: 'Browser',
+    description: 'Doomscroll without leaving the app.',
+    mtime: 0,
+    builtIn: true,
+};
+
+const BUILT_INS = [BUILT_IN, MOONLIGHT, BROWSER];
+
 class GamesManager {
     constructor(eventBus, appStateStore, ipcHandler, vibeBlastManager) {
         this.eventBus = eventBus;
@@ -46,7 +72,7 @@ class GamesManager {
         this.ipc = ipcHandler;
         this.vibe = vibeBlastManager;
 
-        this.games = [BUILT_IN];
+        this.games = BUILT_INS.slice();
         this.activeId = BUILT_IN.id;
         this.cards = new Map();
         this.emptyEl = null;
@@ -197,9 +223,13 @@ class GamesManager {
     }
 
     applyList(discovered) {
-        // Vibe Blast is always first and always present — it is the main game
-        // and it is the only one that ships with the app.
-        this.games = [BUILT_IN, ...discovered.filter((g) => g && g.url && g.url !== BUILT_IN.url)];
+        // The built-ins always lead the rail and are always present — they ship
+        // with the app, so an empty games/ still has something to open.
+        const builtInUrls = new Set(BUILT_INS.map((g) => g.url));
+        this.games = [
+            ...BUILT_INS,
+            ...discovered.filter((g) => g && g.url && !builtInUrls.has(g.url)),
+        ];
         this.render();
     }
 
@@ -265,7 +295,7 @@ class GamesManager {
     }
 
     updateEmptyState() {
-        const show = this.games.length === 1;
+        const show = this.games.length === BUILT_INS.length;
         if (show && !this.emptyEl) {
             this.emptyEl = document.createElement('div');
             this.emptyEl.className = 'games-rail-empty';
@@ -278,8 +308,17 @@ class GamesManager {
         }
     }
 
+    /**
+     * The marker is ALWAYS present, even at mtime 0.
+     *
+     * A card whose thumbnail URL is byte-identical to its stage URL cannot tell
+     * the two apart, and a game that behaves differently in miniature — the
+     * Moonlight card renders a poster rather than running its live UI — would
+     * run for real inside the rail. Built-ins are exactly that case, since they
+     * carry no mtime.
+     */
     thumbUrl(game) {
-        return game.mtime ? `${game.url}?thumb=${game.mtime}` : game.url;
+        return `${game.url}?thumb=${game.mtime || 0}`;
     }
 
     buildCard(game) {
@@ -374,7 +413,12 @@ class GamesManager {
     updateFocusHint() {
         if (!this.hint) return;
         const frame = this.vibe && this.vibe.frame;
-        const focused = !!frame && document.activeElement === frame;
+        const active = document.activeElement;
+        // The Browser card's page is a <webview> in the APP's document rather
+        // than in the stage frame (see BrowserBridge), so while you are
+        // scrolling a feed the stage iframe is legitimately not the focused
+        // element — nudging you to click would be wrong.
+        const focused = !!frame && (active === frame || (active && active.tagName === 'WEBVIEW'));
         this.hint.style.display = focused ? 'none' : '';
     }
 
