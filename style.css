@@ -5012,6 +5012,15 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     will-change: transform;
 }
 
+/* While the window is actively being resized, --vibe-shift changes every
+   frame. The slide transition is driven by that same value, so leaving it on
+   would make the panel chase the window edge half a second behind. Suppressed
+   for the duration of the drag, then restored. */
+.sidebar.vibe-resizing > .vibe-panel,
+.sidebar.vibe-resizing > *:not(.vibe-panel):not(.resize-handle) {
+    transition: none;
+}
+
 .sidebar.vibe-open > *:not(.vibe-panel):not(.resize-handle) {
     transform: translateY(calc(-1 * var(--vibe-shift, 100%)));
 }
