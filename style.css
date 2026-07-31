@@ -5218,9 +5218,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .scratchpad-editor .cm-md-task {
-    display: inline-flex;
-    align-items: center;
-    vertical-align: middle;
+    /* Plain inline, so the box aligns itself against the text baseline via the
+       length offset below. An inline-flex wrapper would interpose its own
+       baseline and the box would sit slightly high on every line. */
+    display: inline;
     margin-right: 0.35em;
 }
 
@@ -5234,7 +5235,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     /* em, not px, so the box stays proportional to the text size above. */
     width: 0.95em;
     height: 0.95em;
-    flex: 0 0 auto;
+    /* Drop the box below the baseline by half its overhang above the x-height,
+       which optically centres it against the lowercase letters beside it. */
+    vertical-align: -0.2em;
     margin: 0;
     border: 0.07em solid var(--border-secondary);
     border-radius: 0.18em;
