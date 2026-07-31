@@ -43,6 +43,19 @@ the Vibe Blast board.
   iframe holds focus. The frame takes `tabindex=0` and is focused on panel open, on
   card select, and on any click on the stage; a "click to play" pill appears whenever
   focus has drifted, so keypresses are never silently swallowed.
+- *The panel tracks the window.* Its geometry lives in two custom properties
+  (`--vibe-shift`, `--vibe-top`) that must hold PIXELS — the panel and its siblings
+  move by the same distance, and a percentage transform would resolve against each
+  element's own height and shear them apart. Pixels don't self-update, though, so
+  the values were written once at open time and went stale on the first window
+  resize: the panel kept its old height and stopped sitting on the sidebar's bottom
+  edge, leaving the games flap floating short of it. A ResizeObserver on the sidebar
+  (plus a scroll listener for `--vibe-top`) now re-syncs them, and a `vibe-resizing`
+  class suppresses the 520ms slide during a drag — that transition is driven by the
+  very value being changed, so leaving it on made the panel chase the window edge
+  half a second behind. Closing resets the memo of what was last written, or
+  reopening at an unchanged size would hit the no-change guard and never re-set the
+  properties at all.
 - *The rail reconciles, it does not rebuild.* Selecting a game used to re-run a full
   `replaceChildren()` render, which destroyed and recreated every thumbnail iframe —
   so one click made the whole shelf drop to its placeholder and re-render, a visible

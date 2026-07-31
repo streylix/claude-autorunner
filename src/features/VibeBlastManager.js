@@ -72,6 +72,19 @@ class VibeBlastManager {
 
         window.addEventListener('message', (e) => this.handleGameMessage(e));
 
+        // The panel's geometry is written as PIXELS (see syncMetrics), so it
+        // goes stale the moment the window is resized — the panel would keep
+        // its old height and stop sitting on the bottom of the sidebar. Track
+        // the sidebar's box instead of measuring once at open time.
+        if (typeof ResizeObserver !== 'undefined') {
+            this.sizeObserver = new ResizeObserver(() => this.syncMetrics());
+            this.sizeObserver.observe(this.sidebar);
+        } else {
+            window.addEventListener('resize', () => this.syncMetrics());
+        }
+        // --vibe-top follows the sidebar's scroll position for the same reason.
+        this.sidebar.addEventListener('scroll', () => this.syncMetrics());
+
         // The app's theme lives on <html data-theme>; mirror every change into
         // the game so it can never sit in light mode inside a dark app.
         this.themeObserver = new MutationObserver(() => this.postTheme());
@@ -146,6 +159,44 @@ class VibeBlastManager {
         }
     }
 
+    // ---------- geometry ----------
+
+    /**
+     * Push the sidebar's current height and scroll offset into the two custom
+     * properties the slide is built on.
+     *
+     * These have to be pixel values: the panel and its siblings move by the
+     * SAME distance, and a percentage transform would resolve against each
+     * element's own height and shear them apart mid-flight. The cost of pixels
+     * is that they don't self-update, which is what this method is for.
+     *
+     * @param {boolean} immediate - skip the transition suppression (used by
+     *        open(), where the slide animation is the whole point).
+     */
+    syncMetrics({ immediate = false } = {}) {
+        if (!this.isOpen || !this.sidebar) return;
+
+        const shift = this.sidebar.clientHeight;
+        const top = this.sidebar.scrollTop;
+        if (shift === this.lastShift && top === this.lastTop) return;
+        this.lastShift = shift;
+        this.lastTop = top;
+
+        if (!immediate) {
+            // A live resize must not animate: the transform is driven by the
+            // value being changed, so leaving the 520ms slide on would make the
+            // panel lag the window edge on every frame of a drag.
+            this.sidebar.classList.add('vibe-resizing');
+            clearTimeout(this.resizeSettleTimer);
+            this.resizeSettleTimer = setTimeout(() => {
+                this.sidebar.classList.remove('vibe-resizing');
+            }, 120);
+        }
+
+        this.sidebar.style.setProperty('--vibe-shift', `${shift}px`);
+        this.sidebar.style.setProperty('--vibe-top', `${top}px`);
+    }
+
     // ---------- the slide ----------
 
     open() {
@@ -158,8 +209,7 @@ class VibeBlastManager {
         // Both halves of the push move by this exact pixel amount; --vibe-top
         // keeps the panel on the visible strip if the sidebar happens to be
         // scrolled when the game opens.
-        this.sidebar.style.setProperty('--vibe-shift', `${this.sidebar.clientHeight}px`);
-        this.sidebar.style.setProperty('--vibe-top', `${this.sidebar.scrollTop}px`);
+        this.syncMetrics({ immediate: true });
 
         this.panel.removeAttribute('inert');
         this.sidebar.classList.add('vibe-active');
@@ -189,8 +239,14 @@ class VibeBlastManager {
         this.closeTimer = setTimeout(() => {
             if (this.isOpen) return;
             this.sidebar.classList.remove('vibe-active');
+            this.sidebar.classList.remove('vibe-resizing');
             this.sidebar.style.removeProperty('--vibe-shift');
             this.sidebar.style.removeProperty('--vibe-top');
+            // The properties are gone, so the memo of what was last written
+            // has to go too — otherwise reopening at an unchanged size would
+            // hit syncMetrics' no-change guard and never re-set them.
+            this.lastShift = null;
+            this.lastTop = null;
         }, SLIDE_MS + 40);
     }
 
