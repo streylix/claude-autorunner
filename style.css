@@ -5357,8 +5357,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     text-transform: uppercase;
 }
 
-/* Collapsed shelf: the rail folds away and the stage takes the space, but the
-   flap stays put so it can be pulled back open. */
+/* Collapsed shelf: everything folds away — rail, label, chevron, folder button —
+   leaving ONLY the grip as a pull-tab. The whole bottom bar reduces to a few
+   pixels so the stage gets essentially the entire panel. */
 .games-shelf.collapsed .games-rail {
     max-height: 0;
     opacity: 0;
@@ -5368,7 +5369,32 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .games-shelf.collapsed {
-    padding-bottom: 2px;
+    padding: 0;
+}
+
+.games-shelf.collapsed .games-shelf-head {
+    padding: 0;
+    gap: 0;
+}
+
+.games-shelf.collapsed .games-shelf-title,
+.games-shelf.collapsed .games-flap-chevron,
+.games-shelf.collapsed .games-folder-btn {
+    display: none;
+}
+
+/* The grip becomes the entire control: a centred tab spanning the bar. */
+.games-shelf.collapsed .games-flap {
+    justify-content: center;
+    padding: 5px 0 6px;
+}
+
+.games-shelf.collapsed .games-flap-grip {
+    width: 34px;
+}
+
+.games-shelf.collapsed .games-flap:hover .games-flap-grip {
+    width: 46px;
 }
 
 @media (prefers-reduced-motion: reduce) {

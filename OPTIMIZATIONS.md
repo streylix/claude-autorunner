@@ -672,8 +672,10 @@ the Vibe Blast board.
   iframe holds focus. The frame takes `tabindex=0` and is focused on panel open, on
   card select, and on any click on the stage; a "click to play" pill appears whenever
   focus has drifted, so keypresses are never silently swallowed.
-- *The shelf collapses.* A grip-bar flap across the shelf head folds the rail away
-  and hands the space to the stage, so a game can run full-height. It reuses the
+- *The shelf collapses to nothing but its flap.* Collapsing folds away the rail AND
+  the label, chevron and folder button, leaving only a centred grip tab — the whole
+  bottom bar goes from 178px to 15px, so the stage gets essentially the entire panel
+  and a game can run full-height. It reuses the
   right sidebar's existing convention — a `collapsed` class and a
   `panelCollapsed:games` localStorage key — but is handled in GamesManager rather
   than by renderer.js's generic `.collapse-toggle[data-collapse-target]` sweep, so
@@ -694,7 +696,8 @@ single-key hotkeys stay inert; `git check-ignore` confirms games are ignored and
 `git ls-files games/` returns only `.gitignore`. Measured uniform 152x86 tiles with
 single-line ellipsis on long titles and descriptions; screenshotted dark and light.
 A second 10/10 pass covers the flap: it collapses the rail to zero height, the stage
-grows into the freed space (622px -> 754px), the flap stays visible while collapsed,
+grows into the freed space (622px -> 785px), the collapsed bar measures 15px against
+an expanded 178px with the label gone and only the grip left, the flap stays usable,
 `aria-expanded` flips, the choice persists to localStorage, and a COLLAPSED shelf is
 still collapsed after a full app restart with the cards intact once reopened.
 
