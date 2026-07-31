@@ -672,6 +672,16 @@ the Vibe Blast board.
   iframe holds focus. The frame takes `tabindex=0` and is focused on panel open, on
   card select, and on any click on the stage; a "click to play" pill appears whenever
   focus has drifted, so keypresses are never silently swallowed.
+- *The rail reconciles, it does not rebuild.* Selecting a game used to re-run a full
+  `replaceChildren()` render, which destroyed and recreated every thumbnail iframe —
+  so one click made the whole shelf drop to its placeholder and re-render, a visible
+  flash. Cards are now keyed by game id and reused; a card's iframe is re-pointed
+  only when that game's mtime actually moves; and order is expressed with the flex
+  `order` property rather than by moving nodes, because relocating an iframe in the
+  DOM reloads it. Selection now touches nothing but a CSS class. The placeholder
+  behind a thumbnail is also just a plain surface now — the coloured gradient and
+  the initial letter are gone, since anything decorative there reads as a flash of
+  the wrong card.
 - *Manual rescan.* A refresh button beside the folder icon calls a `games:refresh`
   IPC that re-runs the scan AND re-arms the watchers, then reports the new count to
   the action log. The watcher normally makes this unnecessary, but `fs.watch` does
