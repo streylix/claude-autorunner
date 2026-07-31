@@ -739,6 +739,66 @@ still collapsed after a full app restart with the cards intact once reopened.
 `games/.gitignore` (new), `main.js`, `index.html`, `style.css`, `renderer.js`,
 `src/features/VibeBlastManager.js`, `vibe-blast.html`.
 ---
+## 2026-07-31 — Startup: 5.9s → 1.6s perceived; artificial delays and dead boot work removed (branch `perf-startup`)
+
+**Problem (measured).** Instrumented cold starts (3 runs, isolated profile, 3
+terminals + manager) put the loading overlay's disappearance at 5.9–6.1s and
+renderer DOMContentLoaded at ~4.0s. Almost none of that was real work:
+
+- The loading overlay added fixed theatrical delays — 300ms per progress step,
+  800ms in `finish()` — after initialization had already completed.
+- `StateManager.initialize()` synchronously read `localStorage.getItem('unifiedState')`
+  on the boot path. That key is only ever written by the manual cmd+s save
+  shortcut, so the read restored NOTHING — but the renderer's FIRST localStorage
+  access synchronously initializes Chromium's whole storage area, which measured
+  0.2–0.45s on a warm profile and multiple seconds on a fresh one.
+- After removing that read, the storage-init cost just moved to the NEXT
+  boot-path localStorage reader (TimerManager's constructor, then
+  RemoteConnectionUI's recents render). The cost lands on whoever touches
+  localStorage first.
+- `createTray()` ran before `createWindow()`, spending ~60–80ms loading the tray
+  icon before first paint.
+- Each visible terminal loaded its WebGL addon synchronously during session
+  restore (10–85ms per terminal, GPU-state dependent).
+- `NotificationManager._renderItem` ran a whole-document `lucide.createIcons()`
+  per notification row — 100 full-document scans while loading history at boot.
+- `AppStateStore.setState` deep-cloned the ENTIRE app state on every call "for
+  history" — and never read the clone. setState runs on every PTY output chunk
+  and keystroke.
+
+**Fix.**
+
+- *`src/ui/loading-manager.js`*: `completeStep` advances immediately and
+  `finish()` hides immediately — the overlay now tracks real work. The renderer
+  ties the final step to `restoreTerminalsAndQueue()` actually resolving.
+- *`src/state/StateManager.js`*: the dead `unifiedState` restore is deleted
+  outright (deferring was rejected: restoring a months-old manual cmd+s snapshot
+  at boot would be wrong even if it were fast).
+- *Boot-path localStorage policy*: no synchronous localStorage access before the
+  overlay is down. All three legitimate readers now restore on a new
+  `app:boot:complete` event emitted right after the overlay hides: TimerManager
+  display values, the sidebar panel collapse state, and the remote-connection
+  recents list (invisible inside the closed command bar anyway; re-rendered on
+  open). Plain `requestIdleCallback` was tried first and rejected — "idle"
+  arrives during the restore chain's IPC await gaps, re-inserting the stall.
+- *`main.js`*: window before tray.
+- *`renderer.js`*: the WebGL addon attaches in an idle slot after first paint;
+  terminals open on the DOM renderer and upgrade transparently (skipped if the
+  terminal closed meanwhile).
+- *`src/features/NotificationManager.js`*: `lucide.createIcons({ root })` scoped
+  to the affected row/button.
+- *`src/state/AppStateStore.js`*: the never-read `deepClone(this.state)` in
+  `setState` is gone (per-chunk allocation, measured ~28µs per call at current
+  state size — pure waste).
+
+**Measured result (same probe, 3 runs before/after).** Loading overlay down:
+5.88–6.06s → **1.33–1.95s**. Renderer DOMContentLoaded: ~4.03s → **0.44–0.50s**.
+Terminals restored: ~4.6–5.0s → **1.27–1.55s**. First paint unchanged (~0.5s).
+
+- Files: `src/ui/loading-manager.js`, `src/state/StateManager.js`,
+  `src/state/AppStateStore.js`, `src/features/TimerManager.js`,
+  `src/features/RemoteConnectionUI.js`, `src/features/NotificationManager.js`,
+  `renderer.js`, `main.js`.
 
 ## 2026-07-15 — Voice STOP-WORD INTERRUPT: saying "no …" (or "wait …") cuts off the manager's current turn and takes over (branch `ssh-view`)
 

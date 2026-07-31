@@ -93,37 +93,31 @@ class LoadingManager {
         const stepIndex = this.steps.findIndex(step => step.id === stepId);
         if (stepIndex === -1) return;
         
-        // Mark current step as completed
+        // Mark current step as completed and advance immediately. The modal
+        // tracks real initialization work; it must never outlive it. (This used
+        // to wait 300ms per step "for visual feedback", which held the finished
+        // app behind the overlay for over a second.)
         this.updateProgress(stepId, message);
-        
-        // Add small delay before moving to next step for visual feedback
-        setTimeout(() => {
-            if (stepIndex < this.totalSteps - 1) {
-                // Move to next step
-                this.updateProgress(this.steps[stepIndex + 1].id);
-            } else {
-                // All steps completed
-                this.finish();
-            }
-        }, 300);
+        if (stepIndex < this.totalSteps - 1) {
+            this.updateProgress(this.steps[stepIndex + 1].id);
+        } else {
+            this.finish();
+        }
     }
-    
+
     finish() {
         // Update to 100% and show completion message
         if (this.progressBar) {
             this.progressBar.style.width = '100%';
         }
-        
+
         if (this.progressText) {
             this.progressText.textContent = 'Loading complete!';
         }
-        
-        // All steps completed
-        
-        // Hide the modal after a brief delay
-        setTimeout(() => {
-            this.hide();
-        }, 800);
+
+        // Hide as soon as the work is done — the CSS fade in hide() is the
+        // only remaining transition. (Previously an extra 800ms fixed delay.)
+        this.hide();
     }
     
     // Error handling

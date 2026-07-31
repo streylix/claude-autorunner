@@ -42,7 +42,13 @@ class TimerManager {
         this.microwaveMode = false;
         
         this.setupEventSubscriptions();
-        this.loadTimerState();
+        // Persisted display values are restored on 'app:boot:complete' (see
+        // setupEventSubscriptions), NOT here: this getItem is the renderer's
+        // first localStorage access, and the first touch synchronously
+        // initializes the whole storage area (measured 0.2-0.45s on a warm
+        // profile, seconds on a fresh one) — far too expensive for the boot
+        // critical path. loadTimerState only restores display values (never a
+        // running timer), so nothing observes the state before it runs.
     }
     
     /**
@@ -570,6 +576,11 @@ class TimerManager {
      * Setup event subscriptions
      */
     setupEventSubscriptions() {
+        // Deferred storage restore — fired by the renderer once boot work is
+        // done and the loading overlay is down (keeps the first localStorage
+        // access off the startup critical path).
+        this.eventBus.on('app:boot:complete', () => this.loadTimerState());
+
         // Timer control events
         this.eventBus.on('timer:toggle', () => this.toggleTimer());
         this.eventBus.on('timer:start', () => this.startTimer());

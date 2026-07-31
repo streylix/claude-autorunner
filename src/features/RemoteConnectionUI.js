@@ -143,7 +143,12 @@ class RemoteConnectionUI {
         this.ipc.on('remote-client-status', (event, status) => this.onStatusPush(status));
 
         this.renderIdle();
-        this.renderRecents();
+        // renderRecents() is NOT called here: it reads localStorage, and the
+        // renderer's first localStorage access synchronously initializes the
+        // whole storage area (hundreds of ms) — too expensive for the boot
+        // path. The renderer calls it after boot completes; the recents list
+        // lives inside the hidden command bar anyway, and showCommandBar()
+        // re-renders it on open.
         console.log('🔌 RemoteConnectionUI initialized');
     }
 
@@ -279,8 +284,9 @@ class RemoteConnectionUI {
     }
 
     renderRecents() {
-        const list = this.loadRecents();
         const box = this.el.recents;
+        if (!box) return; // markup missing — initialize() bailed
+        const list = this.loadRecents();
         box.textContent = '';
         if (list.length === 0) {
             box.classList.add('hidden');

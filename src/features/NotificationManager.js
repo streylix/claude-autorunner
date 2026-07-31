@@ -667,7 +667,9 @@ class NotificationManager {
         if (icon) icon.setAttribute('data-lucide', this.muted ? 'volume-x' : 'volume-2');
         const label = btn.querySelector('.mute-toggle-label');
         if (label) label.textContent = this.muted ? 'Muted' : 'Sound on';
-        if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
+        if (window.lucide && window.lucide.createIcons) {
+            window.lucide.createIcons({ nameAttr: 'data-lucide', root: btn });
+        }
     }
 
     /** User-driven mute change: apply AND persist to preferences. */
@@ -797,7 +799,11 @@ class NotificationManager {
         else if (prepend) list.appendChild(row);
         else list.appendChild(row);
 
-        if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
+        // Scope the icon render to this row — a bare createIcons() rescans the
+        // whole document, and loadHistory() renders up to 100 rows at boot.
+        if (window.lucide && window.lucide.createIcons) {
+            window.lucide.createIcons({ nameAttr: 'data-lucide', root: row });
+        }
         if (this.searchTerm) this._applySearch();
     }
 

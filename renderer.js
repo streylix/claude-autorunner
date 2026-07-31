@@ -916,19 +916,33 @@ class TerminalGUI {
             if (terminalId === this.activeTerminalId) this.updateStatusBar(terminalId);
         });
 
-        // Collapsible right-sidebar panels (Status, Timer) with persistence
-        document.querySelectorAll('.collapse-toggle[data-collapse-target]').forEach((btn) => {
-            const section = btn.closest('.collapsible-section');
-            if (!section) return;
-            const key = `panelCollapsed:${btn.dataset.collapseTarget}`;
-            if (localStorage.getItem(key) === '1') {
-                section.classList.add('collapsed');
-            }
-            btn.addEventListener('click', () => {
-                const collapsed = section.classList.toggle('collapsed');
-                localStorage.setItem(key, collapsed ? '1' : '0');
+        // Collapsible right-sidebar panels (Status, Timer) with persistence.
+        // Toggle handlers bind immediately; the persisted collapsed-state READ
+        // is deferred to an idle slot because a boot-path localStorage access
+        // pays the storage-area initialization cost synchronously (see
+        // TimerManager.loadTimerState for the same reasoning). The loading
+        // overlay still covers the sidebar when the deferred restore applies,
+        // so there is no visible flash.
+        {
+            const buttons = Array.from(document.querySelectorAll('.collapse-toggle[data-collapse-target]'));
+            buttons.forEach((btn) => {
+                const section = btn.closest('.collapsible-section');
+                if (!section) return;
+                const key = `panelCollapsed:${btn.dataset.collapseTarget}`;
+                btn.addEventListener('click', () => {
+                    const collapsed = section.classList.toggle('collapsed');
+                    localStorage.setItem(key, collapsed ? '1' : '0');
+                });
             });
-        });
+            const restoreCollapsed = () => buttons.forEach((btn) => {
+                const section = btn.closest('.collapsible-section');
+                if (!section) return;
+                if (localStorage.getItem(`panelCollapsed:${btn.dataset.collapseTarget}`) === '1') {
+                    section.classList.add('collapsed');
+                }
+            });
+            this.eventBus.on('app:boot:complete', restoreCollapsed);
+        }
 
         // Settings button
         const settingsBtn = document.getElementById('settings-btn');
@@ -1987,19 +2001,32 @@ class TerminalGUI {
         // contexts for nothing and can throw. On context loss (GPU sleep/wake,
         // too many contexts) dispose the addon so xterm reverts to DOM rendering
         // instead of going blank.
-        let webglAddon = null;
+        // Deferred out of the synchronous create path: a WebGL context costs
+        // 10-85ms to create (seconds when the GPU process is contended), and
+        // paying it per terminal inside the restore loop was a measurable
+        // chunk of startup. The terminal opens on the DOM renderer and
+        // upgrades to WebGL after boot completes. NOT requestIdleCallback
+        // during boot: "idle" arrives inside the restore chain's IPC await
+        // gaps, so a contended context creation would land right back on the
+        // startup path (measured as a bimodal ~3s tail).
         if (!options.hidden && !options.noWebgl) {
-            try {
-                webglAddon = new WebglAddon();
-                webglAddon.onContextLoss(() => {
-                    webglAddon.dispose();
-                    webglAddon = null;
-                });
-                terminal.loadAddon(webglAddon);
-            } catch (err) {
-                console.warn(`WebGL renderer unavailable for terminal ${terminalId}, using DOM renderer:`, err && err.message);
-                webglAddon = null;
-            }
+            const attachWebgl = () => {
+                const data = this.terminals.get(terminalId);
+                if (!data || data.terminal !== terminal) return; // closed/replaced meanwhile
+                if (data.webglAddon) return; // already upgraded
+                try {
+                    const webglAddon = new WebglAddon();
+                    webglAddon.onContextLoss(() => {
+                        webglAddon.dispose();
+                        data.webglAddon = null;
+                    });
+                    terminal.loadAddon(webglAddon);
+                    data.webglAddon = webglAddon;
+                } catch (err) {
+                    console.warn(`WebGL renderer unavailable for terminal ${terminalId}, using DOM renderer:`, err && err.message);
+                }
+            };
+            this._scheduleAfterBoot(attachWebgl);
         }
 
         if (options.hidden || options.mountTarget) {
@@ -2054,7 +2081,7 @@ class TerminalGUI {
             terminal,
             fitAddon,
             searchAddon,
-            webglAddon,
+            webglAddon: null, // attached in an idle slot by attachWebgl above
             container
         };
         
@@ -3061,10 +3088,31 @@ class TerminalGUI {
         }
     }
 
+    /**
+     * Run `fn` once boot is done (the loading overlay is down). During boot
+     * this waits for 'app:boot:complete' — NOT requestIdleCallback, whose
+     * "idle" slots occur inside the boot chain's IPC await gaps and would put
+     * deferred work right back on the startup path. After boot, an idle slot
+     * is fine (e.g. a terminal created by the user mid-session).
+     */
+    _scheduleAfterBoot(fn) {
+        if (this._bootComplete) {
+            if (typeof requestIdleCallback === 'function') {
+                requestIdleCallback(() => fn(), { timeout: 2000 });
+            } else {
+                setTimeout(fn, 100);
+            }
+            return;
+        }
+        this.eventBus.on('app:boot:complete', () => fn());
+    }
+
     finalizeInitialization() {
         // Restore last session's terminals (metadata) + queued messages from the
-        // store; falls back to one fresh terminal on first run.
-        this.restoreTerminalsAndQueue();
+        // store; falls back to one fresh terminal on first run. The loading
+        // overlay comes down when this actually finishes (see below), not on a
+        // fixed schedule.
+        const restored = this.restoreTerminalsAndQueue();
 
         // Load + wire the settings modal (sounds, chunk size, theme). Async;
         // self-sequences (loads persisted values, inits sound, relayouts).
@@ -3093,15 +3141,31 @@ class TerminalGUI {
         // Boot the manager instance if the user configured a directory for it
         this.managerInstance.startIfConfigured();
 
-        // Hide loading screen
-        if (this.loadingManager) {
-            this.loadingManager.completeStep('finalization');
-        } else {
-            const loadingModal = document.getElementById('loading-modal');
-            if (loadingModal) {
-                loadingModal.style.display = 'none';
+        // Hide the loading screen once the terminals + queue restore has
+        // actually completed (success or failure) — not before, and with no
+        // artificial delay after.
+        const hideLoading = () => {
+            if (this.loadingManager) {
+                this.loadingManager.completeStep('finalization');
+            } else {
+                const loadingModal = document.getElementById('loading-modal');
+                if (loadingModal) {
+                    loadingModal.style.display = 'none';
+                }
             }
-        }
+            // Boot is done and the overlay is coming down: NOW run the storage
+            // restores that were deliberately kept off the startup critical
+            // path (the renderer's first localStorage access synchronously
+            // initializes the storage area — hundreds of ms). Consumers:
+            // TimerManager display values, sidebar collapse state, remote
+            // recents. setTimeout(0) lets the overlay's fade start first.
+            setTimeout(() => {
+                this._bootComplete = true;
+                this.eventBus.emit('app:boot:complete');
+                if (this.remoteConnectionUI) this.remoteConnectionUI.renderRecents();
+            }, 0);
+        };
+        Promise.resolve(restored).then(hideLoading, hideLoading);
         
         // Expose for debugging
         window.terminalGUI = this;

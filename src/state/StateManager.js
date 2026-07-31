@@ -27,10 +27,14 @@ class StateManager {
         
         // Setup cross-store synchronization
         this.setupSynchronization();
-        
-        // Restore persisted state
-        await this.restoreState();
-        
+
+        // NOTE: this used to `await this.restoreState()` — a synchronous
+        // localStorage read of 'unifiedState' on the boot critical path. That
+        // key is only ever written by the manual cmd+s saveState shortcut, so
+        // in practice the read returned nothing and cost 0.2-3.3s (first
+        // localStorage access initializes the whole storage area). Removed;
+        // real persistence lives in the unified store, restored elsewhere.
+
         this.initialized = true;
         this.eventBus.emit('state:initialized');
     }
@@ -248,32 +252,6 @@ class StateManager {
             return true;
         } catch (error) {
             console.error('Failed to persist state:', error);
-            return false;
-        }
-    }
-    
-    /**
-     * Restore state from storage
-     */
-    async restoreState() {
-        try {
-            const saved = localStorage.getItem('unifiedState');
-            if (!saved) return false;
-            
-            const state = JSON.parse(saved);
-            
-            // Restore each store
-            for (const [name, storeState] of Object.entries(state)) {
-                const store = this.stores.get(name);
-                if (store && store.reset) {
-                    store.reset(storeState);
-                }
-            }
-            
-            this.eventBus.emit('state:restored');
-            return true;
-        } catch (error) {
-            console.error('Failed to restore state:', error);
             return false;
         }
     }

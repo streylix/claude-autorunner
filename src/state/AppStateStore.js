@@ -147,9 +147,10 @@ class AppStateStore {
             }
         }
         
-        // Store previous state for history
-        const previousState = this.deepClone(this.state);
-        
+        // (A full deepClone of the entire state used to be taken here "for
+        // history" but was never read — and setState runs on every PTY output
+        // chunk and keystroke, so it was pure per-chunk allocation. Removed.)
+
         // Apply state change
         const keys = path.split('.');
         const lastKey = keys.pop();

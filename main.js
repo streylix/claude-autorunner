@@ -920,8 +920,6 @@ app.whenReady().then(async () => {
     hookServer = null;
   }
 
-  createTray();
-
   // Log which code this process is running, and drop V8's compiled-code cache
   // before the window loads. The cache clear is belt-and-braces: Electron keys
   // the code cache on script identity and normally recompiles edited files on
@@ -940,7 +938,11 @@ app.whenReady().then(async () => {
     try { console.error('[Main] Cache clear failed (continuing):', error); } catch (e) { /* ignore */ }
   }
 
+  // Window first: tray creation loads the icon synchronously (~60-80ms) and
+  // used to run before createWindow(), delaying first paint for a UI element
+  // nobody can see yet.
   createWindow();
+  createTray();
 
   // Set dock icon (macOS specific)
   if (process.platform === 'darwin') {
