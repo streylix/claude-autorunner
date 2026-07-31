@@ -5431,3 +5431,173 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     visibility: hidden;
     pointer-events: none;
 }
+
+/* ============================================================
+   Scratchpad — live-preview markdown editor (left sidebar tab)
+   ============================================================
+   Everything here is expressed in the palette tokens from
+   COLOR_PALETTE.md, so the light theme ([data-theme="light"] swaps the
+   same variables) needs no overrides of its own. The only hardcoded
+   values are alpha washes layered ON TOP of a token, which read
+   correctly against both a dark and a light background.
+*/
+.scratchpad-view {
+    background-color: var(--bg-primary);
+}
+
+.scratchpad-editor {
+    flex: 1;
+    /* min-height:0 lets the editor actually shrink inside the flex column
+       instead of overflowing the sidebar. */
+    min-height: 0;
+    overflow: auto;
+    cursor: text;
+}
+
+.scratchpad-error {
+    padding: 16px;
+    color: var(--text-tertiary);
+    font-size: 12px;
+}
+
+/* ---- CodeMirror shell ---- */
+.scratchpad-editor .cm-editor {
+    height: 100%;
+    background-color: transparent;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.scratchpad-editor .cm-editor.cm-focused {
+    /* CodeMirror's default focus ring fights the sidebar chrome. */
+    outline: none;
+}
+
+.scratchpad-editor .cm-scroller {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.65;
+    padding: 14px 16px 40px;
+}
+
+.scratchpad-editor .cm-content {
+    caret-color: var(--accent-primary);
+    padding: 0;
+}
+
+.scratchpad-editor .cm-line {
+    padding: 0;
+}
+
+.scratchpad-editor .cm-cursor {
+    border-left-color: var(--accent-primary);
+}
+
+.scratchpad-editor .cm-selectionBackground,
+.scratchpad-editor .cm-content ::selection {
+    background-color: var(--terminal-selection);
+}
+
+.scratchpad-editor .cm-placeholder {
+    color: var(--text-quaternary);
+}
+
+/* ---- Inline formatting ---- */
+.scratchpad-editor .cm-md-bold { font-weight: 700; color: var(--text-primary); }
+.scratchpad-editor .cm-md-italic { font-style: italic; }
+.scratchpad-editor .cm-md-strike { text-decoration: line-through; color: var(--text-tertiary); }
+
+.scratchpad-editor .cm-md-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background-color: var(--bg-quaternary);
+    color: var(--accent-magenta);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.92em;
+}
+
+.scratchpad-editor .cm-md-linktext {
+    color: var(--accent-primary);
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* ---- Headings ---- */
+.scratchpad-editor .cm-md-h1 { font-size: 1.7em; font-weight: 700; line-height: 1.3; }
+.scratchpad-editor .cm-md-h2 { font-size: 1.45em; font-weight: 700; line-height: 1.35; }
+.scratchpad-editor .cm-md-h3 { font-size: 1.25em; font-weight: 600; }
+.scratchpad-editor .cm-md-h4 { font-size: 1.1em; font-weight: 600; }
+.scratchpad-editor .cm-md-h5 { font-size: 1em; font-weight: 600; }
+.scratchpad-editor .cm-md-h6 { font-size: 0.95em; font-weight: 600; color: var(--text-secondary); }
+
+/* ---- Blockquote ---- */
+.scratchpad-editor .cm-md-quote {
+    border-left: 3px solid var(--accent-purple);
+    padding-left: 0.85em;
+    color: var(--text-secondary);
+}
+
+/* ---- Fenced code ---- */
+.scratchpad-editor .cm-md-fenced {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background-color: var(--bg-secondary);
+    font-size: 0.92em;
+}
+
+/* The ``` fence rows themselves. Collapsed rather than emptied: a plain
+   replace would leave two blank rows sitting inside the code block. The
+   rule only applies while the caret is outside the block, so the fences
+   are always reachable for editing. */
+.scratchpad-editor .cm-md-fence-line {
+    display: none;
+}
+
+/* ---- Lists ---- */
+.scratchpad-editor .cm-md-bullet {
+    color: var(--text-tertiary);
+}
+
+.scratchpad-editor .cm-md-task {
+    display: inline-flex;
+    align-items: center;
+    vertical-align: text-bottom;
+    margin-right: 0.4em;
+}
+
+.scratchpad-editor .cm-md-task-box {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    border: 1.5px solid var(--border-secondary);
+    border-radius: 3px;
+    background-color: var(--bg-tertiary);
+    cursor: pointer;
+    position: relative;
+}
+
+.scratchpad-editor .cm-md-task-box:checked {
+    background-color: var(--accent-success);
+    border-color: var(--accent-success);
+}
+
+.scratchpad-editor .cm-md-task-box:checked::after {
+    content: '';
+    position: absolute;
+    left: 3.5px;
+    top: 0.5px;
+    width: 3px;
+    height: 7px;
+    border: solid var(--bg-primary);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+
+/* ---- Horizontal rule ---- */
+.scratchpad-editor .cm-md-rule {
+    display: inline-block;
+    width: 100%;
+    height: 1px;
+    vertical-align: middle;
+    background-color: var(--border-secondary);
+}
