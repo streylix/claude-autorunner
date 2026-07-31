@@ -5089,3 +5089,217 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         transition-duration: 1ms;
     }
 }
+
+/* ============================================================
+   Games shelf — the Hulu-style rail under the game stage
+   ============================================================
+   Vibe Blast is no longer "the easter egg", it is the first card in a
+   library. Everything else in the rail is discovered from games/ at
+   runtime, so this styling has to work for a list of one or of twenty.
+*/
+.games-shelf {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border-primary);
+    background: var(--bg-secondary);
+    padding: 8px 0 10px;
+}
+
+.games-shelf-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px 7px;
+}
+
+.games-shelf-title {
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+
+.games-folder-btn {
+    background: none;
+    border: none;
+    padding: 2px;
+    color: var(--text-quaternary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    border-radius: 4px;
+    transition: color 0.15s, background-color 0.15s;
+}
+
+.games-folder-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-quaternary);
+}
+
+.games-folder-btn i {
+    width: 14px;
+    height: 14px;
+}
+
+/* The rail itself. Horizontal scroll with snap, so flicking through the
+   library lands on a card rather than between two. */
+.games-rail {
+    display: flex;
+    gap: 10px;
+    padding: 2px 12px 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x proximity;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-secondary) transparent;
+}
+
+.games-rail::-webkit-scrollbar {
+    height: 6px;
+}
+
+.games-rail::-webkit-scrollbar-thumb {
+    background: var(--border-secondary);
+    border-radius: 99px;
+}
+
+.games-rail::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.game-card {
+    flex: 0 0 auto;
+    /* Fixed width is what makes the names ellipsise instead of stretching the
+       rail — every card is the same landscape tile regardless of its title. */
+    width: 152px;
+    scroll-snap-align: start;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+}
+
+/* The cover box: a fixed 16:9 tile. Everything inside is clipped to it, so a
+   game that renders at any size still occupies exactly this footprint. */
+.game-card-art {
+    position: relative;
+    width: 152px;
+    height: 86px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: linear-gradient(
+        145deg,
+        hsl(var(--game-hue, 210) 62% 62%),
+        hsl(calc(var(--game-hue, 210) + 34) 58% 48%)
+    );
+    /* Keep the gradient out from under the transparent border, or it shows
+       through as a coloured ring around every rendered thumbnail. */
+    background-clip: padding-box;
+    border: 1px solid transparent;
+    transition: transform 0.16s ease, border-color 0.16s ease;
+}
+
+/* Sits under the render. Visible until (and if) the render paints. */
+.game-card-fallback {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--bg-primary);
+}
+
+/* The live render of the game's own HTML. Laid out at 4x the tile and scaled
+   down, so the game sees a realistic viewport and we get a zoomed-out view of
+   it rather than a cropped top-left corner. */
+.game-card-shot {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 608px;
+    height: 344px;
+    border: 0;
+    transform: scale(0.25);
+    transform-origin: top left;
+    /* Clicks belong to the card button, not the game inside the thumbnail. */
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    background: var(--bg-primary);
+}
+
+.game-card-art.has-shot .game-card-shot {
+    opacity: 1;
+}
+
+.game-card:hover .game-card-art {
+    transform: translateY(-2px);
+}
+
+.game-card.active .game-card-art {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 1px var(--accent-primary);
+}
+
+.game-card-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+
+.game-card.active .game-card-name {
+    color: var(--text-primary);
+}
+
+.game-card-sub {
+    font-size: 9px;
+    color: var(--text-quaternary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+
+.game-card:focus-visible .game-card-art {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+}
+
+.games-rail-empty {
+    flex: 1 1 auto;
+    align-self: center;
+    font-size: 10px;
+    line-height: 1.5;
+    color: var(--text-quaternary);
+    padding: 4px 2px;
+}
+
+/* Focus nudge over the stage. Games bind WASD/arrows, and those keys only
+   reach the game while the iframe holds focus — so say so when it doesn't,
+   rather than letting keypresses vanish. */
+.games-focus-hint {
+    position: absolute;
+    left: 50%;
+    bottom: 10px;
+    transform: translateX(-50%);
+    z-index: 2;
+    pointer-events: none;
+    padding: 4px 10px;
+    border-radius: 99px;
+    background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
+    border: 1px solid var(--border-primary);
+    color: var(--text-tertiary);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}

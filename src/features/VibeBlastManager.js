@@ -171,7 +171,9 @@ class VibeBlastManager {
         this.postTheme();
         this.postStatus();
         if (this.eventBus) {
-            this.eventBus.emit('log:action', { message: 'Vibe Blast opened', type: 'info' });
+            this.eventBus.emit('log:action', { message: 'Games panel opened', type: 'info' });
+            // GamesManager hands keyboard control to the game on this.
+            this.eventBus.emit('games:panel-opened', {});
         }
     }
 
@@ -181,6 +183,7 @@ class VibeBlastManager {
 
         this.panel.setAttribute('inert', '');
         this.sidebar.classList.remove('vibe-open');
+        if (this.eventBus) this.eventBus.emit('games:panel-closed', {});
 
         clearTimeout(this.closeTimer);
         this.closeTimer = setTimeout(() => {
@@ -196,16 +199,38 @@ class VibeBlastManager {
     ensureFrame() {
         if (this.frame) return;
         this.frame = document.createElement('iframe');
-        this.frame.title = 'Vibe Blast';
+        this.frame.title = this.currentGameTitle || 'Vibe Blast';
         this.frame.setAttribute('allow', 'autoplay');
+        // tabindex makes the frame itself focusable, which is what lets the
+        // games rail hand keyboard control (WASD / arrows) to the game.
+        this.frame.setAttribute('tabindex', '0');
         // The theme has to land before the board paints, so push it as soon as
         // the document exists rather than waiting for the next app-side change.
         this.frame.addEventListener('load', () => {
             this.postTheme();
             this.postStatus();
         });
-        this.frame.src = 'vibe-blast.html';
+        this.frame.src = this.currentGameSrc || 'vibe-blast.html';
         this.stage.appendChild(this.frame);
+    }
+
+    /**
+     * Point the stage at a game. Called by GamesManager, which owns which game
+     * is selected; this manager only owns the frame and the storage bridge.
+     *
+     * `force` re-navigates even when the URL is unchanged, which is how a
+     * hot-reload of the currently-playing game happens (the URL carries the
+     * file's mtime, so in practice it changes anyway).
+     */
+    loadGame(src, { force = false } = {}) {
+        this.currentGameSrc = src;
+        if (!this.frame) {
+            // Not opened yet — ensureFrame() will pick up currentGameSrc.
+            return;
+        }
+        const current = this.frame.getAttribute('src');
+        if (!force && current === src) return;
+        this.frame.setAttribute('src', src);
     }
 
     // ---------- the storage bridge ----------
