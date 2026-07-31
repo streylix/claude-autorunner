@@ -48,6 +48,8 @@ class GamesManager {
 
         this.games = [BUILT_IN];
         this.activeId = BUILT_IN.id;
+        this.cards = new Map();
+        this.emptyEl = null;
         this.focusPollTimer = null;
     }
 
@@ -201,92 +203,136 @@ class GamesManager {
         this.render();
     }
 
+    /**
+     * Reconcile the rail against `this.games`.
+     *
+     * Deliberately NOT a rebuild. Tearing the rail down and recreating it
+     * destroyed every thumbnail iframe, so merely SELECTING a game made all the
+     * other cards drop back to their placeholder and re-render — a visible
+     * flash across the whole shelf on every click. So:
+     *
+     *  - cards are keyed by game id and reused,
+     *  - a card's iframe is only re-pointed when that game's mtime moved,
+     *  - order is expressed with the flex `order` property instead of moving
+     *    nodes, because relocating an iframe in the DOM reloads it.
+     *
+     * The result is that selection touches nothing but a CSS class.
+     */
     render() {
-        this.rail.replaceChildren();
+        const seen = new Set();
 
-        for (const game of this.games) {
-            const card = document.createElement('button');
-            card.type = 'button';
-            card.className = 'game-card' + (game.id === this.activeId ? ' active' : '');
-            card.dataset.gameId = game.id;
-            card.title = game.description || game.title;
+        this.games.forEach((game, index) => {
+            seen.add(game.id);
+            let entry = this.cards.get(game.id);
 
-            const art = this.buildArt(game);
+            if (!entry) {
+                entry = this.buildCard(game);
+                this.cards.set(game.id, entry);
+                this.rail.appendChild(entry.card);
+            } else {
+                if (entry.title !== game.title) {
+                    entry.name.textContent = game.title;
+                    entry.title = game.title;
+                }
+                const sub = game.builtIn ? 'Built in' : (game.description || 'Game');
+                if (entry.sub.textContent !== sub) entry.sub.textContent = sub;
+                // Only a genuine file change re-points the thumbnail.
+                if (entry.mtime !== game.mtime) {
+                    entry.mtime = game.mtime;
+                    entry.art.classList.remove('has-shot');
+                    entry.shot.src = this.thumbUrl(game);
+                }
+            }
 
-            const name = document.createElement('span');
-            name.className = 'game-card-name';
-            name.textContent = game.title;
+            entry.card.style.order = String(index);
+        });
 
-            const sub = document.createElement('span');
-            sub.className = 'game-card-sub';
-            sub.textContent = game.builtIn ? 'Built in' : (game.description || 'Game');
-
-            card.append(art, name, sub);
-            card.addEventListener('click', () => this.select(game.id));
-            this.rail.appendChild(card);
+        for (const [id, entry] of this.cards) {
+            if (seen.has(id)) continue;
+            entry.card.remove();
+            this.cards.delete(id);
         }
 
-        if (this.games.length === 1) {
-            const empty = document.createElement('div');
-            empty.className = 'games-rail-empty';
-            empty.textContent = 'Drop an .html file in games/';
-            this.rail.appendChild(empty);
+        this.updateActive();
+        this.updateEmptyState();
+    }
+
+    /** Selection is a class toggle and nothing else — no DOM is rebuilt. */
+    updateActive() {
+        for (const [id, entry] of this.cards) {
+            entry.card.classList.toggle('active', id === this.activeId);
         }
     }
 
-    /**
-     * The card's cover box. The thumbnail IS the game — a live render of the
-     * same HTML, scaled down inside a fixed landscape box, so there is no cover
-     * -art convention for game authors to follow and an edited game's thumbnail
-     * updates itself (the mtime in the URL changes with the file).
-     *
-     * Underneath the render sits a coloured initial. It is not a second code
-     * path — it is simply what remains visible when the render doesn't produce
-     * anything (a game that paints nothing until you press start, a file that
-     * failed to parse), so the box is never empty and never changes size.
-     */
-    buildArt(game) {
+    updateEmptyState() {
+        const show = this.games.length === 1;
+        if (show && !this.emptyEl) {
+            this.emptyEl = document.createElement('div');
+            this.emptyEl.className = 'games-rail-empty';
+            this.emptyEl.textContent = 'Drop an .html file in games/';
+            this.emptyEl.style.order = '9999';
+            this.rail.appendChild(this.emptyEl);
+        } else if (!show && this.emptyEl) {
+            this.emptyEl.remove();
+            this.emptyEl = null;
+        }
+    }
+
+    thumbUrl(game) {
+        return game.mtime ? `${game.url}?thumb=${game.mtime}` : game.url;
+    }
+
+    buildCard(game) {
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'game-card';
+        card.dataset.gameId = game.id;
+        card.title = game.description || game.title;
+
         const art = document.createElement('span');
         art.className = 'game-card-art';
-        art.style.setProperty('--game-hue', String(this.hueFor(game.title)));
 
-        const fallback = document.createElement('span');
-        fallback.className = 'game-card-fallback';
-        fallback.textContent = game.title.slice(0, 1).toUpperCase();
-        art.appendChild(fallback);
-
+        // The thumbnail IS the game: a live render of the same HTML, scaled
+        // down. No cover-art convention for authors to follow, and an edited
+        // game re-thumbnails itself because its mtime is in the URL.
+        //
+        // Behind it is a plain surface — no colour, no lettering. It shows only
+        // in the moment before a render paints, and anything decorative there
+        // reads as a flash of the "wrong" card.
         const shot = document.createElement('iframe');
         shot.className = 'game-card-shot';
         shot.setAttribute('tabindex', '-1');
         shot.setAttribute('aria-hidden', 'true');
         shot.setAttribute('scrolling', 'no');
         shot.setAttribute('loading', 'lazy');
-        shot.src = game.mtime ? `${game.url}?thumb=${game.mtime}` : game.url;
-        // Only reveal the render once it has actually painted; until then the
-        // coloured initial is what the user sees, so no card ever flashes white.
         shot.addEventListener('load', () => {
             art.classList.add('has-shot');
             // Thumbnails are separate documents from the stage, so they never
-            // saw the host's theme push and would sit in light mode inside a
-            // dark app. Same message the stage frame gets.
+            // saw the host's theme push and would sit in light mode in a dark
+            // app. Same message the stage frame gets.
             try {
                 shot.contentWindow.postMessage({
                     source: 'vibe-blast-host',
                     op: 'theme',
                     theme: document.documentElement.getAttribute('data-theme') || 'system',
                 }, '*');
-            } catch (_) { /* frame went away; the card just keeps its own colours */ }
+            } catch (_) { /* frame went away; the card keeps its plain surface */ }
         });
+        shot.src = this.thumbUrl(game);
         art.appendChild(shot);
 
-        return art;
-    }
+        const name = document.createElement('span');
+        name.className = 'game-card-name';
+        name.textContent = game.title;
 
-    /** Stable 0-359 hue from the title, so a game keeps its colour across restarts. */
-    hueFor(text) {
-        let h = 0;
-        for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) % 360;
-        return h;
+        const sub = document.createElement('span');
+        sub.className = 'game-card-sub';
+        sub.textContent = game.builtIn ? 'Built in' : (game.description || 'Game');
+
+        card.append(art, name, sub);
+        card.addEventListener('click', () => this.select(game.id));
+
+        return { card, art, shot, name, sub, title: game.title, mtime: game.mtime };
     }
 
     select(id) {
@@ -294,7 +340,7 @@ class GamesManager {
         if (!game) return;
         const changed = this.activeId !== id;
         this.activeId = id;
-        this.render();
+        this.updateActive();
         this.load(game, { force: changed });
         if (changed) {
             this.eventBus?.emit('log:action', { message: `Playing ${game.title}`, type: 'info' });

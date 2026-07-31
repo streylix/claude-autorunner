@@ -5254,35 +5254,23 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 /* The cover box: a fixed 16:9 tile. Everything inside is clipped to it, so a
-   game that renders at any size still occupies exactly this footprint. */
+   game that renders at any size still occupies exactly this footprint.
+
+   The surface behind the render is a plain app colour — no gradient, no
+   lettering. It is visible only in the instant before a thumbnail paints, and
+   anything decorative there reads as a flash of the "wrong" card. */
 .game-card-art {
     position: relative;
     width: 152px;
     height: 86px;
     border-radius: 6px;
     overflow: hidden;
-    background: linear-gradient(
-        145deg,
-        hsl(var(--game-hue, 210) 62% 62%),
-        hsl(calc(var(--game-hue, 210) + 34) 58% 48%)
-    );
-    /* Keep the gradient out from under the transparent border, or it shows
-       through as a coloured ring around every rendered thumbnail. */
+    background: var(--bg-tertiary);
+    /* Keep the fill out from under the transparent border, or it shows through
+       as a ring around every rendered thumbnail. */
     background-clip: padding-box;
     border: 1px solid transparent;
     transition: transform 0.16s ease, border-color 0.16s ease;
-}
-
-/* Sits under the render. Visible until (and if) the render paints. */
-.game-card-fallback {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 26px;
-    font-weight: 700;
-    color: var(--bg-primary);
 }
 
 /* The live render of the game's own HTML. Laid out at 4x the tile and scaled
