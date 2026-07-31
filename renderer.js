@@ -30,6 +30,7 @@ const WakeWordManager = require('./src/features/WakeWordManager');
 const RemoteMicSink = require('./src/features/RemoteMicSink');
 const DiscordLinkKeyManager = require('./src/features/DiscordLinkKeyManager');
 const RemoteConnectionUI = require('./src/features/RemoteConnectionUI');
+const VibeBlastManager = require('./src/features/VibeBlastManager');
 const UIFocusManager = require('./src/ui/UIFocusManager');
 
 // Import utilities
@@ -162,6 +163,10 @@ class TerminalGUI {
         // Left sidebar: action log feed + view navigation
         this.actionLogManager = new ActionLogManager(this.eventBus, this.appStateStore);
         this.actionLogManager.initialize();
+
+        // Right sidebar: hold Send on an empty box for three seconds.
+        this.vibeBlastManager = new VibeBlastManager(this.eventBus, this.appStateStore);
+        this.vibeBlastManager.initialize();
 
         // Hidden manager Claude instance (terminal 999) - steers the interface
         this.managerInstance = new ManagerInstance(this.eventBus, this.appStateStore, this.ipcHandler, this);

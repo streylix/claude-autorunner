@@ -4965,3 +4965,127 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     color: var(--text-tertiary);
     font-style: italic;
 }
+
+/* ============================================================
+   Vibe Blast — the hold-to-Send easter egg
+   ============================================================
+   The reveal reads as one continuous vertical push: every existing sidebar
+   child slides up by the sidebar's own height while the game rides in from
+   below. Both halves move by the SAME pixel amount (--vibe-shift, set from
+   JS) rather than by percentages, because percentage transforms resolve
+   against each element's own height and the children would visibly shear
+   apart mid-flight.
+*/
+.vibe-panel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    /* --vibe-top tracks the sidebar's scrollTop so the panel lands on the
+       visible area even if the sidebar itself was scrolled. */
+    top: var(--vibe-top, 0px);
+    height: var(--vibe-shift, 100%);
+    /* Below .resize-handle (z-index 100) so the resize grip stays usable. */
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border-primary);
+    transform: translateY(100%);
+    visibility: hidden;
+    overflow: hidden;
+}
+
+/* .vibe-active is on for the duration of the animation and while open; it
+   carries the transitions so the sidebar's children are untouched at rest. */
+.sidebar.vibe-active {
+    overflow: hidden;
+}
+
+.sidebar.vibe-active > .vibe-panel {
+    visibility: visible;
+    transition: transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+}
+
+.sidebar.vibe-active > *:not(.vibe-panel):not(.resize-handle) {
+    transition: transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+}
+
+.sidebar.vibe-open > *:not(.vibe-panel):not(.resize-handle) {
+    transform: translateY(calc(-1 * var(--vibe-shift, 100%)));
+}
+
+.sidebar.vibe-open > .vibe-panel {
+    transform: translateY(0);
+}
+
+/* ---------- the flap ---------- */
+.vibe-flap {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    padding: 7px 0 9px;
+    border: none;
+    border-bottom: 1px solid var(--border-primary);
+    border-radius: 0;
+    background: linear-gradient(180deg, var(--bg-tertiary), var(--bg-secondary));
+    color: var(--text-tertiary);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color 0.2s, background-color 0.2s;
+}
+
+.vibe-flap:hover {
+    color: var(--text-primary);
+    background: linear-gradient(180deg, var(--bg-quaternary), var(--bg-tertiary));
+}
+
+.vibe-flap:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -3px;
+}
+
+.vibe-flap-grip {
+    width: 34px;
+    height: 4px;
+    border-radius: 99px;
+    background: var(--border-secondary);
+    transition: background-color 0.2s, width 0.2s;
+}
+
+.vibe-flap:hover .vibe-flap-grip {
+    background: var(--accent-primary);
+    width: 46px;
+}
+
+.vibe-stage {
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+}
+
+.vibe-stage iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: block;
+    background: var(--bg-primary);
+}
+
+/* The hold itself is deliberately silent — no ring, no progress, no tell.
+   An easter egg that announces itself while you are merely pressing Send is
+   not an easter egg, and the button must look completely ordinary to anyone
+   who is not already looking for this. */
+
+@media (prefers-reduced-motion: reduce) {
+    .sidebar.vibe-active > .vibe-panel,
+    .sidebar.vibe-active > *:not(.vibe-panel):not(.resize-handle) {
+        transition-duration: 1ms;
+    }
+}
