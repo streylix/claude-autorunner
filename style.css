@@ -5192,6 +5192,20 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     height: 14px;
 }
 
+/* One turn per click, so an instant rescan still reads as having happened. */
+.games-folder-btn.spinning i {
+    animation: games-refresh-spin 0.5s linear;
+}
+
+@keyframes games-refresh-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .games-folder-btn.spinning i { animation: none; }
+}
+
 /* The rail itself. Horizontal scroll with snap, so flicking through the
    library lands on a card rather than between two. */
 .games-rail {
