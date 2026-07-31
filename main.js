@@ -995,6 +995,21 @@ function setupIpcHandlers() {
     }
   });
 
+  // Force a rescan. The watcher normally handles this, but fs.watch can miss
+  // events (network mounts, some editors' atomic-save dance), so the rail keeps
+  // a manual refresh as an escape hatch.
+  ipcMain.handle('games:refresh', async () => {
+    try {
+      const lib = ensureGamesLibrary();
+      lib.scan();
+      lib.watch(); // re-arm in case a watched directory was replaced
+      return lib.games;
+    } catch (error) {
+      try { console.error('[Main] games:refresh failed:', error); } catch (e) { /* ignore */ }
+      return [];
+    }
+  });
+
   // Reveal the games folder so the user can drop a file in by hand.
   ipcMain.handle('games:open-folder', async () => {
     try {

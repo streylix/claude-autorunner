@@ -672,6 +672,11 @@ the Vibe Blast board.
   iframe holds focus. The frame takes `tabindex=0` and is focused on panel open, on
   card select, and on any click on the stage; a "click to play" pill appears whenever
   focus has drifted, so keypresses are never silently swallowed.
+- *Manual rescan.* A refresh button beside the folder icon calls a `games:refresh`
+  IPC that re-runs the scan AND re-arms the watchers, then reports the new count to
+  the action log. The watcher normally makes this unnecessary, but `fs.watch` does
+  miss events (network mounts, editors that save by atomic rename), and re-arming
+  also recovers a watched directory that was replaced wholesale.
 - *Shelf head layout.* "GAMES" sits left, the folder button right, and the grip is
   absolutely centred against the head so the folder icon can't pull it off centre.
   The head carries no bottom padding (the gap lives on the rail's padding-top

@@ -121,6 +121,31 @@ class GamesManager {
             setTimeout(() => this.focusGame(), 0);
         });
 
+        const refreshBtn = document.getElementById('games-refresh-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', async () => {
+                refreshBtn.classList.add('spinning');
+                try {
+                    const games = await this.ipc.invoke('games:refresh');
+                    const before = this.games.length;
+                    this.applyList(games || []);
+                    const delta = this.games.length - before;
+                    this.eventBus?.emit('log:action', {
+                        message: delta === 0
+                            ? `Games rescanned — ${this.games.length} found`
+                            : `Games rescanned — ${this.games.length} found (${delta > 0 ? '+' : ''}${delta})`,
+                        type: 'info',
+                    });
+                } catch (_) {
+                    this.eventBus?.emit('log:action', { message: 'Games rescan failed', type: 'warning' });
+                } finally {
+                    // Let one full turn play out even on an instant reply, or the
+                    // button flickers and reads as if nothing happened.
+                    setTimeout(() => refreshBtn.classList.remove('spinning'), 500);
+                }
+            });
+        }
+
         const openFolderBtn = document.getElementById('games-folder-btn');
         if (openFolderBtn) {
             openFolderBtn.addEventListener('click', () => {
