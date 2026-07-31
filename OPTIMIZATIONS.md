@@ -6,6 +6,1345 @@ project's current git branch.
 
 ---
 
+## 2026-07-15 — Voice STOP-WORD INTERRUPT: saying "no …" (or "wait …") cuts off the manager's current turn and takes over (branch `ssh-view`)
+
+**Feature (user request).** The manager sometimes keeps over-processing an
+earlier message. Now, when a transcribed Discord voice message BEGINS with a
+configured stop word, the bridge sends ESC to the manager terminal (999) —
+aborting its in-flight turn — and then injects the whole message (stop word
+not stripped), making it the freshest input.
+
+**How it works.**
+
+- *Bridge (`discord-bridge/src/controlApi.js`).* `sendVoiceMemo` (the single
+  inject sink) checks the message's first token — lowercased, punctuation
+  trimmed, so Whisper's "No," matches — against the stop-word list for
+  `source === 'voice'` only (typed/file messages never interrupt). On match:
+  `/terminal/keys ["esc"]` first, a 250 ms settle, then the normal
+  text + enter injection. An ESC failure is non-fatal — the message is
+  always delivered.
+- *Live config (`discord-bridge/src/appSettings.js`).* `interruptStopWords()`
+  mirrors the app's persisted `interruptStopWords` setting from
+  `~/.config/auto-injector/auto-injector.json` on every call (mtime-cached,
+  same pattern as `wakeSilenceMs`) — edits apply to the NEXT voice message
+  with no bridge restart. Code default `["no"]`; the user's active config is
+  set to `["no","wait"]` per his request (he can remove "wait" in the UI if
+  it false-triggers).
+- *Settings UI (`index.html` + `renderer.js` + `style.css`).* "Interrupt stop
+  words" in Settings → voice section: a chip list with per-word remove and an
+  add box (input normalized like the bridge's matcher). Persists through
+  PreferenceManager → `db-set-setting` → the same store the bridge mirrors.
+
+**Verified.** Bridge unit suite (`controlApi.stopword.test.js`, 8/8, stub
+control API): ESC fires FIRST then text+enter; normal/mid-sentence/typed
+messages don't trigger; a LIVE list change flips behavior on the very next
+message; ESC failure still injects. Headless UI probe on an isolated app:
+default chip "no", adding "Wait!" normalizes to `wait`, removing works, and
+the bridge's own mirror function read the edited store as the UI left it.
+Production bridge restarted on the new code and auto-resumed: "linked to
+session — manager 999 … reachable". Caveat noted: the running (pre-UI) app
+serializes its settings cache on write, so an app-side settings save before
+its next restart could drop the hand-seeded `interruptStopWords` — the
+bridge then falls back to `["no"]`, and the value is durable once the app
+picks up this commit.
+
+## 2026-07-15 — Remote Mode: live MESSAGE-QUEUE mirror — the SSH view stops showing already-delivered messages (branch `ssh-view`)
+
+**User report.** The message-queue panel in the SSH remote view was stale:
+messages already injected into terminals kept showing as queued until a
+reconnect.
+
+**Fix (same fan-out pattern as the terminal-metadata sync).** The local
+renderer already ships its full queue in every `ccbot-state-snapshot` (sent
+on each `message:queue-updated`, i.e. on every add / inject / remove /
+update / clear). Main now diffs the snapshot's queue (JSON compare, so
+status-only snapshots don't spam the socket) and pushes `remote-queue-sync`
+to every attached WS client; the remote's `MessageQueueManager` applies it
+via a new `applyRemoteQueueMirror` — pure state+display, no persistence, no
+injection, guarded to remote renderers only. Boot catch-up: a welcome-time
+push would race the bundle's listener registration, so the remote sends
+`remote-queue-request` once its handlers are wired and the RemoteServer
+answers that one client from main's snapshot cache.
+
+**Debugging worth remembering.** The first e2e "failure" was the mirror
+working perfectly: in a freshly-booted isolated app the runtime probe hasn't
+classified terminals yet, the injection gates deliberately fail OPEN on
+unknown runtime, and an idle bare-shell terminal swallowed the fixtures
+immediately — the "wiped" queue was a genuine delivery (stack trace:
+`_finishInjection`). The e2e now pauses auto-injection for the queued phases
+and uses mark-urgent + `injectMessageNow` as the delivery probe.
+
+**Verified headlessly** (`tests/integration/remote-queue-e2e.js`, isolated
+instance): boot catch-up for a pre-attach message; live add → remote 23 ms;
+Send-now delivery → panel settled without the delivered message 257 ms
+(incl. typing); remove → 19 ms; clear (re-populated first) → 20 ms — all
+within the 2 s budget, no reconnect, no polling. Regressions: unit suite
+174/174; remote-meta-e2e still green (meta 15/21 ms, create 127 ms).
+
+## 2026-07-14 — Single-file TTS model: speed/voice honored everywhere, pre-TTS cue on Discord, turn-taking hold restored (branch `ssh-view`)
+
+**User reports (follow-ups to the burst-gate/TTS→sink work, live in-call).**
+(1) TTS played at 1.0× instead of the configured `ttsPlaybackSpeed=1.25`.
+(2) The short pre-TTS cue click (the renderer's heads-up chime) no longer
+reached Discord. (3) TTS started playing OVER the user while still talking.
+
+**Architecture (user's directive).** The backend generator (`/api/tts/speak/`,
+untouched) is the single source of truth: it synthesizes ONE file at the user's
+`ttsPlaybackSpeed` + `ttsPreferredVoice` (callers pass speed — the manager
+already does; voice defaults from the backend's own preferred-voice config,
+which the app syncs). Every consumer — desktop renderer, remote viewers, the
+Discord bridge — plays that same file UNMODIFIED.
+
+**Changes.**
+- `NotificationManager._startAudio` no longer applies `playbackRate` to a clip
+  that carries its own synthesis speed (prevents the Mac playing 1.25×-files at
+  ~1.56×); legacy speed-1.0 rows keep the client rate so history sounds right.
+  The Test button now bakes the speed into the sample. `manager-session.js`
+  codifies "always pass speed". Remote bundle rebuilt (`npm run build-remote`)
+  so attached viewers pick this up on refresh — no app restart.
+- Bridge shim now plays the SAME cue click (`click2.wav`) immediately before
+  each clip, and the gate pre-roll deepened 120→400ms: the click was being
+  swallowed by the Discord client's stream-start ramp when it sat at the very
+  head of a fresh burst; behind a 400ms silent lead-in it survives. Cue+voice
+  ride one burst (gap ≪ 500ms hangover): click → voice, no gap.
+- Turn-taking restored on the sink path: the shim holds each readout while
+  `receiver.isUserSpeaking()` (up to `bargeInMaxHoldMs`), then plays the FULL
+  reply — playback is serialized per row (awaited paplay) so clips never
+  overlap, and the echo gate is re-marked at actual playback time so a held
+  clip can't be transcribed as the user. Interrupt stays OFF via the existing
+  `BARGE_IN_INTERRUPT_ENABLED=false` systemd drop-in.
+
+**Verified live** (#1461, speed 1.25 bf_emma, duration 3925ms): cue+clip on the
+sink 218ms after synthesis, one burst of 4410ms (400 preroll + ~130 click +
+3925 voice), 4021ms wall vs 3980ms played — zero steady-state drift.
+
+## 2026-07-14 — Discord voice round-trip: TTS restored on Discord, output latency made flat (burst gate), silence slider verified live (branch `ssh-view`)
+
+**User reports (live in a Discord call, viewing from the Mac over SSH).**
+(1) The manager's TTS voice was completely inaudible on Discord while it played
+perfectly on the Mac. (2) Sounds that did reach Discord (the hud4 "sent" chime)
+arrived ~5 s late, so the whole ask→answer loop felt ~5 s slow. (3) The "Stop
+after silence" slider seemed to have no effect on in-call capture.
+
+**Where the seconds actually went (measured, journalctl timestamps).**
+- *Input path was honest:* last-audio → capture cut tracked the slider exactly
+  (802 ms at 1000 ms, 2288–2305 ms at 2500 ms), Whisper 90–950 ms, then
+  `/terminal/keys` writes straight to the manager PTY (no queue, no gates) with
+  a 180 ms text→Enter delay. Stop→injected ≈ 1.1–2 s at the 1000 ms setting.
+- *The slider works and always did:* today's log shows applied silence moving
+  5000→3000→2500→1000→2500 as it was dragged; the remote panel's writes go over
+  the WS (`db-set-setting`, no allowlist) into `auto-injector.json`, which the
+  bridge re-reads per capture. The value had been left at 2500 (each renderer
+  caches prefs independently — a second stale panel can silently rewrite it);
+  set back to the intended 1000 via the app's own WS invoke.
+- *TTS silent on Discord — root cause:* the v1 "no-double-play" rule. With a
+  Remote Mode viewer attached, the local renderer suppressed TTS playback, so
+  nothing reached the `auto_null` sink whose monitor the bridge streams
+  (`AUDIO_SOURCE=system`). Discord went silent precisely because the Mac was
+  watching. Fixed app-side by terminal 1's verified DUAL-OUTPUT patch (applied,
+  tests 11/11, commit `74a376b`): renderer keeps playing with viewers attached.
+  Until the app's next restart picks that up, the bridge runs a TTS→sink shim:
+  it fetches each clip and paplays it into the sink itself — `auto` mode plays
+  only while a viewer is attached AND the running app predates the patch
+  (process start time vs patched-file mtime), so it steps aside automatically
+  after the restart. Verified live: synthesis → audible on Discord in ~1.4 s
+  (poll ≤1.5 s + 0.3 s sink→channel), Mac copy via the WS forwarder in ≤2 s.
+- *The ~5 s everything-late feeling — root cause:* the bridge streamed the sink
+  monitor as ONE eternal Opus stream. The keepalive keeps the monitor producing
+  continuous PCM, so the bot "spoke" 24/7 and Discord's adaptive jitter buffer
+  never got a silence gap to reset on — every hiccup became permanent added
+  delay that only grew with call time. Fixed with a **burst gate** in the
+  bridge player: watch the PCM for sound (s16 peak > 300 ≈ −41 dBFS), stream
+  each burst as its own resource seeded with 120 ms pre-roll, end it after
+  500 ms trailing silence. The bot now starts/stops speaking like a human,
+  the receive buffer resets per burst, and latency stays flat. Measured after
+  restart: chime = 720 ms burst, sender backlog 10–140 ms; a 14 s TTS clip
+  split naturally across a sentence pause into 6.9 s + 4.1 s bursts. Barge-in
+  mute now zero-fills inside the hangover so muting cuts the relay instantly.
+
+**Knobs** (bridge `.env`): `SYSTEM_GATE_ENABLED/THRESHOLD/HANGOVER_MS/PREROLL_MS`,
+`TTS_TO_SINK=auto|always|off`, `REMOTE_VIEW_PORT`. Expected stop-talking →
+manager-injected ≈ 1.1–2 s at the 1000 ms slider; sounds → user's ear well
+under 1 s plus Discord's own transport (~0.2 s), instead of an ever-growing
+multi-second buffer.
+
+## 2026-07-14 — Remote Mode: live terminal-metadata sync — renames, colors, create/close reach every attached view in milliseconds (branch `ssh-view`)
+
+**User report.** Terminal title/color changes and add/remove didn't show up in
+the SSH remote view without reconnecting.
+
+**Fix.** `setTerminalMetadata` (the one funnel behind the inline rename
+editor, the color picker, and the Control API's `terminal-update`) now sends
+`terminal-meta-changed` to main, which fans it out to every attached renderer
+as a `remote-terminal-meta` push over the existing WS — event-driven, no
+polling. Receivers apply through the same method with a `fromSync` guard so
+the originator's echo can't loop. Bidirectional: a rename in the remote view
+lands on the desktop (where it persists) and vice versa. Create/close already
+broadcast; verified they ride the same fan-out. The `/state` snapshot also
+refreshes on metadata changes so the manager sees current titles.
+
+**Verified headlessly** (`tests/integration/remote-meta-e2e.js`, isolated
+instance): desktop→remote title+color 3 ms, remote→desktop rename 4 ms (color
+survives partial updates), create→view 50 ms, close→drop 6 ms — all far inside
+the 2 s budget, without reconnecting. Full unit suite: 174/174 pass.
+See docs/REMOTE_MODE.md §11.
+
+## 2026-07-14 — Remote Mode UI cleanup + mic-picker polish: one connect button, no floating mic, click-away dismiss, explicit Off + auto-resume (branch `ssh-view`)
+
+**User reports (viewing from the Mac over SSH).** (1) Two stacked `<>` buttons
+bottom-left: the embedded remote view renders the same `index.html` as the
+desktop, so the footer's connect indicator painted as a DEAD blue button right
+under the outer app's live green "Remote: host" pill (RemoteConnectionUI
+deliberately never initializes in a remote view — the markup still did).
+(2) A large floating circular mic button (injected by `remote-mic.js`) sat
+bottom-left overlapping the message input. (3) The connect/SSH panel only
+closed via a tiny X.
+
+**Fixes.**
+
+1. *One connect button (`src/remote/remote-bootstrap.js`).* The bootstrap now
+   hides `#remote-indicator` before first paint in every remote client — only
+   the outer desktop app offers a connect control (no nested remote hops
+   anyway).
+2. *Floating mic button removed (`src/remote/remote-mic.js`, `renderer.js`).*
+   Settings → Microphone is now the single mic control in the remote view: it
+   gained an explicit **"Off — don't stream this device's mic"** row (also the
+   default for a first-time viewer — never streams without an opt-in), picking
+   a device starts/re-targets the stream, and the choice persists per-browser
+   and **auto-resumes on the next connect**, so the wake word works over SSH
+   without reopening Settings every time. While streaming, the app's own voice
+   button carries the wake-state glow (green listening / yellow capturing /
+   blue transcribing) instead of a second floating control. Picking "Off" (or
+   never opting in) leaves the manual voice button on the browser-default mic.
+3. *Click-away dismiss (`RemoteConnectionUI.js`, `index.html`, `style.css`).*
+   The X buttons on the connect bar and the management popover are gone; a
+   pointerdown anywhere outside the open panel dismisses it (Esc still works).
+   The corner indicator keeps its toggle, and a connect in flight pins the bar
+   open so the status line / password prompt can't vanish mid-attempt.
+
+**Verified headlessly** (isolated app + headless Chromium, own ports/config —
+the production instance untouched): `remote-mic-e2e` now additionally asserts
+no `#remote-mic-btn`, hidden inner indicator (`display:none` computed), no X
+buttons, outside-click dismiss + inside-click survival, the picker listing the
+BROWSER's fake devices with Off first/selected, selection starting the stream
+on the exact picked device (track label echoed), the voice-button glow, and
+Off stopping the stream — all before the unchanged wake-word/Whisper pipeline
+phases, which still pass (real Vosk detection, byte-exact WAV, memo to 999).
+`remote-tts-e2e` gained a panel-mirror probe: a notification created BEFORE
+the viewer attaches renders in the client's Notifications panel via the /api
+reverse-proxy history load (provably not WS-pushed). NOTE: TTS dual-output
+(desktop sink + viewer simultaneously) was implemented and e2e-verified here,
+then handed to terminal 2 with the Discord-audio workstream — the verified
+patch is preserved for T2; this tree reverted to the ship-state suppression
+behavior to avoid concurrent edits.
+
+## 2026-07-14 — Remote Mode: the mic picker now selects the VIEWER's microphone; voice button, TTS read-aloud and the notifications list now work over SSH (branch `ssh-view`)
+
+**Bugs (reported by the user, viewing from his Mac over SSH).** (1) Settings →
+Microphone was useless in the remote view: it didn't list the Mac's mics, and
+selecting anything did nothing — worse, it would have overwritten the DESKTOP's
+saved microphone with a device id that only exists on the Mac. The remote mic
+forwarder (`remote-mic.js`) always captured the browser's default device. (2) The
+voice button was dead remotely: the renderer fetched the Whisper/TTS backend at
+`http://localhost:8123`, which in a browser is the VIEWER's machine (and CORS
+blocks it even when one exists). (3) No TTS read-aloud and an empty Notifications
+panel in the remote view — root cause found live: Electron's Node resolves
+`localhost` to `::1` first with no IPv4 fallback, while the Docker backend
+publishes on `127.0.0.1` only, so the main-process TTS remote forwarder got
+ECONNREFUSED on every poll, silently, forever — not one notification was ever
+pushed to a browser client (the Discord bridge worked because it's a separate
+plain-node process).
+
+**Fixes.**
+
+1. *Backend base URL (`src/utils/backend-url.js`).* Default host is now
+   `127.0.0.1` (kills the ::1 trap for every main-process consumer, including
+   the TTS forwarder), and in a Remote Mode browser it resolves to `''` — all
+   `/api/...` fetches go same-origin to the server that served the page.
+2. *`/api/*` reverse proxy (`src/main/RemoteServer.js`).* The RemoteServer now
+   streams any-method `/api/*` requests to the desktop's loopback backend, so
+   the browser's Whisper transcription, TTS notification list/audio, and
+   frontend-log calls all work over the one tunneled port. Same trust boundary
+   as before: loopback bind + the user's SSH tunnel.
+3. *Per-viewer mic picker (`renderer.js`, `src/remote/remote-mic.js`,
+   `src/features/VoiceManager.js`).* In the remote view the Settings mic picker
+   enumerates THIS browser's inputs; the choice is stored per-browser
+   (localStorage), never in the shared preference. Picking a mic (re)starts the
+   remote-mic stream on that exact device (deviceId-exact capture with fallback
+   to default if it vanished), so wake word + voice pipeline listen to the
+   selected Mac mic; the voice button records from it too. The desktop's own
+   picker/preference behavior is untouched, as is the single-owner relay rule.
+4. *Notifications list mirror (`renderer.js`).* A remote client now loads the
+   notification history and polls through the proxy, so the panel is populated
+   remotely; the id watermark + items map dedupe rows/playback against the WS
+   audio pushes (whichever arrives first wins).
+
+**Verified.** `tests/integration/remote-mic-e2e.js`, `remote-tts-e2e.js`,
+`remote-client-e2e.js` all pass on the change (headless Xvfb, isolated
+instances, real Vosk); plus live headless-Chromium verification against the
+deployed `aci-serve` server on :8130 — see the goal's evidence.
+
+---
+
+## 2026-07-14 — Remote Mode client: renderer reload no longer orphans the tunnel; reconnect supersedes stale state (branch `ssh-view`)
+
+**Bug (reproduced by the user).** With a remote connected, a HARD REFRESH of the
+renderer reset the UI, but the main process kept the live connection and the
+`ssh -N -L` tunnel child. The app still believed it was connected, so the next
+connect was rejected with "Already connected — disconnect first" and the only
+way out was a full app restart — with the orphaned ssh tunnel still running.
+
+**Fix — two independent layers.**
+
+1. *Renderer-lifecycle cleanup (`main.js`, createWindow).* The main window's
+   webContents now tears the Remote Mode client connection down whenever the
+   MAIN frame really navigates (`did-start-navigation`, main-frame + not
+   same-document — a reload of index.html; the embedded remote iframe is a
+   subframe and never triggers it), and on `render-process-gone` /
+   `destroyed`. Handles both the Electron 26+ event-object shape and the
+   legacy positional args. So a refresh (or a crashed renderer) kills the
+   tunnel child and resets main-process state to idle immediately.
+2. *Reconnect supersedes (`src/main/remote-client.js`).* `connect()` no longer
+   hard-fails on "already connected/connecting". Every connect and disconnect
+   bumps a connection GENERATION; a new connect first kills any existing
+   tunnel, and an in-flight connect checkpoints the generation after every
+   await and aborts (rejecting with `superseded: true`, never clobbering the
+   newer operation's state) when it has been overtaken. `disconnect()` stays
+   idempotent and now also cancels an in-flight connect. So even if some
+   future path leaves stale state behind, the user can ALWAYS just connect
+   again.
+
+**Verified (headless Xvfb, isolated XDG_CONFIG_HOME, real throwaway sshd —
+`tests/integration/remote-client-reload-e2e.js`).** (a) connect → `page.reload()`
+→ main-process state idle, forwarded port closed, ZERO orphaned `ssh -N`
+children (pgrep scoped to the test's remote port); (b) a fresh connect after
+the reload SUCCEEDS (status log shows no "already connected") and the embedded
+terminal echoes a marker end to end; (c) a second `remote-client-connect`
+while connected supersedes cleanly — new tunnel up, old one torn down, exactly
+ONE ssh child; (d) disconnect is idempotent and leaves zero ssh children, and
+a normal UI connect→disconnect cycle still passes. Regressions: the full
+original `remote-client-e2e.js` (auto-enable, auto-start, fast path) and
+`remote-client-password-e2e.js` (password auth path) both pass unchanged;
+`node --test` suite 162/163 (the one failure is the pre-existing, unrelated
+`tests/unit/usage-limit-and-gate.test.js`). New unit tests cover supersede /
+in-flight-abort / idempotent-disconnect (`src/main/remote-client.test.js`,
+34/34).
+
+- Files: `main.js`, `src/main/remote-client.js`, `src/main/remote-client.test.js`,
+  `tests/integration/remote-client-reload-e2e.js`.
+
+## 2026-07-14 — Remote Mode client: SSH password fallback, VS Code style (branch `ssh-view`)
+
+**Goal.** Connecting to a remote previously required working key/agent auth
+(`BatchMode=yes`) and silently failed without it. Now it behaves like VS Code
+Remote-SSH: keys are tried first, silently; if — and only if — authentication
+fails, a password field appears in the top-middle command bar (labelled with
+the destination, focused), and the typed password authenticates the retry. A
+wrong password gives a clear "Wrong password for …" and an in-place retry.
+Advanced also offers a "use password authentication" opt-in that asks up
+front. Working keys keep connecting exactly as before, with no prompt.
+
+**How the password reaches ssh (and where it never goes).** The retry runs
+every ssh operation of the connect — the session-file read, the
+ensure/auto-start step, the settle re-reads, and the long-lived `ssh -N -L`
+tunnel — through the new secret-free `scripts/ssh-askpass.sh` helper:
+`SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` plus a detached (`setsid`) spawn,
+with the password riding only in that ssh child's environment
+(`CCBOT_SSH_PASSWORD`). It is never in an argv (the `ps` exposure
+`sshpass -p` has), never on disk, never logged, never in status events,
+never saved to recents, and cleared from the UI whenever the bar closes.
+`sshpass -e` (env mode) is the fallback mechanism; a clear message appears if
+neither is usable. Wrong passwords fail fast (`NumberOfPasswordPrompts=1`);
+auth failures are distinguished from unreachable-host and host-key errors,
+which keep their specific messages; host keys stay `accept-new`.
+
+**Files.** `src/main/remote-client.js` (auth modes, isAuthFailure/
+sshFailureToError, askpass invocation), `scripts/ssh-askpass.sh` (new),
+`main.js` (needPassword over IPC), `src/features/RemoteConnectionUI.js` +
+`index.html` + `style.css` (password row + opt-in checkbox), docs
+(`docs/REMOTE_MODE.md` §8).
+
+**Verified.** Unit tests (`src/main/remote-client.test.js`, 30 pass) cover
+auth classification and argv/env separation. New end-to-end
+`tests/integration/remote-client-password-e2e.js` (headless, real OpenSSH +
+real askpass against a real-protocol password-only SSH server — an
+unprivileged sshd cannot verify passwords, so the server side is the `ssh2`
+dev dependency): key attempt fails → prompt appears → wrong password →
+clear retry → right password → live-enable + tunnel + embedded terminal
+echo, then a secrecy sweep proving the password appears in no argv/`ps`
+output, no log, no localStorage, and no file on disk. The key-only path is
+still covered by `remote-client-e2e.js` against a real sshd, unchanged.
+
+## 2026-07-13 — Remote Mode: voice notifications play on the device SHOWING the interface (branch `ssh-view`)
+
+**Goal.** When the user watches the interface remotely (browser tab or the
+in-app embedded client), spoken notifications must come out of THAT device —
+not only out of the (usually headless) app host where nobody is listening.
+
+**The path as found.** TTS was host-locked end to end: the manager POSTs
+`/api/tts/speak/` to the Django backend (loopback :8123, Kokoro synthesizes a
+WAV + persists a Notification row); the LOCAL renderer's NotificationManager
+polls `/api/tts/notifications/` every 3s and plays `audio_url` through an
+HTMLAudioElement — audio on the app host only. In Remote Mode the browser
+renderer was simply not initialized for notifications (the backend loopback is
+unreachable from the viewer's machine — `localhost:8123` there is the WRONG
+machine). `discord-bridge/src/audioPlayer.js` is the separate Discord-voice
+playback path — untouched and orthogonal.
+
+**What changed.** New `src/main/tts-remote-forwarder.js`: while ≥1 remote
+client is attached (RemoteServer's new `onClientsChanged` hook), main — where
+the backend loopback IS reachable — polls the same endpoint, fetches each
+fresh notification's WAV, and pushes it (base64, with metadata) to every
+attached client over the EXISTING token-gated WebSocket
+(`remote-tts-notification`). The remote renderer
+(`NotificationManager.initializeRemote`) turns the bytes into a `blob:` URL,
+renders the row, and plays it with the same queue/chime machinery — sound on
+the viewing device, both for a plain browser and the embedded iframe (one
+renderer path). Played-marks ride back over the WS (`remote-tts-played` →
+main POSTs `/played/`). No new ports, no re-implemented TTS.
+
+**Which device plays (no double-play).** ≥1 remote client attached → the
+client(s) play; the local renderer holds AUTO playback (push
+`remote-clients-changed` + boot invoke `remote-clients-count`; rows still
+render and an explicit ▶ replay is always honored locally). 0 clients → local
+playback exactly as before. The forwarder re-baselines on every attach so
+history never replays into a fresh client. A plain browser blocking the first
+autoplay requeues the clip and plays it on the first click/keypress.
+
+**Verified** (headless: Xvfb Electron + headless Chromium + a Django-shaped
+stand-in TTS backend serving real WAV bytes through the same code path —
+`xvfb-run -a node tests/integration/remote-tts-e2e.js`): the pushed audio
+arrived at the client byte-for-byte (19244 === 19244), the client drove
+playback (blob src, `play()` resolved, `playing=true`, currentTime advancing),
+the played-mark round-tripped client → WS → main → backend, the local renderer
+never touched its audio element, and after detach a new notification played
+locally again. Acoustic output itself can't be captured headless; the full
+delivery + playback-invocation chain is what's proven. Plus 11 unit tests
+(`tts-remote-forwarder.test.js`, `NotificationManager.remote.test.js`,
+`NotificationManager.local-sink.test.js`) and a clean re-run of
+`remote-client-e2e.js` (embedded-client regression).
+
+
+## 2026-07-13 — Remote Mode CLIENT: in-app "Connect to a remote machine" (VS Code Remote-SSH style; branch `ssh-view`)
+
+**Goal.** The other half of Remote Mode: a corner control IN the app so a user
+on their laptop can attach to a remote machine's running interface with one
+click — no browser tab, no manual `ssh -L`, no copying tokens.
+
+**What was built.** A VS Code-style indicator pinned to the BOTTOM-LEFT corner
+of the interface opens a "Connect to a remote machine" panel (host/IP, SSH
+port defaulting to 22, username, recent connections remembered locally, plus
+an Advanced section: remote session-file path override and extra ssh options
+like `-i`). On Connect the app does the whole attach sequence automatically:
+(1) it shells out to the system `ssh` (so the user's own `~/.ssh/config`,
+keys, agent and known_hosts apply; `BatchMode=yes` means it can never hang on
+a password prompt) and reads the remote's
+`${XDG_CONFIG_HOME:-$HOME/.config}/ccbot/session.json` to learn the remote
+RemoteServer port and session token — the token only ever travels inside the
+SSH channel; (2) it spawns and owns an `ssh -N -L 127.0.0.1:<free-local>
+:127.0.0.1:<remote>` tunnel child (`ExitOnForwardFailure`, keepalives, killed
+on disconnect and on app quit); (3) once the tunneled server answers, it loads
+the remote interface in a full-window sandboxed iframe — the remote machine's
+terminals, manager and queue, 1:1 interactive, inside the app. The indicator
+turns green ("Remote: host"); clicking it gives Disconnect, which tears the
+tunnel down and returns to the local interface. Unexpected tunnel drops are
+pushed to the renderer and produce a clear message instead of a dead view.
+Clear, specific error messages cover: no ccbot session file (app not running
+there), app running but Remote Mode OFF (says to set CCBOT_REMOTE=1), ssh
+auth failure, changed/unverified host key, unreachable host. New files:
+`src/main/remote-client.js` (main-process client, pure Node, strict input
+validation so form values can never be parsed as ssh options),
+`src/features/RemoteConnectionUI.js` (indicator/panel/iframe UI, skipped in
+remote browser views — no nested hops); wired in `main.js` (3 IPC handlers +
+quit cleanup), `renderer.js`, `index.html`, `style.css`. Design doc §8 in
+`docs/REMOTE_MODE.md`.
+
+**Verified end-to-end (headless Xvfb, real ssh + sshd, this machine as both
+ends).** `tests/integration/remote-client-e2e.js` (committed; un-ignored in
+.gitignore) launches a throwaway sshd (own host/client keys on a high port —
+nothing in the user's ~/.ssh read or written) and TWO isolated app instances
+(separate XDG_CONFIG_HOMEs; the machine's real interface untouched): one with
+CCBOT_REMOTE=1 as the "remote", one as the client. Playwright then drives the
+real UI: corner button opens the panel; a deliberately wrong session path
+surfaces the clear "no session file / not running" error; a real connect
+reads the token over ssh, opens the tunnel, and the embedded iframe
+WS-authenticates and renders the remote terminal (replayed screen); a marker
+command typed INTO the embedded view echoes back both in the embedded xterm
+AND on the remote instance's own window (same PTY, proving the full
+keystroke→ssh-tunnel→WS→PTY→broadcast loop); Disconnect hides the view,
+returns the indicator to idle, closes the forwarded port and leaves no ssh
+child. 16/16 checks passed; screenshots + transcript captured. Unit tests:
+14 new (`src/main/remote-client.test.js`) — validation, session parsing,
+ssh-stderr classification — all green; full tracked suite 120/120.
+
+**Known gaps (v1).** Host keys use `accept-new` (first contact auto-recorded;
+CHANGED keys still hard-fail — no interactive fingerprint prompt yet); no
+"start Remote Mode on the remote machine for me" — the remote must already
+run with CCBOT_REMOTE=1; one remote at a time; the local interface keeps
+running underneath the embedded view (by design, so local terminals continue).
+
+## 2026-07-13 — Remote Mode MVP: the full interface served to a browser over HTTP+WebSocket (branch `ssh-view`)
+
+**Goal.** The VS Code Remote-SSH analog designed in `docs/REMOTE_MODE.md`: a
+browser on another machine (via SSH tunnel / Tailscale) gets a 1:1, fully
+interactive replica of the running interface — every terminal, the manager
+(999), the queue, the whole UI — so a headless box needs no monitor. Strictly a
+superset of the read-only `npm run ssh-view`.
+
+**How it works.** A new `src/main/RemoteServer.js` (loopback-only, off by
+default; enable with `CCBOT_REMOTE=1` or the `remoteServerEnabled` setting)
+serves the app's real `index.html` — transformed at request time to load
+`src/remote/remote-bootstrap.js` plus an esbuild bundle of the unmodified
+`renderer.js` + `src/**` (`npm run build-remote`; `electron`/`fs`/`path`/
+`vosk-browser` external, `__dirname` defined) — and upgrades to a WebSocket
+that bridges the entire Electron IPC surface: `send`/`invoke` frames dispatch
+to the very same `ipcMain` handlers (captured registration maps in `main.js`),
+and every `webContents.send` push now fans out through `broadcastToRenderers`
+to the local window AND all attached browsers, including the raw
+`terminal-data` PTY stream. The bootstrap installs a `require` shim and a
+`wsIpc` object implementing the `ipcRenderer` contract, so the SAME renderer
+runs unchanged in the browser.
+
+**Correctness (the hard part).** A second full renderer must not double-drive
+the app. `window.__CCBOT_REMOTE__` guards: the injection engine (single sink
+`_injectToTerminal` plus the sequential paths), queue/history persistence, the
+manager scheduler (no boot typing, no pass loop, no completion watch — the
+browser only ATTACHES a view of the live 999 PTY), `ccbot-state-snapshot`
+(also dropped server-side), and the completion summarizer. `terminal-start`
+for an existing PTY attaches + replays the current screen (late-join catch-up
+via the existing `readTerminalScreen` path) instead of respawning — enforced
+in both the RemoteServer and main's handler. Browser-added queue messages are
+forwarded (`remote-queue-add`) to the authoritative local queue and echo back
+to every view; terminals created/closed in ANY renderer sync to all others
+(`remote-terminal-created`/`-closed`).
+
+**Security.** Same posture as ssh-view: binds `127.0.0.1` only, reuses the
+HookServer session token (constant-time compare at the WS `hello`; bad token →
+socket closed), token travels only in the URL *fragment* (`/#k=<token>`,
+stripped immediately, never in server logs), transport is the user's SSH
+tunnel or Tailscale. The remote port is advertised in the 0600 session file;
+`npm run remote-url` prints the access URL + tunnel line.
+
+**Verified running (headless, Xvfb + real headless Chromium against the live
+app):** WS auth (bad token rejected 4403 / good token → `welcome` snapshot),
+the real renderer boots in the browser with zero fatal errors, terminals AND
+the live manager (999, mid-session Claude UI) render with replayed screens,
+keystrokes typed in the browser xterm reach the PTY and echo back, resize
+round-trips (`stty size` reports the new dims), remote invokes read AND write
+the real store, a snapshot poisoning attempt from the WS is dropped, a
+terminal created in the browser appears in the local renderer's `/state` and
+is a live echoing PTY. 9/9 protocol + 7/7 + 5/5 browser checks passed.
+
+**Known gaps (v1).** Queue edits/removals/injections don't live-sync to a
+remote's queue *display* (adds do; the authoritative queue is always the local
+one); replay is plain text (colors of the backlog are lost); desktop-only
+invokes (file dialogs, tray) act on the host; no settings-UI toggle yet (env
+var / setting only); PTY frames ride JSON (binary fast-path deferred).
+
+## 2026-07-11 — Desktop app: one silence setting for both voice paths + barge-in on spoken notifications (STAGED — loads at the next app reload; branch `discord-integration`)
+
+**Goal.** The user's voice should work through BOTH Discord and the desktop app,
+governed by the ONE app "Stop after silence" setting, with barge-in on both.
+
+**Finding: the single setting already reaches the desktop path.** The desktop
+end-of-speech cutoff is `WakeWordManager.silenceMs`, fed live from the same
+`wakeSilenceMs` preference the bridge now mirrors (`_checkVad` uses it as the
+sole trailing-silence stop). The Django backend has NO silence logic at all — it
+transcribes complete WAV uploads (no VAD, no silence parameter), so no backend
+change and **no process restart of any kind** was needed. The only mismatch was
+the clamp: desktop floored the value at 1000 ms while the new slider floor is
+600 ms — `WakeWordManager._applyConfig` now clamps at 600 ms to match the bridge.
+(`VoiceManager` push-to-talk is manual-only — no cutoff to unify.)
+
+**Barge-in on spoken notifications.** Previously a mid-readout speech onset only
+HELD the clip (pause → resume in place, force-played-through after 3 holds or
+4 s — "completion is the priority"). Per the new product decision the user now
+has the floor: `NotificationManager._interruptCurrentPlayback` STOPS the
+readout outright on speech onset — no hold, no resume, the notification is
+finalized as played, and the log notes where it was cut ("stopped the readout at
+~3.5s/9.0s (~38%)"). Queued notifications still wait for silence before
+starting; the hands-free reply window is deliberately NOT opened on an
+interrupt (the user is already talking). Echo can't trip it: the existing gate
+raises the VAD threshold 3× during playback (+400 ms tail) with a ~340 ms
+sustained-run requirement — the same guard shape as the bridge's 350 ms/−40 dB.
+Legacy hold-and-resume remains behind the `ttsBargeInInterrupt` preference
+(default ON; no UI toggle yet).
+
+**Tests.** `NotificationManager.test.js` + `tts-echo-gate.test.js` updated: the
+hold tests now pin legacy mode explicitly; new tests cover interrupt mode
+(stops for good, finalizes played, queued clips survive, replays don't double-
+mark) and both modes of the loud-barge-in echo-gate test. 20/20 pass
+(`node --test`).
+
+**How to load it (user action, whenever ready).** These are renderer files —
+the running Auto-Injector is untouched (restarting it would kill the manager,
+so nothing was restarted). The changes take effect at the next deliberate app
+relaunch/reload, which also loads the earlier-staged slider floor
+(index.html `wake-silence-ms` min 2000→600, step 100).
+
+---
+
+## 2026-07-11 — Discord bridge: barge-in / interruptible TTS + auto-follow into voice (branch `discord-integration`)
+
+**Barge-in.** The voice loop was walkie-talkie: once the bot started reading a
+reply, the user had to wait it out. Now, when the user starts really speaking
+while the bot is playing, the bot cuts its own audio so the user can talk over
+it naturally.
+
+- **Detection** (`voiceReceive.js` `_bargeInCheck`, fed every decoded 20 ms PCM
+  chunk of the user's own receive stream — which we already capture during
+  playback since `pauseCaptureDuringTts` defaults off): accumulate only while
+  the bot is speaking; fire when ≥ `bargeInMinSpeechMs` (350 ms) of sustained
+  audio measures ≥ `bargeInMinLevelDb` (−40 dBFS RMS). A too-quiet window resets
+  the accumulator, so echo bleed and coughs can't trip it; fires once per
+  speaking episode and re-arms when the bot goes quiet.
+- **Action** (`session.interruptPlayback`): logs where the reply was cut
+  ("at ~4.2 s (~35%) into the reply" — from the episode start + expected
+  duration now tracked in `markBotSpeaking`). In **tts** mode it stops only the
+  active clip (`player.interrupt()`; the queue is kept and the existing
+  hold-check delays the next clip until the user finishes). In **system** mode
+  (the live config — one continuous parec stream of the desktop sink) the
+  desktop audio can't be stopped from the bridge, so the forwarded stream is
+  MUTED in real time (a zero-fill Transform — no lag build-up, instant unmute);
+  `_openGate`'s guaranteed reopen path un-mutes when the speaking window ends.
+- New env knobs: `BARGE_IN_INTERRUPT_ENABLED` (default on),
+  `BARGE_IN_MIN_SPEECH_MS` (350), `BARGE_IN_MIN_LEVEL_DB` (−40).
+
+**Auto-follow** (`index.js` voiceStateUpdate + startup auto-resume): when an
+authorized user joins a voice channel while the bridge is linked but idle, the
+bot now joins them automatically — no `/resume` after a service restart.
+
+Verified offline: syntax + module-load pass; detection fires at ~360 ms on loud
+sustained speech, never on quiet audio, once per episode, re-arms per episode;
+mute/unmute cycle confirmed against a stubbed player. Live verification happens
+at the next safe bridge restart (deliberately deferred — the user was mid-
+conversation; restart only in an idle window).
+
+---
+
+## 2026-07-11 — Discord bridge: app "Stop after silence" slider now controls the in-call voice-memo cutoff (branch `discord-integration`)
+
+**Problem.** Changing the end-of-speech silence slider in the app did nothing to
+Discord voice memos — every memo took ~5 seconds of silence to end.
+
+**Root cause (two layers).**
+1. **Stale process.** The live bridge service had been running since Jul 1 —
+   a work-in-progress build from before commit `4645606`. In that build the
+   in-call cutoff was tied to the app's `wakeSilenceMs`, whose default had been
+   raised to **5000 ms** on Jun 25 (`d306bc7`, for across-the-room dictation)
+   and was unset in the store — hence the constant ~5 s. The service was never
+   restarted when the newer code landed, so nothing the user changed reached it.
+2. **Decoupled by design in HEAD.** The current code had gone the other way:
+   always-listen used a fixed `inCallSilenceMs` (1500 ms, env-only) and ignored
+   the app slider entirely — so even after a restart the slider would still
+   have done nothing. The 6 s auto-reply window was ruled out: it never feeds
+   the always-listen silence choice.
+
+**Change.**
+- `discord-bridge/src/appSettings.js` — new `inCallSilenceMs()`: mirrors the
+  app's `wakeSilenceMs` LIVE (re-read per capture, so a slider change applies to
+  the very next utterance), floor **600 ms**, snappy **1200 ms** default when the
+  app value is unset. `IN_CALL_SILENCE_MS` env pins it for testing only.
+- `discord-bridge/config.js` — `config.inCallSilence()` (function, replaces the
+  static `inCallSilenceMs`).
+- `discord-bridge/src/voiceReceive.js` — `_capture` uses the live value and now
+  logs, per utterance, `capture start: mode=…, end-of-speech silence=…ms` and
+  `capture end: …ms from last audio to cut` so the applied cutoff is visible in
+  the journal.
+- `index.html` — the "Stop after silence" slider minimum lowered 2000 → 600 ms
+  (step 500 → 100) so sub-2 s values are actually reachable in the app UI.
+- `discord-bridge/src/index.js` + `resumeStore.js` — startup **auto-resume**:
+  after a service restart the bridge re-links the last saved session and rejoins
+  the user's current voice channel on its own (previously it idled until a
+  manual `/resume`, which made every restart drop the relay).
+- `discord-bridge/.env` — `DISCORD_ALLOWED_USER_IDS` set (user-approved): the
+  Phase-2 deny-by-default auth from `4645606` went live for the first time with
+  this restart and would otherwise have denied all commands/voice.
+
+**Result.** With the user's current app value (2000 ms) the memo cuts ~2 s after
+speech stops instead of ~5 s; dragging the slider down to ~1.2 s now takes
+effect on the next utterance, no restart needed. One-off test
+(`config.inCallSilence()`): app value respected, 600 ms floor, 1200 ms default,
+env override — 6/6 pass. **Verified live 2026-07-11 14:19**: per-capture log
+shows `applied silence=5000ms` and `capture end: 4798ms from last audio to cut`
+— wall-clock matches the applied value, and the applied value matches the app
+store exactly (the store's `wakeSilenceMs` had been changed 2000→5000 at 14:07,
+so the mirror is demonstrably live). The slider now genuinely drives the
+cutoff; drag it down for snappier memos.
+
+---
+
+## 2026-06-30 — Discord bridge: source-tagged forward framing + decouple text from voice (branch `discord-integration`)
+
+**Fix 1 — framing by source.** A TYPED channel message was reaching the manager
+wrapped in the VOICE-memo framing ("spoken aloud, auto-transcribed"), which is
+wrong. `controlApi.frameMemo`/`sendVoiceMemo` + `linkManager.forward` now take a
+`source` (and `paths`) so the wrapper matches how the input arrived. New formats:
+- **voice** (transcribed speech): `🎙️ Voice memo from the user (spoken aloud, auto-transcribed — phrasing may be imperfect): "<text>"`
+- **typed** (plain message or /prompt): `💬 Typed message from the user (Discord): "<text>"` — verbatim, no spoken/transcribed language.
+- **file** (image/video): `📎 The user sent a file (Discord): <path>` · with caption → `… <path> — message: "<caption>"` · multiple → `📎 The user sent 2 files (Discord): <p1> | <p2>`.
+
+Voice callers (`voiceReceive`) are unchanged (default source 'voice'); `/prompt`
+and the auto-forward `messageCreate` pass `source: paths.length ? 'file' : 'typed'`.
+(Single-line PTY constraint still collapses newlines to spaces on inject.)
+
+**Fix 2 — text/files/forwarding no longer require a voice channel.** The
+text-mirror channel was only resolved on voice `join()`, so outbox posts
+(post-text/post-image), the mirror, and inbound forwarding only worked while in a
+voice call. Now the channel is resolved at **login** (`index.js onReady` →
+`textMirror.resolve(guild)`, with `guild.channels.fetch()` if the cache is cold),
+so all of that works whenever the bot is online/linked. Only live audio capture
+still needs a voice channel. Outbox CLI messages updated ("as soon as it is online
+— no voice channel needed").
+
+**Preserved.** Voice/always-listen, deaf-recovery, /stop, image-send, key logic —
+untouched.
+
+**Verified (bridge-only restart).** `node --check` + require-smoke clean. framing
+suite — **14/14** (voice/typed/file wrappers + `sendVoiceMemo` branches on the
+wire; empty-typed rejected, file-no-caption still sends). Regressions: autofwd 15,
+/prompt 18. **Live:** restarted → `text mirror → #claude-voice (existing)` resolved
+AT LOGIN (no voice), and `post-text` posted immediately (`📝 posted manager text …
+not TTS'd`) while NOT in a voice channel — confirming the decouple.
+
+---
+
+## 2026-06-30 — Discord bridge: auto-forward all messages + manager text posts (branch `discord-integration`)
+
+**Feature A — auto-forward every user message (no /prompt needed)** (`src/index.js`
+`messageCreate`). When linked, ANY plain text the user types in the mirror channel
+is forwarded to the manager automatically, exactly like a voice memo
+(`linkManager.forward`); any image/video dropped is saved locally and its path
+appended (`mediaInbox`). Text + media in one message → one combined forward. A
+✅/⚠️ reaction confirms receipt. Unlinked → skipped silently (no channel spam);
+`/prompt` still works (it's an interaction, not a channel message, so no
+double-send). **Feedback-loop guard:** the bot's OWN messages are never forwarded
+— filtered on `author.id === client.user.id` PLUS any bot/webhook author. So the
+Heard/Replied mirrors, image posts, and the new manager-text posts can't loop.
+
+**Feature B — manager posts TEXT to chat, NOT spoken by TTS** (`src/textMirror.js`
+`postText`, `src/imageOutbox.js`, `tools/post-text.js`). The manager can now put
+arbitrary text (e.g. clickable LINKS that TTS can't convey) straight into the
+channel AS THE BOT. Reuses the existing outbox: a `{ "text": "…" }` descriptor in
+`$XDG_RUNTIME_DIR/ccbot-bridge/outbox/` (same dir/watcher as post-image) → the
+bridge posts it via `channel.send` — a plain Discord message that NEVER touches the
+TTS/notification path, so it is not read aloud. Chunks over Discord's 2000-char
+limit. Because it's the bot's own message, Feature A's self-ignore excludes it from
+being forwarded back (no loop).
+
+**How the manager posts text:**
+```
+cd /media/ethan/smalls/claude-autorunner/discord-bridge
+node tools/post-text.js "Here's the PR: https://github.com/…/pull/42"
+# or:  npm run post-text -- "…"
+# raw: write {"text":"…"} to $XDG_RUNTIME_DIR/ccbot-bridge/outbox/<name>.json
+```
+It posts within ~1s once the bot is in a channel; it is NOT TTS'd and NOT looped
+back to the manager.
+
+**Preserved.** Voice/always-listen, /prompt, outbound post-image, deaf-recovery,
+/stop, key logic — untouched.
+
+**Verified (bridge-only restart).** `node --check` + require-smoke clean.
+auto-forward + text-outbox suite — **15/15**: postText posts raw content + chunks
+>2000 + blank/no-channel guards; outbox posts a `{text}` descriptor (and `{image}`
+still works); post-text CLI writes the descriptor; self-ignore matrix (own message
+/ other bot / webhook ignored; user text/image while linked → forward; unlinked /
+empty → skip). /prompt regression 18/18. Live: bridge restarted, probe → Message
+Content available, logged in clean, post-text CLI queued a descriptor. **Needs a
+live call** to confirm plain-typing → manager and manager text post → channel
+end-to-end.
+
+---
+
+## 2026-06-30 — Discord bridge: /prompt (typed) + inbound image/video → manager (branch `discord-integration`)
+
+**Feature.** The user can now reach the manager (terminal 999) by TYPING and by
+sending IMAGES/VIDEOS in Discord, not just voice. (Personal convenience — same
+control-API path as voice.)
+
+- **Typed prompt** (`src/commands.js`): `/prompt text:<…> [media:<attachment>]`.
+  When linked, the text is forwarded to the manager via the EXACT same path a voice
+  memo uses (`linkManager.forward` → `sendVoiceMemo`), so it arrives instantly,
+  identically framed. Unlinked → clear ephemeral "run /link or /resume" note.
+- **Inbound media** (`src/mediaInbox.js`): an attachment on `/prompt`, OR a plain
+  image/VIDEO dropped in the text-mirror channel, is downloaded to a known local
+  dir and its local PATH is attached to the forwarded message so the manager (same
+  machine) can open it. Accepts images (png/jpg/gif/webp/…) AND videos
+  (mp4/mov/webm/mkv/…); multiple attachments; per-message cap (`INBOUND_MAX_MEDIA`,
+  10); size cap (`INBOUND_MEDIA_MAX_BYTES`, 25MB) — oversized/undownloadable files
+  are skipped with a stated reason. Plain drops get a ✅/⚠️ reaction.
+- **Message format the manager receives:**
+  - typed: `🎙️ Voice memo from the user (…): "<your text>"` (the existing voice
+    framing — manager treats it like any spoken memo).
+  - media: the same framing wrapping `<caption?>  📎 N file(s) saved locally: <path1> | <path2>`,
+    e.g. `… : "look at this 📎 1 file saved locally: /run/user/1000/ccbot-bridge/inbox/1782-ab12-screen.png"`.
+    The manager reads the absolute path(s) after `saved locally:` (split on ` | `).
+- **Where files land:** `$XDG_RUNTIME_DIR/ccbot-bridge/inbox/` (=
+  `/run/user/1000/ccbot-bridge/inbox/`), named `<ts>-<rand>-<originalname>.<ext>`.
+- **Intent safety** (`src/index.js`): plain drops need the privileged Message
+  Content gateway intent. A throwaway **probe login** checks it BEFORE building the
+  real client, so the bridge never crash-loops if it's disabled — it just logs a
+  note and disables plain drops (/prompt still works). Probe confirmed it IS enabled
+  for this bot. Added the non-privileged `GuildMessages` intent for `messageCreate`.
+
+**Preserved.** Always-listen voice, outbound post-image, deaf-recovery, /stop, key
+logic — all untouched.
+
+**Verified (bridge-only restart).** `node --check` + require-smoke clean. /prompt +
+media-inbox suite — **18/18**: composeForward formatting; isMedia accepts
+image+video, rejects others; downloads image+video, skips oversized + non-media,
+preserves extensions, honors the per-message cap; /prompt unlinked→note,
+text→exact forward, text+media→caption + 📎 path. Live: bridge restarted, probe
+→ "Message Content available", logged in clean, `/prompt` registered. New config:
+`CCBOT_MEDIA_INBOX`, `INBOUND_MEDIA_MAX_BYTES`, `INBOUND_MAX_MEDIA`,
+`ENABLE_MESSAGE_CONTENT`. **Needs a live call** to confirm a typed /prompt + an
+image/video land on the manager end-to-end.
+
+---
+
+## 2026-06-30 — Wake-mute-during-call: why the toggle "does nothing" (branch `discord-integration`)
+
+**Symptom.** Toggling **"Mute local-mic wake word while the Discord bot is in a
+call"** had no observable effect — the local mic still fired the wake word even
+with the bot in a voice call.
+
+**Investigation — all four links of the chain traced.**
+1. **UI → preference** (OK). `renderer.js` reads/writes the `wakeMuteDuringCall`
+   pref against `#wake-mute-during-call`; `PreferenceManager.updatePreference`
+   emits `preference:changed`.
+2. **Preference → app gate** (OK). `WakeWordManager._applyConfig` maps the pref
+   to `muteWhileBotActive` and calls `_syncBotPoll()`; the only wake trigger
+   (`_matchPhrase` → `_onWakeDetected`, line 454) is gated by
+   `_isWakeMuted() = muteWhileBotActive && _botInCall`; `_pollBotStatus` polls
+   `GET /api/voice/bridge-status/` every 3 s and fails safe to *not muted*.
+   App unit suite passes 8/8.
+3. **Bridge → backend reporting** (THE break — code-completeness). The app only
+   learns the bot is in a call if the bridge POSTs that state to the backend.
+   That reporter (`discord-bridge/src/bridgeStatus.js` `startBridgeStatusReporter`,
+   `active = isLinked() && session.isActive()`, heartbeat every 2.5 s) was
+   **never invoked from the committed `discord-bridge/src/index.js`** — 945126b
+   deliberately deferred the "2-line index.js wiring" to the discord-bridge
+   refactor. That refactor (working tree) now wires it: `index.js:30` requires it
+   and `index.js:53/84` calls `startBridgeStatusReporter({ linkManager, session })`
+   with the **same** `linkManager`/`session` instances the slash commands mutate
+   (`commands.handle(interaction, { linkManager, session })`), so `/link`/`/join`
+   set `session.connection` (→ `isActive()` true) and `/stop`/`/leave` null it
+   (`session.js:309`, → un-mute). The handoff is complete in the working tree.
+4. **Backend endpoint** (not deployed — live 404). The committed
+   `bridge_status` view/route (single daphne process, 8 s monotonic TTL fail-safe)
+   is correct, but the **running backend container is a stale build**:
+   `GET http://localhost:8123/api/voice/bridge-status/` returns **404**. The
+   endpoint only goes live on the next backend rebuild.
+
+**Root cause.** Two deploy-pending gaps, no defect in the branch code: (a) the
+bridge's status reporter was wired only in the (uncommitted) discord-bridge
+refactor, so any bridge started before it never reported; (b) the running backend
+predates the `bridge-status` endpoint and 404s it. With both undeployed,
+`_botInCall` can never become true, so `_isWakeMuted()` is always false and the
+toggle has no effect.
+
+**Resolution (no code change required on the branch — already correct).** The
+feature works once the stack is redeployed on the user's next deliberate restart:
+rebuild the backend so the endpoint exists, and restart the bridge so it runs the
+wired `index.js`. Bot joins → local wake word mutes within ≤5.5 s; bot leaves (or
+crashes) → it returns within ≤5.5 s (≤8 s TTL on crash). Fails safe (mic keeps
+working) whenever the backend is unreachable.
+
+**Verified offline (no Electron/backend/bridge restart).** App unit suite 8/8;
+`node --check` clean on `bridgeStatus.js`, `index.js`, `session.js`,
+`linkManager.js`, `WakeWordManager.js`; live `GET` confirms the 404; URL prefix
+`/api/voice/bridge-status/` confirmed; `session.isActive()`/`leave()` connection
+lifecycle confirmed.
+
+**Optional hardening (not done — would touch the T3 discord-bridge refactor).**
+Capture the reporter handle and call its `report()` right after join/leave so the
+mute reacts in ≤3 s (one app-poll) instead of ≤5.5 s, tightening the brief
+double-trigger window at the moment the bot joins.
+
+---
+
+## 2026-06-30 — Discord link key: no more time-based expiry (branch `discord-integration`)
+
+**Problem.** The link/sync key time-expired on a **1-hour TTL** — annoying churn.
+
+**What the TTL was.** `linkVault.writeVault` stamped `expiresAt = now + ttlSec*1000`
+(default **3600s**), `resolveKey` rejected once `Date.now() > expiresAt`, and both
+callers passed `ttlSec: 3600` (`tools/make-link-key.js --ttl` default, and the
+frontend `main.js` `discord:get-link-key` handler).
+
+**Change.** A minted key now has **no time limit** — `expiresAt: null`. It stays
+valid until one of the two events that already invalidate it independently of time:
+(1) the app/bridge **restarts** (control port rotates → old key's port/linkToken no
+longer match the vault), or (2) the user **Regenerates** (new linkToken overwrites
+the vault). Specifically:
+- `linkVault.writeVault`: `expiresAt = Number(ttlSec) > 0 ? now + ttlSec*1000 : null`
+  (default null). `resolveKey`: only enforces expiry `if (record.expiresAt && …)` —
+  null is skipped. Legacy keys that carry a real past `expiresAt` are still
+  honored (backward compatible).
+- `make-link-key.js` default `--ttl` 0 (opt-in TTL preserved); prints "valid until
+  the app/bridge restarts or you regenerate (no time limit)".
+- Frontend `main.js` handler: `ttlSec = 0`; the reuse/"valid" check treats null
+  `expiresAt` as valid so it won't re-mint/churn. Widget + `/status` reworded to
+  "valid until restart or Regenerate" when there's no expiry.
+
+**Preserved.** Deaf-recovery, /stop, image-send, text-mirror, /link, /resume — all
+untouched (only the expiry semantics changed).
+
+**Verified (bridge-only restart; no Electron/backend).** `node --check` clean
+(bridge + main.js + widget). No-expiry suite — **9/9**: default mint has null
+expiry and resolves; a year-old null-expiry key still resolves; **restart**
+(port/linkToken change) still invalidates; **regenerate** (new linkToken) still
+invalidates; legacy past-expiry key still rejected; frontend valid-check reuses on
+null expiry (no churn) and re-mints on port change. Live: restarted the bridge,
+minted a key → "no time limit", vault `expiresAt = null`, `resolveKey` accepts it.
+A key now persists for the whole life of the running bridge.
+
+---
+
+## 2026-06-30 — Discord bridge: image sending (manager → Discord) (branch `discord-integration`)
+
+**Feature.** The bot can now post IMAGE attachments (e.g. a screenshot) into the
+text-mirror channel, triggered by the manager.
+
+**Mechanism (reuses the existing local manager↔bridge channel).** The bridge and
+manager already share a local runtime dir for linking (`vault.json` under
+`$XDG_RUNTIME_DIR/ccbot-bridge/`). Image sending reuses that exact channel — no
+backend change, no new network port — so it deploys by restarting only the bridge.
+The manager drops a tiny JSON descriptor `{ image, caption }` into
+`…/ccbot-bridge/outbox/`; the bridge watches it (`src/imageOutbox.js`, polls 1s) and
+posts the image via `textMirror.postImage()`. (The "natural" path — an image field
+on the TTS notification the bridge already polls — would need a backend schema
+change + backend restart, which is out of scope here; the file-drop is the same
+spirit, fully bridge-local and testable now.)
+
+**How to trigger** (manager runs, on the same machine):
+```
+cd /media/ethan/smalls/claude-autorunner/discord-bridge
+node tools/post-image.js /abs/path/to/screenshot.png "optional caption"
+# or:  npm run post-image -- /abs/path/to/screenshot.png "caption"
+# raw: write {"image":"/abs/path.png","caption":"..."} to $XDG_RUNTIME_DIR/ccbot-bridge/outbox/<name>.json
+```
+The descriptor is written atomically (tmp+rename) so the bridge never reads a
+half-written file. It posts within ~1s once the bot is in a voice channel; if it
+isn't yet, the descriptor stays queued (and stale ones are swept after 5 min).
+
+**Size limit (criterion 3).** Oversized images (> `IMAGE_MAX_BYTES`, default 8MB —
+Discord free-tier safe) are downscaled via ffmpeg (scale to `IMAGE_MAX_WIDTH`=1920
++ JPEG); if still too big, it logs and skips gracefully rather than erroring the
+send.
+
+**Inbound (criterion 5) — deferred.** Forwarding user-posted images to the manager
+needs the privileged **Message Content** gateway intent (attachments aren't
+delivered without it) + a `messageCreate` handler; skipped to keep the main feature
+clean and avoid changing the bot's intents. Can add if that intent is enabled in
+the Discord developer portal.
+
+**Preserved.** Voice, text mirror (Heard/Replied), all commands — untouched
+(`postImage` is additive; `_post`/`postHeard`/`postReplied` unchanged).
+
+**Verified (no Electron/backend restart; bridge-only).** `node --check` +
+require-smoke clean. Image suite — **11/11**: posts an attachment with caption;
+graceful skip on no-channel / missing-file / oversized-beyond-downscale; outbox
+consumes a descriptor (calls postImage, deletes it), leaves it queued when not in a
+channel, sweeps stale (TTL); the CLI writes a correct descriptor. Downscale recipe
+validated on a real 4000px image. New config: `CCBOT_IMAGE_OUTBOX`,
+`IMAGE_POLL_INTERVAL_MS`, `IMAGE_DESCRIPTOR_TTL_MS`, `IMAGE_MAX_BYTES`,
+`IMAGE_MAX_WIDTH`. **Needs a live call** to confirm an image actually appears in
+the channel end-to-end.
+
+---
+
+## 2026-06-29 — Frontend: link-key widget shows the BARE key (branch `discord-integration`)
+
+**Tweak.** The Settings → Discord Voice Bridge widget now shows and copies just the
+RAW key string, not the `/link <key>` form. `DiscordLinkKeyManager` fills the field
+from `res.key` (was `res.command`), so Copy puts the bare key on the clipboard.
+Label changed to "Discord link key" with a static hint: "In Discord, paste this
+after **/link** — or just type **/resume** to rejoin without it." (`index.html`,
+`src/features/DiscordLinkKeyManager.js`.) `node --check` clean. Frontend-only;
+takes effect on the next deliberate Electron restart.
+
+---
+
+## 2026-06-29 — Discord bridge: kill the TTS dead zone, allow barge-in (branch `discord-integration`)
+
+**Problem.** After the stuck-gate fix, a DEAD ZONE remained: the user's speech was
+not captured (a) DURING the bot's TTS playback and (b) for a few seconds after.
+The echo gate paused ALL user capture while the bot spoke (+ a tail), so the user
+couldn't talk over the bot or immediately after.
+
+**Insight.** Discord voice receive is PER-USER. The bot's TTS is OUTPUT (the
+`AUDIO_SOURCE=system` machine-loopback streamed into the channel) — it is NEVER
+part of a user's receive stream. So the bot can safely capture the user's own
+per-user stream while playing its TTS; the only "self-audio" to exclude is the
+bot's OWN stream, which it never receives anyway. The blanket time-gate was an
+over-correction.
+
+**Fix** (`src/voiceReceive.js`, `src/index.js`, `config.js`, `src/session.js`).
+- **No more capture pause by default.** The time-based capture gate is now opt-in
+  (`PAUSE_CAPTURE_DURING_TTS`, default OFF). By default user capture stays fully
+  ACTIVE during and after TTS — no dead zone, full barge-in.
+- **Exclude only the bot's own stream.** The receiver now drops `speaking` events
+  for its own `botUserId` (wired from `client.user.id`), so self-audio is excluded
+  structurally rather than by pausing everyone.
+- **Bot-speaking window kept ONLY for deaf-recovery suppression** (not capture):
+  it still prevents a long reply with a silent user from being mistaken for a deaf
+  receiver, but no longer gates the mic. Logs reworded accordingly
+  (`🔊 bot speaking ~Ns … user capture stays ACTIVE (barge-in)`).
+
+**Net:** the user can talk over the bot AND immediately after, captured every
+time, no dead zone — while the bot still never transcribes its own voice. Users on
+open speakers who hit acoustic echo can set `PAUSE_CAPTURE_DURING_TTS=1`.
+
+**Verified (no Electron relaunch; bridge-only restart).** `node --check` +
+require-smoke clean. echo/barge-in suite — **18/18**: barge-in default (user
+forwarded while bot speaks), opt-in pause drops, **bot's own stream never
+subscribed**, real user subscribed, plus the existing barge-in hold/cap. Full
+regression: gateFix 11, health 11, stopLeave 10, alwaysListen 10, wake 28, resume
+13, textMirror 9 — all green. New config: `PAUSE_CAPTURE_DURING_TTS` (default off);
+`ECHO_GUARD_TAIL_MS` now only affects recovery suppression. **Needs a live call**
+to confirm no dead zone during/after playback.
+
+---
+
+## 2026-06-29 — Discord bridge: FIX echo gate stuck closed (regression) (branch `discord-integration`)
+
+**Regression.** The self-voice echo gate shipped earlier got STUCK CLOSED: after
+the bot read a TTS notification, capture stayed paused and never recovered.
+
+**Root cause (measured).** `markBotSpeaking(row.duration_ms)` set `botSpeakingUntil`
+to `now + duration_ms + tail` with NO upper bound — and real manager TTS replies
+are LONG (live data: `duration_ms` of 43525, **60200**, 27775ms; the manager reads
+its whole response aloud). So one long reply gated capture ~60s, and back-to-back
+replies kept extending the window, parking it minutes into the future. Worse,
+`_receiverState()` forced `audioAgeMs = 0` for the entire window, so the
+deaf-receiver monitor saw "fresh" and never recovered — capture looked permanently
+dead.
+
+**Fix.**
+- **Hard failsafe ceiling** (`config.botSpeakingMaxMs`, default 90s): the gate
+  window is `min(duration_ms + tail, ceiling)`, so a long/garbled/missing duration
+  can NEVER latch capture off. 90s comfortably covers real replies (~60s) so normal
+  replies still gate for their true length (no echo) and reopen right after.
+- **Guaranteed reopen + logged transitions** (`src/session.js`). A failsafe timer
+  fires after the window and reopens the gate (re-arming if the window was
+  extended), independent of any "playback finished" event — which `AUDIO_SOURCE=
+  system` doesn't provide. Every transition logs with a reason:
+  `🔇 capture gate CLOSED for ~Ns — bot speaking (manager reply)` /
+  `🎙️ capture gate OPEN — capture resumed (…)`. `/stop` + leave force-open the gate.
+- **Recovery no longer suppressed by the gate.** The `audioAge=0` discount is now
+  bounded by the capped window; after the gate reopens, the real stall age grows
+  again, so a genuinely deaf receiver is recovered regardless of gate history.
+- **No long-speech cutoff.** `maxUtteranceMs` raised 30s → 180s so a long monologue
+  isn't truncated (the AfterSilence VAD already segments normal speech at pauses).
+
+**Net:** after the bot finishes a reply, capture reopens within ~1s (≤ the 90s
+failsafe even for a bogus duration); the user can talk after every reply,
+indefinitely.
+
+**Verified (no Electron relaunch; bridge-only restart).** `node --check` +
+require-smoke clean. New gate-fix suite — **11/11**: huge duration capped to the
+ceiling; normal reply gates ~its duration; TTS start→end reopens; **end-event-never-
+fires → failsafe still reopens**; recovery discounted during the gate but un-
+suppressed after; forced-open on leave; long-utterance backstop ≥120s. Full
+regression: echoBarge 16, health 11, stopLeave 10, alwaysListen 10, wake 28, resume
+13, textMirror 9 — all green. New config: `BOT_SPEAKING_MAX_MS` (90000). **Needs a
+live call** to confirm the stuck-gate symptom is gone end-to-end.
+
+---
+
+## 2026-06-29 — Discord bridge: self-voice echo gate + TTS barge-in (branch `discord-integration`)
+
+**Problem.** Listening broke every time the bot read a notification aloud. With
+`AUDIO_SOURCE=system` the whole machine output (TTS + SFX) is streamed INTO the
+channel; the bot's own voice (and its acoustic echo through the user's room) was
+being captured + transcribed + forwarded as if it were the user — looping and
+wedging the receiver — and TTS also talked over the user.
+
+**Self-voice / echo gate** (`src/session.js`, `src/voiceReceive.js`, `src/index.js`).
+The session now tracks a `botSpeakingUntil` window, set whenever the bot plays
+audio: on each manager-TTS notification (`row.duration_ms` + an 800ms echo tail,
+fires in both audio modes) and on every SFX/ack (`playSound`). The receiver asks
+`session.isBotSpeaking()` and, while true, refuses to capture/transcribe/forward:
+gated at the `speaking:start` handler, again at capture-end (a clip that
+overlapped playback), and a backstop in `_processAlwaysOn` (a clip that waited on
+the serialization queue). So the bot's own audio can never be mistaken for a
+command. Composes with the deaf-receiver monitor: `_receiverState()` discounts
+bot-speaking time from the stall age (audioAge=0 while speaking; capped to
+time-since-it-ended after), so reading a long TTS is never mistaken for a deaf
+receiver and never triggers a false recovery.
+
+**Barge-in** (`src/audioPlayer.js`, `src/session.js`). A lightweight
+voice-activity signal — `receiver.isUserSpeaking()` (a capture in progress, or
+audio within `userSpeakingGraceMs`) — gates the START of a queued TTS clip in
+tts mode: the player holds the clip while the user is talking and plays it after
+a silence gap, with an 8s max-hold so a reply is never starved. It only delays
+*starting* the next clip (never restarts a playing one), so it can't loop —
+reusing the autorunner barge-in lesson. NOTE: in `AUDIO_SOURCE=system` the
+manager's TTS is played by the OS (the bridge doesn't own that playback), so true
+barge-in there needs upstream coordination; the echo gate (the actual fix for the
+breakage) works in both modes.
+
+**Preserved.** Always-listen, mute=off, wake word, text mirror, /resume, /link,
+/stop, deaf-receiver recovery — all intact.
+
+**Verified (no Electron relaunch; bridge-only restart).** `node --check` +
+require-smoke clean. New echo/barge-in suite — **16/16**: bot-speaking window math
++ tail; `_receiverState` discounts bot-speech (age 0 during, capped after);
+`isUserSpeaking` (active capture / grace); echo gate drops an utterance while the
+bot speaks and forwards normally otherwise; barge-in holds a clip while the user
+talks, plays on silence, and plays anyway past the max-hold cap. Regressions:
+health 11, stopLeave 10, alwaysListen 10, wake 28, resume 13, textMirror 9 — all
+green. New config: `ECHO_GATE_ENABLED`, `ECHO_GUARD_TAIL_MS`, `DEFAULT_TTS_MS`,
+`SFX_GATE_MS`, `BARGE_IN_ENABLED`, `USER_SPEAKING_GRACE_MS`, `BARGE_IN_MAX_HOLD_MS`.
+**Needs a live call to fully confirm** the "breaks every time it reads a message"
+symptom is gone and that TTS-into-channel + user-capture no longer feed back.
+
+---
+
+## 2026-06-29 — Discord bridge: deaf-receiver auto-recovery + /stop escape hatch (branch `discord-integration`)
+
+**Problem.** Two confirmed-live failures: (a) the voice RECEIVER silently goes
+deaf — the VoiceConnection stays "Ready" but stops delivering audio (no speaking
+events, no packets) after a mute/unmute or network blip; nothing errors so it
+never self-recovers (observed ~7 min of zero audio while the user was unmuted and
+talking). (b) The bot got STUCK in a call with no way out — `/resume` only
+rejoins, and the wedged connection couldn't be killed from the user side, forcing
+a full service restart.
+
+**Auto-recovery** (`src/receiverHealth.js`, wired in `src/session.js`,
+`src/voiceReceive.js`). The receiver now stamps `lastAudioAt` on every speaking
+event AND every decoded audio chunk. A `ReceiverHealthMonitor` ticks every 10s
+and recovers when the signal says deaf — **Ready + ≥1 non-bot, UNMUTED member
+present + no audio for a while**. Everyone quiet/muted/absent is explicitly NOT a
+fault. Confidence-tiered threshold: 45s once audio has flowed (we KNOW it can
+hear), 120s if nothing's been heard yet (could be a quiet call). Recovery ladder,
+lightest first, with a 15s cooldown and a hard cap of 3 rejoins before it gives
+up (no thrash): **1.** re-subscribe (drop stale subscriptions); **2.** full
+leave + rejoin of the same channel. Counters reset only when audio actually
+returns, so the cap survives a rejoin. Logs `⚠️ receiver stalled Ns …`,
+`⚠️ still deaf … rejoining (n/3)`, `✅ reception restored`.
+
+**/stop escape hatch** (`src/commands.js`, `src/session.js`). New `/stop` cleanly
+leaves the call and stops listening but stays LINKED (so `/resume` rejoins).
+`session.leave()` is now robust: it FORCE-destroys the connection even when wedged
+(destroys both our handle and any connection discord.js still tracks for the
+guild) and sets `_intentionalLeave` so the Disconnected auto-recovery can't fight
+the teardown. `/leave` still also unlinks (unchanged). Reply: "🛑 Left the call …
+/resume to rejoin." `/stop` is the manual escape hatch; the monitor is the
+automatic one — they share the same robust teardown.
+
+**Empty-transcript diagnostics** (`src/voiceReceive.js`). On an empty transcript
+we now log the clip's duration + peak/RMS dBFS and classify it: "SILENT capture
+(deaf receiver / muted mic?)" vs "audio present (likely a Whisper miss)" —
+distinguishing a deaf receiver from a Whisper miss. `RETAIN_EMPTY_WAV=1` keeps
+that one clip on disk for inspection.
+
+**Preserved.** Always-listen, mute=off, wake word, text mirror, /resume, /link —
+all untouched (regression suites green).
+
+**Verified (no Electron relaunch; bridge-only restart).** `node --check` +
+require-smoke clean. Health-monitor decision ladder with a deterministic fake
+clock — **11/11**: healthy→idle, everyone-muted→idle, not-Ready→idle, stall→light
+then escalate after cooldown, backoff blocks double-acting, rejoin-restores→reset,
+persistent-deaf caps at 3 then gives up, cold-start patience (50s no-op / 130s
+acts). `/stop` + robust-leave + audioLevel — **10/10**: leave force-destroys a
+wedged connection, stays linked, suppresses auto-recovery; `/stop` doesn't unlink;
+`/leave` still unlinks; silence→-inf dBFS, loud→high RMS. Regressions: alwaysListen
+10, wake 28, resume 13, textMirror 9 — all green. New config:
+`RECEIVER_HEALTH_*`, `RECEIVER_STALL_MS`/`COLD_STALL_MS`, `RECEIVER_MAX_REJOINS`,
+`RETAIN_EMPTY_WAV`. **Needs a live call to fully confirm** the real deaf-state
+detection + that a leave+rejoin actually restores reception in the wild.
+
+---
+
+## 2026-06-29 — Frontend: copyable Discord link key in Settings (branch `discord-integration`)
+
+**Feature.** The current Discord `/link` key is now visible and one-click
+copyable in the app — the user grabs it from the UI instead of asking a model to
+mint one.
+
+- **Where:** Settings (gear icon) → new **"Discord Voice Bridge"** group, directly
+  below "Wake Word". Shows a readonly, ready-to-paste **`/link <key>`** field with
+  **Copy** + **Regenerate** buttons, a status line (control port + expiry), and a
+  hint that `/resume` rejoins without a key. (`index.html`, styled with the
+  existing `setting-group`/`setting-btn` classes; a `.setting-btn.copied`
+  success-accent added to `style.css`.)
+- **Never stale, never rejected** (`main.js` IPC `discord:get-link-key`). The main
+  process builds the key from the LIVE `hookServer.port` + `hookServer.token`
+  using the bridge's own `discord-bridge/src/linkVault`. It reuses the current
+  vault token when it's still valid for THIS port (stable display, no churn);
+  if the port rotated, the token expired, or the user clicked Regenerate, it
+  `writeVault`s a fresh token — exactly like `make-link-key`. So the displayed
+  key is always one the bridge's `resolveKey` accepts. Settings re-fetches on
+  every open.
+- **Renderer widget** (`src/features/DiscordLinkKeyManager.js`, wired in
+  `renderer.js setupSecondaryUI`): fetches via IPC, renders, Copy →
+  `navigator.clipboard` with a "✓ Copied!" flash, Regenerate mints fresh.
+  Degrades gracefully ("control API not running yet — reopen Settings") if the
+  hook server isn't up.
+
+**Safety.** Only the link key (port + revocable link-token) is ever surfaced —
+never the control token (it stays in the main process / vault). No backend or
+Electron relaunch performed; this is code-only and takes effect on the user's
+next deliberate app restart.
+
+**Verified (no relaunch).** `node --check` clean on `main.js`, `renderer.js`, the
+new manager. A contract test against the REAL `linkVault` (temp vault, live link
+untouched) — **12/12**: fresh-mint key accepted by `resolveKey`; "current" key is
+stable across opens; port-rotation mints a fresh accepted key; Regenerate rotates
+(old key rejected, new accepted); expired vault re-mints. Full-app UI verified on
+the user's next restart (can't relaunch mid-session).
+
+---
+
+## 2026-06-29 — Discord bridge: always-listening in-call + text mirror (branch `discord-integration`)
+
+**Feature.** While the bot is in a Discord voice call it now ALWAYS listens (no
+wake word — muting your mic is the off switch), transcribes one utterance at a
+time on the silence boundary, forwards to the manager, and mirrors everything
+into a Discord text channel. Built on the `discord-integration` branch (off dev);
+the `/resume` + wake-word work is preserved intact.
+
+- **Always-on in-call, mute = off** (`src/voiceReceive.js`, `src/index.js`).
+  When `alwaysListenInCall` is on (default), the wake-word gate is bypassed
+  in-call: every utterance is captured and forwarded. The bot tracks each
+  speaker's mute via `voiceStateUpdate` (selfMute/serverMute) and treats MUTE as
+  the sole "stop" — a muted speaker is skipped and any in-flight capture dropped
+  (muting also stops audio anyway; this adds explicit gating + logging). The
+  wake-word code path is untouched and still used when `ALWAYS_LISTEN_IN_CALL=0`.
+- **Deferred per-utterance Whisper** (`src/voiceReceive.js`). End-of-speech is
+  Discord's `AfterSilence` VAD (`inCallSilenceMs`, default 1500). On that
+  boundary the buffered utterance is written to a per-utterance temp WAV file and
+  submitted to Whisper exactly ONCE — never streaming/continuous — then cleaned
+  up (falls back to the in-memory buffer if disk I/O fails).
+- **Text mirror** (`src/textMirror.js`, `src/session.js`). A dedicated channel
+  gets "🎙️ **Heard:**" (your transcript, on forward) and "💬 **Replied:**" (the
+  manager's reply, from `TtsPoller.onNotification` `row.text`). Channel resolves:
+  `DISCORD_TEXT_CHANNEL_ID` → existing `#claude-voice` → create it (needs the bot
+  to have Manage Channels). If none works it disables itself with a clear log and
+  voice keeps running. All posts are fire-and-forget.
+- **Status** (`src/commands.js`). `/status` shows the listening mode + text
+  channel.
+
+**Invariants preserved.** Local-mic wake word + the bridge-status
+mute-while-in-call heartbeat (no double-trigger) are untouched; only the link key
+(port + revocable link-token) ever crosses Discord — the mirror posts only your
+own transcript and the manager's reply text, never creds. No new privileged
+intents (message-send needs none; `voiceStateUpdate` uses the existing
+GuildVoiceStates intent). Channel auto-create needs the bot to hold Manage
+Channels, else set `DISCORD_TEXT_CHANNEL_ID`.
+
+**Verified (automated).** `node --check` clean across the bridge; module
+require-smoke clean. Live-backend + mock harnesses: always-listen path forwards a
+non-wake utterance + mirrors "Heard:" + acks; **mute drops capture** and unmute
+resumes; the per-utterance file is written, transcribed, and cleaned up; silence
+forwards nothing (**10/10**). Text mirror: resolve order (id → existing → create
+→ graceful null), label/whitespace/truncation formatting, blank skipped
+(**9/9**). New config: `ALWAYS_LISTEN_IN_CALL` (default on), `IN_CALL_SILENCE_MS`
+(1500), `TEXT_MIRROR_ENABLED`, `DISCORD_TEXT_CHANNEL_ID`, `DISCORD_TEXT_CHANNEL_NAME`.
+**Pending live in-call E2E (criterion 6)** before commit.
+
+---
+
+## 2026-06-28 — Mute local-mic wake word while the Discord bot is in a call
+
+**Goal.** Stop the wake word DOUBLE-triggering when the user is in the same room
+as the host mic AND the Discord bot is in the call: saying the phrase should fire
+once (via the bot), not also via the local mic. New opt-in setting in the
+wake-word settings panel: "Mute local-mic wake word while Discord bot is in a
+call". When ON and the bot is active (linked + in a voice channel), the local
+wake word is suppressed; when the bot isn't in a call, local wake word works
+normally.
+
+**How the app learns the bot is active (3 components).**
+1. **Bridge → backend (`discord-bridge/src/bridgeStatus.js`, new).** A
+   fire-and-forget heartbeat (mirroring `log.js`) POSTs `active =
+   linkManager.isLinked() && session.isActive()` to the backend every ~2.5s.
+   `session.isActive()` (`!!this.connection`) is the authoritative in-voice
+   signal. Wired in `src/index.js` (`startBridgeStatusReporter`).
+2. **Backend (`voice_transcription/views.py` + `urls.py`).** New
+   `GET|POST /api/voice/bridge-status/` backed by an in-memory singleton with a
+   monotonic timestamp + 8s TTL (mirrors `wake_service`, no DB/migration). POST
+   records `{active, last_seen}`; GET returns active **only** if reported within
+   the TTL — so if the bridge crashes/quits the flag goes stale and the app
+   un-mutes itself (fail-safe).
+3. **Renderer (`src/features/WakeWordManager.js`).** New preference
+   `wakeMuteDuringCall` (default off). While the spotter is enabled AND the pref
+   is on, it polls `/api/voice/bridge-status/` every 3s (mirrors
+   NotificationManager's poll) into `_botInCall`; an unreachable backend fails
+   safe to "not in call". Suppression is at the single `_onWakeDetected()`
+   chokepoint via `_isWakeMuted() = muteWhileBotActive && _botInCall` — the
+   always-on RMS speech gate (`_updateSpeechSignal` / `speech:active`) and the
+   post-notification reply window are deliberately left untouched.
+
+**UI.** Toggle added to the Wake Word settings group (`index.html`
+`#wake-mute-during-call`), wired through `PreferenceManager` (default
+`wakeMuteDuringCall: false`) and `renderer.js` `setupSettings` (sync + change),
+following the existing `wake-word-enabled` pattern.
+
+**Verified (no deploy — Electron NOT restarted, manager 999 left alive).**
+- Renderer: `src/features/wake-mute-during-call.test.js` — 8 tests: pref ON + bot
+  in call → suppressed; bot not in call → fires; pref OFF → fires; pref mapping
+  (bulk + live); `_applyBotStatus`; the poll drives suppression end-to-end
+  (active→suppressed, inactive→fires); poll failure fails safe; the TTS speech
+  gate still fires while muted. Full feature suite green; `node --check` clean.
+- Backend: exercised the real Django URL+view+TTL in a throwaway container
+  (host code overlaid, live server untouched): initial inactive → active POST →
+  active → stale-by-TTL → inactive → inactive POST → inactive. ✅
+- Bridge: `computeActive` truth table + the reporter POSTs `{"active":true}` to
+  `…/api/voice/bridge-status/` (stubbed fetch). ✅
+
+**Deploy / coordination notes.** Electron picks this up on the next deliberate
+restart. The backend image is baked (not bind-mounted), so the endpoint needs a
+backend rebuild (`docker compose up -d --build backend`); it ships alongside the
+already-staged `wake_check` backend work. The bridge wiring in
+`discord-bridge/src/index.js` (2 lines: require + `startBridgeStatusReporter`)
+was left in the working tree (NOT committed) to avoid bundling T3's large
+in-progress `index.js` refactor — coordinate with the discord-bridge terminal to
+fold it in; it deploys on the next bridge restart regardless.
+
+---
+
+## 2026-06-28 — Discord bridge: `/resume` — reconnect without re-pasting the key
+
+**Problem.** Re-linking the bot meant pasting the long base64 link key every time
+— painful on mobile, where the user lives.
+
+**Feature.** A new `/resume` slash command re-links and rejoins the user's current
+voice channel using the LAST key they successfully `/link`'d with — no paste.
+
+- **Per-user memory** (`src/resumeStore.js`). On every successful `/link`, the
+  bot records `discordUserId -> { key, tag, port, managerId, linkedAt }` in a
+  small 0600 JSON store at `$XDG_RUNTIME_DIR/ccbot-bridge/resume.json`. The stored
+  `key` is the same paste-able link key (port + revocable link-token, **no**
+  control token — see `linkVault.js`). It survives a **bot restart** (systemd
+  --user restart doesn't clear `/run/user`); it's wiped on machine reboot, which
+  is correct because the vault it points at is wiped then too.
+- **`/resume` flow** (`src/commands.js`). Look up the caller's stored key →
+  re-run `linkManager.link(storedKey)`, which re-resolves it against the live
+  vault AND re-validates the control API. On success, rejoin the user's current
+  voice channel (shared `joinCurrentChannel` helper, same as `/link`). Clear,
+  actionable errors otherwise: **no saved session** ("run /link <key> once") and
+  **stored key no longer valid** (rotated / expired / manager gone → "run /link
+  <key> with a fresh key"). `/leave` intentionally keeps the saved mapping so a
+  later `/resume` still works. `/status` now shows whether a resume is available.
+
+**Why it's safe.** `/resume` re-uses the exact same vault + control-API validation
+as `/link`, so it can never connect to a stale/rotated session — it either
+reconnects to a genuinely-live session or fails with guidance. No new trust path.
+
+**Verified.** 13/13 mock-driven tests on the real `commands.handle` + `resumeStore`:
+`/resume` with no prior link errors cleanly (no link attempt, no join); `/link`
+then leave→`/resume` reconnects using the stored key and rejoins; a now-invalid
+stored key yields the clean "run /link" error with no rejoin; the store persists
+across a simulated restart and is 0600. `npm run check` clean. Tunable:
+`CCBOT_RESUME_STORE` (store path). Pending the user's live confirmation before
+commit.
+
+---
+
 ## 2026-06-27 — Audit fixes: two HIGH-severity autorunner bugs
 
 From the all-projects bug-swarm audit; user approved fixing the **highs only**
@@ -2199,3 +3538,549 @@ ONLY the backend for the `vosk` dep + model mount; never touches the Electron
 app), then bring the bot back (`systemctl --user enable --now ccbot-discord-bridge`)
 and `/link`. Until rebuilt, the endpoint 404s and the bridge falls back to the
 Whisper gate.
+
+---
+
+# Phase 2 audit-driven improvements (2026-07-06)
+
+Prompted by a user-directed audit + improvement pass. Phase 1 was a read-only
+audit (security, dead code, unwired code, feature inventory for both branches,
+README + showcase plan) — the full report is saved to `PHASE1_AUDIT.md`. Phase 2
+(this log) implements the approved fixes. HARD RULE throughout: never restart or
+kill the LIVE app / control API / Discord bridge / terminal 999 — all running and
+testing happens on an ISOLATED sandbox instance. Edits stay uncommitted for the
+user to apply on their own restart.
+
+## Workstream 1 — Isolated test interface (DONE, verified)
+
+Stood up a fully self-contained sandbox so features/security/showcases can be
+exercised without touching the live instance. Everything below is distinct from
+live and was verified before/after launch (live `:8123` stayed healthy and up
+6 days; live `~/.claude/settings.json` mtime unchanged).
+
+- **`docker-compose.test.yml`** (new) — a STANDALONE isolated backend, not an
+  override (compose appends `ports`, so an override would re-bind live's 8123
+  and collide). Brought up as its own project: `docker compose -p ccbot-test -f
+  docker-compose.test.yml up -d --wait`. Binds ONLY `127.0.0.1:8124`; own
+  Postgres with its own project-scoped volume (`ccbot-test_ccbot-test-pgdata`);
+  inline throwaway env (DEBUG on, no secrets). Live containers/volume untouched.
+- **`src/utils/backend-url.js`** (new) — single source of truth for the Django
+  backend base URL. Defaults to `http://localhost:8123` (live behaviour
+  unchanged); honours `CCBOT_BACKEND_URL` (or `BACKEND_URL`) so a process can be
+  pointed at the `:8124` sandbox. Fixes the audit's hardcoded-URL smell.
+  Rewired the 8 hardcoded `http://localhost:8123` call sites to use it:
+  `NotificationManager.js`, `WakeWordManager.js`, `ActionLogManager.js`,
+  `VoiceManager.js` (transcribe + health), `renderer.js` (voice client + TTS
+  voices fetch), and `manager-session.js` (the manager's CLAUDE.md TTS
+  instructions now interpolate the backend URL, so the sandbox manager targets
+  :8124 too). All files `node --check` clean; no stray `localhost:8123` left in
+  app code (only a test fixture).
+- **`.ccbot-test/`** (new, gitignored) — the sandbox harness:
+  - `env.sh` — shared isolation env: `CCBOT_BACKEND_URL=:8124`, `HOME=`sandbox
+    (isolates `~/.claude` hooks + manager session files), sandbox
+    `CCBOT_LINK_VAULT` / `CCBOT_IMAGE_OUTBOX` / `CCBOT_MEDIA_INBOX`. Deliberately
+    does NOT override `XDG_RUNTIME_DIR` so the PulseAudio socket still resolves.
+  - `verify.js` — Playwright probe that launches the sandbox app and asserts
+    every boundary distinct from live (backend :8124, sandbox HOME, sandbox
+    vault, HookServer port != live, sandbox-only hooks). Result: all 6 checks
+    PASS; sandbox HookServer bound 45225 (live is 43971).
+  - `launch.sh` — visible launcher for driving features / recording, with an
+    optional `--synth-mic` (per-process `PULSE_SOURCE`, never the global
+    default).
+  - `mic-setup.sh` — loads/unloads a PulseAudio virtual mic (null-sink +
+    remap-source `ccbot_test_mic`) and plays a clip into it. ADDITIVE +
+    REVERSIBLE; never runs `set-default-source`, so live's real wake mic is
+    never hijacked.
+  - `recordings/wake_sean.wav` — validated the TTS-synth-to-file path on :8124
+    (`POST /api/tts/speak/ {"text":"sean"}` -> `GET /api/tts/audio/1/`), a 66 KB
+    24 kHz WAV. This is the synthetic wake-word clip that lets the wake-word test
+    and showcase self-trigger without a live human voice.
+- **`.gitignore`** — added `.env.test` and `/.ccbot-test/` so sandbox artifacts
+  and any test env never get committed.
+
+**Wake word confirmed (not assumed):** the live persisted phrase is `"sean"`
+(not "hey claude", which is only the code default), threshold `0.95`, silence
+`4500ms` — corroborated by the existing `discord-bridge/config.js` note that
+Vosk garbles the short name. Recorded in `PHASE1_AUDIT.md` §5.1 with the
+synthetic-TTS driving design and the confidentiality note (use a neutral demo
+phrase in the sandbox so the real wake name isn't shown).
+
+## Decisions (user-approved)
+- Test backend = DEDICATED `:8124` with the `CCBOT_BACKEND_URL` override (not
+  sharing live :8123).
+- SKIP provisioning a live test Discord bot; still implement + logic-test the
+  Discord user allow-list security fix; user verifies the live Discord leg later.
+- Remove the dead ADB tree (explanation to accompany the removal in Workstream 3).
+
+## Workstream 2 — Security fixes (DONE, verified in sandbox)
+
+Implements audit findings 1.1, 1.3, 1.5, 1.7 (PHASE1_AUDIT.md §1), plus the
+threat-model notes for 1.2 and 1.6. Nothing here touches the live processes —
+all runtime verification happened against the isolated `:8124` backend or pure
+Node unit tests. All edited files pass `node --check` / `py_compile`.
+
+- **1.1 (HIGH) Discord user allow-list — `discord-bridge/src/auth.js` (new) +
+  `auth.test.js` (new, 4/4 pass).** `DISCORD_ALLOWED_USER_IDS` (comma-separated
+  Discord user IDs) is now enforced at every entry point that can drive the
+  manager:
+  - every slash command incl. `/link` and `/prompt` (`commands.js` top of
+    `handle()` — unauthorized users get an ephemeral deny that includes their
+    own ID so they can allow themselves);
+  - the `messageCreate` auto-forward (`index.js` — unauthorized posts are
+    silently ignored);
+  - **voice capture** (`voiceReceive.js`) — previously an unset
+    `ALLOWED_SPEAKER_IDS` meant *every speaker in the channel* could wake-word
+    the manager; it now falls back to the command allow-list, so speaking is
+    gated exactly like typing. `ALLOWED_SPEAKER_IDS`, when set, still overrides.
+  **DENY BY DEFAULT:** with the env unset, ALL commands/forwards are refused
+  (the bot replies with the caller's ID + one-line setup instructions, and logs
+  a loud startup warning). Documented in `.env.example` and SETUP.md.
+  ⚠️ **User action on next bridge restart:** set
+  `DISCORD_ALLOWED_USER_IDS=<your Discord user ID>` in `discord-bridge/.env`,
+  or the (currently offline) bridge will refuse you too when it comes back.
+
+- **1.3 (MEDIUM) Timing-safe HookServer token compare —
+  `src/main/HookServer.js`.** The `x-ccbot-token` check now uses
+  `crypto.timingSafeEqual` over equal-length buffers (length checked first —
+  safe, token length is fixed) instead of `!==`, closing the timing side
+  channel a co-resident local process could probe.
+
+- **1.5 (LOW/MED) Outbox path containment — `discord-bridge/src/pathGuard.js`
+  (new), wired into `imageOutbox.js`.** Descriptor `image`/`video` paths are
+  resolved with `realpathSync` (defeats symlink escapes), must be regular
+  files, and must live under an allowed root (the bridge runtime dir, the
+  media inbox, the OS tmpdir, or `CCBOT_MEDIA_ROOTS` extras). Functionally
+  tested: legit path ALLOWED; `/etc/passwd`, `../` traversal, and a symlink
+  pointing at `/etc/passwd` all REFUSED.
+
+- **1.7 (LOW) Frontend-log newline strip —
+  `backend/frontend_control/views.py`.** `ts`/`level`/`message` are scrubbed
+  of CR/LF and all C0 control chars before printing, so a crafted log entry
+  can no longer forge fake `[frontend]` lines in the shared stdout timeline.
+  **Verified live in the sandbox** (required rebuilding the sandbox backend
+  image — the test compose bakes `./backend` at build time): a payload with
+  embedded `\n[frontend] [error] FORGED` now prints as ONE flattened line.
+
+- **1.2 threat-model note — `discord-bridge/SETUP.md`.** Documented that the
+  control token is a full-control capability (`/terminal/keys` = raw
+  keystrokes = command execution at a shell): token compromise ≈ host
+  compromise; loopback + the 0600 vault are the boundary; rotate with
+  `npm run link-key`.
+
+- **1.6 guidance — `main.js`.** Comment at the `webPreferences` block: the
+  renderer has full Node (no contextIsolation), so never load remote URLs and
+  insert untrusted text only via `textContent`; contextIsolation + preload is
+  the long-term fix. (No behavior change — deliberate, per audit: not directly
+  exploitable today.)
+
+Live instance checked before/after: `:8123` healthy, containers up, nothing
+restarted.
+
+## Workstream 3 — Dead-code removal (DONE)
+
+Removed the audit's HIGH-confidence dead set (PHASE1_AUDIT.md §2): **39 files,
+19,112 lines**, every one re-verified zero-referenced immediately before
+deletion (grep across index.html, renderer.js, main.js, src/**, backend —
+excluding node_modules/venv). The sandbox app was then booted via the
+Playwright probe: renderer initializes, HookServer binds, all isolation checks
+still PASS.
+
+**The ADB story (user asked what the stray ADB call was).** `src/adb/` was a
+complete, self-contained **Android Debug Bridge** integration: device
+discovery, connection monitoring, and Android screenshot capture via
+`adb shell screencap -p` (plus a demo UI and integration examples). It arrived
+early in the project's life (commit `eeec9d2` "fixed missing dependencies"),
+was clearly intended as a future "watch/control an Android device from the
+grid" feature, but was **never wired** into main.js, renderer.js, or
+index.html — no IPC handler, no script tag, nothing constructs it. It even
+received a recent bug fix (commit `277de25`, binary screenshot corruption)
+without ever becoming reachable. So the "stray ADB call" was the unreachable
+`spawn(adb, ['shell','screencap','-p'])` inside this parked module — dead by
+any runtime measure. Per the user's decision, the whole tree (incl. its test)
+is now removed; it lives in git history if ever wanted again.
+
+**Deleted directories:** `src/integration/` (error-recovery/orchestrator/
+self-test framework, ~3.3k lines), `src/actions/` (action recording system,
+~4k), `src/screenshot/` (screenshot engine, ~1.9k), `src/adb/` (above),
+`src/terminal/` + `src/timer/` (superseded duplicates of the live
+`src/core/terminal-manager.js` / `src/features/TimerManager.js`).
+
+**Deleted files:** `src/core/ipc-handler.js` (IPC actually lives in
+main.js/renderer.js); dead `src/utils/`: `dom-cache.js`, `dom-utils.js`,
+`platform-utils.js`, `terminalUtils.js`, `timer-registry.js`, `uiUtils.js`;
+the whole top-level `utils/` (`textExtraction.js` — required but all imports
+unused; `api-client.js` — script-loaded, never instantiated, wrong port 8001;
+`glowing-effect.js` — only consumer was the deleted timer-controller;
+`completion-timer.js` — operated on DOM nodes nothing creates);
+`backend/pricing/ccusage_simple_parser.py` (never imported);
+`backend/terminal_backend/management/commands/runserver_8001.py` (backend
+runs on 8123); `docs/images/main-interface.png` (unreferenced).
+
+**Live-file edits that went with it:** index.html — dropped the three dead
+`<script>` tags (`glowing-effect`, `api-client`, `completion-timer`);
+renderer.js — dropped the unused `textExtraction` require; StatusManager —
+unused `BoundedSet` import; UsageLimitManager — unused `ipcRenderer` import;
+MessageQueueManager — stale comment pointing at ipc-handler.js; TimerManager —
+removed the dead third constructor param + three `if (this.backendAPIClient)`
+branches that could never run (renderer constructs it with 2 args; the class
+does its glow via CSS). All edited files `node --check` clean; a repo-wide
+sweep confirms zero dangling references to any deleted path.
+
+**CSS pass (delegated subagent, verified):** 261 dead blocks removed — 253
+rule blocks + 8 orphaned `@keyframes` — covering 111 verified-dead class/id
+names; `style.css` went 6,321 → 4,441 lines. Every removal was grep-verified
+against index.html + all live JS first. Audit candidates that turned out LIVE
+were kept: `.history-item(-content/-meta)`, `.image-preview-container/-list`,
+the live `.timer-*` set, `.todo-content`, `.todo-search`,
+`.color-picker-title/-modal`, `.manager-setup(-text/-row)`,
+`.message-edit-input`. Braces verified balanced (664/664); no empty @media
+blocks left.
+
+**Kept (deliberately):** `bin/manage.py` (venv-flow convenience, audit-MEDIUM,
+not in the approved HIGH set); `assets/icons/icon.iconset/` (build input);
+all soundeffects (dynamically enumerated); `.xterm-search-decorations` /
+`.search-highlight` CSS (runtime-injected by the xterm search addon).
+
+## Workstream 4 — Wiring fixes: built-but-disconnected code (DONE, probe-verified)
+
+Implements PHASE1_AUDIT.md §3. Every item below was verified live in the
+sandbox app: a Playwright probe launched the isolated instance and asserted
+17/17 checks PASS (controls exist, state mirrors load, events land, overlay
+toggles, chips render). Live app untouched.
+
+**Event-name mismatches (silent feature outages, one-line fixes):**
+- `StatusManager` now subscribes to `message:injection-started` /
+  `message:injection-completed` (the names MQM actually emits) — the
+  'injecting' status pill and the post-injection rescan fire again for the
+  first time. Also `terminal:closed` (the event the close path emits) instead
+  of the never-emitted `terminal:removed` — per-terminal status entries no
+  longer leak on close.
+- `SoundManager` gained the missing generic `sound:play` handler — the
+  timer-expiry alarm (`TimerManager` emits `sound:play {type:'timer-expired'}`)
+  is audible for the first time.
+- The timer inline-edit path now emits `timer:manual-change`, so
+  `UsageLimitManager` stops auto-syncing the timer when the user takes manual
+  control (previously subscribed but never fired).
+
+**IPC gaps:**
+- `terminal-error` (PTY spawn failure after all retries) now has a renderer
+  listener: logs the error to the Action Log and marks the terminal `error`.
+  Previously silently dropped.
+- Tray menu "Start/Stop Injection" now works — listeners drive the master
+  send switch (`toggleSending`), same as the queue-header button.
+- Renderer→main bridges added for MQM's emitted-but-unheard events:
+  `ui:tray-badge` → `update-tray-badge`, `ui:system-notification` →
+  `show-notification`, `power:save-blocker:start/stop` →
+  `start/stop-power-save-blocker`. All four main-process handlers existed;
+  nothing invoked them.
+
+**Settings that existed in code but the user could never change (new UI):**
+- Settings modal, manager group: "Manager answers permission prompts"
+  (`managerPromptWatchEnabled`), "Recurring optimization passes"
+  (`managerAutoPassEnabled`), "Pass interval" slider
+  (`managerPassIntervalMinutes`, 15–240m). All three were read-only keys
+  documented in CLAUDE.md but editable only by hand-editing the store file.
+- "Keep screen awake while injecting" (`keepScreenAwake`) — routed through
+  PreferenceManager so MQM picks it up live; un-deads the power-save-blocker
+  path end to end (setting → gate → IPC bridge → Electron blocker).
+- "Terminal Scroll Behavior" select wired (`smart` = xterm native follow;
+  `always` = force scroll on every output). The unimplementable "preserve"
+  option was dropped from the markup rather than shipped as a lie.
+- Prompted-sound "Keywords Only" checkbox un-commented and wired
+  (`promptedSoundKeywordsOnly` → SoundManager, which already read it).
+
+**File attach + search (dead DOM, now functional):**
+- The whole file-attach cluster works: drag-drop onto the input area (with
+  the drop overlay), paste-image into the message box (saved to disk via the
+  existing `save-screenshot` IPC), and the hidden `#file-input`. Attachments
+  render as removable chips in the previously-invisible preview strip and are
+  appended to the message as absolute paths (PTY injection is text-only).
+  New minimal `.attachment-chip` CSS.
+- Per-terminal search overlay bound to the always-loaded xterm SearchAddon:
+  incremental find, Enter/Shift+Enter, prev/next buttons, n/m match counter
+  (via `onDidChangeResults` + decorations), Escape/× to close. Dynamic
+  terminals build their own overlay (only terminal 1 shipped one). Shortcut:
+  Cmd+F (mac) / Ctrl+Shift+F (bare Ctrl+F would shadow readline's
+  forward-char).
+- App teardown wired: `beforeunload` → `gui.cleanup()`, which now also stops
+  the TTS notification poller (`NotificationManager.stopPolling()` — defined
+  but never called).
+
+**Wire-vs-delete decisions executed:**
+- **InjectionManager deleted** (`src/messaging/injection-manager.js`, 521
+  lines + renderer construction + the gui compatibility shims it alone
+  consumed). It was constructed but never initialized, and MQM's only
+  delegation call hit a method it didn't have (`scheduleNextInjection`) —
+  the audit's "wedged lock" bug. MQM now always uses its own scheduler.
+- **MQM legacy sequential-engine remnants deleted:** the five
+  `injection:start/pause/resume/cancel/manual` subscriptions (events nothing
+  emits) and their only-reachable-that-way methods, plus zero-call-site
+  methods `injectSpecificMessage`, `validateMessageIds`,
+  `setTerminalForNextMessage`, `queueContinueMessage`. The live
+  `startSequentialInjection`/`maybeAutoInject` paths are untouched.
+- **PreferenceManager dead keys deleted** (18 written-but-never-read defaults:
+  autoScroll, smoothScroll, alwaysTargetPromptedTerminal, autoStart,
+  showTerminalSelector, autoCompleteTodoEnabled, generateTodoOnCompletion,
+  typewriterEffectEnabled, typewriterSpeed, microwaveInterval,
+  startInBackground, enablePowerSaveBlocker, showInDock, trayBarTheme,
+  completionBehavior, backgroundServiceEnabled, verticalLayout + the
+  never-called methods setTheme, setVerticalLayout, registerChangeHandler/
+  notifyChangeHandlers, exportPreferences/importPreferences, updatePref).
+  `voiceEnabled` and `notificationsMuted` were audit-listed but turned out
+  read — kept. Added `keepScreenAwake: false` (now genuinely consumed).
+- **`LinkManager.linkFromVault()` fixed** — it called an undefined
+  `resolveLatest()` (guaranteed ReferenceError). Implemented
+  `linkVault.resolveLatest()` (reads the 0600 vault directly — local-trust
+  shortcut, no pasted key) with the same expiry checks; unit-tested
+  write→resolve roundtrip. The voice auto-join *trigger* is deliberately NOT
+  wired (needs the live Discord leg the user will verify later).
+- Bridge cleanups: dead `useBracketedPaste` config knob removed and the
+  `controlApi.js` comment fixed (memos are single-line collapsed; no
+  bracketed-paste write ever existed); superseded `mediaInbox.composeForward`
+  export removed (real path is `linkManager.forward` → `frameMemo`).
+- **Backend `/api/ccusage/` removed** along with the whole unrouted
+  `pricing/views.py` + `pricing/urls.py` (the DRF router was removed long ago;
+  ccusage really runs on the HOST via IPC since the container has no Node —
+  the endpoint could only ever 503). Pricing models/migrations kept. Sandbox
+  backend rebuilt: health 200, `/api/ccusage/` now 404.
+
+**Left alone (deliberate):** `StatusManager`'s deprecated output-parsing
+methods (marked for the hook-migration cleanup, do-not-rewire);
+`UIFocusManager` (dormant; its hotkeys were reimplemented directly in
+renderer.js long ago); `resumeStore.forget` (plausibly-intentional API);
+`/api/voice/list|clear/`, `/api/tts/health/` (harmless surface, may get a
+history panel later); main.js's registered-but-unused IPC handlers (several
+are now consumed by the new bridges; the db-* family backs live settings).
+
+## Workstream 5 — README rewrite + metadata cleanup (DONE)
+
+- **`README.md` rewritten** (47 → ~150 lines). The old version described ~40%
+  of the app ("message queue + terminal grid"); the new one covers what
+  actually defines it: grouped features (Terminals & queueing / The Manager /
+  Voice / Tracking), a "How it works" section (hooks-not-parsing, the
+  HookServer + control API, the three processes), install for all three modes
+  (Docker default / --venv / frontend-only, incl. the first-run Vosk model
+  download and the espeak-ng note), configuration highlights, and a
+  clearly-scoped "Discord voice bridge (discord-integration branch)" section
+  that links to the bridge's own docs instead of duplicating them. Voice is
+  no longer mislabeled "experimental". Acknowledgments now credit Vosk and
+  Kokoro. The main-branch content stands alone; the Discord section is
+  explicitly branch-scoped — so the README serves BOTH branches.
+- **`package.json`** — replaced placeholder author ("Auto-Injector
+  <auto-injector@example.com>") with streylix, stale description with the
+  real pitch, and generic keywords with claude-code/voice/electron ones.
+- **`start.sh`** — removed the dead legacy Python Discord bot launcher
+  (`.bot-config` / `discord_bot.py` / `run_bot.sh`, ~38 lines) that predates
+  and is unrelated to `discord-bridge/`; left a pointer comment. The current
+  bridge is a systemd service that start.sh deliberately does not manage.
+  `bash -n` + JSON-parse validated.
+
+## Workstream 6 — Self-recording showcase GIFs (DONE)
+
+Produced three Loom-style showcase GIFs, all recorded against the ISOLATED
+sandbox (backend :8124, sandbox HOME, `--user-data-dir` under `.ccbot-test/`)
+on a throwaway Xvfb display `:99` — the live app, its display, the live
+backend, and the live Discord bridge were never touched (verified before/after:
+live :8123 = 200, bridge = active, live `~/.claude/settings.json` mtime
+unchanged at Jul 1). Committed to `docs/showcase/` and referenced from the new
+README's "In action" section.
+
+**Clean demo profile** (`.ccbot-test/`): sandbox `~/.claude` (own credentials
+copied 0600, own `.claude.json` with onboarding done + the demo dirs
+pre-trusted so no trust dialog blocks the capture), two dummy projects
+(`demo-projects/demo-blog`, `todo-cli`), a scratch manager dir with a fake
+`routines/demo-routine.md`, and a NEUTRAL demo wake word ("hey claude", NOT the
+real personal wake word) so nothing private is shown. Sandbox TTS
+(`POST /api/tts/speak/` on :8124) synthesized the spoken clips
+(`wake_heyclaude.wav`, `wake_command.wav`, `voice_command.wav`); the sandbox
+notification rows were then wiped so history starts clean.
+
+**Synthetic-mic driving** (fully hands-off, no live human voice): a PulseAudio
+null-sink + remap-source (`ccbot_test_mic`) loaded ADDITIVELY — never
+`set-default-source`, so the live wake mic could not be hijacked. The sandbox
+Electron got the virtual mic per-process via `PULSE_SOURCE`; clips were played
+into the sink on cue. Loaded for the recordings, unloaded after.
+
+**The three takes** (Playwright drives the UI, ffmpeg x11grab records, two-pass
+palette GIF, cropped to the app window for privacy):
+- **`manager.gif`** (43s) — open the Manager view, target the manager in the
+  selector, type "check state + queue a summary task to terminal 1"; the real
+  manager Claude session reads the control API, reports the fleet state, queues
+  the message to terminal 1, and terminal 1 answers "This is Auto-Injector…".
+  The full steer-the-fleet loop, captured live.
+- **`wake-word.gif`** (28s) — the Wake Word settings section, then the
+  synthetic "hey claude" fires the detector (logged: matched similarity 1.00 ≥
+  strictness 0.75), the command is captured + Whisper-transcribed + forwarded
+  to the manager as an urgent voice memo — all while the window shows the grid.
+- **`voice-mode.gif`** (20s) — click the mic, play the synthetic command, stop;
+  the Action Log shows the Whisper pipeline and "Add input validation to the
+  signup form." lands in the message input, then queues.
+
+**Objective wake-word validation:** before recording, a headless dry run
+asserted the pipeline end to end — the synthetic clip drove
+`wake:state` listening → capturing → transcribing and produced the queued memo.
+Whisper transcribed the clean synthetic speech at 0.97 confidence. So "does the
+synth clip trigger?" is answered YES at the demo settings (neutral phrase,
+0.75 strictness); the real-box caveat (short name "sean" @ 0.95) is avoided by
+using the neutral demo phrase, exactly as the plan intended.
+
+**Notes / caveats for the user:**
+- The GIFs show `ethan@pop-os` and `/media/ethan/…` sandbox paths in the shell
+  prompt — fine for your own/internal use; for a fully public showcase, record
+  under a throwaway OS account (per PHASE1_AUDIT §5). Nothing else sensitive is
+  in frame (sandbox `~/.claude`, so no Pager key; neutral wake word; wiped
+  history).
+- Harmless pre-existing log noise seen during capture:
+  `PreferenceManager.loadMessageQueue` logs "Unexpected end of JSON input" when
+  the persisted `messageQueue` setting is an empty string. Not introduced here
+  and not worth a fix mid-audit, but noting it — a one-line guard
+  (`if (savedQueue)` already exists; the empty-string case slips through) would
+  silence it.
+
+## SSH View — read-only remote mirror of the interface (ssh-view branch)
+
+Added a read-only way to watch the whole Auto-Injector interface from an SSH
+session, so a headless machine (no monitor) running the app can still be observed
+live.
+
+- New CLI `npm run ssh-view` (`scripts/ssh-view.js`): a terminal UI that lists
+  every terminal (id, title, runtime/status) from `GET /state` and shows the
+  selected terminal's live screen from `POST /terminal/screen`, auto-refreshing
+  about every 1.5s. Arrow/j-k keys and number keys switch terminals; the manager
+  (terminal 999) is always shown; `g` toggles a condensed grid of all terminals;
+  `s` toggles scrollback; `q`/Ctrl-C quits. It is read-only by construction — it
+  only ever calls those two non-mutating endpoints and never queues, injects,
+  creates, deletes, or steers. Built on Node built-ins only (no new dependencies).
+- Auth/discovery: an SSH login shell does not inherit the app's CCBOT_PORT/
+  CCBOT_TOKEN, so on startup the app now writes a `0600` session file at
+  `~/.config/ccbot/session.json` (via `src/main/session-file.js`) containing the
+  loopback port + token; `ssh-view` reads it. `--port`/`--token` flags and the
+  CCBOT_* env vars override it. The file is removed on clean shutdown. The token
+  is only ever sent to 127.0.0.1.
+- Resilient: if the Control API is unreachable it shows a "waiting for app…"
+  screen and keeps retrying (re-resolving the port/token each time), never
+  crashing.
+- Docs: `docs/SSH_VIEW.md`. Files touched: `main.js` (write/remove the session
+  file around the hook-server lifecycle), `package.json` (script), `.gitignore`
+  (un-ignore the new script).
+
+## 2026-07-14 — Remote Mode client: top-middle ssh command bar + AUTO-START of the remote (branch `ssh-view`)
+
+Reworked the Remote Mode CLIENT connect flow (docs/REMOTE_MODE.md §8) so that
+connecting to another machine is one typed ssh command — and works even when
+the remote app is not running or not serving Remote Mode.
+
+- **Command bar (primary connect input).** Clicking the bottom-left corner
+  indicator now opens a command bar at the TOP-MIDDLE of the interface. The
+  user types the actual ssh command as real, editable text — `ssh
+  ethan@pop-os`, `ssh host -p 2222`, `user@host`, `-p`/`-l`/`-i` in any
+  position, `ssh://user@host:port` — parsed by the new pure module
+  `src/features/ssh-command-parse.js` (unit-tested); unknown ssh flags merge
+  into the Advanced ssh options and everything is re-validated against
+  remote-client's strict charsets. The most recent command pre-fills as
+  editable text; recents are one click. Advanced… folds out with the session
+  file path, extra ssh options, and a new "remote app directory" field. The
+  old host/port/user form is gone; the bottom-left panel is now purely the
+  connected-state management popover (info + Disconnect).
+- **Auto-start Remote Mode on the remote.** On Connect the client reads the
+  remote session file over SSH and handles all three states instead of
+  erroring: (1) Remote Mode on → connect as before; (2) app running with
+  Remote Mode OFF → the new `scripts/remote-autostart.js` runs on the remote
+  (over the same SSH channel, under ELECTRON_RUN_AS_NODE on the app's own
+  Electron binary — no `node`-on-PATH assumption) and POSTs the new
+  loopback Control API route `POST /remote/enable`, which starts the
+  RemoteServer LIVE with no restart (main.js `startRemoteMode()` is now
+  shared by boot + runtime enable; the renderer bundle is esbuilt on demand
+  if missing; `remoteServerEnabled` is persisted; session.json is rewritten
+  with the remote port); (3) app NOT running → the same script cold-starts it
+  headless + detached with CCBOT_REMOTE=1 (`xvfb-run -a` + `--no-sandbox` on
+  display-less Linux; direct launch on macOS) and polls for a fresh
+  session.json (45 s). Discovery of where the app lives on a stopped machine:
+  the app now writes a persistent, sh-sourceable `~/.config/ccbot/app-root`
+  file (app dir + Electron binary path; paths only, no secrets; 0600; NOT
+  removed on shutdown) via session-file.js. Every phase is narrated in the
+  command bar status line; every failure mode has a specific message (app
+  never ran there → set the app dir; dir gone; checkout too old; no
+  node/electron; xvfb missing; start timeout with remote log tail; stale
+  token; plus the existing ssh auth/host-key/unreachable classes) and the
+  whole ensure step has a 90 s hard kill — nothing silently hangs. Security
+  posture unchanged: BatchMode (no passwords), loopback-only everywhere, the
+  token never leaves the remote (the enable POST happens on the remote
+  itself against 127.0.0.1).
+- **Verified end-to-end headless** (`xvfb-run -a node
+  tests/integration/remote-client-e2e.js`, work dir on a POSIX fs under tmp
+  because the repo drive is FUSE/NTFS and sshd rejects world-readable host
+  keys): real sshd + isolated XDG_CONFIG_HOMEs; command bar proven at the
+  top-middle with real editable text; clear errors for an unreachable host
+  and for a remote with no recorded app; remote app running WITHOUT Remote
+  Mode → Connect live-enabled it (session.json gained remote.port with the
+  SAME pid — no restart) and a typed marker echoed in both the embedded view
+  and the remote's own xterm; app CLOSED → Connect cold-started it (fresh
+  session.json, NEW live pid spawned by the client's action) and the
+  embedded terminal echoed; reconnect fast path showed no enable/start phase
+  and the same pid; disconnect closed the forwarded port with no ssh -L
+  child left. Unit suite: 153 tests, 152 pass — the one failure
+  (`tests/unit/usage-limit-and-gate.test.js`) is a pre-existing, untracked
+  (gitignored) local file unrelated to this work.
+- Files: `src/features/ssh-command-parse.js` (+`.test.js`),
+  `src/features/RemoteConnectionUI.js`, `index.html`, `style.css`,
+  `scripts/remote-autostart.js`, `src/main/remote-client.js` (+`.test.js`),
+  `src/main/session-file.js`, `src/main/HookServer.js`, `main.js`,
+  `tests/integration/remote-client-e2e.js`, `docs/REMOTE_MODE.md`,
+  `.gitignore`.
+
+## 2026-07-14 — Remote Mode: CLIENT MICROPHONE FORWARDING — full remote voice, desktop-processed (branch `ssh-view`)
+
+The INPUT mirror of the §9 voice-output forwarding (docs/REMOTE_MODE.md §10).
+A user viewing the interface remotely (browser tab / embedded client iframe)
+can now TALK to the manager: their device's microphone is captured locally and
+streamed to the desktop, where the EXISTING voice pipeline — Vosk wake-word
+spotting and Whisper transcription, both unchanged and both on the desktop —
+processes it. Combined with §9's output forwarding the loop is fully remote:
+say "hey claude …" into the laptop, the desktop detects + transcribes + routes
+the memo to the manager (999), and the answer plays back on the laptop.
+
+- **Client capture** (`src/remote/remote-mic.js`, served + injected by
+  `RemoteServer` for browser clients only): floating mic toggle button →
+  `getUserMedia` → AudioWorklet tap (ScriptProcessor fallback) → 16 kHz mono
+  PCM16 in ~85 ms frames (matching the desktop's own frame cadence so the VAD
+  tuning holds) → `remote-mic-frame`/`remote-mic-state` frames over the SAME
+  authenticated WebSocket. ~32 KB/s; no new ports, no new auth surface.
+  Permission denial and disconnects are handled; the button mirrors the
+  desktop pipeline state (listening/capturing/transcribing) via
+  `remote-wake-state` pushes and plays the configured activation/stop chimes
+  on the viewing device.
+- **Single-owner rule + relay** (`src/main/RemoteServer.js`, `main.js`): at
+  most one client streams at a time (first-come; later starters get
+  `remote-mic-denied`; owner disconnect dispatches a synthetic detach so the
+  pipeline never hangs). Main relays the owner's frames to the LOCAL renderer
+  only — never re-broadcast to other viewers.
+- **Desktop routing** (`src/features/RemoteMicSink.js` + a remote-source mode
+  in `src/features/WakeWordManager.js`): frames feed the SAME recognizer, VAD,
+  capture, Whisper POST (`/api/voice/transcribe/`) and voice-memo framing as
+  local mic audio. Which-mic rule (mirror of §9's no-double-play rule): while
+  a remote mic streams, IT is the input and the local mic is ignored; with the
+  local wake word off (or a mic-less headless host) the pipeline runs in
+  REMOTE-ONLY mode — no local `getUserMedia` is ever opened; with no remote
+  client attached, local behavior is byte-identical to before.
+- **Verified end-to-end headless** (`xvfb-run -a node
+  tests/integration/remote-mic-e2e.js`): isolated XDG_CONFIG_HOME, stand-in
+  Django-shaped Whisper endpoint (full faster-whisper impractical in-sandbox;
+  the audio still flows the real app path and the stand-in byte-compares it).
+  Proven: real fake-device getUserMedia+worklet capture delivers frames
+  BYTE-FAITHFULLY (client vs server rolling hash over the identical Int16
+  stream); canned SYNTHESIZED SPEECH (piper, committed as
+  tests/fixtures/*.wav) injected through the same send path is detected by
+  the desktop's REAL Vosk engine ("hey claude" → capturing); the VAD stops
+  the capture; the POSTed 16 kHz WAV CONTAINS the injected utterance
+  byte-for-byte; the known transcript comes back and lands in the manager
+  queue (999, urgent, verbatim voice-memo framing); a second client is
+  denied; disconnect releases the mic and the pipeline returns to idle.
+  Unit tests: `src/features/WakeWordManager.remote-source.test.js`,
+  `src/main/RemoteServer.mic.test.js` (suite: 174/175 pass; the one failure
+  is the pre-existing untracked `tests/unit/usage-limit-and-gate.test.js`).
+- Files: `src/remote/remote-mic.js`, `src/features/RemoteMicSink.js`,
+  `src/features/WakeWordManager.js`, `src/main/RemoteServer.js` (+
+  `RemoteServer.mic.test.js`), `main.js`, `renderer.js`,
+  `tests/integration/remote-mic-e2e.js`, `tests/fixtures/hey-claude-16k.wav`,
+  `tests/fixtures/command-16k.wav`, `.gitignore`, `docs/REMOTE_MODE.md`.

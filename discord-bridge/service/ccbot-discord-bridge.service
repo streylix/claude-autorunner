@@ -1,0 +1,23 @@
+[Unit]
+Description=CCBOT Discord voice bridge (standalone)
+# Best-effort ordering; the bridge tolerates the backend/app not being up yet
+# (it idles until /link), so we don't hard-require them.
+After=network-online.target pipewire.service
+Wants=network-online.target
+# Don't spin forever if it's crash-looping on a config error.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# __WORKDIR__ and __NODE__ are filled in by install.sh.
+WorkingDirectory=__WORKDIR__
+EnvironmentFile=__WORKDIR__/.env
+# PipeWire/PulseAudio access for AUDIO_SOURCE=system (user session runtime dir).
+Environment=XDG_RUNTIME_DIR=%t
+ExecStart=__NODE__ src/index.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

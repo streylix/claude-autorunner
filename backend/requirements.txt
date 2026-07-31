@@ -21,6 +21,12 @@ openai-whisper
 torch>=2.2.0
 ffmpeg-python==0.2.0
 
+# Lightweight CPU wake-word spotting (Vosk). Powers /api/voice/wake-check/ so
+# callers (e.g. the Discord bridge) can gate on a wake word WITHOUT running the
+# GPU Whisper model on every utterance. Ships its own libvosk wheel (CPU-only,
+# no ffi-napi unlike the Node binding); reuses the app's small en-us model.
+vosk==0.3.45
+
 # Text-to-speech (Kokoro-82M). Reuses the CPU torch wheel above. kokoro pulls
 # misaki[en] (g2p) + spacy; the Dockerfile installs the espeak-ng + libsndfile
 # system libs and pre-downloads the en_core_web_sm spacy model. soundfile

@@ -7,10 +7,9 @@
  */
 
 class TimerManager {
-    constructor(eventBus, appStateStore, backendAPIClient) {
+    constructor(eventBus, appStateStore) {
         this.eventBus = eventBus;
         this.appStateStore = appStateStore;
-        this.backendAPIClient = backendAPIClient;
         
         // Timer state
         this.timerInterval = null;
@@ -125,11 +124,6 @@ class TimerManager {
             totalSeconds: this.timerTotalSeconds,
             timestamp: Date.now()
         });
-        
-        // Backend sync
-        if (this.backendAPIClient) {
-            this.backendAPIClient.startTimer(this.timerMinutes);
-        }
     }
     
     /**
@@ -161,11 +155,6 @@ class TimerManager {
             remainingSeconds: this.calculateRemainingSeconds(),
             timestamp: Date.now()
         });
-        
-        // Backend sync
-        if (this.backendAPIClient) {
-            this.backendAPIClient.pauseTimer();
-        }
     }
     
     /**
@@ -207,11 +196,6 @@ class TimerManager {
         this.eventBus.emit('timer:stopped', {
             timestamp: Date.now()
         });
-        
-        // Backend sync
-        if (this.backendAPIClient) {
-            this.backendAPIClient.stopTimer();
-        }
     }
     
     /**

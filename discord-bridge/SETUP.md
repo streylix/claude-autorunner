@@ -1,146 +1,141 @@
-# SETUP — what you need to provide to go live
+# SETUP — reference & troubleshooting
 
-The bridge is fully built and self-tested. To run it live you must create a
-Discord bot and hand over **three values**. Follow these steps once.
+For the click-by-click walkthrough, use **DISCORD_SETUP_GUIDE.md**. This file is
+the condensed reference, the design rationale, and troubleshooting.
 
----
+## What you must provide
+1. **Bot token** — discord.com/developers → your app → Bot → Reset Token.
+2. **Guild (server) ID** — Developer Mode on → right-click server → Copy Server ID.
+3. *(optional)* A default voice channel ID — normally unnecessary (the bot joins
+   the channel you're in when you `/link`).
 
-## (a) Create the Discord application + bot, copy the token
+Put 1–2 in `.env` (copy from `.env.example`).
 
-1. Go to <https://discord.com/developers/applications> → **New Application**.
-   Name it anything (e.g. "Manager Voice Bridge"). Accept the terms.
-2. Left sidebar → **Bot**.
-   - Click **Reset Token** → **Copy**. This is your `DISCORD_BOT_TOKEN`.
-     Treat it like a password — anyone with it controls the bot. It only shows
-     once; reset again if you lose it.
-   - Under **Privileged Gateway Intents**: the bridge does **not** require any
-     privileged intents (it uses Guilds + GuildVoiceStates, which are not
-     privileged). You can leave the Presence/Server-Members/Message-Content
-     toggles **off**.
+## Invite scopes & permissions
+Invite the bot (OAuth2 → URL Generator) with:
+- **Scopes:** `bot` **and** `applications.commands` (the latter is required for
+  the `/link` slash command to register/appear).
+- **Permissions:** View Channels + Connect + Speak = **`3146752`**.
 
-## (b) Invite the bot to your server (OAuth2 URL)
+Voice-receive needs no extra permission beyond Connect; the bot must not be
+server-muted (`selfDeaf:false`/`selfMute:false` are set).
 
-1. Left sidebar → **OAuth2** → **URL Generator**.
-2. Under **Scopes**, check: **`bot`**.
-3. Under **Bot Permissions**, check exactly:
-   - **View Channels** (Read Messages/View Channels)
-   - **Connect** (join voice)
-   - **Speak** (transmit audio — required for the manager's TTS playback)
-   - *(optional)* **Use Voice Activity** — on by default for users; harmless.
-4. Copy the generated URL at the bottom. It looks like:
-
-   ```
-   https://discord.com/api/oauth2/authorize?client_id=YOUR_APP_ID&permissions=3146752&scope=bot
-   ```
-
-   `permissions=3146752` = View Channels + Connect + Speak. (If the generator
-   gives a different number because you ticked extra boxes, that's fine.)
-5. Open the URL in a browser, pick your server, **Authorize**. The bot now
-   appears (offline) in your member list.
-
-> Voice **receive** (hearing you) needs no special Discord permission beyond
-> Connect — capturing audio is a client-side capability of the voice
-> connection, not a gated permission. The bot must just be able to join and not
-> be server-muted.
-
-## (c) Get the guild ID and voice channel ID
-
-1. Discord → **User Settings → Advanced → Developer Mode: ON**.
-2. Right-click your **server icon** → **Copy Server ID** → that's
-   `DISCORD_GUILD_ID`.
-3. Right-click the **voice channel** you'll talk in → **Copy Channel ID** →
-   that's `DISCORD_VOICE_CHANNEL_ID`.
-
----
-
-## Put the three values in `.env`
-
+## Run as a persistent service
 ```bash
-cd discord-bridge
-cp .env.example .env
-# edit .env and set:
-#   DISCORD_BOT_TOKEN=...        (from step a)
-#   DISCORD_GUILD_ID=...         (from step c)
-#   DISCORD_VOICE_CHANNEL_ID=... (from step c)
+./service/install.sh          # systemd --user: install, start, auto-restart
+./service/install.sh --boot   # also enable-linger (runs at boot/login)
+systemctl --user status  ccbot-discord-bridge
+journalctl   --user -u   ccbot-discord-bridge -f
+./service/uninstall.sh        # remove
 ```
+The service holds **no app credentials** — it idles until you `/link`, and it is
+unaffected by the auto-injector app restarting. No systemd? Fallback:
+`nohup node src/index.js > bridge.log 2>&1 &`.
 
-`CCBOT_PORT` / `CCBOT_TOKEN` are inherited automatically when you launch from an
-app terminal — leave them blank in `.env`.
+Preflight anytime (no token needed): `node src/doctor.js`.
 
----
+> **Node version:** `@discordjs/voice@0.19.2` declares `engines.node >=22.12.0`.
+> Everything loads/verifies on Node 20, but prefer Node 22+ for the live voice
+> run. `install.sh` warns if Node < 22 and uses `$(command -v node)` for the
+> unit's `ExecStart`.
 
-## Avoid double audio (important)
+## Linking (session key) — how it works
+1. The **manager** (terminal 999) holds the live `CCBOT_PORT`/`CCBOT_TOKEN`. It
+   runs `npm run link-key` (`tools/make-link-key.js`), which:
+   - mints a random, revocable **link-token**;
+   - writes the real creds + link-token to a `0600` vault at
+     `$XDG_RUNTIME_DIR/ccbot-bridge/vault.json` (loopback/tmpfs, local-only);
+   - prints `/link <key>` where the key encodes only `{ port, link-token }`.
+2. You paste `/link <key>` in Discord. The bot decodes it, **resolves it against
+   the local vault** (reads the real token locally — it never travels through
+   Discord), validates against the live control API `/state`, and links.
+3. The bot then joins **your current voice channel**.
 
-The Electron app **also** plays each manager TTS clip through your computer
-speakers. While using the Discord bridge, **mute in-app playback** so you don't
-hear every reply twice:
+**Security properties**
+- The control **token never leaves the box** — only `{port, link-token}` goes
+  through Discord. A key leaked in Discord is useless without local access.
+- **Rotatable:** re-running `npm run link-key` mints a new link-token and
+  overwrites the vault → the previous key stops resolving immediately. The
+  underlying app token is unchanged.
+- Creds live in the bot's **memory only**; restarting the service unlinks (paste
+  a fresh key). Keys also expire (default 1h; `--ttl <seconds>` to change).
+- **Who may drive the manager is an explicit allow-list** —
+  `DISCORD_ALLOWED_USER_IDS` gates every slash command and auto-forwarded text
+  message, and (unless `ALLOWED_SPEAKER_IDS` overrides it) voice capture too.
+  Unset = **deny everything**: guild membership alone is never enough.
+- **Threat model — the control token is a full-control capability.** The
+  `CCBOT_TOKEN` authorizes `/terminal/keys`, which types raw keystrokes into any
+  terminal (at a bare shell that is command execution). Loopback binding + the
+  0600 tmpfs vault are the boundary; anything that can read the vault or reach
+  the loopback port with the token effectively owns the machine's terminals.
+  Treat token compromise as host compromise — rotate with `npm run link-key`
+  and never copy the vault off-box.
 
-- In the app toolbar, click the **speaker / "Sound on"** toggle
-  (`#notification-mute-btn`, tooltip "Mute / unmute all spoken notifications").
-  It flips to **"Muted"**.
+## Wake word
+Only speech starting with the wake phrase is forwarded; the phrase is stripped
+and the rest becomes the prompt. Say the phrase alone and the bot listens for
+your next sentence.
 
-This is safe: muting only stops the *local* HTMLAudioElement. The backend still
-records every notification, so the bridge's poller keeps receiving and playing
-them into Discord. No app restart, no lost messages. Unmute when you're back at
-the machine.
+**The wake word is NOT configured here** — it's mirrored LIVE from the app's own
+settings (`wakeWordPhrase`, `wakeWordEnabled`, `wakeSilenceMs` in
+`~/.config/auto-injector/auto-injector.json`), so the bridge uses whatever wake
+word you've set in the app (change it in the app → the bridge follows). `/status`
+shows the current phrase. You can override just for testing with `WAKE_PHRASE` /
+`WAKE_WORD_ENABLED` in `.env`, but normally leave them unset.
 
----
+**Resource sharing (no duplicate Whisper, no constant GPU):** the bridge runs
+**no ASR of its own**. It gates each utterance through the backend's cheap **CPU
+Vosk** endpoint (`POST /api/voice/wake-check/`), and only when the wake word
+fires does it call the backend's **GPU Whisper** (`/api/voice/transcribe/`) for an
+accurate command. So idle channel chatter costs only CPU Vosk; the GPU is touched
+~once per real command. Knobs: `USE_SHARED_WAKE_GATE` (default on),
+`COMMAND_USE_WHISPER` (default on; set **off** for ZERO GPU — uses the Vosk
+transcript as the command).
 
-## Recommended runtime: Node 22+
+*Why this design:* the `vosk` npm (native) won't build on Node 20/22 (`ffi-napi`),
+and `vosk-browser` (WASM) needs browser globals (`Worker`/`AudioContext`), so the
+bridge can't run Vosk locally. Instead it reuses the Vosk model the desktop app
+already ships, served from the backend on CPU — one Whisper, one Vosk, both in the
+backend, zero duplicates.
 
-`@discordjs/voice@0.19.2` declares `engines.node >= 22.12.0`. All modules load
-and the non-voice paths are verified on Node 20, but for the **live voice run**
-prefer Node 22+ to avoid any runtime API gap during DAVE negotiation. Install
-via your version manager (e.g. `nvm install 22 && nvm use 22`) and run from that
-shell. (If you stay on Node 20, the bridge will start and warn; test the voice
-join and report if negotiation fails.)
+> **Requires a backend rebuild to activate:** the Vosk endpoint adds the `vosk`
+> pip dep and mounts the model. Deploy with `docker compose up -d --build`
+> (restarts only the backend — never the Electron app). Until then the bridge
+> falls back to the Whisper gate if `USE_SHARED_WAKE_GATE` can't reach the
+> endpoint.
 
----
+## Audio output: `AUDIO_SOURCE`
+| Mode | You hear | Muting rule |
+|------|----------|-------------|
+| `tts` (default) | Manager's TTS voice only. Misses sound effects + wake-up alarm. | **MUTE** in-app playback (toolbar speaker `#notification-mute-btn`) to avoid double audio. |
+| `system` | **Everything** the speakers play (TTS + SFX + wake-up song). | **Do NOT mute** — audio must reach the sink to be captured. TTS poller auto-disabled. |
 
-## Run it
+`system` mode needs `parec`/`pacat`/`pactl` (present here) and a reachable
+PulseAudio/PipeWire socket. A silent **keepalive** keeps the sink's monitor
+continuous (PipeWire suspends idle sinks). Switching the system's default output
+device → restart the bridge to re-resolve the monitor. `system` streams the
+*entire* output (music, other apps too), not just the manager.
 
-```bash
-cd discord-bridge
-./run.sh
-```
+## Verifying / troubleshooting
+- `node src/doctor.js` — deps, DAVE, backend, audio tools, vault, and (if run in
+  an app terminal) the live control API + manager presence.
+- `/status` in Discord — link/voice/audio/wake state.
+- Logs: `journalctl --user -u ccbot-discord-bridge -f`, also mirrored to the
+  app's `[discord-bridge]` stream (`docker compose logs -f backend`) when
+  `FORWARD_LOGS_TO_BACKEND=true`.
+- **`/link` says "no active link"** → manager hasn't minted a key (or you're on a
+  different machine/UID). Run `npm run link-key` in an app terminal.
+- **"key superseded"** → a newer key was minted; use the latest, or re-mint.
+- **"control API not reachable"** → the app/session isn't running, or creds are
+  stale (app restarted) → mint a fresh key.
 
-or:
+## DAVE (mandatory E2EE voice, March 2026) — verify-on-live
+`@discordjs/voice@^0.19.2` is pinned because that release fixes the DAVE
+voice-**receive** bug (PR #11449); `@snazzah/davey` auto-installs. Playback under
+DAVE is maintainer-confirmed. Receive is officially "unofficial" — the fix is
+shipped but only fully confirmable live. On the first "hey claude", watch the
+logs for `command: "..."` → `memo delivered to terminal 999`.
 
-```bash
-node src/doctor.js   # preflight: deps, backend, control API, manager 999 (no token needed)
-node src/index.js    # start the bridge
-```
-
-On success you'll see in the logs (and in `docker compose logs -f backend`,
-tagged `[discord-bridge]`):
-
-```
-logged in as <bot>#0000.
-joined voice channel <id>.
-bridge live: manager TTS -> channel, your speech -> terminal 999.
-```
-
-Then:
-1. Join that voice channel from your phone/desktop.
-2. Speak — within a moment the manager (terminal 999) receives your words framed
-   as a 🎙️ voice memo and acknowledges aloud; its reply plays back into the
-   channel within a few seconds.
-
----
-
-## If voice-receive captures silence/garbage (DAVE fallback)
-
-Voice-receive is officially "unofficial" in `@discordjs/voice`. The DAVE-receive
-bug was fixed in **0.19.2** (PR #11449, RFC3550 padding) — which is what we pin —
-and there are no open DAVE-receive issues, but Discord could regress it. If, on
-the live test, the manager receives empty/garbled transcripts:
-
-1. Confirm you're on `@discordjs/voice@>=0.19.2` (`npm ls @discordjs/voice`).
-2. Make sure the bot is **not** server-muted and `selfDeaf:false` (it is).
-3. The Python alternative (`discord.py 2.7.1` + `discord-ext-voice-recv`) is
-   **NOT** a drop-in: that extension does not yet decrypt DAVE
-   (issue #53 open; fix PR #54 unmerged as of June 2026). Only pursue it if the
-   Node path regresses and you can apply PR #54 by hand. See `python-receiver/`.
-
-Playback (manager → channel) under DAVE is confirmed working by the discord.js
-maintainers, so the output direction should be solid regardless.
+If receive captures silence/garbage: confirm `npm ls @discordjs/voice` ≥ 0.19.2;
+the bot isn't server-muted. The Python path (`discord-ext-voice-recv`) is **not**
+a drop-in (doesn't decrypt DAVE; fix unmerged) — see `python-receiver/`.

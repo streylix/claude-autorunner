@@ -370,6 +370,14 @@
                         </div>
                     </div>
                 </div>
+                <!-- Vibe Blast. Hold Send on an empty message box for 1.5s. -->
+                <div class="vibe-panel" id="vibe-panel" inert>
+                    <button type="button" class="vibe-flap" id="vibe-flap" title="Back to the queue" aria-label="Close Vibe Blast and return to the sidebar" data-test-id="vibe-flap">
+                        <span class="vibe-flap-grip"></span>
+                        <span class="vibe-flap-label">Back to queue</span>
+                    </button>
+                    <div class="vibe-stage" id="vibe-stage"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -404,9 +412,16 @@
                     <select id="terminal-scroll-behavior" class="setting-select">
                         <option value="smart">Smart (Recommended)</option>
                         <option value="always">Always scroll to bottom</option>
-                        <option value="preserve">Preserve scroll position</option>
                     </select>
-                    <p class="setting-description">Smart: Only scrolls to bottom if you were already there. Always: Always scrolls to bottom on new output. Preserve: Never auto-scrolls.</p>
+                    <p class="setting-description">Smart: Only scrolls to bottom if you were already there. Always: Always scrolls to bottom on new output.</p>
+                </div>
+
+                <div class="setting-group">
+                    <label class="setting-label">
+                        <input type="checkbox" id="keep-screen-awake">
+                        <span class="setting-title">Keep screen awake while injecting</span>
+                    </label>
+                    <p class="setting-description">Blocks display sleep while a queue flush is running, so long unattended runs don't get suspended.</p>
                 </div>
 
                 <div class="setting-group">
@@ -471,7 +486,7 @@
                         <div class="sound-category">
                             <label class="sound-category-label">
                                 Prompted Sound 
-                                <!-- <span class="sound-toggle-text">( <input type="checkbox" id="prompted-sound-keywords-only"> Keywords Only)</span> -->
+                                <span class="sound-toggle-text">( <input type="checkbox" id="prompted-sound-keywords-only"> Keywords Only)</span>
                             </label>
                             <div class="sound-selection-row">
                                 <select id="prompted-sound-select" class="setting-select">
@@ -524,6 +539,14 @@
                         <p class="setting-help">Keeps the microphone open and runs a local, offline spotter (Vosk). Nothing leaves your machine until the wake word fires.</p>
                     </div>
 
+                    <div class="setting-row">
+                        <label class="setting-label">
+                            <input type="checkbox" id="wake-mute-during-call">
+                            <span class="setting-text">Mute local-mic wake word while Discord bot is in a call</span>
+                        </label>
+                        <p class="setting-help">When the Discord bot is linked and in a voice channel, ignore the host microphone's wake word so saying the phrase in the room only triggers once (via the bot), not twice. Local wake word works normally when the bot isn't in a call.</p>
+                    </div>
+
                     <div class="sound-category">
                         <label class="sound-category-label">Wake phrase</label>
                         <input type="text" id="wake-word-phrase" class="setting-input" value="hey claude" placeholder="hey claude">
@@ -532,8 +555,18 @@
 
                     <div class="sound-category">
                         <label class="sound-category-label">Stop after silence: <span id="wake-silence-value">5.0s</span></label>
-                        <input type="range" id="wake-silence-ms" min="2000" max="10000" step="500" value="5000" class="setting-range">
+                        <input type="range" id="wake-silence-ms" min="600" max="10000" step="100" value="5000" class="setting-range">
                         <p class="setting-help">How long a pause ends your command and sends it.</p>
+                    </div>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">Interrupt stop words</label>
+                        <div id="stop-words-list" class="stop-words-list" data-test-id="stop-words-list"></div>
+                        <div class="stop-words-add-row">
+                            <input type="text" id="stop-word-input" class="setting-input" placeholder="Add a word (e.g. wait)" data-test-id="stop-word-input">
+                            <button type="button" id="stop-word-add-btn" class="setting-btn setting-btn-small" data-test-id="stop-word-add-btn">Add</button>
+                        </div>
+                        <p class="setting-help">If a voice message STARTS with one of these words, the assistant's current turn is cut off (ESC to the manager) and your new message takes over. Takes effect immediately, including for the Discord bridge.</p>
                     </div>
 
                     <div class="sound-category">
@@ -556,6 +589,25 @@
                             <option value="hud4.wav">hud4.wav</option>
                         </select>
                         <p class="setting-help">Plays when it stops listening and sends your command.</p>
+                    </div>
+                </div>
+
+                <!-- Discord Voice Bridge link key -->
+                <div class="setting-group">
+                    <div class="setting-header">
+                        <span class="setting-title">Discord Voice Bridge</span>
+                    </div>
+                    <p class="setting-description">Connect the Discord voice bot to this session: in your server, run <code>/link</code> with the key below. It encodes only the local control port + a revocable link-token — never your control token. The key is tied to the current session and updates here automatically; click Regenerate for a fresh one (the previous key stops working).</p>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">Discord link key</label>
+                        <div class="setting-input-group">
+                            <input type="text" id="discord-link-key" class="setting-input" readonly value="Loading…" data-test-id="discord-link-key">
+                            <button type="button" id="discord-link-copy-btn" class="setting-btn setting-btn-small" data-test-id="discord-link-copy-btn">Copy</button>
+                            <button type="button" id="discord-link-regen-btn" class="setting-btn setting-btn-small" title="Mint a fresh key (invalidates the previous one)" data-test-id="discord-link-regen-btn">Regenerate</button>
+                        </div>
+                        <p class="setting-help">In Discord, paste this after <strong>/link</strong> — or just type <strong>/resume</strong> to rejoin without it.</p>
+                        <p class="setting-help" id="discord-link-status">Loading the current link key…</p>
                     </div>
                 </div>
 
@@ -600,6 +652,28 @@
                             <span class="setting-text">Send completions to manager</span>
                         </label>
                         <p class="setting-help">When on, every terminal that finishes is reported to the manager (which decides what to announce). Turn off on the fly when the volume gets overwhelming.</p>
+                    </div>
+
+                    <div class="setting-row">
+                        <label class="setting-label">
+                            <input type="checkbox" id="manager-prompt-watch-enabled" checked>
+                            <span class="setting-text">Manager answers permission prompts</span>
+                        </label>
+                        <p class="setting-help">When a terminal opens a real permission dialog or select menu, the manager is notified so it can answer. Turn off to handle prompts yourself.</p>
+                    </div>
+
+                    <div class="setting-row">
+                        <label class="setting-label">
+                            <input type="checkbox" id="manager-auto-pass-enabled" checked>
+                            <span class="setting-text">Recurring optimization passes</span>
+                        </label>
+                        <p class="setting-help">The manager periodically runs a standing "run a pass" instruction against the routines in its own directory. Applies from the next scheduled tick.</p>
+                    </div>
+
+                    <div class="sound-category">
+                        <label class="sound-category-label">Pass interval: <span id="manager-pass-interval-value">60m</span></label>
+                        <input type="range" id="manager-pass-interval-minutes" min="15" max="240" step="15" value="60" class="setting-range">
+                        <p class="setting-help">How often the manager dispatches an optimization pass.</p>
                     </div>
                 </div>
 
@@ -715,17 +789,99 @@
             </div>
         </div>
     </div>
-    
-    
+
+    <!-- ==== Remote connection (VS Code Remote-SSH style status bar) ====
+         Full-width footer bar (like VS Code's bottom status bar) whose
+         leftmost segment is the remote indicator + connect panel; the
+         embedded remote view sits above it, never covering it, so there's
+         always a way back to the local interface.
+         Driven by src/features/RemoteConnectionUI.js (local desktop app only;
+         a remote browser view skips it). -->
+    <div id="remote-view-container" class="remote-view-container hidden" data-test-id="remote-view-container">
+        <iframe id="remote-view-frame" data-test-id="remote-view-frame" title="Remote interface"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"></iframe>
+    </div>
+    <footer id="app-footer-bar" class="app-footer-bar" data-test-id="app-footer-bar">
+        <button id="remote-indicator" class="remote-indicator" data-test-id="remote-indicator" title="Connect to a remote machine">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="6 8 2 12 6 16"></polyline>
+                <polyline points="18 8 22 12 18 16"></polyline>
+            </svg>
+            <span id="remote-indicator-label" data-test-id="remote-indicator-label"></span>
+        </button>
+    </footer>
+    <!-- The PRIMARY connect input: a command bar at the TOP-MIDDLE of the
+         interface. The user types a real, editable ssh command
+         (e.g. `ssh ethan@pop-os`, `ssh host -p 2222`, `user@host`); parsing
+         lives in src/features/ssh-command-parse.js. Advanced options
+         (session file path, extra ssh options, remote app directory for
+         auto-start) fold out underneath. -->
+    <div id="remote-command-bar" class="remote-command-bar hidden" data-test-id="remote-command-bar">
+        <div class="remote-command-row">
+            <span class="remote-command-prompt" aria-hidden="true">$</span>
+            <input type="text" id="remote-command-input" data-test-id="remote-command-input"
+                   placeholder="ssh user@host" spellcheck="false" autocomplete="off"
+                   aria-label="SSH command, e.g. ssh ethan@pop-os">
+            <button type="button" id="remote-connect-btn" class="remote-command-connect" data-test-id="remote-connect-btn">Connect</button>
+        </div>
+        <!-- No close button: the bar dismisses on Esc or a click anywhere outside it. -->
+        <!-- Key→password fallback (VS Code Remote-SSH style): hidden until key
+             auth fails (or the Advanced "use password" box is ticked). The
+             value is sent ONLY in the connect IPC call — never stored in
+             recents/localStorage, never logged. -->
+        <div id="remote-password-row" class="remote-password-row hidden" data-test-id="remote-password-row">
+            <label for="remote-password-input" id="remote-password-label" class="remote-password-label">SSH password</label>
+            <input type="password" id="remote-password-input" data-test-id="remote-password-input"
+                   autocomplete="off" spellcheck="false" aria-label="SSH password for the remote machine">
+        </div>
+        <div class="remote-command-hintline">
+            <span class="remote-command-hint">ssh user@host · ssh host -p 2222 · user@host — your own ssh keys/config; if no key works you'll be asked for the machine's SSH password. If the remote isn't serving Remote Mode yet, it gets started for you.</span>
+            <button type="button" id="remote-advanced-toggle" class="remote-advanced-toggle" data-test-id="remote-advanced-toggle">Advanced…</button>
+        </div>
+        <div id="remote-advanced-box" class="remote-advanced-box hidden">
+            <div class="remote-field">
+                <label for="remote-session-path-input">Remote session file <span class="remote-label-soft">(default: ~/.config/ccbot/session.json)</span></label>
+                <input type="text" id="remote-session-path-input" data-test-id="remote-session-path-input" placeholder="~/.config/ccbot/session.json" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="remote-field">
+                <label for="remote-ssh-options-input">Extra ssh options <span class="remote-label-soft">(e.g. -i ~/.ssh/other_key)</span></label>
+                <input type="text" id="remote-ssh-options-input" data-test-id="remote-ssh-options-input" placeholder="-i /path/to/key -o SomeOption=value" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="remote-field">
+                <label for="remote-app-dir-input">Remote app directory <span class="remote-label-soft">(only for auto-start when the app never ran there)</span></label>
+                <input type="text" id="remote-app-dir-input" data-test-id="remote-app-dir-input" placeholder="~/claude-autorunner" spellcheck="false" autocomplete="off">
+            </div>
+            <label class="remote-check-row" for="remote-use-password-check">
+                <input type="checkbox" id="remote-use-password-check" data-test-id="remote-use-password-check">
+                Use password authentication <span class="remote-label-soft">(ask up front instead of trying keys)</span>
+            </label>
+        </div>
+        <div id="remote-recents-list" class="remote-recents-list hidden" data-test-id="remote-recents-list"></div>
+        <div id="remote-command-status" class="remote-panel-status" data-test-id="remote-command-status"></div>
+    </div>
+
+    <!-- Bottom-left popover: connection MANAGEMENT while connected
+         (what you're attached to + Disconnect). Connecting starts in the
+         top-middle command bar above. -->
+    <div id="remote-panel" class="remote-panel hidden" data-test-id="remote-panel">
+        <div class="remote-panel-header">
+            <span class="remote-panel-title">Remote connection</span>
+            <!-- No close button: the popover dismisses on Esc or a click anywhere outside it. -->
+        </div>
+        <div id="remote-connected-box" class="remote-connected-box hidden">
+            <p id="remote-connected-text" class="remote-connected-text" data-test-id="remote-connected-text"></p>
+            <button type="button" id="remote-disconnect-btn" class="remote-disconnect-btn" data-test-id="remote-disconnect-btn">Disconnect</button>
+        </div>
+        <div id="remote-panel-status" class="remote-panel-status" data-test-id="remote-panel-status"></div>
+    </div>
+
     <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
     <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
     <script src="node_modules/@xterm/addon-search/lib/addon-search.js"></script>
     <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
     <script src="src/ui/loading-manager.js"></script>
-    <script src="utils/glowing-effect.js"></script>
     <script src="src/audio/microwave-mode.js"></script>
-    <script src="utils/api-client.js"></script>
-    <script src="utils/completion-timer.js"></script>
     <script src="renderer.js"></script>
     <script src="src/utils/microwave-init.js"></script>
 </body>

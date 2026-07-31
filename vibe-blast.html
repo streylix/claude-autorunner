@@ -1,0 +1,1434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Vibe Blast</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=DM+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+/* ============================================================================
+   ORIGINAL "ENAMEL" PALETTE — kept verbatim so this skin can be reverted.
+   To go back: paste this block over the :root + .c1..c7 rules below.
+
+   :root{
+     --ink:#181120;        --ink-2:#221830;
+     --felt:#2C2039;       --well:#392B49;      --well-lip:#4A3860;
+     --brass:#E0A64B;      --brass-lo:#A9772C;  --brass-hi:#F8DFA6;
+     --text:#F0E7F6;       --muted:#9C89AE;     --danger:#FF5C7A;
+   }
+   .c1{--j:#FF4D6D;--jl:#FF9AAF}   .c2{--j:#FF9F2E;--jl:#FFCE86}
+   .c3{--j:#F2DD52;--jl:#FBF0A6}   .c4{--j:#3ED6A0;--jl:#96F3D5}
+   .c5{--j:#49B4FF;--jl:#A6DBFF}   .c6{--j:#A97BFF;--jl:#D5BEFF}
+   .c7{--j:#FF6FD8;--jl:#FFB9EE}
+
+   Other Enamel-specific values that were swapped out, for reference:
+     plate / button / card gradients ... #3A2C4A -> #261B34, #332444 -> #20172C
+     board tray gradient ............... #2C2039 -> #241A30
+     page glow ......................... #3A2A4C
+     accent glows ...................... rgba(224 166 75 / a) and rgba(248 223 166 / a)
+     overlay veil ...................... rgba(12,8,18,.82)
+     floater text ...................... #9C89AE (muted), #96F3D5 (perfect clear)
+     combo hot text .................... #FFF1CE
+   ============================================================================ */
+
+/* ---------- tokens: Claude Autorunner palette ---------- */
+:root{
+  /* backgrounds */
+  --bg-primary:#1a1a1e;
+  --bg-secondary:#121214;
+  --bg-tertiary:#222228;
+  --bg-quaternary:#2a2a32;
+  /* text */
+  --text-primary:#e8e8ed;
+  --text-secondary:#c2c2c9;
+  --text-tertiary:#a0a0ab;
+  --text-quaternary:#6b6b76;
+  /* borders */
+  --border-primary:#33333c;
+  --border-secondary:#44444f;
+  /* semantic */
+  --accent-primary:#4f8ff7;
+  --accent-secondary:#3a6fd0;
+  --accent-success:#34d399;
+  --accent-warning:#fbbf24;
+  --accent-error:#f87171;
+  --accent-magenta:#ff69b4;
+  --accent-purple:#A7B0ED;
+
+  /* three accent steps used for the score plate, wordmark and combo meter */
+  --acc-hi:#9dc0ff;
+  --acc:var(--accent-primary);
+  --acc-lo:var(--accent-secondary);
+  --glow:79,143,247;                /* accent as raw rgb, for glow alphas */
+  --veil:rgba(18,18,20,.84);
+
+  /* names the layout already speaks, now pointing at the palette */
+  --ink:var(--bg-primary);
+  --ink-2:var(--bg-secondary);
+  --felt:var(--bg-tertiary);
+  --well:var(--bg-quaternary);
+  --well-lip:var(--border-secondary);
+  --brass:var(--acc);
+  --brass-lo:var(--acc-lo);
+  --brass-hi:var(--acc-hi);
+  --text:var(--text-primary);
+  --muted:var(--text-tertiary);
+  --danger:var(--accent-error);
+
+  --display:"Bricolage Grotesque", "Trebuchet MS", system-ui, sans-serif;
+  --mono:"DM Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --body:system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --cell:38px;
+  --gap:4px;
+  --pitch:calc(var(--cell) + var(--gap));
+  --radius:26%;
+}
+
+/* Catppuccin Latte.
+   Dark is the base above, so light needs stating twice: once for "the OS says
+   light and the host has not pinned a theme", once for "the host pinned light".
+   The host mirrors the app's own data-theme onto this document, and its
+   "system" value deliberately matches neither pinned selector so it falls
+   through to the media query. */
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="light"]):not([data-theme="dark"]){
+    --bg-primary:#eff1f5;
+    --bg-secondary:#e6e9ef;
+    --bg-tertiary:#dce0e8;
+    --bg-quaternary:#ccd0da;
+    --text-primary:#4c4f69;
+    --text-secondary:#5c5f77;
+    --text-tertiary:#6c6f85;
+    --text-quaternary:#7c7f93;
+    --border-primary:#dce0e8;
+    --border-secondary:#ccd0da;
+    --accent-primary:#1e66f5;
+    --accent-secondary:#04a5e5;
+    --accent-success:#40a02b;
+    --accent-warning:#df8e1d;
+    --accent-error:#d20f39;
+    --accent-magenta:#ea76cb;
+    --accent-purple:#8839ef;
+    --acc-hi:#1e66f5;
+    --acc:#04a5e5;
+    --acc-lo:#8839ef;
+    --glow:30,102,245;
+    --veil:rgba(230,233,239,.86);
+  }
+}
+
+:root[data-theme="light"]{
+    --bg-primary:#eff1f5;
+    --bg-secondary:#e6e9ef;
+    --bg-tertiary:#dce0e8;
+    --bg-quaternary:#ccd0da;
+    --text-primary:#4c4f69;
+    --text-secondary:#5c5f77;
+    --text-tertiary:#6c6f85;
+    --text-quaternary:#7c7f93;
+    --border-primary:#dce0e8;
+    --border-secondary:#ccd0da;
+    --accent-primary:#1e66f5;
+    --accent-secondary:#04a5e5;
+    --accent-success:#40a02b;
+    --accent-warning:#df8e1d;
+    --accent-error:#d20f39;
+    --accent-magenta:#ea76cb;
+    --accent-purple:#8839ef;
+    /* on a light field the "bright" step has to go darker, not lighter */
+    --acc-hi:#1e66f5;
+    --acc:#04a5e5;
+    --acc-lo:#8839ef;
+    --glow:30,102,245;
+    --veil:rgba(230,233,239,.86);
+}
+
+/* jewels: the 24-colour terminal instance palette, first seven */
+.c1{--j:#4f8ff7;--jl:#a8c9fb}
+.c2{--j:#28ca42;--jl:#8ee79f}
+.c3{--j:#ff5f57;--jl:#ffa9a4}
+.c4{--j:#ffbe2e;--jl:#ffdd91}
+.c5{--j:#af52de;--jl:#d8a6f0}
+.c6{--j:#5ac8fa;--jl:#aee5fc}
+.c7{--j:#ff6b9d;--jl:#ffb4ca}
+
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  margin:0;
+  font-family:var(--body);
+  color:var(--text);
+  background:
+    radial-gradient(120% 80% at 50% -10%, var(--bg-tertiary) 0%, transparent 60%),
+    repeating-linear-gradient(45deg, rgba(255,255,255,.012) 0 2px, transparent 2px 5px),
+    var(--ink);
+  display:flex; flex-direction:column; align-items:center;
+  min-height:100dvh; overflow:hidden; touch-action:manipulation;
+}
+
+/* ---------- shell ---------- */
+.shell{
+  width:100%; max-width:520px; padding:14px 16px calc(14px + env(safe-area-inset-bottom));
+  display:flex; flex-direction:column; gap:14px; flex:1;
+}
+
+/* ---------- header ---------- */
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:12px}
+.wordmark{display:flex;flex-direction:column;line-height:1}
+.wordmark b{
+  font-family:var(--display); font-weight:800; font-size:26px; letter-spacing:-.03em;
+  background:linear-gradient(180deg,var(--brass-hi),var(--brass) 55%,var(--brass-lo));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+.wordmark span{font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--muted);margin-top:5px}
+
+/* signature: brass score plate */
+.plate{
+  position:relative; padding:8px 14px 9px; border-radius:12px; text-align:right;
+  background:linear-gradient(180deg,var(--bg-tertiary),var(--bg-secondary));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--glow),.28),
+    inset 0 -2px 0 rgba(0,0,0,.45),
+    0 0 0 1px rgba(var(--glow),.28),
+    0 6px 18px rgba(0,0,0,.45);
+  min-width:132px;
+}
+.plate .lbl{font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);display:block}
+.digits{display:flex;justify-content:flex-end;gap:1px;margin-top:2px;height:30px;align-items:center}
+.digits i{
+  font-family:var(--mono); font-style:normal; font-size:27px; line-height:1;
+  color:var(--brass-hi); text-shadow:0 1px 0 rgba(0,0,0,.22), 0 0 12px rgba(var(--glow),.35);
+  display:inline-block; min-width:.62em; text-align:center;
+}
+.digits i.roll{animation:roll .26s ease-out}
+@keyframes roll{
+  0%{transform:translateY(-70%) rotateX(85deg);opacity:0;filter:brightness(2)}
+  100%{transform:none;opacity:1}
+}
+.best{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:3px}
+.best b{color:var(--brass);font-weight:500}
+
+/* ---------- combo meter ---------- */
+.meter{
+  height:6px;border-radius:99px;background:rgba(0,0,0,.35);overflow:hidden;position:relative;
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.6);
+}
+.meter i{
+  position:absolute;inset:0;transform-origin:left;transform:scaleX(0);
+  background:linear-gradient(90deg,var(--brass-lo),var(--brass),var(--brass-hi));
+  transition:transform .35s cubic-bezier(.2,.9,.25,1);
+  box-shadow:0 0 14px rgba(var(--glow),.7);
+}
+.meter-row{display:flex;align-items:center;gap:10px;margin-top:-4px}
+.meter-row .tag{
+  font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap;letter-spacing:.04em;
+}
+.meter-row .tag b{color:var(--brass-hi);font-weight:500}
+.meter-row .meter{flex:1}
+
+/* ---------- board ---------- */
+.board-wrap{position:relative;display:flex;justify-content:center}
+.board{
+  display:grid; grid-template-columns:repeat(8,var(--cell)); gap:var(--gap);
+  padding:10px; border-radius:18px;
+  background:linear-gradient(180deg,var(--bg-tertiary),var(--bg-secondary));
+  box-shadow:
+    inset 0 2px 0 rgba(255,255,255,.06),
+    inset 0 -3px 10px rgba(0,0,0,.5),
+    0 0 0 1px rgba(var(--glow),.16),
+    0 18px 40px rgba(0,0,0,.5);
+  touch-action:none;
+}
+.board.shake{animation:shake .3s ease}
+@keyframes shake{
+  0%,100%{transform:none}25%{transform:translate(-3px,1px)}50%{transform:translate(3px,-1px)}75%{transform:translate(-2px,0)}
+}
+.cell{
+  width:var(--cell);height:var(--cell);border-radius:var(--radius);
+  background:var(--well);
+  box-shadow:inset 0 2px 3px rgba(0,0,0,.5), inset 0 -1px 0 rgba(255,255,255,.05);
+  position:relative;
+}
+.jewel{
+  position:absolute;inset:0;border-radius:var(--radius);opacity:0;transform:scale(.2);
+  background:linear-gradient(155deg,var(--jl),var(--j) 45%,color-mix(in srgb,var(--j) 72%,#000));
+  box-shadow:
+    inset 0 2px 0 rgba(255,255,255,.5),
+    inset 0 -3px 0 rgba(0,0,0,.3),
+    0 0 0 1px rgba(255,255,255,.14),
+    0 2px 6px rgba(0,0,0,.35);
+}
+.cell.on .jewel{opacity:1;transform:none;animation:seat .22s cubic-bezier(.2,1.5,.4,1)}
+@keyframes seat{0%{transform:scale(.35)}70%{transform:scale(1.08)}100%{transform:none}}
+.cell.ghost .jewel{opacity:.5;transform:scale(.92);animation:none}
+.cell.ghost{box-shadow:inset 0 0 0 2px rgba(255,255,255,.45), inset 0 2px 3px rgba(0,0,0,.5)}
+.cell.willclear{box-shadow:inset 0 0 0 2px var(--brass-hi), 0 0 14px rgba(var(--glow),.5)}
+.cell.willclear .jewel{filter:brightness(1.35) saturate(1.2)}
+.cell.pop .jewel{animation:pop .34s ease-out forwards}
+@keyframes pop{
+  0%{filter:brightness(1)}
+  35%{filter:brightness(3) saturate(0);transform:scale(1.16)}
+  100%{opacity:0;transform:scale(.35) rotate(8deg);filter:brightness(2)}
+}
+
+/* ---------- tray ---------- */
+.tray{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:8px;align-items:center;justify-items:center;
+  min-height:calc(var(--cell) * 2.9);
+  padding:8px 6px;border-radius:16px;
+  background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(0,0,0,.22));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06), inset 0 -2px 8px rgba(0,0,0,.35);
+}
+.slot{display:flex;align-items:center;justify-content:center;width:100%;height:100%;position:relative}
+.piece{
+  display:grid;gap:3px;cursor:grab;touch-action:none;
+  transition:transform .18s cubic-bezier(.2,1.4,.4,1), opacity .2s;
+  animation:deal .34s cubic-bezier(.2,1.2,.3,1) backwards;
+}
+@keyframes deal{0%{transform:translateY(14px) scale(.6);opacity:0}100%{transform:none;opacity:1}}
+.piece:active{cursor:grabbing}
+.piece.sel{transform:scale(1.12)}
+.piece.sel .pj{box-shadow:inset 0 2px 0 rgba(255,255,255,.55), 0 0 0 1.5px var(--brass-hi), 0 0 10px rgba(var(--glow),.45)}
+.piece.used{opacity:0;pointer-events:none;transform:scale(.4)}
+.pcell{width:var(--tcell);height:var(--tcell);border-radius:var(--radius)}
+.pj{
+  width:100%;height:100%;border-radius:var(--radius);
+  background:linear-gradient(155deg,var(--jl),var(--j) 45%,color-mix(in srgb,var(--j) 72%,#000));
+  box-shadow:inset 0 2px 0 rgba(255,255,255,.5), inset 0 -2px 0 rgba(0,0,0,.3), 0 0 0 1px rgba(255,255,255,.12);
+}
+
+/* ---------- drag ghost ---------- */
+#ghost{position:fixed;left:0;top:0;pointer-events:none;z-index:60;display:grid;gap:var(--gap);
+  filter:drop-shadow(0 10px 14px rgba(0,0,0,.5));will-change:transform}
+#ghost .pcell{width:var(--cell);height:var(--cell)}
+
+/* ---------- controls ---------- */
+.controls{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+button{
+  font-family:var(--body);font-size:12px;letter-spacing:.04em;color:var(--text);
+  background:linear-gradient(180deg,var(--bg-quaternary),var(--bg-tertiary));border:0;border-radius:10px;padding:9px 14px;cursor:pointer;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.1), inset 0 -2px 0 rgba(0,0,0,.4), 0 2px 8px rgba(0,0,0,.35);
+  transition:transform .12s, filter .12s;
+}
+button:hover{filter:brightness(1.15)}
+button:active{transform:translateY(1px)}
+button:focus-visible{outline:2px solid var(--brass-hi);outline-offset:2px}
+button.on{color:var(--bg-secondary);background:linear-gradient(180deg,var(--brass-hi),var(--brass));font-weight:600}
+
+/* ---------- combo banner ---------- */
+.banner{
+  position:absolute;left:50%;top:50%;z-index:20;pointer-events:none;opacity:0;
+  transform:translate(-50%,-50%);text-align:center;white-space:nowrap;
+}
+.banner.go{animation:banner .95s cubic-bezier(.2,1.2,.3,1) forwards}
+@keyframes banner{
+  0%{opacity:0;transform:translate(-50%,-50%) scale(.4) rotate(-6deg)}
+  18%{opacity:1;transform:translate(-50%,-50%) scale(1.18) rotate(2deg)}
+  30%{transform:translate(-50%,-50%) scale(1) rotate(0)}
+  75%{opacity:1;transform:translate(-50%,-64%) scale(1)}
+  100%{opacity:0;transform:translate(-50%,-86%) scale(.92)}
+}
+.banner b{
+  display:block;font-family:var(--display);font-weight:800;font-size:40px;letter-spacing:-.04em;
+  background:linear-gradient(180deg,var(--brass-hi),var(--brass) 60%,var(--brass-lo));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 3px 10px rgba(0,0,0,.7));
+}
+.banner span{
+  display:block;font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;color:var(--text);
+  text-shadow:0 2px 6px rgba(0,0,0,.8);margin-top:2px;
+}
+.meter-row .tag.hot b{color:var(--acc-hi);text-shadow:0 0 12px rgba(var(--glow),.8)}
+.pip{
+  display:inline-block;width:6px;height:6px;border-radius:50%;vertical-align:middle;
+  background:rgba(255,255,255,.16);margin-left:4px;transition:background .2s, box-shadow .2s;
+}
+.pip.lit{background:var(--brass);box-shadow:0 0 7px rgba(var(--glow),.75)}
+.pip.last{background:var(--danger);box-shadow:0 0 7px rgba(248,113,113,.8);animation:blip 1s infinite}
+@keyframes blip{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* ---------- floaters ---------- */
+.float{
+  position:fixed;z-index:70;pointer-events:none;font-family:var(--display);font-weight:800;
+  letter-spacing:-.02em;text-shadow:0 2px 8px rgba(0,0,0,.6);animation:rise 1s ease-out forwards;
+}
+@keyframes rise{0%{transform:translate(-50%,0) scale(.7);opacity:0}
+15%{transform:translate(-50%,-6px) scale(1.15);opacity:1}
+100%{transform:translate(-50%,-58px) scale(1);opacity:0}}
+.spark{position:fixed;z-index:65;width:7px;height:7px;border-radius:2px;pointer-events:none;
+  animation:fly .62s ease-out forwards}
+@keyframes fly{0%{transform:translate(0,0) scale(1);opacity:1}
+100%{transform:translate(var(--dx),var(--dy)) scale(.2) rotate(180deg);opacity:0}}
+
+/* ---------- overlay ---------- */
+.veil{
+  position:fixed;inset:0;z-index:80;display:none;place-items:center;padding:24px;
+  background:var(--veil);backdrop-filter:blur(6px);
+}
+.veil.show{display:grid;animation:fade .25s ease}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.card{
+  width:100%;max-width:330px;text-align:center;padding:26px 22px;border-radius:20px;
+  background:linear-gradient(180deg,var(--bg-tertiary),var(--bg-primary));
+  box-shadow:0 0 0 1px rgba(var(--glow),.3), 0 26px 60px rgba(0,0,0,.6);
+  animation:pops .32s cubic-bezier(.2,1.3,.35,1);
+}
+@keyframes pops{from{transform:scale(.85) translateY(12px);opacity:0}to{transform:none;opacity:1}}
+.card h2{font-family:var(--display);font-weight:800;font-size:24px;margin:0 0 4px;letter-spacing:-.02em}
+.card p{color:var(--muted);font-size:13px;margin:0 0 18px;line-height:1.5}
+.card .big{font-family:var(--mono);font-size:44px;color:var(--brass-hi);margin:6px 0 2px}
+.card .sub{font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:20px}
+
+.hint{text-align:center;font-size:11.5px;color:var(--muted);letter-spacing:.02em}
+
+/* ---------- offline / local-only notice ---------- */
+.conn{
+  display:flex;align-items:center;gap:7px;margin-top:-6px;
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.03em;color:var(--accent-warning);
+  padding:5px 9px;border-radius:8px;
+  background:color-mix(in srgb,var(--accent-warning) 12%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent-warning) 30%,transparent);
+}
+.conn[hidden]{display:none}
+.conn .dot{
+  width:6px;height:6px;border-radius:50%;flex:0 0 auto;
+  background:var(--accent-warning);box-shadow:0 0 7px color-mix(in srgb,var(--accent-warning) 80%,transparent);
+}
+
+@media (prefers-reduced-motion: reduce){
+  *{animation-duration:.01ms !important;transition-duration:.01ms !important}
+}
+@media (max-height:700px){
+  .wordmark b{font-size:22px}
+  .shell{gap:10px}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div class="wordmark">
+      <b>VIBE BLAST</b>
+      <span>fit · clear · combo</span>
+    </div>
+    <div class="plate">
+      <span class="lbl">Score</span>
+      <div class="digits" id="digits"><i>0</i></div>
+      <div class="best">Best <b id="best">0</b></div>
+    </div>
+  </header>
+
+  <div class="conn" id="conn" hidden>
+    <span class="dot"></span>
+    <span id="connText">Saved on this device only</span>
+  </div>
+
+  <div class="meter-row">
+    <span class="tag" id="comboTag">Combo <b>&times;1</b></span>
+    <div class="meter"><i id="meterFill"></i></div>
+  </div>
+
+  <div class="board-wrap">
+    <div class="board" id="board"></div>
+    <div class="banner" id="banner"><b></b><span></span></div>
+  </div>
+
+  <div class="tray" id="tray"></div>
+
+  <div class="controls">
+    <button id="btnSound" class="on">Sound on</button>
+    <button id="btnNew">New game</button>
+  </div>
+
+  <p class="hint">All three pieces always fit somewhere. Fit them all in, or the run ends.</p>
+</div>
+
+<div class="veil" id="veil">
+  <div class="card">
+    <h2 id="vTitle">No moves left</h2>
+    <p id="vText">Every remaining piece is too big for the gaps you left.</p>
+    <div class="big" id="vScore">0</div>
+    <div class="sub" id="vSub">lines cleared 0 · best combo ×1</div>
+    <button id="vBtn" class="on" style="padding:11px 22px;font-size:13px">Play again</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   HOST BRIDGE
+   The game runs inside an iframe in the Auto-Injector sidebar. All
+   persistence goes through the host over postMessage; the host decides
+   whether that lands in the database or in localStorage and tells us
+   which, so the UI can say so. Standalone (opened directly) still works —
+   every call just rejects and the game keeps its state in memory.
+   ============================================================ */
+const Bridge = {
+  seq: 0,
+  pending: new Map(),
+  embedded: window.parent !== window,
+  backed: null,               // true = database, false = local only, null = unknown
+  call(op, payload){
+    if (!this.embedded) return Promise.reject(new Error("standalone"));
+    const id = ++this.seq;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      window.parent.postMessage(Object.assign({ source:"vibe-blast", id, op }, payload), "*");
+      setTimeout(() => {
+        const p = this.pending.get(id);
+        if (p){ this.pending.delete(id); reject(new Error("host timeout")); }
+      }, 5000);
+    });
+  }
+};
+
+window.addEventListener("message", e => {
+  const m = e.data;
+  if (!m || m.source !== "vibe-blast-host") return;
+  // The app owns the theme; this document just mirrors whatever it is told,
+  // so the game never sits in light mode inside a dark app.
+  if (m.op === "theme"){ applyTheme(m.theme); return; }
+  if (m.op === "status"){ Bridge.backed = !!m.backed; paintConn(); return; }
+  const p = Bridge.pending.get(m.id);
+  if (!p) return;
+  Bridge.pending.delete(m.id);
+  if (m.error) p.reject(new Error(m.error));
+  else {
+    if (typeof m.backed === "boolean" && m.backed !== Bridge.backed){ Bridge.backed = m.backed; paintConn(); }
+    p.resolve(m.result);
+  }
+});
+
+window.storage = {
+  get: key => Bridge.call("get", { key }),
+  set: (key, value) => Bridge.call("set", { key, value })
+};
+
+function applyTheme(theme){
+  if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
+  else document.documentElement.removeAttribute("data-theme");  // "system" → follow the OS
+}
+
+/* ============================================================
+   VIBE BLAST — a block puzzle
+   Board: 8x8. Tray: 3 pieces. Clear a full row or column.
+   The generator proves every tray is placeable before dealing it.
+   ============================================================ */
+
+const N = 8, CELLS = N * N;
+
+/* ---------- bitboard helpers (one BigInt = whole 8x8 board) ---------- */
+const BIT = [];
+for (let i = 0; i < CELLS; i++) BIT.push(1n << BigInt(i));
+const ROW = [], COL = [];
+for (let r = 0; r < N; r++) { let m = 0n; for (let c = 0; c < N; c++) m |= BIT[r*N+c]; ROW.push(m); }
+for (let c = 0; c < N; c++) { let m = 0n; for (let r = 0; r < N; r++) m |= BIT[r*N+c]; COL.push(m); }
+
+/* Remove any full rows/columns from a bitboard (used by the solver). */
+function clearBB(o){
+  let kill = 0n;
+  for (let r = 0; r < N; r++) if ((o & ROW[r]) === ROW[r]) kill |= ROW[r];
+  for (let c = 0; c < N; c++) if ((o & COL[c]) === COL[c]) kill |= COL[c];
+  return kill ? (o & ~kill) : o;
+}
+
+/* ---------- shape library ---------- */
+/* Each shape: cells as [row, col], plus a spawn weight. */
+const RAW = [
+  { w: 5,  cells:[[0,0]] },                                              // dot
+  { w: 8,  cells:[[0,0],[0,1]] },                                        // domino
+  { w: 8,  cells:[[0,0],[1,0]] },
+  { w: 8,  cells:[[0,0],[0,1],[0,2]] },                                  // I3
+  { w: 8,  cells:[[0,0],[1,0],[2,0]] },
+  { w: 5,  cells:[[0,0],[0,1],[0,2],[0,3]] },                            // I4
+  { w: 5,  cells:[[0,0],[1,0],[2,0],[3,0]] },
+  { w: 2,  cells:[[0,0],[0,1],[0,2],[0,3],[0,4]] },                      // I5
+  { w: 2,  cells:[[0,0],[1,0],[2,0],[3,0],[4,0]] },
+  { w: 8,  cells:[[0,0],[0,1],[1,0],[1,1]] },                            // O
+  { w: 2,  cells:[[0,0],[0,1],[0,2],[1,0],[1,1],[1,2],[2,0],[2,1],[2,2]] }, // big square
+  { w: 4,  cells:[[0,0],[0,1],[0,2],[1,0],[1,1],[1,2]] },                // 2x3
+  { w: 4,  cells:[[0,0],[0,1],[1,0],[1,1],[2,0],[2,1]] },                // 3x2
+  { w: 7,  cells:[[0,0],[1,0],[1,1]] },                                  // corner triominoes
+  { w: 7,  cells:[[0,0],[0,1],[1,0]] },
+  { w: 7,  cells:[[0,0],[0,1],[1,1]] },
+  { w: 7,  cells:[[0,1],[1,0],[1,1]] },
+  { w: 4,  cells:[[0,0],[1,0],[2,0],[2,1]] },                            // J / L tetrominoes
+  { w: 4,  cells:[[0,0],[0,1],[1,1],[2,1]] },
+  { w: 4,  cells:[[0,0],[0,1],[1,0],[2,0]] },
+  { w: 4,  cells:[[0,1],[1,1],[2,0],[2,1]] },
+  { w: 4,  cells:[[0,0],[0,1],[0,2],[1,0]] },
+  { w: 4,  cells:[[0,0],[0,1],[0,2],[1,2]] },
+  { w: 4,  cells:[[0,0],[1,0],[1,1],[1,2]] },
+  { w: 4,  cells:[[0,2],[1,0],[1,1],[1,2]] },
+  { w: 3,  cells:[[0,1],[1,0],[1,1],[1,2]] },                            // T tetrominoes
+  { w: 3,  cells:[[0,0],[0,1],[0,2],[1,1]] },
+  { w: 3,  cells:[[0,0],[1,0],[1,1],[2,0]] },
+  { w: 3,  cells:[[0,1],[1,0],[1,1],[2,1]] },
+  { w: 3,  cells:[[0,1],[0,2],[1,0],[1,1]] },                            // S / Z
+  { w: 3,  cells:[[0,0],[0,1],[1,1],[1,2]] },
+  { w: 3,  cells:[[0,0],[1,0],[1,1],[2,1]] },
+  { w: 3,  cells:[[0,1],[1,0],[1,1],[2,0]] },
+  { w: 2,  cells:[[0,0],[1,0],[2,0],[2,1],[2,2]] },                      // big L (5)
+  { w: 2,  cells:[[0,0],[0,1],[0,2],[1,0],[2,0]] },
+  { w: 2,  cells:[[0,0],[0,1],[0,2],[1,2],[2,2]] },
+  { w: 2,  cells:[[0,2],[1,2],[2,0],[2,1],[2,2]] },
+];
+
+/* Precompute every legal anchor position + its bitmask for each shape. */
+const SHAPES = RAW.map(s => {
+  const rs = s.cells.map(p => p[0]), cs = s.cells.map(p => p[1]);
+  const h = Math.max(...rs) + 1, w = Math.max(...cs) + 1;
+  const placements = [];
+  for (let r = 0; r + h <= N; r++) for (let c = 0; c + w <= N; c++) {
+    let m = 0n;
+    for (const [dr, dc] of s.cells) m |= BIT[(r + dr) * N + (c + dc)];
+    placements.push({ r, c, mask: m });
+  }
+  return { cells: s.cells, weight: s.w, h, w, size: s.cells.length, placements };
+});
+
+const fitsAnywhere = (si, occ) => SHAPES[si].placements.some(p => (p.mask & occ) === 0n);
+
+/* ---------- the tray solver ----------
+   Depth-first over all orderings of the three pieces. Three questions get asked
+   of the same search, controlled by `opts`:
+
+     plain        — can all three be placed at all? (clears simulated as normal)
+     requireClear — is there an order that places all three AND clears a line?
+     noClears     — can all three be placed if no line ever cleared?
+
+   `noClears === false` while `plain === true` is the interesting case: it means
+   the only way to fit the tray is to complete a line partway through and use the
+   space it frees. Memoised, and capped by a node budget so a hostile board can
+   never freeze the UI.                                                        */
+function search(occ, tray, opts, budget){
+  let work = 0;
+  const seen = new Set();
+  const order = tray.map((_, i) => i);
+  function dfs(o, rem, didClear){
+    if (!rem.length) return opts.requireClear ? didClear : true;
+    const key = o.toString(36) + "|" + rem.join("") + (opts.requireClear ? (didClear ? "1" : "0") : "");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    for (let i = 0; i < rem.length; i++){
+      const si = tray[rem[i]];
+      const rest = rem.slice(0, i).concat(rem.slice(i + 1));
+      for (const p of SHAPES[si].placements){
+        // the budget counts placement tests, not recursions — that is what
+        // actually costs time, so this genuinely bounds the work
+        if (++work > budget) return opts.requireClear ? false : true;
+        if ((p.mask & o) !== 0n) continue;
+        const merged = o | p.mask;
+        const after = opts.noClears ? merged : clearBB(merged);
+        if (dfs(after, rest, didClear || after !== merged)) return true;
+      }
+    }
+    return false;
+  }
+  return dfs(occ, order, false);
+}
+
+const trayIsSolvable = (occ, tray, budget = 120000) => search(occ, tray, {}, budget);
+const trayCanClear   = (occ, tray, budget = 90000)  => search(occ, tray, { requireClear:true }, budget);
+const trayNeedsClear = (occ, tray, budget = 60000)  => !search(occ, tray, { noClears:true }, budget);
+
+/* ---------- weighted sampling, biased toward BIG pieces ---------- */
+function sampleShape(pressure){
+  // pressure 0 (empty board) .. 1 (packed). Big shapes are always favoured; the
+  // bias only relaxes as the board tightens, because an all-giant tray on a full
+  // board has no solution and every candidate would be thrown away.
+  const bigBias = 2.4 * (1 - pressure * 0.75);
+  let total = 0; const w = [];
+  for (let i = 0; i < SHAPES.length; i++){
+    const s = SHAPES[i];
+    const v = s.weight * Math.pow(s.size, bigBias);
+    w.push(v); total += v;
+  }
+  let x = Math.random() * total;
+  for (let i = 0; i < w.length; i++){ x -= w[i]; if (x <= 0) return i; }
+  return SHAPES.length - 1;
+}
+
+/* Deal three pieces. Ranked, best first:
+     tier 3 — all three fit, a line can be cleared, and the tray only fits AT ALL
+              if you clear that line partway through to make the room
+     tier 2 — all three fit and a line can be cleared this turn
+     tier 1 — all three fit in some order
+   Within a tier, the trio with the most blocks wins. */
+function dealTray(occ){
+  const filled = popcount(occ);
+  const pressure = Math.min(1, filled / CELLS * 1.35);
+  const t0 = performance.now();
+
+  let best = null, bestTier = 0, bestSize = 0;
+  for (let a = 0; a < 600; a++){
+    if (performance.now() - t0 > 55) break;
+    const cand = [sampleShape(pressure), sampleShape(pressure), sampleShape(pressure)];
+    const size = SHAPES[cand[0]].size + SHAPES[cand[1]].size + SHAPES[cand[2]].size;
+    if (bestTier >= 2 && size <= bestSize) continue;      // can't beat what we hold
+    if (!cand.every(si => fitsAnywhere(si, occ))) continue;
+    if (!trayIsSolvable(occ, cand)) continue;
+
+    let tier = 1;
+    if (trayCanClear(occ, cand)) tier = trayNeedsClear(occ, cand) ? 3 : 2;
+    if (tier > bestTier || (tier === bestTier && size > bestSize)){
+      best = cand; bestTier = tier; bestSize = size;
+    }
+    if (bestTier === 3 && bestSize >= 16) break;          // ideal, stop looking
+    if (bestTier >= 2 && bestSize >= 19) break;
+  }
+  if (best) return best;
+
+  // Fallback: nothing solvable turned up — take the biggest pieces that each fit
+  // the board as it stands, largest first.
+  const singleFit = [];
+  for (let i = 0; i < SHAPES.length; i++) if (fitsAnywhere(i, occ)) singleFit.push(i);
+  if (singleFit.length){
+    singleFit.sort((x, y) => SHAPES[y].size - SHAPES[x].size);
+    const top = singleFit.slice(0, Math.max(3, Math.ceil(singleFit.length / 3)));
+    const pick = () => top[Math.floor(Math.random() * top.length)];
+    return [pick(), pick(), pick()].sort((x, y) => SHAPES[y].size - SHAPES[x].size);
+  }
+  // The board is genuinely full — hand out dots.
+  return [0, 0, 0];
+}
+
+function popcount(bb){ let n = 0; while (bb){ n += Number(bb & 1n); bb >>= 1n; } return n; }
+
+/* ============================================================
+   SOUND — everything synthesised, no files
+   ============================================================ */
+const Sound = {
+  ctx:null, master:null, on:true, noiseBuf:null,
+  boot(){
+    if (this.ctx) { if (this.ctx.state === "suspended") this.ctx.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = 0.42;
+    this.master.connect(this.ctx.destination);
+    const len = this.ctx.sampleRate * 0.6;
+    this.noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const d = this.noiseBuf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  },
+  now(){ return this.ctx ? this.ctx.currentTime : 0; },
+  tone(freq, at, dur, o = {}){
+    if (!this.on || !this.ctx) return;
+    const t = this.now() + at;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = o.type || "triangle";
+    osc.frequency.setValueAtTime(freq, t);
+    if (o.glide) osc.frequency.exponentialRampToValueAtTime(Math.max(20, o.glide), t + dur);
+    const vol = o.vol == null ? 0.22 : o.vol;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + (o.attack || 0.008));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    let node = osc;
+    if (o.lp){
+      const f = this.ctx.createBiquadFilter();
+      f.type = "lowpass"; f.frequency.value = o.lp;
+      osc.connect(f); node = f;
+    }
+    node.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + dur + 0.03);
+  },
+  noise(at, dur, o = {}){
+    if (!this.on || !this.ctx || !this.noiseBuf) return;
+    const t = this.now() + at;
+    const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuf;
+    const f = this.ctx.createBiquadFilter();
+    f.type = o.type || "bandpass";
+    f.frequency.setValueAtTime(o.f0 || 1200, t);
+    if (o.f1) f.frequency.exponentialRampToValueAtTime(o.f1, t + dur);
+    f.Q.value = o.q == null ? 1.2 : o.q;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(o.vol == null ? 0.16 : o.vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); g.connect(this.master);
+    src.start(t); src.stop(t + dur + 0.02);
+  },
+
+  pick(){
+    // dry wooden tick — no upward glide, which is what reads as "notification"
+    this.tone(420, 0, 0.045, { type:"triangle", vol:0.1, glide:330, lp:2200 });
+    this.noise(0, 0.03, { f0:2600, f1:1400, vol:0.06, q:1.4 });
+  },
+  drop(size){
+    const base = 200 - Math.min(70, size * 9);
+    this.tone(base, 0, 0.13, { type:"sine", vol:0.3, glide:base * 0.55 });
+    this.tone(base * 3, 0, 0.06, { type:"triangle", vol:0.09, glide:base * 2 });
+    this.noise(0, 0.07, { f0:2200, f1:600, vol:0.09, q:0.8 });
+  },
+  deny(){
+    this.tone(150, 0, 0.09, { type:"sawtooth", vol:0.13, lp:900 });
+    this.tone(140, 0.1, 0.1, { type:"sawtooth", vol:0.13, lp:800 });
+  },
+  /* A bubble pop. The defining move is an UPWARD chirp: the cavity opens and
+     its resonance leaps up in ~20ms, then stops dead. Downward sweeps sound
+     like water drops — that was the earlier mistake. A high-Q noise burst rides
+     the same rising contour to give it the hollow, wet edge. */
+  pop(at, freq, vol){
+    if (!this.on || !this.ctx) return;
+    const t = this.now() + at, ctx = this.ctx;
+    const rise = 0.020, dur = 0.055;
+
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq * 0.38, t);
+    osc.frequency.exponentialRampToValueAtTime(freq, t + rise);   // the pop
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + dur + 0.02);
+
+    // hollow "skin" of the bubble: resonant noise on the same rising contour
+    const src = ctx.createBufferSource(); src.buffer = this.noiseBuf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass"; bp.Q.value = 9;
+    bp.frequency.setValueAtTime(freq * 0.7, t);
+    bp.frequency.exponentialRampToValueAtTime(freq * 2.1, t + rise);
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(vol * 0.5, t);
+    ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.032);
+    src.connect(bp); bp.connect(ng); ng.connect(this.master);
+    src.start(t); src.stop(t + 0.06);
+  },
+  clear(lines, combo, cells){
+    // one clean headline pop, then lighter ones trailing off behind it
+    const base = 720 * Math.pow(2, Math.min(7, combo - 1) / 12);
+    this.pop(0, base, 0.3);
+    const extra = Math.min(7, Math.max(1, Math.round((cells || 8) / 3)));
+    for (let i = 1; i <= extra; i++){
+      this.pop(i * 0.045 + Math.random() * 0.012,
+               base * (0.72 + Math.random() * 0.55),
+               0.12 * (1 - i / (extra + 2)));
+    }
+    if (lines >= 2) this.tone(base / 5, 0, 0.22, { type:"sine", vol:0.09, glide: base / 8, attack:0.015 });
+  },
+  perfect(){
+    for (let i = 0; i < 14; i++)
+      this.pop(i * 0.05 + Math.random() * 0.02, 480 * (1 + Math.random() * 1.6), 0.14 * (1 - i / 18));
+    [196, 294, 392].forEach((f, i) =>
+      this.tone(f, i * 0.05, 1.2, { type:"sine", vol:0.09, attack:0.25 }));
+  },
+  streakEnd(){
+    this.tone(330, 0, 0.18, { type:"sine", vol:0.1, glide:220, lp:1400 });
+    this.tone(220, 0.09, 0.22, { type:"sine", vol:0.07, glide:165, lp:1100 });
+  },
+  over(){
+    [440, 392, 330, 262].forEach((f, i) =>
+      this.tone(f, i * 0.16, 0.5, { type:"sawtooth", vol:0.14, lp:1300, glide:f * 0.94 }));
+    this.noise(0.5, 0.7, { f0:700, f1:120, vol:0.09, q:0.6 });
+  },
+  ui(){ this.tone(520, 0, 0.05, { type:"square", vol:0.06, lp:1800 }); }
+};
+
+/* ============================================================
+   GAME STATE
+   ============================================================ */
+const boardEl  = document.getElementById("board");
+const trayEl   = document.getElementById("tray");
+const digitsEl = document.getElementById("digits");
+const bestEl   = document.getElementById("best");
+const meterEl  = document.getElementById("meterFill");
+const comboTag = document.getElementById("comboTag");
+const bannerEl = document.getElementById("banner");
+const veil     = document.getElementById("veil");
+const REDUCED  = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+let grid = new Uint8Array(CELLS);   // 0 = empty, else colour index 1..7
+let bb = 0n;                        // occupancy bitboard, always mirrors `grid`
+let tray = [];                      // shape ids, null once used
+let trayColor = [];
+let score = 0, best = 0, combo = 0, bestCombo = 0, linesTotal = 0, recordBeaten = false;
+let misses = 0;                     // placements since the last clear (3 ends a streak)
+const GRACE = 3;
+let busy = false, dead = false;
+let selected = null;                // index in tray, for tap-to-place
+
+const cells = [];
+for (let i = 0; i < CELLS; i++){
+  const d = document.createElement("div");
+  d.className = "cell";
+  d.innerHTML = '<div class="jewel"></div>';
+  boardEl.appendChild(d);
+  cells.push(d);
+}
+
+/* ---------- responsive sizing ---------- */
+/* The sidebar is a lot narrower than a phone, so width is usually the binding
+   constraint here and the floor has to be low enough that the board still fits
+   a ~250px panel instead of overflowing it. */
+function fit(){
+  const wAvail = Math.min(window.innerWidth - 24, 488);
+  const hAvail = window.innerHeight;
+  const byWidth = Math.floor((wAvail - 20 - 7 * 4) / 8);
+  const byHeight = Math.floor((hAvail - 260) / 11);
+  const cell = Math.max(18, Math.min(byWidth, byHeight, 52));
+  document.documentElement.style.setProperty("--cell", cell + "px");
+  document.documentElement.style.setProperty("--tcell", Math.round(cell * 0.62) + "px");
+}
+addEventListener("resize", fit);
+fit();
+
+/* ---------- score plate ---------- */
+function paintScore(){
+  const s = String(score);
+  const cur = digitsEl.children;
+  if (cur.length !== s.length){
+    digitsEl.innerHTML = "";
+    for (const ch of s){ const i = document.createElement("i"); i.textContent = ch; i.className = "roll"; digitsEl.appendChild(i); }
+    return;
+  }
+  for (let k = 0; k < s.length; k++){
+    if (cur[k].textContent !== s[k]){
+      cur[k].textContent = s[k];
+      cur[k].classList.remove("roll"); void cur[k].offsetWidth; cur[k].classList.add("roll");
+    }
+  }
+}
+/* Combo counts LINES, not moves: every completed row or column adds +1, so a
+   placement that clears three lines jumps the combo by three. It does not break
+   the moment a placement fails to clear — you get three such placements to get
+   back on the board, and any clear refills that allowance.
+   Combo 1 = ×1, then +0.5 per line, capped at ×5. */
+const comboMult = () => Math.min(5, 1 + Math.max(0, combo - 1) * 0.5);
+const COMBO_WORDS = ["", "", "Double", "Triple", "Quadruple", "Quintuple", "Rampage", "Frenzy", "Unreal"];
+
+function paintCombo(){
+  const m = comboMult();
+  let html = `Combo <b>${combo}</b> &nbsp;·&nbsp; <b>&times;${m % 1 ? m.toFixed(1) : m}</b>`;
+  if (combo >= 1){
+    const left = GRACE - misses;
+    html += " ";
+    for (let i = 0; i < GRACE; i++){
+      const lit = i < left;
+      html += `<i class="pip${lit ? " lit" : ""}${lit && left === 1 ? " last" : ""}"></i>`;
+    }
+  }
+  comboTag.innerHTML = html;
+  comboTag.classList.toggle("hot", combo >= 3);
+  meterEl.style.transform = `scaleX(${Math.min(1, combo / 9)})`;
+}
+
+function banner(big, small){
+  bannerEl.querySelector("b").textContent = big;
+  bannerEl.querySelector("span").textContent = small;
+  bannerEl.classList.remove("go"); void bannerEl.offsetWidth; bannerEl.classList.add("go");
+}
+
+/* ---------- persistence ----------
+   Best score and the whole run are both kept by the host. Every write is
+   fire-and-forget: if the host has no database it falls back to localStorage
+   and flips the notice on, and if there is no host at all the game simply
+   plays on with everything in memory. */
+const BEST_KEY = "vibeblast:best";
+const STATE_KEY = "vibeblast:state";
+const STATE_VERSION = 1;
+
+const connEl = document.getElementById("conn");
+const connTextEl = document.getElementById("connText");
+function paintConn(){
+  if (!Bridge.embedded){
+    connTextEl.textContent = "Standalone — nothing is saved";
+    connEl.hidden = false;
+    return;
+  }
+  connTextEl.textContent = "Not connected — score saved on this device only";
+  connEl.hidden = Bridge.backed !== false;
+}
+
+async function loadBest(){
+  try {
+    const r = await window.storage.get(BEST_KEY);
+    if (r && r.value != null) best = parseInt(r.value, 10) || 0;
+  } catch (e) { /* memory only for this session */ }
+  bestEl.textContent = best;
+}
+async function saveBest(){
+  bestEl.textContent = best;
+  try { await window.storage.set(BEST_KEY, String(best)); } catch (e) {}
+}
+
+function snapshot(){
+  return {
+    v: STATE_VERSION,
+    grid: Array.from(grid),
+    tray, trayColor,
+    score, combo, bestCombo, linesTotal, misses, recordBeaten, dead,
+    sound: Sound.on
+  };
+}
+
+/* Rebuild from a snapshot. Anything malformed returns false and the caller
+   starts a fresh run rather than trusting a half-valid board. */
+function restore(s){
+  if (!s || s.v !== STATE_VERSION) return false;
+  if (!Array.isArray(s.grid) || s.grid.length !== CELLS) return false;
+  if (!Array.isArray(s.tray) || s.tray.length !== 3) return false;
+  if (!Array.isArray(s.trayColor) || s.trayColor.length !== 3) return false;
+  const okPiece = t => t === null || (Number.isInteger(t) && t >= 0 && t < SHAPES.length);
+  if (!s.tray.every(okPiece)) return false;
+  if (!s.grid.every(v => Number.isInteger(v) && v >= 0 && v <= 7)) return false;
+
+  grid = Uint8Array.from(s.grid);
+  bb = 0n;
+  for (let i = 0; i < CELLS; i++) if (grid[i]) bb |= BIT[i];
+  tray = s.tray.slice();
+  trayColor = s.trayColor.map(c => (Number.isInteger(c) && c >= 1 && c <= 7) ? c : 1);
+  score      = Math.max(0, +s.score || 0);
+  combo      = Math.max(0, +s.combo || 0);
+  bestCombo  = Math.max(0, +s.bestCombo || 0);
+  linesTotal = Math.max(0, +s.linesTotal || 0);
+  misses     = Math.min(GRACE, Math.max(0, +s.misses || 0));
+  recordBeaten = !!s.recordBeaten;
+  dead = !!s.dead;
+  busy = false; selected = null;
+  if (typeof s.sound === "boolean") setSound(s.sound);
+
+  clearPreview();
+  repaint(); paintScore(); paintCombo();
+  if (tray.every(t => t == null)) refillTray(); else renderTray();
+  if (dead) showGameOver(); else veil.classList.remove("show");
+  return true;
+}
+
+let saveTimer = null;
+function saveState(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try { window.storage.set(STATE_KEY, JSON.stringify(snapshot())).catch(() => {}); } catch (e) {}
+  }, 180);
+}
+function saveStateNow(){
+  clearTimeout(saveTimer);
+  try { window.storage.set(STATE_KEY, JSON.stringify(snapshot())).catch(() => {}); } catch (e) {}
+}
+addEventListener("pagehide", saveStateNow);
+document.addEventListener("visibilitychange", () => { if (document.hidden) saveStateNow(); });
+
+/* ---------- board painting ---------- */
+function paintCell(i){
+  const v = grid[i], el = cells[i];
+  el.className = v ? "cell on c" + v : "cell";
+}
+function repaint(){ for (let i = 0; i < CELLS; i++) paintCell(i); }
+
+/* ---------- tray ---------- */
+function buildPiece(si, color, forGhost){
+  const s = SHAPES[si];
+  const el = document.createElement("div");
+  el.className = "piece c" + color;
+  el.style.gridTemplateColumns = `repeat(${s.w}, ${forGhost ? "var(--cell)" : "var(--tcell)"})`;
+  el.style.gap = forGhost ? "var(--gap)" : "3px";
+  const map = new Set(s.cells.map(p => p[0] * 10 + p[1]));
+  for (let r = 0; r < s.h; r++) for (let c = 0; c < s.w; c++){
+    const d = document.createElement("div");
+    d.className = "pcell";
+    if (map.has(r * 10 + c)) d.innerHTML = '<div class="pj"></div>';
+    el.appendChild(d);
+  }
+  return el;
+}
+function renderTray(){
+  trayEl.innerHTML = "";
+  for (let k = 0; k < 3; k++){
+    const slot = document.createElement("div");
+    slot.className = "slot";
+    if (tray[k] != null){
+      const p = buildPiece(tray[k], trayColor[k], false);
+      p.style.animationDelay = (k * 70) + "ms";
+      p.dataset.k = k;
+      slot.appendChild(p);
+    }
+    trayEl.appendChild(slot);
+  }
+  markSelected();
+}
+function markSelected(){
+  trayEl.querySelectorAll(".piece").forEach(p =>
+    p.classList.toggle("sel", selected != null && +p.dataset.k === selected));
+}
+function refillTray(){
+  tray = dealTray(bb);
+  trayColor = tray.map(() => 1 + Math.floor(Math.random() * 7));
+  renderTray();
+}
+
+/* ---------- placement maths ---------- */
+function placementMask(si, r, c){
+  const s = SHAPES[si];
+  if (r < 0 || c < 0 || r + s.h > N || c + s.w > N) return null;
+  let m = 0n;
+  for (const [dr, dc] of s.cells) m |= BIT[(r + dr) * N + (c + dc)];
+  return m;
+}
+function canPlace(si, r, c){
+  const m = placementMask(si, r, c);
+  return m !== null && (m & bb) === 0n ? m : null;
+}
+
+/* ---------- preview ---------- */
+let previewCells = [];
+let previewAt = "";
+function clearPreview(){
+  for (const el of previewCells) el.classList.remove("ghost", "willclear");
+  previewCells = [];
+  previewAt = "";
+}
+/* Draws a rigid, grid-locked copy of the piece — but only where it legally
+   fits. An illegal position simply shows nothing. Returns true if placeable. */
+function showPreview(si, color, r, c){
+  const mask = (r == null) ? null : placementMask(si, r, c);
+  const ok = mask !== null && (mask & bb) === 0n;
+  if (!ok){ clearPreview(); return false; }
+
+  const key = si + ":" + r + ":" + c + ":" + color;
+  if (key === previewAt) return true;      // already drawn here, don't thrash the DOM
+  clearPreview();
+  previewAt = key;
+
+  const s = SHAPES[si];
+  for (const [dr, dc] of s.cells){
+    const el = cells[(r + dr) * N + (c + dc)];
+    el.classList.remove("c1","c2","c3","c4","c5","c6","c7");
+    el.classList.add("ghost", "c" + color);
+    previewCells.push(el);
+  }
+  const after = bb | mask;
+  const willClear = new Set();
+  for (let rr = 0; rr < N; rr++) if ((after & ROW[rr]) === ROW[rr]) for (let cc = 0; cc < N; cc++) willClear.add(rr * N + cc);
+  for (let cc = 0; cc < N; cc++) if ((after & COL[cc]) === COL[cc]) for (let rr = 0; rr < N; rr++) willClear.add(rr * N + cc);
+  for (const i of willClear){
+    cells[i].classList.add("willclear");
+    if (!previewCells.includes(cells[i])) previewCells.push(cells[i]);
+  }
+  return true;
+}
+
+/* ---------- effects ---------- */
+function floater(x, y, text, color){
+  const el = document.createElement("div");
+  el.className = "float";
+  el.textContent = text;
+  el.style.left = x + "px"; el.style.top = y + "px";
+  el.style.fontSize = (text.length > 5 ? 20 : 26) + "px";
+  el.style.color = color || "var(--brass-hi)";
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1000);
+}
+function sparks(i, color){
+  if (REDUCED) return;
+  const b = cells[i].getBoundingClientRect();
+  for (let k = 0; k < 2; k++){
+    const s = document.createElement("div");
+    s.className = "spark c" + color;
+    s.style.background = "var(--jl)";
+    s.style.left = (b.left + b.width / 2) + "px";
+    s.style.top = (b.top + b.height / 2) + "px";
+    s.style.setProperty("--dx", (Math.random() * 90 - 45) + "px");
+    s.style.setProperty("--dy", (Math.random() * -80 - 20) + "px");
+    document.body.appendChild(s);
+    setTimeout(() => s.remove(), 640);
+  }
+}
+
+/* ---------- the move ---------- */
+function place(k, r, c){
+  const si = tray[k];
+  const mask = canPlace(si, r, c);
+  if (mask === null) return false;
+
+  const color = trayColor[k];
+  const s = SHAPES[si];
+  for (const [dr, dc] of s.cells) grid[(r + dr) * N + (c + dc)] = color;
+  bb |= mask;
+  for (const [dr, dc] of s.cells) paintCell((r + dr) * N + (c + dc));
+
+  score += s.size * 10;                 // 10 per block
+  paintScore();
+  Sound.drop(s.size);
+
+  tray[k] = null;
+  selected = null;
+  const used = trayEl.querySelector(`.piece[data-k="${k}"]`);
+  if (used) used.classList.add("used");
+
+  resolveClears(r, c);
+  return true;
+}
+
+function resolveClears(lastR, lastC){
+  const rows = [], cols = [];
+  for (let r = 0; r < N; r++) if ((bb & ROW[r]) === ROW[r]) rows.push(r);
+  for (let c = 0; c < N; c++) if ((bb & COL[c]) === COL[c]) cols.push(c);
+  const lines = rows.length + cols.length;
+
+  if (!lines){
+    if (combo >= 1){
+      misses++;
+      const b = boardEl.getBoundingClientRect();
+      if (misses >= GRACE){
+        combo = 0; misses = 0;
+        comboTag.classList.remove("hot");
+        floater(b.left + b.width / 2, b.top + b.height + 6, "Combo lost", "var(--muted)");
+        Sound.streakEnd();
+      } else {
+        const left = GRACE - misses;
+        floater(b.left + b.width / 2, b.top + b.height + 6,
+          left + (left === 1 ? " try left" : " tries left"), "var(--muted)");
+      }
+    }
+    paintCombo();
+    finishTurn();
+    return;
+  }
+
+  busy = true;
+  combo += lines; misses = 0; linesTotal += lines;
+  bestCombo = Math.max(bestCombo, combo);
+
+  const doomed = new Set();
+  for (const r of rows) for (let c = 0; c < N; c++) doomed.add(r * N + c);
+  for (const c of cols) for (let r = 0; r < N; r++) doomed.add(r * N + c);
+
+  // staggered sweep out from the piece you just dropped
+  for (const i of doomed){
+    const r = (i / N) | 0, c = i % N;
+    const d = (Math.abs(r - lastR) + Math.abs(c - lastC)) * 22;
+    const el = cells[i];
+    el.classList.add("pop");
+    el.style.setProperty("animation-delay", d + "ms");
+    setTimeout(() => sparks(i, grid[i] || 3), d);
+  }
+
+  const mult = comboMult();
+  const linePts = 50 * lines * (lines + 1);     // 100 / 300 / 600 / 1000 …
+  const cellPts = doomed.size * 10;             // 10 per block cleared
+  let gained = Math.round((linePts + cellPts) * mult);
+
+  const multTxt = "×" + (mult % 1 ? mult.toFixed(1) : mult);
+  if (lines >= 2) banner(COMBO_WORDS[Math.min(lines, 8)] || "Massive", `${lines} lines · combo ${combo} · ${multTxt}`);
+  else if (combo >= 2) banner(multTxt, "Combo " + combo);
+
+  Sound.clear(lines, combo, doomed.size);
+  if (!REDUCED && lines >= 2){ boardEl.classList.add("shake"); setTimeout(() => boardEl.classList.remove("shake"), 320); }
+
+  setTimeout(() => {
+    for (const i of doomed){ grid[i] = 0; cells[i].style.removeProperty("animation-delay"); paintCell(i); }
+    bb = clearBB(bb);
+
+    let perfect = false;
+    if (bb === 0n){ perfect = true; gained += 2000; Sound.perfect(); }
+
+    score += gained;
+    paintScore(); paintCombo();
+
+    const b = boardEl.getBoundingClientRect();
+    floater(b.left + b.width / 2, b.top + b.height / 2 - 10,
+      "+" + gained + (mult > 1 ? " " + multTxt : ""), "var(--brass-hi)");
+    if (perfect) setTimeout(() => floater(b.left + b.width / 2, b.top + b.height / 2 + 30, "Board cleared", "var(--accent-success)"), 160);
+
+    busy = false;
+    finishTurn(lines);
+  }, REDUCED ? 20 : 400);
+}
+
+function finishTurn(){
+  if (score > best){ if (best > 0) recordBeaten = true; best = score; saveBest(); }
+
+  if (tray.every(t => t == null)){
+    setTimeout(() => { refillTray(); saveState(); }, 120);
+    return;
+  }
+  // The deal guaranteed all three could be placed. If the leftovers no longer
+  // fit, that ordering was the player's — the run is over.
+  const left = tray.filter(t => t != null);
+  if (left.some(t => fitsAnywhere(t, bb))) { saveState(); return; }
+  setTimeout(gameOver, 420);
+}
+
+/* Painting the end card is separate from reaching the end, so a restored
+   dead run can show the card again without replaying the sting. */
+function showGameOver(){
+  const isBest = recordBeaten;
+  document.getElementById("vTitle").textContent = isBest ? "New best" : "No moves left";
+  document.getElementById("vText").textContent = isBest
+    ? "Nothing left that fits. That is your highest run so far."
+    : "All three pieces fit when they were dealt — a different order would have kept the run alive.";
+  document.getElementById("vScore").textContent = score;
+  document.getElementById("vSub").textContent =
+    `${linesTotal} lines cleared · highest combo ${bestCombo}`;
+  veil.classList.add("show");
+}
+
+function gameOver(){
+  dead = true;
+  selected = null;
+  clearPreview();
+  Sound.over();
+  showGameOver();
+  saveStateNow();
+}
+
+/* ============================================================
+   INPUT — drag, and tap-to-select / tap-to-place
+   ============================================================ */
+let ghost = null, dragK = null, dragMoved = false, startX = 0, startY = 0, lift = 0;
+
+function boardGeom(){
+  const rect = boardEl.getBoundingClientRect();
+  const cs = getComputedStyle(document.documentElement);
+  const cell = parseFloat(cs.getPropertyValue("--cell"));
+  const gap = parseFloat(cs.getPropertyValue("--gap"));
+  return { x0: rect.left + 10, y0: rect.top + 10, pitch: cell + gap, cell, rect };
+}
+
+function beginDrag(e, k){
+  if (busy || dead || tray[k] == null) return;
+  Sound.boot(); Sound.pick();
+  dragK = k; dragMoved = false;
+  startX = e.clientX; startY = e.clientY;
+  selected = k; markSelected();
+
+  ghost = buildPiece(tray[k], trayColor[k], true);
+  ghost.id = "ghost";
+  ghost.classList.remove("piece");
+  ghost.style.display = "grid";
+  document.body.appendChild(ghost);
+  lift = (e.pointerType === "touch") ? parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--cell")) * 1.5 : 0;
+  moveGhost(e.clientX, e.clientY);
+  e.target.setPointerCapture?.(e.pointerId);
+}
+
+/* Where the free-floating ghost would land, in grid coordinates.
+   Returns null when it is off the board entirely. */
+function ghostAnchor(){
+  if (!ghost) return null;
+  const g = boardGeom();
+  const s = SHAPES[tray[dragK]];
+  const gx = ghostPos.x, gy = ghostPos.y;
+  const r = Math.round((gy - g.y0) / g.pitch);
+  const c = Math.round((gx - g.x0) / g.pitch);
+  if (r < 0 || c < 0 || r + s.h > N || c + s.w > N) return null;
+  // ignore drops that are nowhere near the grid
+  if (gx + s.w * g.pitch < g.rect.left - g.cell || gx > g.rect.right + g.cell ||
+      gy + s.h * g.pitch < g.rect.top - g.cell  || gy > g.rect.bottom + g.cell) return null;
+  return { r, c };
+}
+
+let ghostPos = { x: 0, y: 0 };
+function moveGhost(x, y){
+  if (!ghost) return;
+  // the piece itself is never snapped — it tracks the pointer 1:1
+  ghostPos.x = x - ghost.offsetWidth / 2;
+  ghostPos.y = y - ghost.offsetHeight / 2 - lift;
+  ghost.style.transform = `translate(${ghostPos.x}px, ${ghostPos.y}px)`;
+
+  const a = ghostAnchor();
+  if (a) showPreview(tray[dragK], trayColor[dragK], a.r, a.c);
+  else clearPreview();
+}
+
+function endDrag(e){
+  if (dragK == null) return;
+  const k = dragK, moved = dragMoved;
+  const a = ghost ? ghostAnchor() : null;
+  ghost?.remove(); ghost = null; dragK = null;
+  clearPreview();
+
+  if (!moved){                     // treat as a tap: keep it selected for tap-to-place
+    selected = k; markSelected();
+    return;
+  }
+  if (a && canPlace(tray[k], a.r, a.c)) { place(k, a.r, a.c); }
+  else { Sound.deny(); selected = null; markSelected(); }
+}
+
+trayEl.addEventListener("pointerdown", e => {
+  const p = e.target.closest(".piece");
+  if (!p) return;
+  e.preventDefault();
+  beginDrag(e, +p.dataset.k);
+});
+addEventListener("pointermove", e => {
+  if (dragK == null) return;
+  if (!dragMoved && Math.hypot(e.clientX - startX, e.clientY - startY) > 6) dragMoved = true;
+  moveGhost(e.clientX, e.clientY);
+});
+addEventListener("pointerup", endDrag);
+addEventListener("pointercancel", endDrag);
+
+/* tap-to-place: the tapped cell becomes the centre of the piece */
+boardEl.addEventListener("pointerup", e => {
+  if (dragK != null || selected == null || busy || dead) return;
+  const cell = e.target.closest(".cell");
+  if (!cell) return;
+  const i = cells.indexOf(cell);
+  const s = SHAPES[tray[selected]];
+  const r = ((i / N) | 0) - Math.floor((s.h - 1) / 2);
+  const c = (i % N) - Math.floor((s.w - 1) / 2);
+  const rr = Math.max(0, Math.min(N - s.h, r)), cc = Math.max(0, Math.min(N - s.w, c));
+  if (canPlace(tray[selected], rr, cc)) place(selected, rr, cc);
+  else { Sound.deny(); boardEl.classList.add("shake"); setTimeout(() => boardEl.classList.remove("shake"), 300); }
+});
+boardEl.addEventListener("pointermove", e => {
+  if (dragK != null || selected == null || busy || dead) return;
+  const cell = e.target.closest(".cell");
+  if (!cell) { clearPreview(); return; }
+  const i = cells.indexOf(cell);
+  const s = SHAPES[tray[selected]];
+  const rr = Math.max(0, Math.min(N - s.h, ((i / N) | 0) - Math.floor((s.h - 1) / 2)));
+  const cc = Math.max(0, Math.min(N - s.w, (i % N) - Math.floor((s.w - 1) / 2)));
+  showPreview(tray[selected], trayColor[selected], rr, cc);
+});
+boardEl.addEventListener("pointerleave", () => { if (dragK == null) clearPreview(); });
+
+/* ---------- controls ---------- */
+const btnSound = document.getElementById("btnSound");
+function setSound(on){
+  Sound.on = on;
+  btnSound.classList.toggle("on", on);
+  btnSound.textContent = on ? "Sound on" : "Sound off";
+}
+btnSound.onclick = () => {
+  Sound.boot(); setSound(!Sound.on);
+  if (Sound.on) Sound.ui();
+  saveState();
+};
+document.getElementById("btnNew").onclick = () => { Sound.boot(); Sound.ui(); reset(); };
+document.getElementById("vBtn").onclick = () => { Sound.ui(); reset(); };
+
+function reset(){
+  grid = new Uint8Array(CELLS); bb = 0n;
+  score = 0; combo = 0; bestCombo = 0; linesTotal = 0; recordBeaten = false; misses = 0;
+  busy = false; dead = false; selected = null;
+  clearPreview();
+  veil.classList.remove("show");
+  repaint(); paintScore(); paintCombo(); refillTray();
+  saveStateNow();
+}
+
+/* ---------- go ---------- */
+paintConn();
+(async function boot(){
+  await loadBest();
+  let resumed = false;
+  try {
+    const r = await window.storage.get(STATE_KEY);
+    if (r && r.value) resumed = restore(JSON.parse(r.value));
+  } catch (e) { /* nothing saved, or no host — start clean */ }
+  if (!resumed) reset();
+})();
+addEventListener("pointerdown", () => Sound.boot(), { once: true });
+</script>
+</body>
+</html>

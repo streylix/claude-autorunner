@@ -14,7 +14,6 @@ const TerminalStateManager = require('./src/state/TerminalStateManager');
 
 // Import messaging
 const MessageQueueManager = require('./src/messaging/MessageQueueManager');
-const InjectionManager = require('./src/messaging/injection-manager');
 
 // Import feature managers
 const StatusManager = require('./src/features/StatusManager');
@@ -28,11 +27,23 @@ const ActionLogManager = require('./src/features/ActionLogManager');
 const ManagerInstance = require('./src/features/ManagerInstance');
 const PromptWatchManager = require('./src/features/PromptWatchManager');
 const WakeWordManager = require('./src/features/WakeWordManager');
+const RemoteMicSink = require('./src/features/RemoteMicSink');
+const DiscordLinkKeyManager = require('./src/features/DiscordLinkKeyManager');
+const RemoteConnectionUI = require('./src/features/RemoteConnectionUI');
+const VibeBlastManager = require('./src/features/VibeBlastManager');
 const UIFocusManager = require('./src/ui/UIFocusManager');
 
 // Import utilities
-const { getAllTextIn, getLastTextIn, cleanTerminalText } = require('./utils/textExtraction');
 const { parseUsageLimitMessage } = require('./src/utils/usage-limit-parser');
+const { BACKEND_URL } = require('./src/utils/backend-url');
+
+// Remote Mode (docs/REMOTE_MODE.md): when this same renderer runs in a browser
+// tab served by RemoteServer, remote-bootstrap.js sets this flag. A remote
+// renderer is a fully interactive VIEW — it renders everything and sends
+// inputs — but must NOT re-run the authoritative singletons that exist once in
+// the local Electron window (injection engine, manager scheduler, state
+// snapshot mirror, DB persistence), or it would double-drive them.
+const IS_REMOTE = typeof window !== 'undefined' && !!window.__CCBOT_REMOTE__;
 
 /**
  * Main application controller that orchestrates all modules
@@ -126,9 +137,6 @@ class TerminalGUI {
     }
     
     initializeMessaging() {
-        // Create injection manager, passing the GUI as its context (fix 7).
-        this.injectionManager = new InjectionManager(this);
-
         // Create message queue manager with explicit dependencies and an ipc
         // wrapper (no longer coupled to the renderer "context" object).
         this.messageQueueManager = new MessageQueueManager(
@@ -137,9 +145,6 @@ class TerminalGUI {
             this.terminalStateManager,
             this.ipcHandler
         );
-
-        // Allow the message queue manager to delegate injection scheduling.
-        this.messageQueueManager.injectionManager = this.injectionManager;
 
         console.log('📨 Messaging system initialized');
     }
@@ -159,6 +164,10 @@ class TerminalGUI {
         this.actionLogManager = new ActionLogManager(this.eventBus, this.appStateStore);
         this.actionLogManager.initialize();
 
+        // Right sidebar: hold Send on an empty box for three seconds.
+        this.vibeBlastManager = new VibeBlastManager(this.eventBus, this.appStateStore);
+        this.vibeBlastManager.initialize();
+
         // Hidden manager Claude instance (terminal 999) - steers the interface
         this.managerInstance = new ManagerInstance(this.eventBus, this.appStateStore, this.ipcHandler, this);
         this.managerInstance.initializeUI();
@@ -171,6 +180,15 @@ class TerminalGUI {
         // Always-on "Hey Claude" wake word → records a command → routes it to
         // the manager (999) as a voice memo. Off until enabled in settings.
         this.wakeWordManager = new WakeWordManager(this.eventBus, this.appStateStore, this);
+
+        // Remote client microphone forwarding (docs/REMOTE_MODE.md §10): a
+        // Remote Mode viewer's mic streams over the WS into THIS renderer's
+        // wake-word + Whisper pipeline. LOCAL renderer only — a remote view
+        // has no pipeline of its own (it is the microphone, not the brain).
+        if (!IS_REMOTE) {
+            this.remoteMicSink = new RemoteMicSink(this.eventBus, this);
+            this.remoteMicSink.initialize();
+        }
 
         // The injection gate (R3) blocks while a countdown is armed, so the
         // queue needs a handle on the timer to call isRunning().
@@ -193,6 +211,15 @@ class TerminalGUI {
 
         // Wire centralized event processors onto the EventBus (fix 8).
         this.setupEventProcessors();
+
+        // Remote-SSH style client (the bottom-left corner indicator): connect
+        // to another machine's Remote Mode over the user's own ssh and embed
+        // its full interface in-app. LOCAL desktop app only — a remote browser
+        // view must not offer a nested remote hop.
+        if (!IS_REMOTE) {
+            this.remoteConnectionUI = new RemoteConnectionUI(this.ipcHandler);
+            this.remoteConnectionUI.initialize();
+        }
 
         console.log('🎨 Feature managers initialized');
     }
@@ -325,6 +352,13 @@ class TerminalGUI {
             if (terminalData && terminalData.terminal) {
                 terminalData.terminal.write(content);
 
+                // 'always' forces the viewport down on every output; 'smart'
+                // (default) is xterm's native behavior — follow only when
+                // already at the bottom.
+                if (this.appStateStore.getState('settings.terminalScrollBehavior') === 'always') {
+                    try { terminalData.terminal.scrollToBottom(); } catch { /* disposed */ }
+                }
+
                 // Update state
                 this.terminalStateManager.updateTerminal(terminalId, {
                     lastOutput: content,
@@ -410,8 +444,10 @@ class TerminalGUI {
                 this.eventBus.emit('completion:recorded', completionData);
 
                 // Opt-in plain-English mode: headless Claude compresses the
-                // message to 1-2 sentences (costs quota - off by default)
-                if (this.appStateStore.getState('summarizeCompletions') && completionData.sessionId) {
+                // message to 1-2 sentences (costs quota - off by default).
+                // Local renderer only: a remote browser invoking this too
+                // would run (and bill) the summarizer twice per completion.
+                if (!IS_REMOTE && this.appStateStore.getState('summarizeCompletions') && completionData.sessionId) {
                     this.ipcHandler.invoke('summarize-completion', payload.lastAssistantText)
                         .then((summary) => {
                             if (summary) {
@@ -448,6 +484,47 @@ class TerminalGUI {
             this.terminalStateManager.updateTerminal(terminalId, { runtime });
         });
 
+        // PTY spawn failure after all retries — surface it in the log and mark
+        // the terminal errored (main sends this; it was previously dropped).
+        ipcRenderer.on('terminal-error', (event, { terminalId, error }) => {
+            this.eventBus.emit('log:action', {
+                message: `Terminal ${terminalId} failed to start: ${error}`,
+                type: 'error'
+            });
+            const previousStatus = this.terminalStateManager.setTerminalStatus(terminalId, 'error');
+            if (previousStatus !== null) {
+                this.eventBus.emit('terminal:status:changed', {
+                    terminalId,
+                    status: 'error',
+                    previousStatus,
+                    source: 'ipc'
+                });
+            }
+        });
+
+        // Tray menu "Start/Stop Injection" — drive the master send switch
+        ipcRenderer.on('tray-start-injection', () => {
+            if (this.messageQueueManager.injectionPaused) this.toggleSending();
+        });
+        ipcRenderer.on('tray-stop-injection', () => {
+            if (!this.messageQueueManager.injectionPaused) this.toggleSending();
+        });
+
+        // Renderer→main bridges: MessageQueueManager emits these on the event
+        // bus; the main-process handlers already exist but nothing invoked them.
+        this.eventBus.on('ui:tray-badge', ({ count }) => {
+            ipcRenderer.invoke('update-tray-badge', count).catch(() => {});
+        });
+        this.eventBus.on('ui:system-notification', ({ title, body }) => {
+            ipcRenderer.invoke('show-notification', title, body).catch(() => {});
+        });
+        this.eventBus.on('power:save-blocker:start', () => {
+            ipcRenderer.invoke('start-power-save-blocker').catch(() => {});
+        });
+        this.eventBus.on('power:save-blocker:stop', () => {
+            ipcRenderer.invoke('stop-power-save-blocker').catch(() => {});
+        });
+
         // Terminal status updates (canonical: terminal:status:changed)
         ipcRenderer.on('terminal-status', (event, terminalId, status) => {
             const previousStatus = this.terminalStateManager.setTerminalStatus(terminalId, status);
@@ -470,12 +547,50 @@ class TerminalGUI {
         // External queue-add requests arriving via the HookServer API
         // (POST /queue/add - e.g. the manager instance steering a terminal)
         ipcRenderer.on('queue-add-request', (event, { terminalId, content, type }) => {
-            this.messageQueueManager.addMessage({ content, terminalId, type });
+            // fromBroadcast: in a remote renderer this add is display-only (the
+            // local renderer owns injection/persistence); in the local renderer
+            // the flag is inert and this behaves exactly as before.
+            this.messageQueueManager.addMessageToQueue(content, terminalId, type, { fromBroadcast: true });
             this.eventBus.emit('log:action', {
                 message: `Queued ${type === 'urgent' ? 'URGENT ' : ''}message for Terminal ${terminalId} via control API`,
                 type: 'info'
             });
         });
+
+        // Cross-renderer topology sync (Remote Mode): another attached renderer
+        // (local window or a remote browser) created/closed a terminal in main.
+        // Build/drop a matching view here. The originator's own echo is skipped
+        // by the has-check; closeTerminal's redundant terminal-close send is a
+        // harmless no-op in main (the PTY is already gone).
+        ipcRenderer.on('remote-terminal-created', (event, { terminalId, directory }) => {
+            if (this.terminals.has(terminalId)) return;
+            if (terminalId === ManagerInstance.TERMINAL_ID) return; // manager mounts via its own tab
+            this.createTerminal({ id: terminalId, directory: directory || undefined, skipActive: true });
+        });
+        ipcRenderer.on('remote-terminal-closed', (event, { terminalId }) => {
+            if (!this.terminals.has(terminalId)) return;
+            this.closeTerminal(terminalId);
+        });
+        // Live metadata sync: another attached renderer renamed/recolored a
+        // terminal — apply it here too. fromSync stops the re-broadcast echo.
+        ipcRenderer.on('remote-terminal-meta', (event, { terminalId, title, color } = {}) => {
+            this.setTerminalMetadata(terminalId, { title, color }, { fromSync: true });
+        });
+        // Live message-queue mirror (remote views only): main pushes the
+        // authoritative queue whenever it changes (add / inject / remove /
+        // clear), so the panel never shows already-delivered messages. The
+        // local renderer is the source and must ignore any echo.
+        ipcRenderer.on('remote-queue-sync', (event, payload) => {
+            if (!IS_REMOTE) return;
+            const queue = payload && Array.isArray(payload.queue) ? payload.queue : [];
+            this.messageQueueManager.applyRemoteQueueMirror(queue);
+        });
+        if (IS_REMOTE) {
+            // Boot-time catch-up: ask for the current queue now that the
+            // listener above exists (a welcome-time push would have raced
+            // this registration and been lost).
+            ipcRenderer.send('remote-queue-request');
+        }
 
         // Control requests needing a response (terminal create/update/delete
         // via the HookServer) - correlated back to main by requestId
@@ -491,7 +606,11 @@ class TerminalGUI {
 
         // Mirror terminal state to main so the HookServer's GET /state can
         // answer external controllers without a renderer round trip.
+        // LOCAL renderer only: the local window owns the snapshot; a remote
+        // browser pushing its (partial) view would corrupt main's cache. The
+        // RemoteServer drops the channel server-side too (defense in depth).
         const sendStateSnapshot = () => {
+            if (IS_REMOTE) return;
             const terminals = [];
             this.terminalStateManager.getAllTerminals().forEach((data, id) => {
                 terminals.push({
@@ -521,7 +640,7 @@ class TerminalGUI {
                 updatedAt: Date.now()
             });
         };
-        ['terminal:status:changed', 'terminal:directory', 'terminal:created', 'terminal:closed', 'message:queue-updated']
+        ['terminal:status:changed', 'terminal:directory', 'terminal:created', 'terminal:closed', 'terminal:metadata', 'message:queue-updated']
             .forEach((evt) => this.eventBus.on(evt, sendStateSnapshot));
         setTimeout(sendStateSnapshot, 1000); // initial snapshot after init settles
 
@@ -558,13 +677,24 @@ class TerminalGUI {
 
             const handleAddMessage = () => {
                 const message = messageInput.value.trim();
-                if (message) {
+                // PTY injection is text-only, so attachments ride along as
+                // absolute paths appended to the prompt text.
+                const attachments = this.pendingAttachments || [];
+                if (message || attachments.length) {
+                    let content = message;
+                    if (attachments.length) {
+                        const list = attachments.map(a => a.path).join('\n');
+                        content = content
+                            ? `${content}\n\nAttached file(s):\n${list}`
+                            : `Attached file(s):\n${list}`;
+                    }
                     this.messageQueueManager.addMessage({
-                        content: message,
+                        content,
                         // Selector choice wins; falls back to the active terminal
                         terminalId: this.queueTargetTerminalId ?? this.activeTerminalId
                     });
                     messageInput.value = '';
+                    this.clearAttachments();
                     autoSizeInput(); // collapse back to one row after sending
                 }
             };
@@ -628,6 +758,9 @@ class TerminalGUI {
             const min = Math.min(59, parseInt(m[2], 10));
             const s = Math.min(59, parseInt(m[3], 10));
             this.timerManager.setTimer(h, min, s, true);
+            // User took manual control of the timer — stop the usage-limit
+            // auto-sync so it doesn't fight their edit.
+            this.eventBus.emit('timer:manual-change', { hours: h, minutes: min, seconds: s });
         };
         const beginTimerEdit = () => {
             if (!timerDisplay || timerDisplay.getAttribute('contenteditable') === 'true') return;
@@ -738,9 +871,132 @@ class TerminalGUI {
             else if (key === 'm' && !shift) { e.preventDefault(); click('manager-nav-btn'); }
             else if (key === 'h' && shift) { e.preventDefault(); click('message-history-btn'); }
             else if (key === 'l' && shift) { e.preventDefault(); click('clear-log-btn'); }
+            // Terminal search: Cmd+F (mac) or Ctrl+Shift+F (bare Ctrl+F would
+            // shadow readline's forward-char inside the PTY).
+            else if (key === 'f' && (e.metaKey || shift)) {
+                e.preventDefault();
+                this.toggleTerminalSearch(this.activeTerminalId);
+            }
         });
 
+        this.setupFileAttachments();
+
         console.log('🎮 DOM event handlers configured');
+    }
+
+    /**
+     * File attach: drag-drop onto the input area, paste-image, and the hidden
+     * #file-input. Files become absolute-path references appended to the
+     * message (PTY injection is text-only); pasted images are saved to disk
+     * first via the existing save-screenshot IPC.
+     */
+    setupFileAttachments() {
+        this.pendingAttachments = [];
+        const dropZone = document.getElementById('drop-zone');
+        const dropOverlay = document.getElementById('drop-overlay');
+        const fileInput = document.getElementById('file-input');
+        const messageInput = document.getElementById('message-input');
+
+        const attachDiskFile = (name, absPath) => {
+            if (!absPath) return;
+            if (this.pendingAttachments.some(a => a.path === absPath)) return;
+            this.pendingAttachments.push({ name: name || absPath.split('/').pop(), path: absPath });
+            this.renderAttachmentChips();
+        };
+
+        const attachFiles = async (fileList) => {
+            for (const file of Array.from(fileList || [])) {
+                if (file.path) {
+                    // Real disk file (Electron exposes the absolute path)
+                    attachDiskFile(file.name, file.path);
+                } else if (file.type && file.type.startsWith('image/')) {
+                    // Clipboard-pasted image blob — persist it first
+                    try {
+                        const dataUrl = await new Promise((resolve, reject) => {
+                            const r = new FileReader();
+                            r.onload = () => resolve(r.result);
+                            r.onerror = reject;
+                            r.readAsDataURL(file);
+                        });
+                        const res = await this.ipcHandler.invoke('save-screenshot', dataUrl);
+                        if (res && res.success) attachDiskFile(res.fileName, res.filePath);
+                        else this.eventBus.emit('log:action', { message: `Could not save pasted image: ${res && res.error}`, type: 'error' });
+                    } catch (err) {
+                        this.eventBus.emit('log:action', { message: `Could not save pasted image: ${err.message}`, type: 'error' });
+                    }
+                }
+            }
+        };
+
+        if (dropZone) {
+            let dragDepth = 0;
+            const showOverlay = (on) => { if (dropOverlay) dropOverlay.style.display = on ? '' : 'none'; };
+            dropZone.addEventListener('dragenter', (e) => {
+                e.preventDefault(); dragDepth++; showOverlay(true);
+            });
+            dropZone.addEventListener('dragover', (e) => e.preventDefault());
+            dropZone.addEventListener('dragleave', () => {
+                dragDepth = Math.max(0, dragDepth - 1);
+                if (!dragDepth) showOverlay(false);
+            });
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault(); dragDepth = 0; showOverlay(false);
+                attachFiles(e.dataTransfer && e.dataTransfer.files);
+            });
+        }
+
+        if (messageInput) {
+            messageInput.addEventListener('paste', (e) => {
+                const items = e.clipboardData && e.clipboardData.items;
+                if (!items) return;
+                const files = [];
+                for (const item of items) {
+                    if (item.kind === 'file') {
+                        const f = item.getAsFile();
+                        if (f) files.push(f);
+                    }
+                }
+                if (files.length) { e.preventDefault(); attachFiles(files); }
+            });
+        }
+
+        if (fileInput) {
+            fileInput.addEventListener('change', () => {
+                attachFiles(fileInput.files);
+                fileInput.value = '';
+            });
+        }
+    }
+
+    renderAttachmentChips() {
+        const container = document.getElementById('image-preview-container');
+        const list = document.getElementById('image-preview-list');
+        if (!container || !list) return;
+        list.innerHTML = '';
+        this.pendingAttachments.forEach((att, i) => {
+            const chip = document.createElement('div');
+            chip.className = 'attachment-chip';
+            const name = document.createElement('span');
+            name.textContent = att.name;
+            name.title = att.path;
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.textContent = '×';
+            remove.title = 'Remove attachment';
+            remove.addEventListener('click', () => {
+                this.pendingAttachments.splice(i, 1);
+                this.renderAttachmentChips();
+            });
+            chip.appendChild(name);
+            chip.appendChild(remove);
+            list.appendChild(chip);
+        });
+        container.style.display = this.pendingAttachments.length ? '' : 'none';
+    }
+
+    clearAttachments() {
+        this.pendingAttachments = [];
+        this.renderAttachmentChips();
     }
     
     /**
@@ -886,12 +1142,20 @@ class TerminalGUI {
         const settingsBtn = document.getElementById('settings-btn');
         const settingsModal = document.getElementById('settings-modal');
         const settingsClose = document.getElementById('settings-close');
+        // Discord voice-bridge link-key widget (Settings → Discord Voice Bridge).
+        if (!this.discordLinkKey) {
+            this.discordLinkKey = new DiscordLinkKeyManager();
+            this.discordLinkKey.init();
+        }
         const openSettings = () => {
             if (settingsModal) settingsModal.classList.add('show');
             this.populateMicrophoneSelect();
             // Re-reflect saved voice/wake/delay values on open (covers round-trip:
             // change a setting, reopen, see the change; and any missed load event).
             if (this._syncVoiceSettingsForms) this._syncVoiceSettingsForms();
+            // Pull the current, bridge-acceptable /link key each time Settings opens
+            // so it never goes stale (e.g. after the control port rotates).
+            if (this.discordLinkKey) this.discordLinkKey.refresh(false);
         };
         const closeSettings = () => { if (settingsModal) settingsModal.classList.remove('show'); };
         if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
@@ -953,11 +1217,42 @@ class TerminalGUI {
         // ---- Microphone picker (settings modal) ----
         // Options are (re)enumerated on every settings open; the choice persists
         // as the 'microphoneDeviceId' preference, which VoiceManager listens for.
+        //
+        // REMOTE view: the picker lists the VIEWING browser's inputs, so the
+        // choice is per-device — persisted in this browser's localStorage and fed
+        // to the remote-mic forwarder + the local VoiceManager instance. It must
+        // NEVER be written to the shared 'microphoneDeviceId' preference: that
+        // would clobber the desktop's own mic choice with a device id that only
+        // exists on the viewer's machine.
         const micSelect = document.getElementById('microphone-select');
         if (micSelect) {
             micSelect.addEventListener('change', () => {
+                if (IS_REMOTE) {
+                    const v = micSelect.value;
+                    // 'off' only stops the wake stream; the manual voice button
+                    // keeps recording from the browser default (never 'off' as
+                    // a device id — that would OverconstrainedError getUserMedia).
+                    if (this.voiceManager) this.voiceManager.setMicrophoneDevice(v === 'off' ? 'default' : v);
+                    const rm = window.__ccbotRemoteMic;
+                    if (rm && typeof rm.setDevice === 'function') {
+                        // (Re)starts the mic stream on that device — wake word +
+                        // voice pipeline now listen to THIS machine's mic.
+                        rm.setDevice(v).catch(() => {});
+                    } else {
+                        try { window.localStorage.setItem('ccbotRemoteMicDeviceId', v); } catch (_) { /* ignore */ }
+                    }
+                    return;
+                }
                 this.preferenceManager.updatePreference('microphoneDeviceId', micSelect.value);
             });
+        }
+        if (IS_REMOTE && this.voiceManager) {
+            // Boot: restore this browser's saved input so the voice button
+            // records from the right mic without reopening Settings.
+            try {
+                const savedRemoteMic = window.localStorage.getItem('ccbotRemoteMicDeviceId');
+                if (savedRemoteMic && savedRemoteMic !== 'off') this.voiceManager.setMicrophoneDevice(savedRemoteMic);
+            } catch (_) { /* private mode */ }
         }
 
         // ---- Queue send delay (injectionDelayMs) ----
@@ -987,11 +1282,13 @@ class TerminalGUI {
         const wakeThresholdVal = document.getElementById('wake-threshold-value');
         const wakeActSound = document.getElementById('wake-activation-sound');
         const wakeStopSound = document.getElementById('wake-stop-sound');
+        const wakeMuteDuringCall = document.getElementById('wake-mute-during-call');
 
         // Reflect persisted prefs into the controls when the settings open.
         const syncWakeUI = () => {
             const p = this.preferenceManager.preferences;
             if (wakeEnabled) wakeEnabled.checked = !!p.wakeWordEnabled;
+            if (wakeMuteDuringCall) wakeMuteDuringCall.checked = !!p.wakeMuteDuringCall;
             if (wakePhrase) wakePhrase.value = p.wakeWordPhrase || 'hey claude';
             if (wakeSilence) wakeSilence.value = p.wakeSilenceMs || 5000;
             if (wakeSilenceVal) wakeSilenceVal.textContent = `${((p.wakeSilenceMs || 5000) / 1000).toFixed(1)}s`;
@@ -1036,6 +1333,9 @@ class TerminalGUI {
         if (wakeEnabled) wakeEnabled.addEventListener('change', () => {
             this.preferenceManager.updatePreference('wakeWordEnabled', wakeEnabled.checked);
         });
+        if (wakeMuteDuringCall) wakeMuteDuringCall.addEventListener('change', () => {
+            this.preferenceManager.updatePreference('wakeMuteDuringCall', wakeMuteDuringCall.checked);
+        });
         if (wakePhrase) wakePhrase.addEventListener('change', () => {
             const v = wakePhrase.value.trim().toLowerCase() || 'hey claude';
             wakePhrase.value = v;
@@ -1045,6 +1345,67 @@ class TerminalGUI {
             if (wakeSilenceVal) wakeSilenceVal.textContent = `${(wakeSilence.value / 1000).toFixed(1)}s`;
             this.preferenceManager.updatePreference('wakeSilenceMs', parseInt(wakeSilence.value, 10));
         });
+
+        // ---- Interrupt stop words (voice barge-in → ESC to the manager) ----
+        // Editable chip list persisted as the `interruptStopWords` array. The
+        // Discord bridge mirrors the persisted value LIVE (appSettings.js), so
+        // edits here change its behavior without a bridge restart. Default
+        // ["no"]; the trailing normalization mirrors the bridge's first-token
+        // matching (lowercase, no punctuation).
+        const stopWordsList = document.getElementById('stop-words-list');
+        const stopWordInput = document.getElementById('stop-word-input');
+        const stopWordAddBtn = document.getElementById('stop-word-add-btn');
+        const getStopWords = () => {
+            const v = this.preferenceManager.preferences.interruptStopWords;
+            const list = Array.isArray(v) ? v : ['no'];
+            return list.map((w) => String(w).trim().toLowerCase()).filter(Boolean);
+        };
+        const saveStopWords = (words) => {
+            this.preferenceManager.updatePreference('interruptStopWords', words);
+            renderStopWords();
+        };
+        const renderStopWords = () => {
+            if (!stopWordsList) return;
+            const words = getStopWords();
+            stopWordsList.innerHTML = '';
+            if (!words.length) {
+                const empty = document.createElement('span');
+                empty.className = 'stop-words-empty';
+                empty.textContent = 'none — voice interrupt disabled';
+                stopWordsList.appendChild(empty);
+                return;
+            }
+            words.forEach((w) => {
+                const chip = document.createElement('span');
+                chip.className = 'stop-word-chip';
+                chip.dataset.word = w;
+                const label = document.createElement('span');
+                label.textContent = w;
+                const del = document.createElement('button');
+                del.type = 'button';
+                del.className = 'stop-word-remove';
+                del.title = `Remove "${w}"`;
+                del.textContent = '×';
+                del.addEventListener('click', () => saveStopWords(getStopWords().filter((x) => x !== w)));
+                chip.appendChild(label);
+                chip.appendChild(del);
+                stopWordsList.appendChild(chip);
+            });
+        };
+        const addStopWord = () => {
+            if (!stopWordInput) return;
+            const w = stopWordInput.value.trim().toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+            stopWordInput.value = '';
+            if (!w) return;
+            const words = getStopWords();
+            if (!words.includes(w)) saveStopWords([...words, w]);
+        };
+        if (stopWordAddBtn) stopWordAddBtn.addEventListener('click', addStopWord);
+        if (stopWordInput) stopWordInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); addStopWord(); }
+        });
+        renderStopWords();
+        this.eventBus.on('preferences:applied', renderStopWords);
         if (wakeThreshold) wakeThreshold.addEventListener('input', () => {
             const v = parseFloat(wakeThreshold.value);
             if (wakeThresholdVal) wakeThresholdVal.textContent = `${Math.round(v * 100)}%`;
@@ -1062,7 +1423,7 @@ class TerminalGUI {
         if (voiceBtn) {
             // VoiceManager fetches the transcribe URL directly; give it a
             // truthy client so its internal guard passes, and activate it.
-            this.voiceManager.setBackendClient({ baseUrl: 'http://localhost:8123' });
+            this.voiceManager.setBackendClient({ baseUrl: BACKEND_URL });
             this.voiceManager.initialize();
             voiceBtn.addEventListener('click', () => {
                 // Branch on the button's current state. While the wake-word system
@@ -1216,9 +1577,28 @@ class TerminalGUI {
 
             const devices = await navigator.mediaDevices.enumerateDevices();
             const mics = devices.filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default');
-            const saved = this.preferenceManager.getPreference('microphoneDeviceId') || 'default';
+            // enumerateDevices always describes the machine RUNNING this code —
+            // the desktop locally, the viewer's own browser in Remote Mode. The
+            // saved selection must come from the matching store: the shared
+            // preference locally, this browser's localStorage remotely.
+            let saved = 'default';
+            if (IS_REMOTE) {
+                // Unset = never opted in = not streaming — show that as Off.
+                try { saved = window.localStorage.getItem('ccbotRemoteMicDeviceId') || 'off'; } catch (_) { saved = 'off'; }
+            } else {
+                saved = this.preferenceManager.getPreference('microphoneDeviceId') || 'default';
+            }
 
             micSelect.innerHTML = '';
+            if (IS_REMOTE) {
+                // Remote view: picking a mic STARTS streaming it to the desktop
+                // pipeline, so the picker needs an explicit way to stop — the
+                // "Off" row (persisted; also blocks the auto-resume on reconnect).
+                const offOpt = document.createElement('option');
+                offOpt.value = 'off';
+                offOpt.textContent = 'Off — don\'t stream this device\'s mic';
+                micSelect.appendChild(offOpt);
+            }
             const defOpt = document.createElement('option');
             defOpt.value = 'default';
             defOpt.textContent = 'System default';
@@ -1270,6 +1650,101 @@ class TerminalGUI {
             show('pricing-loading', false); show('pricing-error', true);
             const errText = document.querySelector('#pricing-error .error-text');
             if (errText) errText.textContent = `Pricing unavailable: ${err.message}. Needs Node/npx on PATH and a logged-in Claude Code (ccusage reads ~/.claude logs).`;
+        }
+    }
+
+    /**
+     * Wire a terminal's search overlay to its SearchAddon. The overlay existed
+     * in the markup (and the addon was always loaded) but nothing bound them.
+     */
+    setupTerminalSearch(terminalData) {
+        const { id, container, terminal, searchAddon } = terminalData;
+        if (!container || !searchAddon) return;
+        let overlay = container.querySelector('.terminal-search-overlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.className = 'terminal-search-overlay';
+            overlay.dataset.terminalSearch = id;
+            overlay.style.display = 'none';
+            overlay.innerHTML = `
+                <div class="search-bar">
+                    <div class="search-input-wrapper">
+                        <i class="search-icon" data-lucide="search"></i>
+                        <input type="text" class="search-input" placeholder="Search in terminal..." />
+                    </div>
+                    <div class="search-controls">
+                        <button class="search-btn search-prev" title="Previous match"><i data-lucide="chevron-up"></i></button>
+                        <button class="search-btn search-next" title="Next match"><i data-lucide="chevron-down"></i></button>
+                        <span class="search-matches">0/0</span>
+                        <button class="search-btn search-close" title="Close search"><i data-lucide="x"></i></button>
+                    </div>
+                </div>`;
+            const mount = container.querySelector('.terminal-container');
+            container.insertBefore(overlay, mount);
+            if (window.lucide) window.lucide.createIcons({ nameAttr: 'data-lucide', root: overlay });
+        }
+
+        const input = overlay.querySelector('.search-input');
+        const matchesEl = overlay.querySelector('.search-matches');
+        if (!input) return;
+
+        // Decorations make onDidChangeResults fire (for the n/m counter) and
+        // highlight matches; fall back to plain search on any API mismatch.
+        const SEARCH_OPTS = {
+            decorations: {
+                matchBackground: '#3e4451',
+                activeMatchBackground: '#528bff',
+                matchOverviewRuler: '#3e4451',
+                activeMatchColorOverviewRuler: '#528bff'
+            }
+        };
+        const run = (dir, incremental = false) => {
+            const q = input.value;
+            if (!q) {
+                try { searchAddon.clearDecorations(); } catch { /* older addon */ }
+                if (matchesEl) matchesEl.textContent = '0/0';
+                return;
+            }
+            try {
+                const opts = incremental ? { ...SEARCH_OPTS, incremental: true } : SEARCH_OPTS;
+                if (dir === 'prev') searchAddon.findPrevious(q, opts);
+                else searchAddon.findNext(q, opts);
+            } catch {
+                if (dir === 'prev') searchAddon.findPrevious(q);
+                else searchAddon.findNext(q);
+            }
+        };
+        try {
+            searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+                if (matchesEl) matchesEl.textContent = resultCount ? `${resultIndex + 1}/${resultCount}` : '0/0';
+            });
+        } catch { /* counter stays static on older addon versions */ }
+
+        input.addEventListener('input', () => run('next', true));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); run(e.shiftKey ? 'prev' : 'next'); }
+            else if (e.key === 'Escape') { e.preventDefault(); this.toggleTerminalSearch(id, false); }
+        });
+        const bindClick = (sel, fn) => { const b = overlay.querySelector(sel); if (b) b.addEventListener('click', fn); };
+        bindClick('.search-prev', () => run('prev'));
+        bindClick('.search-next', () => run('next'));
+        bindClick('.search-close', () => this.toggleTerminalSearch(id, false));
+    }
+
+    /** Show/hide a terminal's search overlay. force: true=open, false=close. */
+    toggleTerminalSearch(terminalId, force) {
+        const td = this.terminals.get(terminalId != null ? terminalId : this.activeTerminalId);
+        if (!td || !td.container) return;
+        const overlay = td.container.querySelector('.terminal-search-overlay');
+        if (!overlay) return;
+        const show = force !== undefined ? force : overlay.style.display === 'none';
+        overlay.style.display = show ? '' : 'none';
+        if (show) {
+            const input = overlay.querySelector('.search-input');
+            if (input) { input.focus(); input.select(); }
+        } else {
+            try { td.searchAddon.clearDecorations(); } catch { /* older addon */ }
+            td.terminal.focus();
         }
     }
 
@@ -1450,7 +1925,11 @@ class TerminalGUI {
         };
         
         this.terminals.set(terminalId, terminalData);
-        
+
+        // Bind the in-terminal search overlay (builds one for dynamic terminals;
+        // the static terminal-1 wrapper ships it in index.html).
+        if (!options.hidden) this.setupTerminalSearch(terminalData);
+
         // Update state (color is read back by the message queue to tint dots)
         this.terminalStateManager.createTerminal({
             id: terminalId,
@@ -1663,6 +2142,7 @@ class TerminalGUI {
      * The manager (999) is excluded; it boots from its own configuration.
      */
     persistTerminalMetadata() {
+        if (IS_REMOTE) return; // the local renderer owns workspace persistence
         if (this._restoringTerminals) return; // don't clobber mid-restore
         const meta = [];
         this.terminals.forEach((data, id) => {
@@ -1855,8 +2335,15 @@ class TerminalGUI {
     /**
      * Update a terminal tab's metadata (title and/or color) and reflect it in
      * the DOM chrome immediately. Used by the control API and any UI rename.
+     *
+     * Cross-renderer live sync (Remote Mode): every commit is re-broadcast by
+     * main as 'remote-terminal-meta' so all other attached renderers (the
+     * desktop window and every remote browser) apply the same change within
+     * push latency — no reconnect, no polling. `fromSync` marks an apply of a
+     * received broadcast: it must NOT re-send, or two renderers would ping-pong
+     * the same update forever.
      */
-    setTerminalMetadata(terminalId, { title, color } = {}) {
+    setTerminalMetadata(terminalId, { title, color } = {}, { fromSync = false } = {}) {
         const terminalData = this.terminals.get(terminalId);
         if (!terminalData) return false;
 
@@ -1880,6 +2367,9 @@ class TerminalGUI {
         this.eventBus.emit('terminal:metadata', { terminalId, ...updates });
         if (terminalId === this.queueTargetTerminalId) this.updateSelectorDisplay(terminalId);
         if (terminalId === this.activeTerminalId) this.updateStatusBar(terminalId);
+        if (!fromSync) {
+            try { ipcRenderer.send('terminal-meta-changed', { terminalId, ...updates }); } catch (_) { /* unit tests */ }
+        }
         return true;
     }
 
@@ -2109,6 +2599,8 @@ class TerminalGUI {
             soundEnabled, completionSound, injectionSound, promptedSound,
             terminalsPerChunk, chunkOrientation, theme,
             ttsPreferredVoice, ttsPlaybackSpeed, ttsAutoplayEnabled, managerInputEnabled,
+            managerPromptWatchEnabled, managerAutoPassEnabled, managerPassIntervalMinutes,
+            terminalScrollBehavior, keepScreenAwake, promptedKeywordsOnly,
         ] = await Promise.all([
             this.getPersistedSetting('soundEffectsEnabled', false),
             this.getPersistedSetting('completionSound', 'completion.mp3'),
@@ -2121,6 +2613,12 @@ class TerminalGUI {
             this.getPersistedSetting('ttsPlaybackSpeed', 1.3),
             this.getPersistedSetting('ttsAutoplayEnabled', true),
             this.getPersistedSetting('managerCompletionWatchEnabled', true),
+            this.getPersistedSetting('managerPromptWatchEnabled', true),
+            this.getPersistedSetting('managerAutoPassEnabled', true),
+            this.getPersistedSetting('managerPassIntervalMinutes', 60),
+            this.getPersistedSetting('terminalScrollBehavior', 'smart'),
+            this.getPersistedSetting('keepScreenAwake', false),
+            this.getPersistedSetting('promptedSoundKeywordsOnly', false),
         ]);
 
         // Apply TTS prefs to the NotificationManager immediately (it may already
@@ -2135,6 +2633,14 @@ class TerminalGUI {
         // Mirror into app state so the injection gate can read it live at send
         // time (blocks ALL injection to the manager terminal 999 when disabled).
         this.appStateStore.setState('settings.managerInputEnabled', !!managerInputEnabled);
+
+        // Manager behavior settings — read live from the state store by
+        // PromptWatchManager / ManagerInstance (previously write-nowhere keys).
+        this.appStateStore.setState('managerPromptWatchEnabled', !!managerPromptWatchEnabled);
+        this.appStateStore.setState('managerAutoPassEnabled', !!managerAutoPassEnabled);
+        this.appStateStore.setState('managerPassIntervalMinutes', Number(managerPassIntervalMinutes) || 60);
+        this.appStateStore.setState('settings.terminalScrollBehavior', terminalScrollBehavior);
+        this.appStateStore.setState('settings.sound.promptedKeywordsOnly', !!promptedKeywordsOnly);
 
         // ---- Mirror into the app state store (SoundManager reads settings.sound.*) ----
         this.appStateStore.setState('settings.sound.enabled', !!soundEnabled);
@@ -2158,7 +2664,9 @@ class TerminalGUI {
         this.wireSettingsControls({
             soundEnabled, completionSound, injectionSound, promptedSound,
             terminalsPerChunk, chunkOrientation, theme,
-            ttsPreferredVoice, ttsPlaybackSpeed, ttsAutoplayEnabled, managerInputEnabled
+            ttsPreferredVoice, ttsPlaybackSpeed, ttsAutoplayEnabled, managerInputEnabled,
+            managerPromptWatchEnabled, managerAutoPassEnabled, managerPassIntervalMinutes,
+            terminalScrollBehavior, keepScreenAwake, promptedKeywordsOnly
         });
 
         // ---- Init sound manager (loads available files; heals stale prefs) ----
@@ -2253,7 +2761,7 @@ class TerminalGUI {
         const voiceSelect = byId('tts-voice-select');
         if (voiceSelect) {
             const selected = current.ttsPreferredVoice || 'af_heart';
-            fetch('http://localhost:8123/api/tts/voices/')
+            fetch(`${BACKEND_URL}/api/tts/voices/`)
                 .then(r => r.json())
                 .then(({ voices }) => {
                     voiceSelect.innerHTML = '';
@@ -2326,6 +2834,71 @@ class TerminalGUI {
             if (el) el.addEventListener('change', () => applyManagerInput(el.checked, true));
         });
 
+        // ---- Manager behavior toggles (read live off the state store) ----
+        const promptWatchToggle = byId('manager-prompt-watch-enabled');
+        if (promptWatchToggle) {
+            promptWatchToggle.checked = !!current.managerPromptWatchEnabled;
+            promptWatchToggle.addEventListener('change', () => {
+                this.appStateStore.setState('managerPromptWatchEnabled', promptWatchToggle.checked);
+                this.persistSetting('managerPromptWatchEnabled', promptWatchToggle.checked);
+            });
+        }
+
+        const autoPassToggle = byId('manager-auto-pass-enabled');
+        if (autoPassToggle) {
+            autoPassToggle.checked = !!current.managerAutoPassEnabled;
+            autoPassToggle.addEventListener('change', () => {
+                this.appStateStore.setState('managerAutoPassEnabled', autoPassToggle.checked);
+                this.persistSetting('managerAutoPassEnabled', autoPassToggle.checked);
+            });
+        }
+
+        const passIntervalRange = byId('manager-pass-interval-minutes');
+        const passIntervalValue = byId('manager-pass-interval-value');
+        if (passIntervalRange) {
+            passIntervalRange.value = Number(current.managerPassIntervalMinutes) || 60;
+            if (passIntervalValue) passIntervalValue.textContent = `${passIntervalRange.value}m`;
+            passIntervalRange.addEventListener('input', () => {
+                if (passIntervalValue) passIntervalValue.textContent = `${passIntervalRange.value}m`;
+            });
+            passIntervalRange.addEventListener('change', () => {
+                const mins = parseInt(passIntervalRange.value, 10);
+                this.appStateStore.setState('managerPassIntervalMinutes', mins);
+                this.persistSetting('managerPassIntervalMinutes', mins);
+            });
+        }
+
+        // ---- Terminal scroll behavior ----
+        const scrollBehavior = byId('terminal-scroll-behavior');
+        if (scrollBehavior) {
+            scrollBehavior.value = current.terminalScrollBehavior || 'smart';
+            scrollBehavior.addEventListener('change', () => {
+                this.appStateStore.setState('settings.terminalScrollBehavior', scrollBehavior.value);
+                this.persistSetting('terminalScrollBehavior', scrollBehavior.value);
+            });
+        }
+
+        // ---- Keep screen awake (power-save blocker gate, read by MQM) ----
+        const keepAwakeToggle = byId('keep-screen-awake');
+        if (keepAwakeToggle) {
+            keepAwakeToggle.checked = !!current.keepScreenAwake;
+            keepAwakeToggle.addEventListener('change', () => {
+                // Route through PreferenceManager: persists AND emits
+                // preference:changed, which MessageQueueManager merges live.
+                this.preferenceManager.updatePreference('keepScreenAwake', keepAwakeToggle.checked);
+            });
+        }
+
+        // ---- Prompted sound: keywords-only filter ----
+        const keywordsOnlyToggle = byId('prompted-sound-keywords-only');
+        if (keywordsOnlyToggle) {
+            keywordsOnlyToggle.checked = !!current.promptedKeywordsOnly;
+            keywordsOnlyToggle.addEventListener('change', () => {
+                this.soundManager.setPromptedKeywordsOnly(keywordsOnlyToggle.checked);
+                this.persistSetting('promptedSoundKeywordsOnly', keywordsOnlyToggle.checked);
+            });
+        }
+
         // ---- Terminal chunk layout (max visible per page) ----
         const chunkRange = byId('terminals-per-chunk');
         const chunkValue = byId('terminals-per-chunk-value');
@@ -2363,7 +2936,23 @@ class TerminalGUI {
 
         // Load notification history and start polling the TTS backend for new
         // spoken notifications (the manager produces them; this just plays/shows).
-        this.notificationManager.initialize();
+        // Local: the TTS backend lives on the app host's loopback — poll it.
+        // Remote: audio pushes over the WS and PLAYS HERE, on the device showing
+        // the interface (REMOTE_MODE.md §9) — and since /api/* is reverse-proxied
+        // by the RemoteServer, the list itself loads + polls same-origin too, so
+        // the Notifications panel mirrors the desktop's instead of sitting empty.
+        // The id watermark (lastSeenId) + items map dedupe the two feeds: whoever
+        // delivers a notification first wins, the other skips it.
+        if (!IS_REMOTE) {
+            this.notificationManager.initialize();
+        } else {
+            this.notificationManager.initializeRemote();
+            // History FIRST (it sets the id watermark), polling after — else the
+            // first poll would see the whole backlog as "fresh" and read it out.
+            this.notificationManager.loadHistory()
+                .then(() => this.notificationManager.startPolling())
+                .catch(() => this.notificationManager.startPolling());
+        }
 
         // Boot the manager instance if the user configured a directory for it
         this.managerInstance.startIfConfigured();
@@ -2388,56 +2977,27 @@ class TerminalGUI {
         console.log('✅ TerminalGUI initialization complete');
     }
     
-    // ===== Compatibility shims for InjectionManager (fix 7) =====
-    // InjectionManager reads several fields/methods off its gui context. These
-    // shims keep it from crashing and bridge to the canonical subsystems.
+    // Bridge kept for script-loaded modules (microwave-mode) that call
+    // gui.logAction directly.
     logAction(message, type = 'info') {
         this.eventBus.emit('log:action', { message, type });
     }
 
-    get messageQueue() {
-        return this.appStateStore.getState('messages.queue') || [];
-    }
-
-    get terminalStatuses() {
-        return (this.statusManager && this.statusManager.terminalStatuses) || new Map();
-    }
-
-    get injectionPaused() {
-        return this.messageQueueManager ? this.messageQueueManager.injectionPaused : false;
-    }
-
-    get usageLimitWaiting() {
-        return this.messageQueueManager ? this.messageQueueManager.usageLimitWaiting : false;
-    }
-    set usageLimitWaiting(v) {
-        if (this.messageQueueManager) this.messageQueueManager.usageLimitWaiting = v;
-    }
-
-    get timerExpired() {
-        return this.messageQueueManager ? this.messageQueueManager.timerExpired : false;
-    }
-    set timerExpired(v) {
-        if (this.messageQueueManager) this.messageQueueManager.timerExpired = v;
-    }
-
-    processMessage(message) {
-        // Delegate actual injection to the message queue manager.
-        if (this.messageQueueManager && typeof this.messageQueueManager.injectNextMessage === 'function') {
-            this.messageQueueManager.injectNextMessage();
-        }
-    }
-
     cleanup() {
+        // Stop the TTS notification poller (otherwise it fetches forever)
+        if (this.notificationManager && this.notificationManager.stopPolling) {
+            this.notificationManager.stopPolling();
+        }
+
         // Dispose all terminals
         this.terminals.forEach(terminalData => {
             terminalData.terminal.dispose();
         });
         this.terminals.clear();
-        
+
         // Clean up managers
         this.eventBus.removeAllListeners();
-        
+
         console.log('🧹 TerminalGUI cleanup completed');
     }
 }
@@ -2448,6 +3008,9 @@ document.addEventListener('DOMContentLoaded', () => {
     
     try {
         const gui = new TerminalGUI();
+        // Teardown on window close: stops the notification poller and disposes
+        // terminals (cleanup() previously existed but nothing invoked it).
+        window.addEventListener('beforeunload', () => gui.cleanup());
         console.log('✅ TerminalGUI created successfully');
     } catch (error) {
         console.error('❌ Failed to initialize TerminalGUI:', error);
