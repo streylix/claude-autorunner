@@ -6,6 +6,64 @@ project's current git branch.
 
 ---
 
+## 2026-07-31 — Scratchpad: a live-markdown notes tab in the left sidebar (branch `scratchpad`)
+
+**Feature (user request).** The left sidebar gets a fifth tab, **Scratchpad**: one
+persistent markdown document with an Obsidian-style live-preview editor. Formatting
+appears as you type, and the raw `**`/`#`/`` ` `` syntax characters reveal themselves
+only when the caret is on or next to the thing they format. It is a single document
+per app instance — not a note list, no title, no save button.
+
+**Where the technique came from.** Ported from the note-body editor in **Peridot**,
+the user's React note-taking app on the Pop OS box
+(`/media/ethan/smalls/peridot/src/components/MarkdownEditor.jsx`). Worth recording:
+the task asked for a project called "Paradox", which does not exist on that machine —
+Peridot is the note app with this editor, and it is what was studied.
+
+**How it works.**
+
+- *The document is always plain markdown.* Nothing is rewritten into HTML. Formatting
+  is a decoration layer painted on top of the text by CodeMirror 6, which is what keeps
+  undo/redo, selection, arrow keys and the clipboard behaving like a normal textarea —
+  and why copying a formatted region yields the raw source (CodeMirror's copy handler
+  slices the document, not the DOM).
+- *Two caret-proximity rules* (`src/features/ScratchpadManager.js`). Inline markers
+  (`**`, `*`, `~~`, `` ` ``, `[…](…)`) reveal when the selection overlaps the parent
+  styled span, tested inclusively at both ends so a caret sitting directly adjacent
+  counts as inside. Block markers (`#`, `>`, `-`, `1.`, ```` ``` ````, `---`) reveal when
+  the caret is anywhere on the same line — a span rule there would flicker mid-word.
+  Because only decorations change, the document never changes when syntax toggles, so
+  the caret cannot jump and fast typing cannot drop characters.
+- *Widgets where hiding is not enough.* Bullets become `•` (ordered lists keep their
+  number), `- [ ]` becomes a real checkbox that edits the source `[x]` on click, `---`
+  becomes a rule. The ``` fence rows are collapsed with `display:none` rather than
+  emptied, since a plain replace would leave two blank rows inside the code block.
+- *Vendored CodeMirror* (`vendor/codemirror-md.js`, built by `npm run build:editor`
+  from `scripts/codemirror-entry.js`). The `@codemirror/*` packages are ESM-only and
+  `renderer.js` is a classic CommonJS script, so they are pre-bundled to a `CM6`
+  global. A plain `<script>` tag also means Remote Mode gets the editor for free —
+  `RemoteServer` already serves static files under the app root.
+- *Persistence* reuses the existing store: debounced `db-set-setting` /
+  `db-get-setting` IPC into `unified-store` under the `scratchpad` key (plus
+  `scratchpadCaret`). No second mechanism was invented.
+- *Tab wiring* follows the existing pattern exactly — a `sidebar-nav-btn` in
+  `index.html` and one more entry in `ActionLogManager`'s `VIEWS` map.
+
+**Verified.** Live-probed the real Electron app with the Playwright driver, 55/55
+checks green, run against an isolated `--user-data-dir` (a first pass raced the
+user's own running instance, which shares the store). Covered: the tab switches and
+leaves the other four views untouched; all thirteen element types render inline;
+each one reveals its syntax with the caret on it and re-hides when the caret leaves;
+caret-adjacent reveal works from both sides; typing 64 characters at zero delay drops
+and reorders nothing and leaves the caret at the end; undo/redo; select-all copy
+returns byte-identical raw markdown; and content survives a full app restart, restored
+exactly and re-rendered. Screenshots taken in both dark and light themes — the CSS
+uses only COLOR_PALETTE.md tokens, so the light theme needs no overrides.
+
+**Files.** `src/features/ScratchpadManager.js` (new), `scripts/codemirror-entry.js`
+(new), `vendor/codemirror-md.js` (new, built), `index.html`, `style.css`,
+`renderer.js`, `src/features/ActionLogManager.js`, `package.json`.
+
 ## 2026-07-15 — Voice STOP-WORD INTERRUPT: saying "no …" (or "wait …") cuts off the manager's current turn and takes over (branch `ssh-view`)
 
 **Feature (user request).** The manager sometimes keeps over-processing an

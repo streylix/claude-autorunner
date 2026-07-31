@@ -31,6 +31,7 @@ const RemoteMicSink = require('./src/features/RemoteMicSink');
 const DiscordLinkKeyManager = require('./src/features/DiscordLinkKeyManager');
 const RemoteConnectionUI = require('./src/features/RemoteConnectionUI');
 const VibeBlastManager = require('./src/features/VibeBlastManager');
+const ScratchpadManager = require('./src/features/ScratchpadManager');
 const UIFocusManager = require('./src/ui/UIFocusManager');
 
 // Import utilities
@@ -163,6 +164,11 @@ class TerminalGUI {
         // Left sidebar: action log feed + view navigation
         this.actionLogManager = new ActionLogManager(this.eventBus, this.appStateStore);
         this.actionLogManager.initialize();
+
+        // Left sidebar: the Scratchpad tab — a single persistent markdown doc
+        // with live preview. Async because it loads its content from the store.
+        this.scratchpadManager = new ScratchpadManager(this.eventBus, this.appStateStore, this.ipcHandler);
+        this.scratchpadManager.initialize();
 
         // Right sidebar: hold Send on an empty box for three seconds.
         this.vibeBlastManager = new VibeBlastManager(this.eventBus, this.appStateStore);

@@ -47,6 +47,9 @@
                         <button class="icon-btn sidebar-nav-btn" id="manager-nav-btn" title="Manager" data-test-id="manager-nav-btn">
                             <i data-lucide="bot"></i>
                         </button>
+                        <button class="icon-btn sidebar-nav-btn" id="scratchpad-nav-btn" title="Scratchpad" data-test-id="scratchpad-nav-btn">
+                            <i data-lucide="notebook-pen"></i>
+                        </button>
                     </div>
                 </div>
                 
@@ -172,6 +175,12 @@
                     </div>
                     <!-- The manager terminal's xterm wrapper is mounted here -->
                     <div class="manager-terminal-mount" id="manager-terminal-mount"></div>
+                </div>
+
+                <!-- Scratchpad View — one persistent markdown document with an
+                     Obsidian-style live-preview editor (ScratchpadManager). -->
+                <div class="sidebar-view scratchpad-view" id="scratchpad-view" style="display: none;">
+                    <div class="scratchpad-editor" id="scratchpad-editor"></div>
                 </div>
             </div>
 
@@ -882,6 +891,10 @@
     <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
     <script src="src/ui/loading-manager.js"></script>
     <script src="src/audio/microwave-mode.js"></script>
+    <!-- CodeMirror 6, pre-bundled to a `CM6` global for the Scratchpad editor.
+         Must load before renderer.js, which requires ScratchpadManager.
+         Rebuild with `npm run build:editor`. -->
+    <script src="vendor/codemirror-md.js"></script>
     <script src="renderer.js"></script>
     <script src="src/utils/microwave-init.js"></script>
 </body>

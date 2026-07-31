@@ -20,7 +20,8 @@ const VIEWS = {
     'action-log-nav-btn': { viewId: 'action-log-view', title: 'Action Log' },
     'todo-nav-btn': { viewId: 'todo-view', title: 'Notifications' },
     'pricing-nav-btn': { viewId: 'pricing-view', title: 'Token Usage & Costs' },
-    'manager-nav-btn': { viewId: 'manager-view', title: 'Manager' }
+    'manager-nav-btn': { viewId: 'manager-view', title: 'Manager' },
+    'scratchpad-nav-btn': { viewId: 'scratchpad-view', title: 'Scratchpad' }
 };
 
 class ActionLogManager {
