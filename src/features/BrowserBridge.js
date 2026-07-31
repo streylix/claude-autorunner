@@ -74,7 +74,21 @@ class BrowserBridge {
         this.box = null;         // last geometry actually written, page coordinates
         this.rafId = null;
         this.boundMessage = null;
-        this.prefs = this.readPrefs();
+        // Prefs load lazily on first access (see the getter below), NOT here:
+        // readPrefs() hits localStorage, and the renderer's first localStorage
+        // access synchronously initializes the whole storage area — too
+        // expensive for the boot path. First real access is when the Browser
+        // card opens, well after boot.
+        this._prefs = null;
+    }
+
+    get prefs() {
+        if (!this._prefs) this._prefs = this.readPrefs();
+        return this._prefs;
+    }
+
+    set prefs(value) {
+        this._prefs = value;
     }
 
     initialize() {

@@ -75,7 +75,17 @@ class GamesManager {
         this.flap = document.getElementById('games-flap');
         if (!this.rail || !this.stage) return;
 
-        this.restoreCollapsed();
+        // Deferred to app:boot:complete: restoreCollapsed() reads localStorage,
+        // and a boot-path localStorage access pays the storage-area
+        // initialization cost synchronously (hundreds of ms; see
+        // TimerManager.loadTimerState). The loading overlay still covers the
+        // shelf when the deferred restore applies, so there is no visible
+        // flash — same policy as the sidebar panels' collapse state.
+        if (this.eventBus) {
+            this.eventBus.on('app:boot:complete', () => this.restoreCollapsed());
+        } else {
+            this.restoreCollapsed();
+        }
 
         this.setupDOMHandlers();
         this.refresh();
