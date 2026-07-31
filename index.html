@@ -376,7 +376,22 @@
                         <span class="vibe-flap-grip"></span>
                         <span class="vibe-flap-label">Back to queue</span>
                     </button>
-                    <div class="vibe-stage" id="vibe-stage"></div>
+                    <div class="vibe-stage" id="vibe-stage">
+                        <!-- Shown only while the game does NOT hold focus, so
+                             WASD/arrow keys are never silently swallowed. -->
+                        <div class="games-focus-hint" id="games-focus-hint">Click to play</div>
+                    </div>
+                    <!-- Game library rail. Populated by GamesManager from the
+                         games/ folder; Vibe Blast is always the first card. -->
+                    <div class="games-shelf">
+                        <div class="games-shelf-head">
+                            <span class="games-shelf-title">Games</span>
+                            <button type="button" class="games-folder-btn" id="games-folder-btn" title="Open the games folder" data-test-id="games-folder-btn">
+                                <i data-lucide="folder-open"></i>
+                            </button>
+                        </div>
+                        <div class="games-rail" id="games-rail"></div>
+                    </div>
                 </div>
             </div>
         </div>

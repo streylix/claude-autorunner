@@ -17,6 +17,7 @@ const { enrichSnapshot, detectRuntime } = require('./src/main/terminal-runtime')
 const { handlePtyControl } = require('./src/main/pty-control');
 const { runCcusage } = require('./src/main/ccusage');
 const { writeSessionFile, removeSessionFile, writeAppRootFile } = require('./src/main/session-file');
+const GamesLibrary = require('./src/main/games-library');
 const RemoteServer = require('./src/main/RemoteServer');
 const RemoteClient = require('./src/main/remote-client');
 const TtsRemoteForwarder = require('./src/main/tts-remote-forwarder');
@@ -24,6 +25,7 @@ const { BACKEND_URL } = require('./src/utils/backend-url');
 
 let mainWindow;
 let hookServer = null;
+let gamesLibrary = null;
 let remoteServer = null;
 let remoteClient = null; // outbound Remote-SSH-style client (bottom-left indicator)
 let ttsRemoteForwarder = null; // pushes TTS audio to attached remote viewers (REMOTE_MODE.md §9)
@@ -944,6 +946,39 @@ let clearTriggerWatcher = null;
 let terminalStatusWatcher = null;
 
 function setupIpcHandlers() {
+  // ---- Games library (games/) ----
+  // Started lazily on the first list call rather than at boot: an app whose
+  // user never opens the games rail should not be holding an fs watcher.
+  const ensureGamesLibrary = () => {
+    if (gamesLibrary) return gamesLibrary;
+    gamesLibrary = new GamesLibrary(__dirname, (games) => {
+      broadcastToRenderers('games:changed', games);
+    });
+    gamesLibrary.start();
+    return gamesLibrary;
+  };
+
+  ipcMain.handle('games:list', async () => {
+    try {
+      return ensureGamesLibrary().games;
+    } catch (error) {
+      try { console.error('[Main] games:list failed:', error); } catch (e) { /* ignore */ }
+      return [];
+    }
+  });
+
+  // Reveal the games folder so the user can drop a file in by hand.
+  ipcMain.handle('games:open-folder', async () => {
+    try {
+      const dir = ensureGamesLibrary().dir;
+      await shell.openPath(dir);
+      return { ok: true, dir };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  });
+
+
   // Manager instance support: resume detection + role bootstrap for the
   // hidden Claude session that monitors/steers the interface (terminal 0)
   ipcMain.handle('manager-prepare', async (event, managerDir) => {

@@ -6,6 +6,62 @@ project's current git branch.
 
 ---
 
+## 2026-07-31 — Games shelf: Vibe Blast becomes a library any Claude session can add to (branch `games`)
+
+**Feature (user request).** The hold-to-Send panel stops being a single easter egg
+and becomes a game library. Under the stage there is now a horizontally scrolling,
+Hulu-style rail of games. Vibe Blast is the first card and the built-in; everything
+else is discovered from a new `games/` folder at runtime. Any Claude session in any
+terminal, the manager instance, or the user with a text editor can add a game by
+writing ONE html file — no registration, no restart. Editing that file reloads it
+mid-play. Also removed the "All three pieces always fit somewhere…" hint line from
+the Vibe Blast board.
+
+**How it works.**
+
+- *Discovery is the filesystem* (`src/main/games-library.js`). It scans `games/` for
+  `foo.html` or `foo/index.html` (a folder so a game can ship assets), and pulls the
+  card's name from the file's `<title>` and its subtitle from an optional
+  `<meta name="game-description">` — metadata out of the HTML rather than a manifest,
+  because a manifest is one more file to get wrong. An `fs.watch` on the directory
+  debounces save storms into one rescan and pushes the new list over IPC. Watching is
+  recursive on macOS/Windows; Linux gets a watcher per subdirectory, re-added on each
+  rescan so a newly created game folder picks one up.
+- *Hot reload* (`src/features/GamesManager.js`). On every library change: a game that
+  vanished falls back to Vibe Blast, and a game whose mtime moved WHILE BEING PLAYED
+  gets its iframe re-pointed. The mtime rides in the URL as a query string, which is
+  what makes the edited file actually re-fetch instead of coming back from cache.
+- *Thumbnails are the game.* Each card renders the real HTML in a scaled-down iframe
+  (laid out at 4x the tile, `transform: scale(0.25)`) clipped to a fixed 152x86 box.
+  No cover-art convention for game authors, nothing to regenerate, and an edited game
+  re-thumbnails itself. A coloured initial sits underneath — not a second code path,
+  just what stays visible if the render paints nothing. The host's theme is posted
+  into each thumbnail too, or Vibe Blast's card would sit in light mode in a dark app.
+- *Keyboard.* Games want WASD and the arrows, which the app binds for its own hotkeys.
+  Because a game runs in an iframe its keydowns land in a different document and can
+  never reach the app's handlers — so the whole problem reduces to making sure the
+  iframe holds focus. The frame takes `tabindex=0` and is focused on panel open, on
+  card select, and on any click on the stage; a "click to play" pill appears whenever
+  focus has drifted, so keypresses are never silently swallowed.
+- *`games/` is tracked but its contents are not.* `games/.gitignore` contains `*` and
+  `!.gitignore`, so the one tracked file in the folder is the ignore file itself —
+  which keeps the directory in a fresh clone while the library stays local. Vibe Blast
+  is the exception and remains a tracked file at the app root.
+
+**Verified.** Live-probed the real app, 16/16 green, isolated `--user-data-dir`:
+panel opens with rail and hint; Vibe Blast is first and active; `key-probe.html` is
+discovered with its title and description; a file WRITTEN while the app runs appears
+in the rail; selecting it swaps the stage and renders; EDITING it hot-reloads the
+running game (rev 1 -> rev 2); DELETING it removes the card and falls back to Vibe
+Blast; `d/d/s` and `ArrowLeft/ArrowUp` both drive a focused game while the app's own
+single-key hotkeys stay inert; `git check-ignore` confirms games are ignored and
+`git ls-files games/` returns only `.gitignore`. Measured uniform 152x86 tiles with
+single-line ellipsis on long titles and descriptions; screenshotted dark and light.
+
+**Files.** `src/main/games-library.js` (new), `src/features/GamesManager.js` (new),
+`games/.gitignore` (new), `main.js`, `index.html`, `style.css`, `renderer.js`,
+`src/features/VibeBlastManager.js`, `vibe-blast.html`.
+
 ## 2026-07-15 — Voice STOP-WORD INTERRUPT: saying "no …" (or "wait …") cuts off the manager's current turn and takes over (branch `ssh-view`)
 
 **Feature (user request).** The manager sometimes keeps over-processing an

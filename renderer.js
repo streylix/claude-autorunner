@@ -31,6 +31,7 @@ const RemoteMicSink = require('./src/features/RemoteMicSink');
 const DiscordLinkKeyManager = require('./src/features/DiscordLinkKeyManager');
 const RemoteConnectionUI = require('./src/features/RemoteConnectionUI');
 const VibeBlastManager = require('./src/features/VibeBlastManager');
+const GamesManager = require('./src/features/GamesManager');
 const UIFocusManager = require('./src/ui/UIFocusManager');
 
 // Import utilities
@@ -167,6 +168,13 @@ class TerminalGUI {
         // Right sidebar: hold Send on an empty box for three seconds.
         this.vibeBlastManager = new VibeBlastManager(this.eventBus, this.appStateStore);
         this.vibeBlastManager.initialize();
+
+        // The games rail under that stage. Discovers games/ over IPC, hot-reloads
+        // edits, and hands keyboard focus to whichever game is on the stage.
+        this.gamesManager = new GamesManager(
+            this.eventBus, this.appStateStore, this.ipcHandler, this.vibeBlastManager
+        );
+        this.gamesManager.initialize();
 
         // Hidden manager Claude instance (terminal 999) - steers the interface
         this.managerInstance = new ManagerInstance(this.eventBus, this.appStateStore, this.ipcHandler, this);
