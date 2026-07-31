@@ -27,6 +27,9 @@
  *     and shows a "click to play" hint whenever focus has drifted away.
  */
 
+// Shares the naming convention of the right sidebar's collapsible panels.
+const COLLAPSE_KEY = 'panelCollapsed:games';
+
 const BUILT_IN = {
     id: 'vibe-blast.html',
     url: 'vibe-blast.html',
@@ -52,7 +55,11 @@ class GamesManager {
         this.rail = document.getElementById('games-rail');
         this.stage = document.getElementById('vibe-stage');
         this.hint = document.getElementById('games-focus-hint');
+        this.shelf = document.getElementById('games-shelf');
+        this.flap = document.getElementById('games-flap');
         if (!this.rail || !this.stage) return;
+
+        this.restoreCollapsed();
 
         this.setupDOMHandlers();
         this.refresh();
@@ -72,7 +79,40 @@ class GamesManager {
         }
     }
 
+    // ---------- the collapse flap ----------
+    //
+    // Same convention the right sidebar's Status/Timer panels already use — a
+    // `collapsed` class plus a `panelCollapsed:<name>` localStorage key — but
+    // handled here rather than by renderer.js's generic
+    // `.collapse-toggle[data-collapse-target]` sweep, so the flap can be a
+    // full-width grip bar instead of a rotating chevron button.
+
+    restoreCollapsed() {
+        if (localStorage.getItem(COLLAPSE_KEY) === '1') this.setCollapsed(true);
+    }
+
+    setCollapsed(collapsed) {
+        if (!this.shelf) return;
+        this.shelf.classList.toggle('collapsed', collapsed);
+        if (this.flap) {
+            this.flap.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            this.flap.title = collapsed ? 'Show the games shelf' : 'Collapse the games shelf';
+        }
+        try { localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0'); } catch (_) { /* private mode */ }
+    }
+
+    toggleCollapsed() {
+        this.setCollapsed(!this.shelf.classList.contains('collapsed'));
+        // Collapsing hands the stage more room; give the game focus back so the
+        // player isn't left typing at a button.
+        this.focusGame();
+    }
+
     setupDOMHandlers() {
+        if (this.flap) {
+            this.flap.addEventListener('click', () => this.toggleCollapsed());
+        }
+
         // Any click on the stage means "I want to play" — take focus back from
         // whatever app control had it.
         this.stage.addEventListener('mousedown', () => {

@@ -672,6 +672,13 @@ the Vibe Blast board.
   iframe holds focus. The frame takes `tabindex=0` and is focused on panel open, on
   card select, and on any click on the stage; a "click to play" pill appears whenever
   focus has drifted, so keypresses are never silently swallowed.
+- *The shelf collapses.* A grip-bar flap across the shelf head folds the rail away
+  and hands the space to the stage, so a game can run full-height. It reuses the
+  right sidebar's existing convention — a `collapsed` class and a
+  `panelCollapsed:games` localStorage key — but is handled in GamesManager rather
+  than by renderer.js's generic `.collapse-toggle[data-collapse-target]` sweep, so
+  the flap can be a full-width grip bar instead of a rotating chevron button. The
+  flap itself never collapses, and the state survives a restart.
 - *`games/` is tracked but its contents are not.* `games/.gitignore` contains `*` and
   `!.gitignore`, so the one tracked file in the folder is the ignore file itself —
   which keeps the directory in a fresh clone while the library stays local. Vibe Blast
@@ -686,6 +693,10 @@ Blast; `d/d/s` and `ArrowLeft/ArrowUp` both drive a focused game while the app's
 single-key hotkeys stay inert; `git check-ignore` confirms games are ignored and
 `git ls-files games/` returns only `.gitignore`. Measured uniform 152x86 tiles with
 single-line ellipsis on long titles and descriptions; screenshotted dark and light.
+A second 10/10 pass covers the flap: it collapses the rail to zero height, the stage
+grows into the freed space (622px -> 754px), the flap stays visible while collapsed,
+`aria-expanded` flips, the choice persists to localStorage, and a COLLAPSED shelf is
+still collapsed after a full app restart with the cards intact once reopened.
 
 **Files.** `src/main/games-library.js` (new), `src/features/GamesManager.js` (new),
 `games/.gitignore` (new), `main.js`, `index.html`, `style.css`, `renderer.js`,
