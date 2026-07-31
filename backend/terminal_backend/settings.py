@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     "voice_transcription",  # audio transcribing
     "text_to_speech",       # Kokoro TTS + spoken notifications
     "frontend_control",     # frontend log shipping API
+    "game_state",           # Vibe Blast easter egg save
 
     # REMOVED: admin, channels, terminal, settings, todos, user_settings
     # No WebSocket consumers remain, so channels/CHANNEL_LAYERS are gone.
