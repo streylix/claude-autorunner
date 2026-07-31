@@ -894,6 +894,15 @@ Peridot is the note app with this editor, and it is what was studied.
   the caret is anywhere on the same line — a span rule there would flicker mid-word.
   Because only decorations change, the document never changes when syntax toggles, so
   the caret cannot jump and fast typing cannot drop characters.
+- *The task checkbox is the one exception* and uses the SPAN rule rather than the line
+  rule (user call): the raw `- [x]` returns only when the caret is on or next to the
+  marker itself, so writing a task's text doesn't make the box flicker away.
+- *Sizing.* The editor runs at 26px — roughly 2x the sidebar's usual 13px, since notes
+  are read rather than scanned like log output. Every other size in the block is
+  em-relative so headings, code, bullets and the checkbox all track that one number.
+  The checkbox needs an explicit `font-size: inherit`: form controls don't inherit it,
+  so its em units would otherwise resolve against the browser's ~13px control default
+  and the box would stay tiny however large the text got.
 - *Widgets where hiding is not enough.* Bullets become `•` (ordered lists keep their
   number), `- [ ]` becomes a real checkbox that edits the source `[x]` on click, `---`
   becomes a rule. The ``` fence rows are collapsed with `display:none` rather than
@@ -909,11 +918,13 @@ Peridot is the note app with this editor, and it is what was studied.
 - *Tab wiring* follows the existing pattern exactly — a `sidebar-nav-btn` in
   `index.html` and one more entry in `ActionLogManager`'s `VIEWS` map.
 
-**Verified.** Live-probed the real Electron app with the Playwright driver, 55/55
+**Verified.** Live-probed the real Electron app with the Playwright driver, 57/57
 checks green, run against an isolated `--user-data-dir` (a first pass raced the
 user's own running instance, which shares the store). Covered: the tab switches and
 leaves the other four views untouched; all thirteen element types render inline;
 each one reveals its syntax with the caret on it and re-hides when the caret leaves;
+the task marker reveals on/adjacent to `- [ ]` and keeps its widget while the caret
+is out in the task text;
 caret-adjacent reveal works from both sides; typing 64 characters at zero delay drops
 and reorders nothing and leaves the caret at the end; undo/redo; select-all copy
 returns byte-identical raw markdown; and content survives a full app restart, restored

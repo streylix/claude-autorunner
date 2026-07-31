@@ -5465,7 +5465,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     height: 100%;
     background-color: transparent;
     color: var(--text-primary);
-    font-size: 13px;
+    /* Notes are read, not scanned like log output — this runs at roughly 2x
+       the sidebar's usual 13px. Every other size in this block is em-relative,
+       so headings, code, bullets and checkboxes all track this one number. */
+    font-size: 26px;
 }
 
 .scratchpad-editor .cm-editor.cm-focused {
@@ -5559,18 +5562,24 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .scratchpad-editor .cm-md-task {
     display: inline-flex;
     align-items: center;
-    vertical-align: text-bottom;
-    margin-right: 0.4em;
+    vertical-align: middle;
+    margin-right: 0.35em;
 }
 
 .scratchpad-editor .cm-md-task-box {
     appearance: none;
     -webkit-appearance: none;
-    width: 13px;
-    height: 13px;
+    /* Form controls do NOT inherit font-size, so without this the em units
+       below resolve against the browser's default ~13px control font and the
+       box stays tiny no matter how large the editor text gets. */
+    font-size: inherit;
+    /* em, not px, so the box stays proportional to the text size above. */
+    width: 0.95em;
+    height: 0.95em;
+    flex: 0 0 auto;
     margin: 0;
-    border: 1.5px solid var(--border-secondary);
-    border-radius: 3px;
+    border: 0.07em solid var(--border-secondary);
+    border-radius: 0.18em;
     background-color: var(--bg-tertiary);
     cursor: pointer;
     position: relative;
@@ -5584,12 +5593,12 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .scratchpad-editor .cm-md-task-box:checked::after {
     content: '';
     position: absolute;
-    left: 3.5px;
-    top: 0.5px;
-    width: 3px;
-    height: 7px;
+    left: 0.32em;
+    top: 0.11em;
+    width: 0.2em;
+    height: 0.45em;
     border: solid var(--bg-primary);
-    border-width: 0 2px 2px 0;
+    border-width: 0 0.12em 0.12em 0;
     transform: rotate(45deg);
 }
 

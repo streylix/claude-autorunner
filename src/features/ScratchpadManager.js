@@ -327,15 +327,20 @@ class ScratchpadManager {
                             // ---- task checkboxes ----
                             // The widget replaces the WHOLE `- [ ]` prefix, so
                             // the list marker can't bleed through beside the
-                            // box. Like every other element it yields to the
-                            // caret: on the task's own line the raw `- [x]` is
-                            // shown and directly editable.
+                            // box.
+                            //
+                            // Unlike the other block markers this uses the SPAN
+                            // rule, not the line rule: the raw `- [x]` comes
+                            // back only when the caret is on or next to the
+                            // marker itself. Writing the task's text is the
+                            // common case, and the checkbox flickering away
+                            // every time you touched the line was noise.
                             if (name === 'TaskMarker') {
                                 const line = doc.lineAt(node.from);
-                                if (!activeLines.has(line.number)) {
-                                    const before = doc.sliceString(line.from, node.from);
-                                    const prefix = before.match(/^(\s*)(?:[-*+]|\d+[.)])\s+$/);
-                                    const replaceFrom = prefix ? line.from + prefix[1].length : node.from;
+                                const before = doc.sliceString(line.from, node.from);
+                                const prefix = before.match(/^(\s*)(?:[-*+]|\d+[.)])\s+$/);
+                                const replaceFrom = prefix ? line.from + prefix[1].length : node.from;
+                                if (!cursorIn(replaceFrom, node.to)) {
                                     const checked = /x/i.test(doc.sliceString(node.from, node.to));
                                     const deco = Decoration.replace({
                                         widget: new CheckboxWidget(checked, node.from, node.to),
