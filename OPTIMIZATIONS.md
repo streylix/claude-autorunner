@@ -739,6 +739,73 @@ still collapsed after a full app restart with the cards intact once reopened.
 `games/.gitignore` (new), `main.js`, `index.html`, `style.css`, `renderer.js`,
 `src/features/VibeBlastManager.js`, `vibe-blast.html`.
 ---
+## 2026-07-31 — Bug fixes: Claude launchable via the control API on macOS, /tmp watcher subsystem deleted, timer-expiry interval leak, double-injection hole closed (branch `perf-startup`)
+
+**1. macOS runtime detection (`src/main/terminal-runtime.js`, fixes `POST /terminal/claude`).**
+Runtime detection read `/proc`, which does not exist on darwin — every terminal
+was `runtime: "unknown"` forever, so `pty-control` refused `POST
+/terminal/claude` unconditionally on macOS (external controllers had to inject
+the shell command as text instead). Darwin now takes ONE `ps -axo
+pid,ppid,command` snapshot (cached 1.5s — the runtime watcher polls every 2.5s
+and `/state` enriches per request) and walks the PTY's child tree from it. The
+claude CLI rewrites its process title so argv[0] is literally `claude`; a
+freshly exec'd one shows the binary path whose basename is `claude` — either
+counts. An injected `procRoot` (tests/Linux) still takes the `/proc` path;
+`liveCwd` stays /proc-only, so the live-directory enrichment remains
+Linux-only. Verified live on macOS: `/state` reports `shell`/`claude`
+correctly, `POST /terminal/claude` returns `{ok:true}`, and the terminal's
+runtime flips to `claude` after launch.
+
+**2. /tmp trigger-file subsystem deleted (`main.js`).**
+Three `fs.watch`-based control channels (addmsg, clear-queue, terminal-status
+via `/tmp/claude-code-*` files) were dead end-to-end: nothing in the repo
+writes those files (the backend's only references are in tests for endpoints
+that no longer exist; the Docker backend has no /tmp mount at all), and the
+renderer never listened for any of the IPC events they sent. The
+terminal-status watcher was also actively harmful: it watched ALL of `/tmp`
+(waking the main process on every unrelated file event on the machine) and
+registered an `ipcMain.once('terminal-status-response')` listener per event
+that could never fire — a permanent listener leak. All three watchers, their
+module state, and their before-quit cleanup are gone. External control lives
+in the HookServer control API.
+
+**3. Timer-expiry interval leak (`src/features/TimerManager.js` + `src/features/timer-expiry-stop.test.js`).**
+When a countdown hit 0, the 100ms tick interval ran FOREVER (10 display
+updates + EventBus emits per second for the life of the process), and expiry
+armed a 500ms "glow" interval that only an explicit Stop cleared. Expiry now
+clears the tick and sets `timerRunning=false` (`timerExpired` stays true, so
+the display keeps its 00:00:00 `.expired` styling and `isRunning()` reports
+false exactly as before — the injection gate behavior is unchanged). The glow
+machinery is deleted outright: the classes it toggled (`glow-pulse`,
+`glowing`) have NO CSS rules — it was visually dead code. New tests cover the
+leak plus the tuned resume semantics: restart-after-expiry via `startTimer`,
+the usage-limit release path (`stopTimer` + `startCountdown`), pause/resume,
+single `timer:expired` emission, and the constructor's no-localStorage
+guarantee. The pre-existing `timer-expiry-resume` gate test still passes.
+
+**4. Injection retry chains + double injection (`src/messaging/MessageQueueManager.js` + `src/messaging/injection-retry-guard.test.js`).**
+The "all target terminals busy" branch spawned an INDEPENDENT unguarded 1s
+`setTimeout` chain per caller — chains stacked forever, each tick emitting a
+log action (a backend POST every 3s for as long as any terminal was busy). Now
+one guarded handle (`_busyRetryTimer`): a single pending retry, ever.
+
+While in there, the DOUBLE-INJECTION question was settled: **yes, the queue
+layer could inject the same message twice.** A message queued without an
+explicit terminal resolves its target at pick time
+(`msg.terminalId || activeTerminalId`). Neither picker checked
+`currentlyInjectingMessages`, so when the active terminal changed while such a
+message was mid-typing (the 150ms text→submit window), the status-change
+picker re-matched the SAME message against the NEW active terminal and typed
+it again — reproduced against the pre-fix code (message typed into terminals
+1 AND 2). Both pickers now skip in-flight messages. Regression tests cover the
+single-retry guard, retry-then-inject on release, the double-injection
+scenario, and a no-over-blocking sanity check.
+
+- Files: `src/main/terminal-runtime.js`, `main.js`,
+  `src/features/TimerManager.js`, `src/messaging/MessageQueueManager.js`,
+  `src/features/timer-expiry-stop.test.js`,
+  `src/messaging/injection-retry-guard.test.js`.
+
 ## 2026-07-31 — Startup: 5.9s → 1.6s perceived; artificial delays and dead boot work removed (branch `perf-startup`)
 
 **Problem (measured).** Instrumented cold starts (3 runs, isolated profile, 3

@@ -36,7 +36,6 @@ class TimerManager {
         
         // UI update configuration
         this.updateInterval = 100; // Update every 100ms for smooth display
-        this.glowingInterval = null;
         
         // Microwave mode
         this.microwaveMode = false;
@@ -176,11 +175,6 @@ class TimerManager {
             this.timerInterval = null;
         }
         
-        if (this.glowingInterval) {
-            clearInterval(this.glowingInterval);
-            this.glowingInterval = null;
-        }
-        
         // Reset state
         this.timerRunning = false;
         this.timerPaused = false;
@@ -268,8 +262,6 @@ class TimerManager {
             }
         }
         
-        // Update glowing effect
-        this.updateGlowingEffect();
         
         // Emit display update event
         this.eventBus.emit('timer:display:updated', {
@@ -411,16 +403,26 @@ class TimerManager {
      */
     async handleTimerExpired() {
         console.log('[TimerManager] Timer expired!');
-        
+
+        // Stop the 100ms tick — the countdown is over. Before this, the
+        // interval ran forever after expiry (10 display updates + EventBus
+        // emits per second for the life of the process). timerExpired stays
+        // true so the display keeps its 00:00:00 + .expired styling, and
+        // isRunning() stays false either way, so the injection gate opens
+        // exactly as before.
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+            this.timerInterval = null;
+        }
+        this.timerRunning = false;
+        this.timerPaused = false;
+
         // Play sound if enabled
         const soundEnabled = this.appStateStore.getState('settings.sound.enabled');
         if (soundEnabled) {
             this.eventBus.emit('sound:play', { type: 'timer-expired' });
         }
-        
-        // Start glowing effect
-        this.startGlowingEffect();
-        
+
         // Emit expiration event
         this.eventBus.emit('timer:expired', {
             timestamp: Date.now()
@@ -436,40 +438,6 @@ class TimerManager {
         }
     }
     
-    /**
-     * Update glowing effect for expired timer
-     * Extracted from renderer.js line 3853
-     */
-    updateGlowingEffect() {
-        const timerDisplay = document.getElementById('timer-display');
-        if (!timerDisplay) return;
-
-        if (this.timerExpired) {
-            timerDisplay.classList.add('glowing');
-        } else {
-            timerDisplay.classList.remove('glowing');
-        }
-    }
-    
-    /**
-     * Start glowing animation
-     */
-    startGlowingEffect() {
-        if (this.glowingInterval) return;
-        
-        let glowState = true;
-        this.glowingInterval = setInterval(() => {
-            const timerDisplay = document.getElementById('timer-display');
-            if (timerDisplay) {
-                if (glowState) {
-                    timerDisplay.classList.add('glow-pulse');
-                } else {
-                    timerDisplay.classList.remove('glow-pulse');
-                }
-                glowState = !glowState;
-            }
-        }, 500);
-    }
     
     // ============= Helper Methods =============
     
@@ -626,11 +594,7 @@ class TimerManager {
      */
     destroy() {
         this.stopTimer();
-        
-        if (this.glowingInterval) {
-            clearInterval(this.glowingInterval);
-        }
-        
+
         // Remove all event subscriptions
         this.eventBus.off('timer:*');
     }

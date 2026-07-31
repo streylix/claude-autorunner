@@ -95,6 +95,7 @@ class MessageQueueManager {
         this.currentlyInjectingMessageId = null;
         this.safetyCheckCount = 0;
         this.currentTypeInterval = null;
+        this._busyRetryTimer = null; // single pending "terminals busy" retry (never stacks)
         
         // Message editing state
         this.editingMessageId = null;
@@ -241,8 +242,14 @@ class MessageQueueManager {
         if (tid == null) return;
         if (this.currentlyInjectingTerminals.has(tid)) return; // already busy on this terminal
 
+        // Exclude messages already mid-injection: a target-less message
+        // resolves (msg.terminalId || activeTerminalId) at pick time, so when
+        // the active terminal changes during the in-flight typing, this picker
+        // used to re-match the SAME message against the new terminal and
+        // double-inject it.
         const message = this.messageQueue.find(
-            msg => (msg.terminalId || this.activeTerminalId) === tid
+            msg => !this.currentlyInjectingMessages.has(msg.id)
+                && (msg.terminalId || this.activeTerminalId) === tid
         );
         if (!message) return;
 
@@ -1144,8 +1151,13 @@ class MessageQueueManager {
         
         // R3 gate (auto path): only pick a message whose target terminal is both
         // free of an in-flight injection AND passes canInjectToTerminal (not
-        // running/prompted, no usage-limit/timer block).
+        // running/prompted, no usage-limit/timer block). Skip messages that are
+        // themselves mid-injection: a target-less message resolves its terminal
+        // at pick time (msg.terminalId || activeTerminalId), so if the active
+        // terminal changes while it is being typed, a concurrent picker used to
+        // resolve the SAME message to the NEW terminal and inject it twice.
         const messageIndex = this.messageQueue.findIndex(msg => {
+            if (this.currentlyInjectingMessages.has(msg.id)) return false;
             const terminalId = msg.terminalId || this.activeTerminalId;
             if (this.currentlyInjectingTerminals.has(terminalId)) return false;
             return this.canInjectToTerminal(terminalId).allowed;
@@ -1159,8 +1171,18 @@ class MessageQueueManager {
                 this.logAction('Injection gated (usage limit / timer) - awaiting release', 'info');
                 return;
             }
+            // Single guarded retry handle. Every entry into this branch used to
+            // spawn an INDEPENDENT unguarded setTimeout chain — chains stacked
+            // (two callers ⇒ two permanent 1Hz loops), each tick logging an
+            // action (→ a backend POST every 3s, forever, while any terminal
+            // was busy). One pending retry is all a "wait for a terminal to
+            // free up" loop needs.
+            if (this._busyRetryTimer) return;
             this.logAction('All target terminals busy or not idle - waiting...', 'info');
-            setTimeout(() => this.injectMessageAndContinueQueue(), 1000);
+            this._busyRetryTimer = setTimeout(() => {
+                this._busyRetryTimer = null;
+                this.injectMessageAndContinueQueue();
+            }, 1000);
             return;
         }
         

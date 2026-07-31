@@ -982,11 +982,6 @@ app.on('activate', () => {
 
 // Terminal state functionality removed - terminals now created fresh on each startup
 
-// Global file watcher variables for cleanup
-let syncTriggerWatcher = null;
-let clearTriggerWatcher = null;
-let terminalStatusWatcher = null;
-
 function setupIpcHandlers() {
   // ---- Games library (games/) ----
   // Started lazily on the first list call rather than at boot: an app whose
@@ -1562,172 +1557,16 @@ function setupIpcHandlers() {
     }
   });
 
-  // Set up file watcher for addmsg sync triggers
-  const syncTriggerPath = '/tmp/claude-code-addmsg-trigger';
-  
-  // Set up file watcher for clear queue triggers
-  const clearTriggerPath = '/tmp/claude-code-clear-trigger';
-  
-  const setupSyncWatcher = () => {
-    try {
-      // Create the trigger file if it doesn't exist
-      const fs_sync = require('fs');
-      if (!fs_sync.existsSync(syncTriggerPath)) {
-        fs_sync.writeFileSync(syncTriggerPath, 'init');
-      }
-      
-      // Watch for changes to the sync trigger file
-      syncTriggerWatcher = fs_sync.watch(syncTriggerPath, (eventType, filename) => {
-        console.log('[Main] File watcher triggered - Event:', eventType, 'File:', filename);
-        if ((eventType === 'change' || eventType === 'rename') && mainWindow && !mainWindow.isDestroyed()) {
-          try {
-            // Read the trigger file to get message content
-            const triggerContent = fs_sync.readFileSync(syncTriggerPath, 'utf8').trim();
-            console.log('[Main] Addmsg trigger content:', triggerContent);
-            
-            // Parse trigger content: timestamp:addmsg:content:terminal_id
-            const parts = triggerContent.split(':');
-            if (parts.length >= 3 && parts[1] === 'addmsg') {
-              const content = parts.slice(2, -1).join(':'); // Rejoin in case content had colons
-              const terminalId = parts[parts.length - 1];
-              
-              console.log('[Main] Sending message to frontend:', { content, terminalId });
-              mainWindow.webContents.send('addmsg-message', { content, terminalId });
-            } else {
-              // Fallback to old behavior
-              console.log('[Main] Using fallback sync trigger');
-              mainWindow.webContents.send('addmsg-sync-trigger');
-            }
-          } catch (error) {
-            console.log('[Main] Error reading trigger file:', error.message);
-            // Fallback to old behavior
-            mainWindow.webContents.send('addmsg-sync-trigger');
-          }
-        }
-      });
-      
-      syncTriggerWatcher.on('error', (error) => {
-        console.log('[Main] Sync trigger watcher error:', error.message);
-        // Try to recreate the watcher after a short delay
-        setTimeout(setupSyncWatcher, 1000);
-      });
-      
-      console.log('[Main] Addmsg sync trigger watcher started');
-    } catch (error) {
-      console.log('[Main] Could not start sync trigger watcher:', error.message);
-      // Try again after a delay
-      setTimeout(setupSyncWatcher, 5000);
-    }
-  };
-  
-  setupSyncWatcher();
-  
-  // Set up clear queue trigger watcher
-  const setupClearWatcher = () => {
-    try {
-      // Create the clear trigger file if it doesn't exist
-      const fs_sync = require('fs');
-      if (!fs_sync.existsSync(clearTriggerPath)) {
-        fs_sync.writeFileSync(clearTriggerPath, 'init');
-      }
-      
-      // Watch for changes to the clear trigger file
-      clearTriggerWatcher = fs_sync.watch(clearTriggerPath, (eventType, filename) => {
-        console.log('[Main] Clear trigger watcher activated - Event:', eventType, 'File:', filename);
-        if ((eventType === 'change' || eventType === 'rename') && mainWindow && !mainWindow.isDestroyed()) {
-          try {
-            // Read the trigger file to get any additional context
-            const triggerContent = fs_sync.readFileSync(clearTriggerPath, 'utf8').trim();
-            console.log('[Main] Clear trigger content:', triggerContent);
-            
-            // Send clear-queue IPC event to renderer
-            console.log('[Main] Sending clear-queue event to frontend');
-            mainWindow.webContents.send('clear-queue', { source: 'backend' });
-          } catch (error) {
-            console.log('[Main] Error reading clear trigger file:', error.message);
-            // Still send the clear event even if reading fails
-            mainWindow.webContents.send('clear-queue', { source: 'backend' });
-          }
-        }
-      });
-      
-      clearTriggerWatcher.on('error', (error) => {
-        console.log('[Main] Clear trigger watcher error:', error.message);
-        // Try to recreate the watcher after a short delay
-        setTimeout(setupClearWatcher, 1000);
-      });
-      
-      console.log('[Main] Clear queue trigger watcher started');
-    } catch (error) {
-      console.log('[Main] Could not start clear trigger watcher:', error.message);
-      // Try again after a delay
-      setTimeout(setupClearWatcher, 5000);
-    }
-  };
-  
-  setupClearWatcher();
-  
-  // Set up file watcher for terminal status requests
-  const terminalStatusTriggerPath = '/tmp/claude-code-terminal-status-trigger';
-  const terminalStatusResponsePath = '/tmp/claude-code-terminal-status-response';
-  
-  const setupTerminalStatusWatcher = () => {
-    try {
-      const fs_sync = require('fs');
-      
-      // Watch for terminal status request trigger
-      if (fs_sync.existsSync(terminalStatusTriggerPath)) {
-        fs_sync.unlinkSync(terminalStatusTriggerPath);
-      }
-      
-      // Create a watcher for the directory instead of the file
-      const triggerDir = path.dirname(terminalStatusTriggerPath);
-      terminalStatusWatcher = fs_sync.watch(triggerDir, (eventType, filename) => {
-        if (filename === 'claude-code-terminal-status-trigger' && mainWindow && !mainWindow.isDestroyed()) {
-          console.log('[Main] Terminal status request detected');
-          
-          // Request terminal status from renderer
-          mainWindow.webContents.send('request-terminal-status');
-          
-          // Set up a one-time listener for the response
-          ipcMain.once('terminal-status-response', (event, terminalData) => {
-            console.log('[Main] Received terminal status from renderer:', terminalData);
-            
-            // Add process information to each terminal
-            if (terminalData.terminals) {
-              for (const [termId, termInfo] of Object.entries(terminalData.terminals)) {
-                const ptyProc = ptyProcesses.get(parseInt(termId));
-                if (ptyProc) {
-                  termInfo.has_process = true;
-                  termInfo.pid = ptyProc.pid || null;
-                } else {
-                  termInfo.has_process = false;
-                  termInfo.pid = null;
-                }
-              }
-            }
-            
-            // Write response to file for backend to read
-            try {
-              fs_sync.writeFileSync(terminalStatusResponsePath, JSON.stringify(terminalData));
-              console.log('[Main] Wrote terminal status response to file');
-            } catch (error) {
-              console.error('[Main] Error writing terminal status response:', error);
-            }
-          });
-        }
-      });
-      
-      console.log('[Main] Terminal status watcher started');
-    } catch (error) {
-      console.log('[Main] Could not start terminal status watcher:', error.message);
-      setTimeout(setupTerminalStatusWatcher, 5000);
-    }
-  };
-  
-  setupTerminalStatusWatcher();
-  
-  // Note: Trigger watchers cleanup moved to main before-quit handler
+  // The /tmp trigger-file subsystem (addmsg / clear-queue / terminal-status
+  // watchers) was removed: nothing anywhere writes those trigger files (the
+  // backend's only reference was in tests for endpoints that no longer
+  // exist, and the Docker backend has no /tmp mount at all), and the
+  // renderer never listened for the IPC events they sent. The
+  // terminal-status watcher was also actively harmful: it fs.watch()ed ALL
+  // of /tmp (waking the main loop on every unrelated file event on the
+  // machine) and registered an ipcMain.once('terminal-status-response')
+  // listener per trigger that could never fire — a permanent listener leak.
+  // External control lives in the HookServer control API now.
 
   // Get file information
   ipcMain.handle('get-file-info', async (event, filePath) => {
@@ -2240,20 +2079,6 @@ app.on('before-quit', async (event) => {
   event.preventDefault();
   
   try {
-    // Clean up file watchers first
-    if (syncTriggerWatcher) {
-      syncTriggerWatcher.close();
-      syncTriggerWatcher = null;
-    }
-    if (clearTriggerWatcher) {
-      clearTriggerWatcher.close();
-      clearTriggerWatcher = null;
-    }
-    if (terminalStatusWatcher) {
-      terminalStatusWatcher.close();
-      terminalStatusWatcher = null;
-    }
-    
     // Proper cleanup of all terminal processes
     await cleanupPtyProcesses();
 
