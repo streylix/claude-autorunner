@@ -173,6 +173,14 @@ body{
 .shell{
   width:100%; max-width:520px; padding:14px 16px calc(14px + env(safe-area-inset-bottom));
   display:flex; flex-direction:column; gap:14px; flex:1;
+  /* Centre the board group vertically instead of letting it hang from the top.
+     The panel is much taller than the game once the games shelf is collapsed,
+     and the slack all pooling at the bottom read as misaligned.
+     `safe center` keeps the top edge reachable if the content ever outgrows the
+     viewport — plain `center` would clip it into unscrollable overflow. The
+     unprefixed value first so a browser without `safe` still centres. */
+  justify-content:center;
+  justify-content:safe center;
 }
 
 /* ---------- header ---------- */
