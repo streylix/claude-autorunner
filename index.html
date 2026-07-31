@@ -383,9 +383,13 @@
                     </div>
                     <!-- Game library rail. Populated by GamesManager from the
                          games/ folder; Vibe Blast is always the first card. -->
-                    <div class="games-shelf">
+                    <div class="games-shelf" id="games-shelf">
                         <div class="games-shelf-head">
-                            <span class="games-shelf-title">Games</span>
+                            <button type="button" class="games-flap" id="games-flap" aria-expanded="true" aria-controls="games-rail" title="Collapse the games shelf" data-test-id="games-flap">
+                                <span class="games-flap-grip"></span>
+                                <span class="games-shelf-title">Games</span>
+                                <i class="games-flap-chevron" data-lucide="chevron-down"></i>
+                            </button>
                             <button type="button" class="games-folder-btn" id="games-folder-btn" title="Open the games folder" data-test-id="games-folder-btn">
                                 <i data-lucide="folder-open"></i>
                             </button>

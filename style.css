@@ -5106,16 +5106,66 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .games-shelf-head {
     display: flex;
-    align-items: center;
+    align-items: stretch;
     justify-content: space-between;
     padding: 0 12px 7px;
+    gap: 6px;
+}
+
+/* The flap. Same grip-bar language as .vibe-flap at the top of the panel, so
+   the panel reads as two pull-tabs: one back to the queue, one for the shelf. */
+.games-flap {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    transition: color 0.15s ease;
+}
+
+.games-flap:hover {
+    color: var(--text-primary);
+}
+
+.games-flap:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+.games-flap-grip {
+    width: 26px;
+    height: 3px;
+    border-radius: 99px;
+    background: var(--border-secondary);
+    transition: background-color 0.2s, width 0.2s;
+}
+
+.games-flap:hover .games-flap-grip {
+    background: var(--accent-primary);
+    width: 34px;
+}
+
+.games-flap-chevron {
+    width: 13px;
+    height: 13px;
+    margin-left: auto;
+    transition: transform 0.25s ease;
+}
+
+.games-shelf.collapsed .games-flap-chevron {
+    transform: rotate(-90deg);
 }
 
 .games-shelf-title {
     font-size: 10px;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: var(--text-tertiary);
+    color: inherit;
 }
 
 .games-folder-btn {
@@ -5146,6 +5196,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     display: flex;
     gap: 10px;
     padding: 2px 12px 4px;
+    max-height: 220px;
+    transition: max-height 0.25s ease, opacity 0.2s ease,
+                padding-top 0.25s ease, padding-bottom 0.25s ease;
     overflow-x: auto;
     overflow-y: hidden;
     scroll-snap-type: x proximity;
@@ -5302,4 +5355,25 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     font-size: 10px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
+}
+
+/* Collapsed shelf: the rail folds away and the stage takes the space, but the
+   flap stays put so it can be pulled back open. */
+.games-shelf.collapsed .games-rail {
+    max-height: 0;
+    opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+}
+
+.games-shelf.collapsed {
+    padding-bottom: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .games-rail,
+    .games-flap-chevron {
+        transition-duration: 1ms;
+    }
 }
