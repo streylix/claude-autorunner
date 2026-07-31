@@ -5105,10 +5105,14 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .games-shelf-head {
+    position: relative;
     display: flex;
     align-items: stretch;
     justify-content: space-between;
-    padding: 0 12px 7px;
+    /* No bottom padding: the grip is centred against this element's padding
+       box, so any padding here would push it off the label's optical centre.
+       The gap below the head lives on the rail's padding-top instead. */
+    padding: 0 12px;
     gap: 6px;
 }
 
@@ -5118,7 +5122,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     flex: 1 1 auto;
     display: flex;
     align-items: center;
-    gap: 8px;
+    /* Label sits left; the grip is centred against the whole bar (below), not
+       against this button, so the folder icon on the right can't push it off
+       centre. */
+    justify-content: flex-start;
     padding: 3px 0;
     border: none;
     background: none;
@@ -5137,8 +5144,14 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     border-radius: 4px;
 }
 
+/* Absolute, so it centres on .games-shelf-head (the nearest positioned
+   ancestor) rather than on the flap button's own content box. */
 .games-flap-grip {
-    width: 26px;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 34px;
     height: 3px;
     border-radius: 99px;
     background: var(--border-secondary);
@@ -5147,18 +5160,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .games-flap:hover .games-flap-grip {
     background: var(--accent-primary);
-    width: 34px;
-}
-
-.games-flap-chevron {
-    width: 13px;
-    height: 13px;
-    margin-left: auto;
-    transition: transform 0.25s ease;
-}
-
-.games-shelf.collapsed .games-flap-chevron {
-    transform: rotate(-90deg);
+    width: 46px;
 }
 
 .games-shelf-title {
@@ -5195,7 +5197,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .games-rail {
     display: flex;
     gap: 10px;
-    padding: 2px 12px 4px;
+    /* The 7px top absorbs the spacing the head used to carry. */
+    padding: 7px 12px 4px;
     max-height: 220px;
     transition: max-height 0.25s ease, opacity 0.2s ease,
                 padding-top 0.25s ease, padding-bottom 0.25s ease;
@@ -5378,28 +5381,18 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .games-shelf.collapsed .games-shelf-title,
-.games-shelf.collapsed .games-flap-chevron,
 .games-shelf.collapsed .games-folder-btn {
     display: none;
 }
 
-/* The grip becomes the entire control: a centred tab spanning the bar. */
+/* The grip is already centred on the bar; collapsing just leaves it alone. */
 .games-shelf.collapsed .games-flap {
-    justify-content: center;
     padding: 5px 0 6px;
-}
-
-.games-shelf.collapsed .games-flap-grip {
-    width: 34px;
-}
-
-.games-shelf.collapsed .games-flap:hover .games-flap-grip {
-    width: 46px;
 }
 
 @media (prefers-reduced-motion: reduce) {
     .games-rail,
-    .games-flap-chevron {
+    .games-flap-grip {
         transition-duration: 1ms;
     }
 }

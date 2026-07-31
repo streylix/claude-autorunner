@@ -43,6 +43,12 @@ the Vibe Blast board.
   iframe holds focus. The frame takes `tabindex=0` and is focused on panel open, on
   card select, and on any click on the stage; a "click to play" pill appears whenever
   focus has drifted, so keypresses are never silently swallowed.
+- *Shelf head layout.* "GAMES" sits left, the folder button right, and the grip is
+  absolutely centred against the head so the folder icon can't pull it off centre.
+  The head carries no bottom padding (the gap lives on the rail's padding-top
+  instead), because the grip centres on the head's padding box and any padding there
+  would drop it below the label's optical centre. No chevron — the grip is the
+  affordance.
 - *The shelf collapses to nothing but its flap.* Collapsing folds away the rail AND
   the label, chevron and folder button, leaving only a centred grip tab — the whole
   bottom bar goes from 178px to 15px, so the stage gets essentially the entire panel
