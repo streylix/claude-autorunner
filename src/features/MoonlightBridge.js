@@ -80,6 +80,19 @@ class MoonlightBridge {
             event: payload && payload.event,
             payload,
         }));
+
+        // The card cannot see the panel open or close: closing only marks the
+        // panel inert and slides it away, so the iframe stays mounted and gets
+        // no event of its own. It needs to know, because a hidden card must not
+        // still be claiming the keyboard.
+        if (this.eventBus) {
+            this.eventBus.on('games:panel-closed', () => this.post({
+                source: 'moonlight-host', op: 'panel', visible: false,
+            }));
+            this.eventBus.on('games:panel-opened', () => this.post({
+                source: 'moonlight-host', op: 'panel', visible: true,
+            }));
+        }
     }
 
     dispose() {

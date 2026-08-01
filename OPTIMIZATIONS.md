@@ -4916,3 +4916,42 @@ operator remembering to do it by hand.
   restart also restarts the manager.
 - Files: `src/features/ManagerInstance.js`,
   `src/features/ManagerInstance.nightlyClear.test.js` (new).
+## Moonlight card: the keyboard only goes to the game when you ask for it
+
+- Problem: starting a stream made the whole app impossible to type in. The card
+  grabbed focus the moment the first video frame arrived, and its key handler
+  calls `preventDefault()` on every key it recognises — so the terminals and the
+  message box silently stopped receiving anything. It persisted after closing
+  the games panel, because the handler only checked whether a stream was
+  running, not whether the card was even on screen.
+- Why it was missed: the keyboard had been "verified" with synthetic
+  `dispatchEvent` and by calling the send path directly. Both bypass focus
+  entirely, so they proved the wire format and nothing about whether a real
+  keystroke ever arrives. Every check below was done by actually typing.
+- Fix: an explicit `streamKeyboardActive` flag, false by default and never set
+  by the app itself. Only a pointerdown on the video turns it on. It goes off
+  when focus leaves the card, when the panel closes (the bridge forwards
+  `games:panel-closed`, since a closed panel only goes `inert` and the iframe
+  never hears about it), when the stream stops, and on Cmd/Ctrl+Escape. The key
+  handler returns early unless the flag is set AND the panel is visible AND a
+  stream is running — otherwise the event is not touched at all, so the rest of
+  the app behaves as though the card did not exist.
+- One subtlety worth keeping: the click handler calls `preventDefault()`, which
+  also suppresses the browser's focus move. Focus is therefore taken explicitly
+  in the pointerdown handler. Without that, whether keys reached the game
+  depended on whatever else had happened to focus the frame — it worked
+  intermittently, which is worse than never working.
+- Also removed: pointer lock, which could never have worked here. A `file://`
+  document inside a `file://` root has an opaque origin and Chromium refuses it
+  with "WrongDocumentError: The root document of this element is not valid for
+  pointer lock." That is also why Escape used to yank the mouse — the browser
+  steals Escape only to break out of a lock. With no lock, Escape reaches the
+  game like any other key, which is what a game menu needs. The cost is
+  relative-motion aim; the "Capture the mouse" setting is disabled rather than
+  removed so it does not read as a toggle that does nothing.
+- Verified by typing, not by inspection: stream running but unclicked → app
+  typing normal; click the picture → W/arrows/Enter/Escape reach the game;
+  click back to the app mid-stream → typing returns; close the panel mid-stream
+  → typing works everywhere; stop and reopen → no focus theft. Run twice for
+  flakiness. Unit suites (pairing, Reed-Solomon, audio FEC) still pass.
+- Files: `moonlight.html`, `src/features/MoonlightBridge.js`.

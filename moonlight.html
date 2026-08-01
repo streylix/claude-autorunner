@@ -600,7 +600,7 @@ body.thumb .poster{display:flex;}
         <label class="check"><input type="checkbox" id="hdr"> HDR</label>
         <label class="check"><input type="checkbox" id="vsync"> V-sync</label>
         <label class="check"><input type="checkbox" id="fullscreen"> Allow full screen <span style="color:var(--text-tertiary)">— use the ⛶ button while streaming</span></label>
-        <label class="check"><input type="checkbox" id="mouseCapture"> Capture the mouse <span style="color:var(--text-tertiary)" id="capture-hint"></span></label>
+        <label class="check"><input type="checkbox" id="mouseCapture" disabled> Capture the mouse <span style="color:var(--text-tertiary)">— unavailable in the panel</span></label>
         <label class="check"><input type="checkbox" id="playAudioOnHost"> Also play audio on the host</label>
         <label class="check"><input type="checkbox" id="optimizeGameSettings"> Let the host adjust game settings</label>
       </div>
@@ -736,6 +736,12 @@ window.addEventListener("message", (e) => {
   if (m.source !== "moonlight-host") return;
 
   if (m.op === "welcome"){ token = m.token; onWelcome(); return; }
+  if (m.op === "panel"){
+    panelVisible = !!m.visible;
+    // A hidden card has no business holding the keyboard.
+    if (!panelVisible) setStreamKeyboard(false);
+    return;
+  }
 
   // A push (pairing progress, scan lifecycle) rather than a reply.
   if (!m.id){ onHostEvent(m.payload || {}); return; }
@@ -1441,6 +1447,31 @@ function stopGamepads(){
    stays WASD on a French keyboard and does not become ZQSD.
    ------------------------------------------------------------------------ */
 
+/**
+ * Whether keystrokes belong to the stream.
+ *
+ * FALSE by default and never set true on its own. Nothing about a stream
+ * starting, a frame arriving, or the panel opening implies you want to type at
+ * the game rather than at your terminals — only clicking the picture does.
+ *
+ * The previous attempt focused the card as soon as video appeared, and since
+ * the key handler calls preventDefault() on everything it recognises, starting
+ * a stream silently stopped the terminals and the message box from receiving
+ * anything. Hence: explicit intent in, explicit intent out.
+ */
+let streamKeyboardActive = false;
+let panelVisible = true;
+
+function setStreamKeyboard(on){
+  streamKeyboardActive = !!on;
+  const hint = document.getElementById("stage-hint");
+  if (hint){
+    hint.textContent = streamKeyboardActive
+      ? `keyboard goes to the game — ${RELEASE_CHORD} or click away to stop`
+      : "click the picture to type into the game";
+  }
+}
+
 const VK = {
   Backspace:0x08, Tab:0x09, Enter:0x0D, Escape:0x1B, Space:0x20,
   PageUp:0x21, PageDown:0x22, End:0x23, Home:0x24,
@@ -1459,14 +1490,12 @@ for (let i = 0; i < 10; i++) VK["Digit" + i] = 0x30 + i;
 for (let i = 0; i < 10; i++) VK["Numpad" + i] = 0x60 + i;
 for (let i = 1; i <= 12; i++) VK["F" + i] = 0x6F + i;
 
-// The chord that hands the cursor back: Cmd+Escape on a Mac, Ctrl+Escape
-// elsewhere.
-//
-// Escape is the right key for this despite also being a key games want, because
-// the browser already treats it as an unconditional way out of pointer lock and
-// no page can override that outside full screen. Since the capture is going to
-// drop on Escape regardless, binding the release to Escape-with-a-modifier
-// costs nothing — whereas an unrelated chord left the two fighting.
+// Pointer lock is not used and cannot be: this card is a file:// document
+// inside a file:// root, and Chromium refuses pointer lock for opaque origins
+// ("WrongDocumentError: The root document of this element is not valid for
+// pointer lock"). The mouse therefore stays yours, which suits the panel — and
+// means Escape reaches the game normally, since the browser only steals Escape
+// to break out of a lock. The cost is relative-motion aim.
 const RELEASE_KEY = "Escape";
 const IS_MAC = navigator.platform.startsWith("Mac");
 const RELEASE_CHORD = IS_MAC ? "⌘Esc" : "Ctrl+Esc";
@@ -1487,14 +1516,6 @@ function modifiersOf(e){
  * send those now or the game is left believing Ctrl, Alt and Shift are stuck
  * down — which in most games means crouched, walking and menu-modified.
  */
-function releasePointer(){
-  for (const keyCode of [0x11, 0x12, 0x10, 0x51]){   // Ctrl, Alt, Shift, Q
-    sendInput({ type: "keyup", keyCode, modifiers: 0 });
-  }
-  if (document.pointerLockElement) document.exitPointerLock();
-  toast(`Pointer released — click the picture to capture it again`);
-}
-
 function sendInput(event){
   const ws = stream.ws;
   if (!ws || ws.readyState !== 1) return;
@@ -1524,21 +1545,27 @@ function bindInput(){
 
   c.addEventListener("mousemove", (e) => {
     if (!document.body.classList.contains("streaming")) return;
-    if (document.pointerLockElement === c){
-      // Captured: the host wants deltas and moves its own cursor.
-      sendInput({ type: "mousemove", dx: e.movementX, dy: e.movementY });
-    }else{
-      const p = toVideoCoords(e);
-      if (p) sendInput({ type: "mouseposition", x: p.x, y: p.y });
-    }
+    const p = toVideoCoords(e);
+    if (p) sendInput({ type: "mouseposition", x: p.x, y: p.y });
+  });
+
+  // The one thing that hands the keyboard to the game.
+  //
+  // Focus has to be taken explicitly here: the mousedown handler below calls
+  // preventDefault() to stop text selection and to forward the button, and that
+  // also suppresses the browser's own focus move. Without this the card's key
+  // listeners only fire when something else happened to focus the frame, which
+  // made the keyboard work or not depending on timing.
+  //
+  // This is still user intent — it is a click on the picture, not something the
+  // card does to itself when a frame arrives.
+  c.addEventListener("pointerdown", () => {
+    setStreamKeyboard(true);
+    try { window.focus(); c.focus(); } catch (_) { /* refused; click again */ }
   });
 
   c.addEventListener("mousedown", (e) => {
     e.preventDefault();
-    // Capture on click only when the user asked for it in settings.
-    if (state.settings && currentValues().mouseCapture && document.pointerLockElement !== c){
-      c.requestPointerLock().catch(() => { /* denied; absolute mode still works */ });
-    }
     sendInput({ type: "mousedown", button: MOUSE_BUTTON[e.button] || 1 });
   });
   c.addEventListener("mouseup", (e) => {
@@ -1551,43 +1578,30 @@ function bindInput(){
 
   // Keep the on-screen hint honest about whether the pointer is captured, and
   // try to keep Escape for the game while it is.
-  document.addEventListener("pointerlockchange", () => {
-    const hint = document.getElementById("stage-hint");
-    const locked = !!document.pointerLockElement;
-    if (hint) hint.textContent = locked ? `${RELEASE_CHORD} to release the pointer` : "";
-
-    // The browser treats Escape as an unconditional way out of pointer lock and
-    // a page cannot override that — which is a problem when Escape is also the
-    // pause button of whatever is being streamed. Keyboard Lock is the one
-    // sanctioned exception, but it only applies in full screen, so in the
-    // sidebar Escape still drops the capture and the game has to be re-clicked.
-    if (!navigator.keyboard || !navigator.keyboard.lock) return;
-    if (locked && document.fullscreenElement){
-      navigator.keyboard.lock(["Escape"]).catch(() => { /* not permitted here */ });
-    }else{
-      try { navigator.keyboard.unlock(); } catch (_) { /* not supported */ }
-    }
-  });
-
   c.addEventListener("wheel", (e) => {
     e.preventDefault();
     sendInput({ type: "scroll", dy: -Math.sign(e.deltaY) * 120, dx: Math.sign(e.deltaX) * 120 });
   }, { passive: false });
 
+  // Focus leaving this frame means a click landed somewhere else in the app —
+  // a terminal, the rail, the message box. The card must stop claiming keys.
+  window.addEventListener("blur", () => setStreamKeyboard(false));
+
   // Keys are taken at the document level: the canvas cannot hold focus while
   // the pointer is locked, and a game expects keys either way.
   const onKey = (down) => (e) => {
+    // Three conditions, all required. Any one of them false and the event is
+    // left completely alone — not inspected, not preventDefault()ed — so the
+    // rest of the app behaves exactly as if this card did not exist.
+    if (!streamKeyboardActive) return;
+    if (!panelVisible) return;
     if (!document.body.classList.contains("streaming")) return;
 
-    // Cmd+Escape (Ctrl+Escape off a Mac) releases the pointer without touching
-    // the session — the stream keeps running, you just get the cursor back for
-    // the terminals.
-    //
-    // PLAIN Escape is still forwarded to the host: games lean on it for menus
-    // and pausing, and swallowing it made the stream feel broken.
+    // Cmd+Escape (Ctrl+Escape off a Mac) hands the keyboard back without
+    // touching the session — a way out that does not need the mouse.
     if (down && e.code === RELEASE_KEY && (IS_MAC ? e.metaKey : e.ctrlKey)){
       e.preventDefault();
-      releasePointer();
+      setStreamKeyboard(false);
       return;
     }
 
@@ -1601,8 +1615,8 @@ function bindInput(){
 }
 
 function closeStream(){
+  setStreamKeyboard(false);
   clearTimeout(stream.watchdog);
-  if (document.pointerLockElement) document.exitPointerLock();
   stopGamepads();
   closeAudio();
   if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
@@ -1861,8 +1875,6 @@ async function resetSettings(){
    ======================================================================== */
 
 function bind(){
-  const captureHint = $("capture-hint");
-  if (captureHint) captureHint.textContent = `— ${RELEASE_CHORD} to release`;
 
   $("add").addEventListener("click", addHost);
   $("address").addEventListener("keydown", (e) => { if (e.key === "Enter") addHost(); });
