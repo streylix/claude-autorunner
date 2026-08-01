@@ -4955,3 +4955,25 @@ operator remembering to do it by hand.
   → typing works everywhere; stop and reopen → no focus theft. Run twice for
   flakiness. Unit suites (pairing, Reed-Solomon, audio FEC) still pass.
 - Files: `moonlight.html`, `src/features/MoonlightBridge.js`.
+
+## Moonlight card: removed
+
+- Removed at the user's request after the input model proved unworkable in the
+  panel. The streaming itself was fine — H.264 video, Opus audio, mouse, and
+  FEC recovery all worked against a real Sunshine host — but keyboard handling
+  never became something you could live with alongside the terminals.
+- The root difficulty, for anyone tempted to try again: the card is a `file://`
+  document inside a `file://` root. That opaque origin means Chromium refuses
+  pointer lock outright ("WrongDocumentError: The root document of this element
+  is not valid for pointer lock"), so the mouse can never be captured, and key
+  routing has to be arbitrated by hand between the card and the app. Every
+  attempt at that arbitration either swallowed the app's keystrokes or failed to
+  deliver the game's. Serving the card from a real origin (http://localhost)
+  rather than file:// would remove the constraint and is where a second attempt
+  should start.
+- The sections above describing the card are kept as a record of what was built
+  and what was learned; none of that code is in the tree any more.
+- Files removed: `moonlight.html`, `src/main/moonlight/` (13 modules),
+  `src/features/MoonlightBridge.js`, `tests/unit/moonlight-*.test.js`, plus the
+  wiring in `main.js`, `renderer.js`, `src/features/GamesManager.js` and the
+  `.gitignore` carve-out.

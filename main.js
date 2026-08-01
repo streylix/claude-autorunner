@@ -19,8 +19,6 @@ const { handlePtyControl } = require('./src/main/pty-control');
 const { runCcusage } = require('./src/main/ccusage');
 const { writeSessionFile, removeSessionFile, writeAppRootFile } = require('./src/main/session-file');
 const GamesLibrary = require('./src/main/games-library');
-const MoonlightService = require('./src/main/moonlight');
-const { registerMoonlightIpc } = require('./src/main/moonlight');
 const { setupBrowserGame, guardWebviewAttach } = require('./src/main/browser-game');
 const RemoteServer = require('./src/main/RemoteServer');
 const RemoteClient = require('./src/main/remote-client');
@@ -30,7 +28,6 @@ const { BACKEND_URL } = require('./src/utils/backend-url');
 let mainWindow;
 let hookServer = null;
 let gamesLibrary = null;
-let moonlightService = null;
 let remoteServer = null;
 let remoteClient = null; // outbound Remote-SSH-style client (bottom-left indicator)
 let ttsRemoteForwarder = null; // pushes TTS audio to attached remote viewers (REMOTE_MODE.md §9)
@@ -1024,12 +1021,6 @@ function setupIpcHandlers() {
       return [];
     }
   });
-
-  // ---- Moonlight (the game-streaming card) ----
-  // Registered eagerly: the constructor only computes paths, and the client
-  // certificate is not generated until something actually contacts a host.
-  moonlightService = new MoonlightService(app.getPath('userData'), broadcastToRenderers);
-  registerMoonlightIpc(ipcMain, moonlightService);
 
   // ---- Browser (the card that shows the open web) ----
   // Session policy for the <webview> the card puts on the stage: its own

@@ -39,21 +39,9 @@ const BUILT_IN = {
     builtIn: true,
 };
 
-// Moonlight is a card like any other, but unlike a game in `games/` it is half
-// main-process code (src/main/moonlight/), so it is tracked source and lives at
-// the app root next to Vibe Blast rather than in the gitignored library.
-const MOONLIGHT = {
-    id: 'moonlight.html',
-    url: 'moonlight.html',
-    title: 'Moonlight',
-    description: 'Stream games from your PC.',
-    mtime: 0,
-    builtIn: true,
-};
-
-// Same deal as Moonlight: half of the Browser card is main-process and renderer
-// code (src/main/browser-game.js, src/features/BrowserBridge.js), so the card
-// itself is tracked source at the app root rather than a file in games/.
+// The Browser card is half main-process and renderer code
+// (src/main/browser-game.js, src/features/BrowserBridge.js), so the card itself
+// is tracked source at the app root rather than a file in games/.
 const BROWSER = {
     id: 'browser.html',
     url: 'browser.html',
@@ -63,7 +51,7 @@ const BROWSER = {
     builtIn: true,
 };
 
-const BUILT_INS = [BUILT_IN, MOONLIGHT, BROWSER];
+const BUILT_INS = [BUILT_IN, BROWSER];
 
 class GamesManager {
     constructor(eventBus, appStateStore, ipcHandler, vibeBlastManager) {
@@ -313,7 +301,7 @@ class GamesManager {
      *
      * A card whose thumbnail URL is byte-identical to its stage URL cannot tell
      * the two apart, and a game that behaves differently in miniature — the
-     * Moonlight card renders a poster rather than running its live UI — would
+     * Browser card shows a placeholder rather than loading live tabs — would
      * run for real inside the rail. Built-ins are exactly that case, since they
      * carry no mtime.
      */

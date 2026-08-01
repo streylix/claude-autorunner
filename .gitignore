@@ -384,18 +384,6 @@ tests/fixtures/*
 !tests/fixtures/hey-claude-16k.wav
 !tests/fixtures/command-16k.wav
 
-# Same carve-out for the Moonlight unit tests. These cover the pairing
-# handshake and the Reed-Solomon recovery used by the video and audio streams —
-# places where a mistake returns confident garbage rather than failing, so
-# losing them to the blanket tests/ ignore would leave nothing to catch a wrong
-# Cauchy matrix or an off-by-one in the audio block index.
-# Run: node tests/unit/moonlight-reedsolomon.test.js
-!tests/unit/
-tests/unit/*
-!tests/unit/moonlight-pairing.test.js
-!tests/unit/moonlight-reedsolomon.test.js
-!tests/unit/moonlight-audio-fec.test.js
-
 # Scratch output of the e2e harnesses (screenshots, transcripts, isolated configs)
 .e2e-remote-client/
 .e2e-remote-tts/
