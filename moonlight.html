@@ -600,7 +600,7 @@ body.thumb .poster{display:flex;}
         <label class="check"><input type="checkbox" id="hdr"> HDR</label>
         <label class="check"><input type="checkbox" id="vsync"> V-sync</label>
         <label class="check"><input type="checkbox" id="fullscreen"> Allow full screen <span style="color:var(--text-tertiary)">— use the ⛶ button while streaming</span></label>
-        <label class="check"><input type="checkbox" id="mouseCapture" disabled> Capture the mouse <span style="color:var(--text-tertiary)">— unavailable in the panel</span></label>
+        <label class="check"><input type="checkbox" id="mouseCapture"> Capture the mouse <span style="color:var(--text-tertiary)" id="capture-hint"></span></label>
         <label class="check"><input type="checkbox" id="playAudioOnHost"> Also play audio on the host</label>
         <label class="check"><input type="checkbox" id="optimizeGameSettings"> Let the host adjust game settings</label>
       </div>
@@ -623,7 +623,7 @@ body.thumb .poster{display:flex;}
 
 <div class="stage" id="stage">
   <div style="position:relative;flex:1 1 auto;min-height:0;display:flex">
-    <canvas id="screen" tabindex="0"></canvas>
+    <canvas id="screen"></canvas>
     <div class="stage-status" id="stage-status">
       <span class="spin"></span>
       <span id="stage-stage">Starting…</span>
@@ -1179,7 +1179,6 @@ function setupDecoder(config){
       stream.frames++;
       if (stream.frames === 1){
         $("stage-status").classList.add("hidden");
-        focusCard();
         toast("Streaming");
       }
       // drawImage takes a VideoFrame directly; close it or the pool starves.
@@ -1460,19 +1459,17 @@ for (let i = 0; i < 10; i++) VK["Digit" + i] = 0x30 + i;
 for (let i = 0; i < 10; i++) VK["Numpad" + i] = 0x60 + i;
 for (let i = 1; i <= 12; i++) VK["F" + i] = 0x6F + i;
 
-// Pointer lock is NOT used, and cannot be: this card is a file:// document
-// inside a file:// root, and Chromium refuses pointer lock for opaque origins
-// with "WrongDocumentError: The root document of this element is not valid for
-// pointer lock." No permissions attribute or chord changes that.
+// The chord that hands the cursor back: Cmd+Escape on a Mac, Ctrl+Escape
+// elsewhere.
 //
-// So the mouse is never captured. That turns out to suit the panel: the cursor
-// stays yours, moving it to the terminals just works, and — the reason this
-// matters — Escape is no longer special. The browser only steals Escape to
-// break out of pointer lock; with no lock to break out of, Escape reaches the
-// game like any other key, which is what a game menu needs.
-//
-// The cost is relative-motion aim (FPS mouselook), which needs capture.
+// Escape is the right key for this despite also being a key games want, because
+// the browser already treats it as an unconditional way out of pointer lock and
+// no page can override that outside full screen. Since the capture is going to
+// drop on Escape regardless, binding the release to Escape-with-a-modifier
+// costs nothing — whereas an unrelated chord left the two fighting.
+const RELEASE_KEY = "Escape";
 const IS_MAC = navigator.platform.startsWith("Mac");
+const RELEASE_CHORD = IS_MAC ? "⌘Esc" : "Ctrl+Esc";
 
 // Browser button numbers are not the host's button ids.
 const MOUSE_BUTTON = { 0:1, 1:2, 2:3, 3:4, 4:5 };
@@ -1490,12 +1487,12 @@ function modifiersOf(e){
  * send those now or the game is left believing Ctrl, Alt and Shift are stuck
  * down — which in most games means crouched, walking and menu-modified.
  */
-/** Pull keyboard focus into the card so its key listeners actually fire. */
-function focusCard(){
-  try{
-    window.focus();
-    (stream.canvas || document.body).focus();
-  }catch(_){ /* cross-document focus refused; clicking again recovers */ }
+function releasePointer(){
+  for (const keyCode of [0x11, 0x12, 0x10, 0x51]){   // Ctrl, Alt, Shift, Q
+    sendInput({ type: "keyup", keyCode, modifiers: 0 });
+  }
+  if (document.pointerLockElement) document.exitPointerLock();
+  toast(`Pointer released — click the picture to capture it again`);
 }
 
 function sendInput(event){
@@ -1527,17 +1524,21 @@ function bindInput(){
 
   c.addEventListener("mousemove", (e) => {
     if (!document.body.classList.contains("streaming")) return;
-    const p = toVideoCoords(e);
-    if (p) sendInput({ type: "mouseposition", x: p.x, y: p.y });
+    if (document.pointerLockElement === c){
+      // Captured: the host wants deltas and moves its own cursor.
+      sendInput({ type: "mousemove", dx: e.movementX, dy: e.movementY });
+    }else{
+      const p = toVideoCoords(e);
+      if (p) sendInput({ type: "mouseposition", x: p.x, y: p.y });
+    }
   });
 
   c.addEventListener("mousedown", (e) => {
     e.preventDefault();
-    // Take focus explicitly. Key listeners live on THIS document, and while
-    // focus sits in the app's own document — which it does after any click on
-    // the terminals or the rail — not one keystroke arrives here. The stream
-    // looks alive and silently ignores the keyboard.
-    focusCard();
+    // Capture on click only when the user asked for it in settings.
+    if (state.settings && currentValues().mouseCapture && document.pointerLockElement !== c){
+      c.requestPointerLock().catch(() => { /* denied; absolute mode still works */ });
+    }
     sendInput({ type: "mousedown", button: MOUSE_BUTTON[e.button] || 1 });
   });
   c.addEventListener("mouseup", (e) => {
@@ -1548,6 +1549,26 @@ function bindInput(){
   // Right-click belongs to the game, not to a context menu.
   c.addEventListener("contextmenu", (e) => e.preventDefault());
 
+  // Keep the on-screen hint honest about whether the pointer is captured, and
+  // try to keep Escape for the game while it is.
+  document.addEventListener("pointerlockchange", () => {
+    const hint = document.getElementById("stage-hint");
+    const locked = !!document.pointerLockElement;
+    if (hint) hint.textContent = locked ? `${RELEASE_CHORD} to release the pointer` : "";
+
+    // The browser treats Escape as an unconditional way out of pointer lock and
+    // a page cannot override that — which is a problem when Escape is also the
+    // pause button of whatever is being streamed. Keyboard Lock is the one
+    // sanctioned exception, but it only applies in full screen, so in the
+    // sidebar Escape still drops the capture and the game has to be re-clicked.
+    if (!navigator.keyboard || !navigator.keyboard.lock) return;
+    if (locked && document.fullscreenElement){
+      navigator.keyboard.lock(["Escape"]).catch(() => { /* not permitted here */ });
+    }else{
+      try { navigator.keyboard.unlock(); } catch (_) { /* not supported */ }
+    }
+  });
+
   c.addEventListener("wheel", (e) => {
     e.preventDefault();
     sendInput({ type: "scroll", dy: -Math.sign(e.deltaY) * 120, dx: Math.sign(e.deltaX) * 120 });
@@ -1557,6 +1578,18 @@ function bindInput(){
   // the pointer is locked, and a game expects keys either way.
   const onKey = (down) => (e) => {
     if (!document.body.classList.contains("streaming")) return;
+
+    // Cmd+Escape (Ctrl+Escape off a Mac) releases the pointer without touching
+    // the session — the stream keeps running, you just get the cursor back for
+    // the terminals.
+    //
+    // PLAIN Escape is still forwarded to the host: games lean on it for menus
+    // and pausing, and swallowing it made the stream feel broken.
+    if (down && e.code === RELEASE_KEY && (IS_MAC ? e.metaKey : e.ctrlKey)){
+      e.preventDefault();
+      releasePointer();
+      return;
+    }
 
     const keyCode = VK[e.code];
     if (!keyCode) return;
@@ -1569,6 +1602,7 @@ function bindInput(){
 
 function closeStream(){
   clearTimeout(stream.watchdog);
+  if (document.pointerLockElement) document.exitPointerLock();
   stopGamepads();
   closeAudio();
   if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
@@ -1827,6 +1861,8 @@ async function resetSettings(){
    ======================================================================== */
 
 function bind(){
+  const captureHint = $("capture-hint");
+  if (captureHint) captureHint.textContent = `— ${RELEASE_CHORD} to release`;
 
   $("add").addEventListener("click", addHost);
   $("address").addEventListener("keydown", (e) => { if (e.key === "Enter") addHost(); });

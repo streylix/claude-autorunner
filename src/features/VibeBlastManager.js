@@ -256,11 +256,7 @@ class VibeBlastManager {
         if (this.frame) return;
         this.frame = document.createElement('iframe');
         this.frame.title = this.currentGameTitle || 'Vibe Blast';
-        // Permissions Policy is deny-by-default for a nested browsing context,
-        // and it does not warn — `requestPointerLock()` simply rejects and
-        // `requestFullscreen()` does nothing. Without `pointer-lock` listed
-        // here, a game can never capture the mouse no matter what it asks for.
-        this.frame.setAttribute('allow', 'autoplay; pointer-lock; fullscreen');
+        this.frame.setAttribute('allow', 'autoplay');
         // tabindex makes the frame itself focusable, which is what lets the
         // games rail hand keyboard control (WASD / arrows) to the game.
         this.frame.setAttribute('tabindex', '0');
