@@ -1322,3 +1322,12 @@ passes.
 
 **Restart needed?** Yes — `manager-session.js` runs in the main process, and the
 refreshed doc is only written when the manager next boots, which happens on app start.
+
+## 2026-08-07 — contributor attribution cleanup complete
+
+Git history was rewritten so that all commits previously attributed to the work
+account now carry `streylix <paeem@dukes.jmu.edu>` for both author and committer.
+No file content changed — the rewrite touched commit metadata only.
+
+This commit exists solely to trigger a recompute of GitHub's cached contributor
+graph; it has no functional effect on the application.
