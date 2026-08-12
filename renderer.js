@@ -1002,7 +1002,6 @@ class TerminalGUI {
      */
     setupFileAttachments() {
         this.pendingAttachments = [];
-        const dropZone = document.getElementById('drop-zone');
         const dropOverlay = document.getElementById('drop-overlay');
         const fileInput = document.getElementById('file-input');
         const messageInput = document.getElementById('message-input');
@@ -1014,13 +1013,18 @@ class TerminalGUI {
             this.renderAttachmentChips();
         };
 
-        const attachFiles = async (fileList) => {
+        /**
+         * Turn whatever was dropped/pasted into absolute disk paths. A real
+         * file already has one; a clipboard/browser image arrives as a bare
+         * blob and has to be written out first, because PTY injection is
+         * text-only and can only ever carry a path.
+         */
+        const resolvePaths = async (fileList) => {
+            const out = [];
             for (const file of Array.from(fileList || [])) {
                 if (file.path) {
-                    // Real disk file (Electron exposes the absolute path)
-                    attachDiskFile(file.name, file.path);
+                    out.push({ name: file.name, path: file.path });
                 } else if (file.type && file.type.startsWith('image/')) {
-                    // Clipboard-pasted image blob — persist it first
                     try {
                         const dataUrl = await new Promise((resolve, reject) => {
                             const r = new FileReader();
@@ -1029,31 +1033,101 @@ class TerminalGUI {
                             r.readAsDataURL(file);
                         });
                         const res = await this.ipcHandler.invoke('save-screenshot', dataUrl);
-                        if (res && res.success) attachDiskFile(res.fileName, res.filePath);
-                        else this.eventBus.emit('log:action', { message: `Could not save pasted image: ${res && res.error}`, type: 'error' });
+                        if (res && res.success) out.push({ name: res.fileName, path: res.filePath });
+                        else this.eventBus.emit('log:action', { message: `Could not save dropped image: ${res && res.error}`, type: 'error' });
                     } catch (err) {
-                        this.eventBus.emit('log:action', { message: `Could not save pasted image: ${err.message}`, type: 'error' });
+                        this.eventBus.emit('log:action', { message: `Could not save dropped image: ${err.message}`, type: 'error' });
                     }
                 }
             }
+            return out;
         };
 
-        if (dropZone) {
-            let dragDepth = 0;
-            const showOverlay = (on) => { if (dropOverlay) dropOverlay.style.display = on ? '' : 'none'; };
-            dropZone.addEventListener('dragenter', (e) => {
-                e.preventDefault(); dragDepth++; showOverlay(true);
+        const attachFiles = async (fileList) => {
+            for (const f of await resolvePaths(fileList)) attachDiskFile(f.name, f.path);
+        };
+
+        // A path typed into a live prompt has to survive the shell, and screen
+        // shots in particular land in directories with spaces in them.
+        const quotePath = (p) => (/[\s'"\\$`()&;|*?<>]/.test(p) ? `'${p.replace(/'/g, `'\\''`)}'` : p);
+
+        const dropIntoTerminal = async (terminalId, fileList) => {
+            const files = await resolvePaths(fileList);
+            if (!files.length) return;
+            const text = files.map(f => quotePath(f.path)).join(' ') + ' ';
+            this.ipcHandler.send('terminal-input', { terminalId, data: text });
+            if (this.activeTerminalId !== terminalId) this.setActiveTerminal(terminalId);
+            this.eventBus.emit('log:action', {
+                message: `Dropped ${files.length} file${files.length === 1 ? '' : 's'} into Terminal ${terminalId}`,
+                type: 'info'
             });
-            dropZone.addEventListener('dragover', (e) => e.preventDefault());
-            dropZone.addEventListener('dragleave', () => {
-                dragDepth = Math.max(0, dragDepth - 1);
-                if (!dragDepth) showOverlay(false);
-            });
-            dropZone.addEventListener('drop', (e) => {
-                e.preventDefault(); dragDepth = 0; showOverlay(false);
-                attachFiles(e.dataTransfer && e.dataTransfer.files);
-            });
-        }
+        };
+
+        const showOverlay = (on) => { if (dropOverlay) dropOverlay.style.display = on ? '' : 'none'; };
+
+        // Only file drags are ours. Queue reordering and terminal reordering are
+        // internal HTML5 drags carrying text/*, and must keep their own handling.
+        const carriesFiles = (e) => !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+
+        const terminalUnder = (e) => {
+            const el = e.target;
+            const wrapper = el && el.closest ? el.closest('.terminal-wrapper[data-terminal-id]') : null;
+            if (!wrapper) return null;
+            const id = parseInt(wrapper.getAttribute('data-terminal-id'), 10);
+            return Number.isFinite(id) ? { wrapper, id } : null;
+        };
+
+        let hotWrapper = null;
+        const highlightTerminal = (wrapper) => {
+            if (hotWrapper === wrapper) return;
+            if (hotWrapper) hotWrapper.classList.remove('terminal-drag-active');
+            hotWrapper = wrapper;
+            if (!wrapper) return;
+            if (!wrapper.querySelector('.terminal-drop-overlay')) {
+                const overlay = document.createElement('div');
+                overlay.className = 'terminal-drop-overlay';
+                overlay.textContent = 'Drop to paste the file path';
+                wrapper.appendChild(overlay);
+            }
+            wrapper.classList.add('terminal-drag-active');
+        };
+
+        // Listening on the document rather than on #drop-zone alone: a file
+        // dropped anywhere else used to hit the browser default, and in Electron
+        // that navigates the whole window to file:///… — the app just vanishes,
+        // which is why this only ever "sort of" worked. Now the entire window is
+        // a target: over a terminal the path is typed into that terminal, and
+        // anywhere else it is attached to the message being composed.
+        document.addEventListener('dragover', (e) => {
+            if (!carriesFiles(e)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            const hit = terminalUnder(e);
+            highlightTerminal(hit ? hit.wrapper : null);
+            showOverlay(!hit);
+        });
+
+        document.addEventListener('dragleave', (e) => {
+            // relatedTarget is null only when the pointer leaves the window
+            // entirely; every crossing between elements reports the new one.
+            if (e.relatedTarget) return;
+            highlightTerminal(null);
+            showOverlay(false);
+        });
+
+        document.addEventListener('drop', (e) => {
+            if (!carriesFiles(e)) return;
+            e.preventDefault();
+            highlightTerminal(null);
+            showOverlay(false);
+            // The DataTransfer is neutered once this handler yields, so the
+            // list has to be copied out before anything is awaited.
+            const files = Array.from(e.dataTransfer.files || []);
+            if (!files.length) return;
+            const hit = terminalUnder(e);
+            if (hit) dropIntoTerminal(hit.id, files);
+            else attachFiles(files);
+        });
 
         // Drop onto any terminal pane: the whole .terminal-wrapper is the
         // target (not just the flaky input container), and the image
