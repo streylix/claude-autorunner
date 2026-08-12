@@ -1365,8 +1365,12 @@ class TerminalGUI {
             this.discordLinkKey = new DiscordLinkKeyManager();
             this.discordLinkKey.init();
         }
+        // Category rail + search for the two-pane settings layout.
+        const settingsNav = this.setupSettingsNav();
         const openSettings = () => {
             if (settingsModal) settingsModal.classList.add('show');
+            // Drop any leftover search query so the modal always opens browsing.
+            if (settingsNav) settingsNav.reset();
             this.populateMicrophoneSelect();
             // Re-reflect saved voice/wake/delay values on open (covers round-trip:
             // change a setting, reopen, see the change; and any missed load event).
@@ -1774,6 +1778,154 @@ class TerminalGUI {
                 loadPricing();
             }
         });
+    }
+
+    /**
+     * Wire the settings modal's category rail and search box.
+     *
+     * This is layout only — it shows and hides existing nodes and never
+     * touches a control's value, so the per-control persistence wired up in
+     * loadAllSettings() keeps working untouched.
+     *
+     * Two display modes:
+     *   browsing  — exactly one .settings-section is visible, chosen by the rail
+     *   searching — the rail selection clears and every section holding a match
+     *               is shown, with non-matching blocks inside it hidden
+     *
+     * Returns a small controller ({ reset }) for the modal's open handler, or
+     * null when the markup isn't present.
+     */
+    setupSettingsNav() {
+        const modal = document.getElementById('settings-modal');
+        if (!modal) return null;
+        const content = modal.querySelector('.settings-content');
+        const search = document.getElementById('settings-search');
+        const noResults = document.getElementById('settings-no-results');
+        const items = Array.from(modal.querySelectorAll('.settings-nav-item'));
+        const sections = Array.from(modal.querySelectorAll('.settings-section'));
+        if (!items.length || !sections.length) return null;
+
+        // Search index, built once. A "block" is one .setting-row/.sound-category
+        // inside a group; a group's own head text is whatever is left after the
+        // blocks are stripped out, plus its section title — so searching a
+        // category name ("wake word") matches everything filed under it.
+        const groups = [];
+        for (const section of sections) {
+            const title = section.querySelector('.settings-section-title')?.textContent || '';
+            for (const group of section.querySelectorAll('.setting-group')) {
+                const blocks = Array.from(group.querySelectorAll('.setting-row, .sound-category'));
+                const headOnly = group.cloneNode(true);
+                headOnly.querySelectorAll('.setting-row, .sound-category').forEach(n => n.remove());
+                groups.push({
+                    section,
+                    group,
+                    head: `${title} ${headOnly.textContent}`.toLowerCase(),
+                    blocks: blocks.map(el => ({ el, text: el.textContent.toLowerCase() })),
+                });
+            }
+        }
+
+        const clearFilter = () => {
+            for (const g of groups) {
+                g.group.hidden = false;
+                for (const b of g.blocks) b.el.hidden = false;
+            }
+        };
+
+        let activeSection = items.find(b => b.classList.contains('active'))?.dataset.section
+            || items[0].dataset.section;
+
+        const showSection = (key) => {
+            activeSection = key;
+            clearFilter();
+            for (const section of sections) section.hidden = section.dataset.section !== key;
+            for (const btn of items) {
+                const on = btn.dataset.section === key;
+                btn.classList.toggle('active', on);
+                btn.setAttribute('aria-selected', on ? 'true' : 'false');
+                btn.tabIndex = on ? 0 : -1;
+            }
+            if (content) {
+                content.classList.remove('is-searching');
+                content.scrollTop = 0;
+            }
+            if (noResults) noResults.hidden = true;
+        };
+
+        const applySearch = () => {
+            const q = (search?.value || '').trim().toLowerCase();
+            if (!q) { showSection(activeSection); return; }
+
+            const hit = new Set();
+            for (const g of groups) {
+                // A head match keeps the whole group: the label a user searched
+                // for is the group's, so hiding its rows would strand it.
+                const headHit = g.head.includes(q);
+                let any = headHit;
+                for (const b of g.blocks) {
+                    const show = headHit || b.text.includes(q);
+                    b.el.hidden = !show;
+                    if (show) any = true;
+                }
+                g.group.hidden = !any;
+                if (any) hit.add(g.section);
+            }
+
+            for (const section of sections) section.hidden = !hit.has(section);
+            for (const btn of items) {
+                btn.classList.remove('active');
+                btn.setAttribute('aria-selected', 'false');
+                btn.tabIndex = 0;
+            }
+            if (content) content.classList.add('is-searching');
+            if (noResults) noResults.hidden = hit.size > 0;
+        };
+
+        for (const btn of items) {
+            btn.addEventListener('click', () => {
+                if (search) search.value = '';
+                showSection(btn.dataset.section);
+            });
+        }
+
+        // Roving-tabstop arrow keys, the expected behaviour for role="tablist".
+        const navList = modal.querySelector('.settings-nav-list');
+        if (navList) {
+            navList.addEventListener('keydown', (e) => {
+                const dir = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+                if (!dir && e.key !== 'Home' && e.key !== 'End') return;
+                const from = items.indexOf(document.activeElement);
+                if (from === -1) return;
+                e.preventDefault();
+                const to = e.key === 'Home' ? 0
+                    : e.key === 'End' ? items.length - 1
+                    : (from + dir + items.length) % items.length;
+                if (search) search.value = '';
+                showSection(items[to].dataset.section);
+                items[to].focus();
+            });
+        }
+
+        if (search) {
+            search.addEventListener('input', applySearch);
+            // Escape clears the query first; only an already-empty box lets the
+            // keystroke fall through to whatever closes the modal.
+            search.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && search.value) {
+                    e.stopPropagation();
+                    search.value = '';
+                    applySearch();
+                }
+            });
+        }
+
+        showSection(activeSection);
+        return {
+            reset: () => {
+                if (search) search.value = '';
+                showSection(activeSection);
+            },
+        };
     }
 
     /**

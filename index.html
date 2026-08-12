@@ -416,300 +416,394 @@
     <input type="file" id="file-input" style="display: none;" accept="image/*,text/*" multiple>
     
     <!-- Settings Modal -->
-    <div id="settings-modal" class="modal">
+    <div id="settings-modal" class="modal settings-modal">
         <div class="modal-content">
             <div class="modal-header">
                 <h3>Settings</h3>
                 <button class="modal-close" id="settings-close" title="Close settings" data-test-id="settings-close-btn">&times;</button>
             </div>
-            <div class="modal-body">
-                <div class="setting-group">
-                    <label class="setting-label">
-                        <span class="setting-title">Theme</span>
-                    </label>
-                    <select id="theme-select" class="setting-select">
-                        <option value="dark">Dark Mode</option>
-                        <option value="light">Light Mode (Catppuccin Latte)</option>
-                        <option value="system">System (Auto)</option>
-                    </select>
-                    <p class="setting-description">Choose your preferred theme. System mode automatically switches between light and dark based on your system preferences.</p>
-                </div>
-
-                <div class="setting-group">
-                    <label class="setting-label">
-                        <span class="setting-title">Terminal Scroll Behavior</span>
-                    </label>
-                    <select id="terminal-scroll-behavior" class="setting-select">
-                        <option value="smart">Smart (Recommended)</option>
-                        <option value="always">Always scroll to bottom</option>
-                    </select>
-                    <p class="setting-description">Smart: Only scrolls to bottom if you were already there. Always: Always scrolls to bottom on new output.</p>
-                </div>
-
-                <div class="setting-group">
-                    <label class="setting-label">
-                        <input type="checkbox" id="keep-screen-awake">
-                        <span class="setting-title">Keep screen awake while injecting</span>
-                    </label>
-                    <p class="setting-description">Blocks display sleep while a queue flush is running, so long unattended runs don't get suspended.</p>
-                </div>
-
-                <div class="setting-group">
-                    <label class="setting-label">
-                        <span class="setting-title">Terminal Chunk Layout</span>
-                    </label>
-                    <p class="setting-description">Configure how multiple terminals are arranged in chunks and set the maximum number of terminals allowed.</p>
-                    
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <span class="setting-text">Terminals per chunk</span>
-                        </label>
-                        <div class="setting-input-group">
-                            <input type="range" id="terminals-per-chunk" min="1" max="8" value="4" class="setting-range">
-                            <span id="terminals-per-chunk-value" class="setting-value">4</span>
-                        </div>
-                        <p class="setting-help">Number of terminals to display in each chunk (1-8 terminals).</p>
+            <div class="modal-body settings-body">
+                <!-- Left rail: search + one entry per category. The rail is the only
+                     navigation; exactly one .settings-section is visible at a time
+                     (except while searching, when matches from every category show). -->
+                <aside class="settings-nav" aria-label="Settings categories">
+                    <div class="settings-nav-search">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                        <input type="search" id="settings-search" placeholder="Search settings" aria-label="Search settings" autocomplete="off" data-test-id="settings-search">
                     </div>
-                    
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <span class="setting-text">Chunk orientation</span>
-                        </label>
-                        <select id="chunk-orientation" class="setting-select">
-                            <option value="horizontal">Horizontal (chunks scroll right)</option>
-                            <option value="vertical">Vertical (chunks stack below)</option>
-                        </select>
-                        <p class="setting-help">Choose whether chunks are arranged horizontally or vertically.</p>
+
+                    <div class="settings-nav-list" role="tablist" aria-orientation="vertical">
+                        <div class="settings-nav-label" id="settings-nav-label-interface">Interface</div>
+                        <button type="button" class="settings-nav-item active" data-section="appearance" role="tab" aria-selected="true" aria-controls="settings-section-appearance" id="settings-nav-appearance" data-test-id="settings-nav-appearance">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
+                            <span>Appearance</span>
+                        </button>
+                        <button type="button" class="settings-nav-item" data-section="injection" role="tab" aria-selected="false" aria-controls="settings-section-injection" id="settings-nav-injection" data-test-id="settings-nav-injection">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+                            <span>Injection &amp; Queue</span>
+                        </button>
+                        <button type="button" class="settings-nav-item" data-section="sounds" role="tab" aria-selected="false" aria-controls="settings-section-sounds" id="settings-nav-sounds" data-test-id="settings-nav-sounds">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                            <span>Sound Effects</span>
+                        </button>
+
+                        <div class="settings-nav-label" id="settings-nav-label-voice">Voice</div>
+                        <button type="button" class="settings-nav-item" data-section="voice" role="tab" aria-selected="false" aria-controls="settings-section-voice" id="settings-nav-voice" data-test-id="settings-nav-voice">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                            <span>Voice Input</span>
+                        </button>
+                        <button type="button" class="settings-nav-item" data-section="wake-word" role="tab" aria-selected="false" aria-controls="settings-section-wake-word" id="settings-nav-wake-word" data-test-id="settings-nav-wake-word">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>
+                            <span>Wake Word</span>
+                        </button>
+                        <button type="button" class="settings-nav-item" data-section="notifications" role="tab" aria-selected="false" aria-controls="settings-section-notifications" id="settings-nav-notifications" data-test-id="settings-nav-notifications">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+                            <span>Spoken Notifications</span>
+                        </button>
+
+                        <div class="settings-nav-label" id="settings-nav-label-automation">Automation</div>
+                        <button type="button" class="settings-nav-item" data-section="manager" role="tab" aria-selected="false" aria-controls="settings-section-manager" id="settings-nav-manager" data-test-id="settings-nav-manager">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+                            <span>Manager</span>
+                        </button>
+                        <button type="button" class="settings-nav-item" data-section="discord" role="tab" aria-selected="false" aria-controls="settings-section-discord" id="settings-nav-discord" data-test-id="settings-nav-discord">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                            <span>Discord Bridge</span>
+                        </button>
                     </div>
-                    
-                </div>
-                
-                <div class="setting-group">
-                    <label class="setting-label">
-                        <input type="checkbox" id="sound-effects-enabled">
-                        <span class="setting-title">Sound Effects</span>
-                    </label>
-                    <p class="setting-description">Play sound effects for various terminal states and actions.</p>
-                    <div class="setting-subgroup" id="sound-selection-group">
-                        <div class="sound-category">
-                            <label class="sound-category-label">Completion Sound</label>
-                            <div class="sound-selection-row">
-                                <select id="completion-sound-select" class="setting-select">
-                                </select>
-                                <button type="button" id="test-completion-sound-btn" class="setting-btn setting-btn-small" data-test-id="test-completion-sound-btn">
-                                    <i data-lucide="volume-2"></i>
-                                    Test
-                                </button>
-                            </div>
-                        </div>
-                        <div class="sound-category">
-                            <label class="sound-category-label">Injection Sound</label>
-                            <div class="sound-selection-row">
-                                <select id="injection-sound-select" class="setting-select">
-                                </select>
-                                <button type="button" id="test-injection-sound-btn" class="setting-btn setting-btn-small" data-test-id="test-injection-sound-btn">
-                                    <i data-lucide="volume-2"></i>
-                                    Test
-                                </button>
-                            </div>
-                        </div>
-                        <div class="sound-category">
-                            <label class="sound-category-label">
-                                Prompted Sound 
-                                <span class="sound-toggle-text">( <input type="checkbox" id="prompted-sound-keywords-only"> Keywords Only)</span>
+
+                    <!-- Occupies BananaBread's .settings-nav-save slot. This app persists
+                         each control on change, so there is nothing to submit — the slot
+                         states that rather than offering a no-op Save button. -->
+                    <div class="settings-nav-save">
+                        <span class="settings-autosave-note" id="settings-autosave-note">Changes save automatically</span>
+                    </div>
+                </aside>
+
+                <div class="settings-content">
+                    <!-- ── Appearance ── -->
+                    <section class="settings-section active" data-section="appearance" id="settings-section-appearance" role="tabpanel" aria-labelledby="settings-nav-appearance" tabindex="0">
+                        <div class="settings-section-head"><h4 class="settings-section-title">Appearance</h4></div>
+
+                        <div class="setting-group">
+                            <label class="setting-label">
+                                <span class="setting-title">Theme</span>
                             </label>
-                            <div class="sound-selection-row">
-                                <select id="prompted-sound-select" class="setting-select">
+                            <select id="theme-select" class="setting-select">
+                                <option value="dark">Dark Mode</option>
+                                <option value="light">Light Mode (Catppuccin Latte)</option>
+                                <option value="system">System (Auto)</option>
+                            </select>
+                            <p class="setting-description">Choose your preferred theme. System mode automatically switches between light and dark based on your system preferences.</p>
+                        </div>
+
+                        <div class="setting-group">
+                            <label class="setting-label">
+                                <span class="setting-title">Terminal Scroll Behavior</span>
+                            </label>
+                            <select id="terminal-scroll-behavior" class="setting-select">
+                                <option value="smart">Smart (Recommended)</option>
+                                <option value="always">Always scroll to bottom</option>
+                            </select>
+                            <p class="setting-description">Smart: Only scrolls to bottom if you were already there. Always: Always scrolls to bottom on new output.</p>
+                        </div>
+
+                        <div class="setting-group">
+                            <label class="setting-label">
+                                <span class="setting-title">Terminal Chunk Layout</span>
+                            </label>
+                            <p class="setting-description">Configure how multiple terminals are arranged in chunks and set the maximum number of terminals allowed.</p>
+
+                            <div class="setting-row">
+                                <label class="setting-label">
+                                    <span class="setting-text">Terminals per chunk</span>
+                                </label>
+                                <div class="setting-input-group">
+                                    <input type="range" id="terminals-per-chunk" min="1" max="8" value="4" class="setting-range">
+                                    <span id="terminals-per-chunk-value" class="setting-value">4</span>
+                                </div>
+                                <p class="setting-help">Number of terminals to display in each chunk (1-8 terminals).</p>
+                            </div>
+
+                            <div class="setting-row">
+                                <label class="setting-label">
+                                    <span class="setting-text">Chunk orientation</span>
+                                </label>
+                                <select id="chunk-orientation" class="setting-select">
+                                    <option value="horizontal">Horizontal (chunks scroll right)</option>
+                                    <option value="vertical">Vertical (chunks stack below)</option>
                                 </select>
-                                <button type="button" id="test-prompted-sound-btn" class="setting-btn setting-btn-small" data-test-id="test-prompted-sound-btn">
-                                    <i data-lucide="volume-2"></i>
-                                    Test
-                                </button>
+                                <p class="setting-help">Choose whether chunks are arranged horizontally or vertically.</p>
+                            </div>
+
+                        </div>
+                    </section>
+
+                    <!-- ── Injection & Queue ── -->
+                    <section class="settings-section" data-section="injection" id="settings-section-injection" role="tabpanel" aria-labelledby="settings-nav-injection" tabindex="0" hidden>
+                        <div class="settings-section-head"><h4 class="settings-section-title">Injection &amp; Queue</h4></div>
+
+                        <!-- Queue Send Delay -->
+                        <div class="setting-group">
+                            <label class="setting-label">
+                                <span class="setting-title">Queue send delay</span>
+                            </label>
+                            <p class="setting-description">How long to wait after a terminal becomes free before the next queued message is auto-injected into it.</p>
+                            <div class="sound-category">
+                                <label class="sound-category-label">Send delay: <span id="injection-delay-value">0.4s</span></label>
+                                <input type="range" id="injection-delay-ms" min="0" max="3000" step="100" value="400" class="setting-range">
+                                <p class="setting-help">Lower sends queued messages faster; higher leaves more breathing room between sends.</p>
                             </div>
                         </div>
-                    </div>
-                </div>
 
-                <!-- Queue Send Delay -->
-                <div class="setting-group">
-                    <label class="setting-label">
-                        <span class="setting-title">Queue send delay</span>
-                    </label>
-                    <p class="setting-description">How long to wait after a terminal becomes free before the next queued message is auto-injected into it.</p>
-                    <div class="sound-category">
-                        <label class="sound-category-label">Send delay: <span id="injection-delay-value">0.4s</span></label>
-                        <input type="range" id="injection-delay-ms" min="0" max="3000" step="100" value="400" class="setting-range">
-                        <p class="setting-help">Lower sends queued messages faster; higher leaves more breathing room between sends.</p>
-                    </div>
-                </div>
-
-                <!-- Voice Input Settings -->
-                <div class="setting-group">
-                    <label class="setting-label">
-                        <span class="setting-title">Microphone</span>
-                    </label>
-                    <select id="microphone-select" class="setting-select" data-test-id="microphone-select">
-                        <option value="default">System default</option>
-                    </select>
-                    <p class="setting-description">Input device used for voice transcription. If recordings come back silent, pick your actual microphone here.</p>
-                </div>
-
-                <!-- Wake Word ("Hey Claude") Settings -->
-                <div class="setting-group">
-                    <div class="setting-header">
-                        <span class="setting-title">Wake Word</span>
-                    </div>
-                    <p class="setting-description">Always-on voice activation. Say your wake phrase, wait for the chime, then speak your command — after a pause it's transcribed and sent to the manager as a voice memo. Works even when this window is hidden.</p>
-
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <input type="checkbox" id="wake-word-enabled">
-                            <span class="setting-text">Listen for the wake word</span>
-                        </label>
-                        <p class="setting-help">Keeps the microphone open and runs a local, offline spotter (Vosk). Nothing leaves your machine until the wake word fires.</p>
-                    </div>
-
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <input type="checkbox" id="wake-mute-during-call">
-                            <span class="setting-text">Mute local-mic wake word while Discord bot is in a call</span>
-                        </label>
-                        <p class="setting-help">When the Discord bot is linked and in a voice channel, ignore the host microphone's wake word so saying the phrase in the room only triggers once (via the bot), not twice. Local wake word works normally when the bot isn't in a call.</p>
-                    </div>
-
-                    <div class="sound-category">
-                        <label class="sound-category-label">Wake phrase</label>
-                        <input type="text" id="wake-word-phrase" class="setting-input" value="hey claude" placeholder="hey claude">
-                        <p class="setting-help">The phrase that activates listening. Lowercase, common words work best (the spotter is restricted to exactly this phrase).</p>
-                    </div>
-
-                    <div class="sound-category">
-                        <label class="sound-category-label">Stop after silence: <span id="wake-silence-value">5.0s</span></label>
-                        <input type="range" id="wake-silence-ms" min="600" max="10000" step="100" value="5000" class="setting-range">
-                        <p class="setting-help">How long a pause ends your command and sends it.</p>
-                    </div>
-
-                    <div class="sound-category">
-                        <label class="sound-category-label">Interrupt stop words</label>
-                        <div id="stop-words-list" class="stop-words-list" data-test-id="stop-words-list"></div>
-                        <div class="stop-words-add-row">
-                            <input type="text" id="stop-word-input" class="setting-input" placeholder="Add a word (e.g. wait)" data-test-id="stop-word-input">
-                            <button type="button" id="stop-word-add-btn" class="setting-btn setting-btn-small" data-test-id="stop-word-add-btn">Add</button>
+                        <div class="setting-group">
+                            <label class="setting-label">
+                                <input type="checkbox" id="keep-screen-awake">
+                                <span class="setting-title">Keep screen awake while injecting</span>
+                            </label>
+                            <p class="setting-description">Blocks display sleep while a queue flush is running, so long unattended runs don't get suspended.</p>
                         </div>
-                        <p class="setting-help">If a voice message STARTS with one of these words, the assistant's current turn is cut off (ESC to the manager) and your new message takes over. Takes effect immediately, including for the Discord bridge.</p>
-                    </div>
+                    </section>
 
-                    <div class="sound-category">
-                        <label class="sound-category-label">Wake-word strictness: <span id="wake-threshold-value">75%</span></label>
-                        <input type="range" id="wake-threshold" min="0" max="0.95" step="0.05" value="0.75" class="setting-range">
-                        <p class="setting-help">Higher = stricter matching and fewer false activations (the spotter must be more confident it heard the phrase). Lower it if your real wake word stops being detected.</p>
-                    </div>
+                    <!-- ── Sound Effects ── -->
+                    <section class="settings-section" data-section="sounds" id="settings-section-sounds" role="tabpanel" aria-labelledby="settings-nav-sounds" tabindex="0" hidden>
+                        <div class="settings-section-head"><h4 class="settings-section-title">Sound Effects</h4></div>
 
-                    <div class="sound-category">
-                        <label class="sound-category-label">Activation sound</label>
-                        <select id="wake-activation-sound" class="setting-select" data-test-id="wake-activation-sound">
-                            <option value="screenshot.wav">screenshot.wav</option>
-                        </select>
-                        <p class="setting-help">Plays when the wake word is heard and it starts listening for your command.</p>
-                    </div>
-
-                    <div class="sound-category">
-                        <label class="sound-category-label">End-of-command sound</label>
-                        <select id="wake-stop-sound" class="setting-select" data-test-id="wake-stop-sound">
-                            <option value="hud4.wav">hud4.wav</option>
-                        </select>
-                        <p class="setting-help">Plays when it stops listening and sends your command.</p>
-                    </div>
-                </div>
-
-                <!-- Discord Voice Bridge link key -->
-                <div class="setting-group">
-                    <div class="setting-header">
-                        <span class="setting-title">Discord Voice Bridge</span>
-                    </div>
-                    <p class="setting-description">Connect the Discord voice bot to this session: in your server, run <code>/link</code> with the key below. It encodes only the local control port + a revocable link-token — never your control token. The key is tied to the current session and updates here automatically; click Regenerate for a fresh one (the previous key stops working).</p>
-
-                    <div class="sound-category">
-                        <label class="sound-category-label">Discord link key</label>
-                        <div class="setting-input-group">
-                            <input type="text" id="discord-link-key" class="setting-input" readonly value="Loading…" data-test-id="discord-link-key">
-                            <button type="button" id="discord-link-copy-btn" class="setting-btn setting-btn-small" data-test-id="discord-link-copy-btn">Copy</button>
-                            <button type="button" id="discord-link-regen-btn" class="setting-btn setting-btn-small" title="Mint a fresh key (invalidates the previous one)" data-test-id="discord-link-regen-btn">Regenerate</button>
+                        <div class="setting-group">
+                            <label class="setting-label">
+                                <input type="checkbox" id="sound-effects-enabled">
+                                <span class="setting-title">Sound Effects</span>
+                            </label>
+                            <p class="setting-description">Play sound effects for various terminal states and actions.</p>
+                            <div class="setting-subgroup" id="sound-selection-group">
+                                <div class="sound-category">
+                                    <label class="sound-category-label">Completion Sound</label>
+                                    <div class="sound-selection-row">
+                                        <select id="completion-sound-select" class="setting-select">
+                                        </select>
+                                        <button type="button" id="test-completion-sound-btn" class="setting-btn setting-btn-small" data-test-id="test-completion-sound-btn">
+                                            <i data-lucide="volume-2"></i>
+                                            Test
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="sound-category">
+                                    <label class="sound-category-label">Injection Sound</label>
+                                    <div class="sound-selection-row">
+                                        <select id="injection-sound-select" class="setting-select">
+                                        </select>
+                                        <button type="button" id="test-injection-sound-btn" class="setting-btn setting-btn-small" data-test-id="test-injection-sound-btn">
+                                            <i data-lucide="volume-2"></i>
+                                            Test
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="sound-category">
+                                    <label class="sound-category-label">
+                                        Prompted Sound
+                                        <span class="sound-toggle-text">( <input type="checkbox" id="prompted-sound-keywords-only"> Keywords Only)</span>
+                                    </label>
+                                    <div class="sound-selection-row">
+                                        <select id="prompted-sound-select" class="setting-select">
+                                        </select>
+                                        <button type="button" id="test-prompted-sound-btn" class="setting-btn setting-btn-small" data-test-id="test-prompted-sound-btn">
+                                            <i data-lucide="volume-2"></i>
+                                            Test
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
-                        <p class="setting-help">In Discord, paste this after <strong>/link</strong> — or just type <strong>/resume</strong> to rejoin without it.</p>
-                        <p class="setting-help" id="discord-link-status">Loading the current link key…</p>
-                    </div>
-                </div>
+                    </section>
 
-                <!-- Spoken Notifications (Kokoro TTS) Settings -->
-                <div class="setting-group">
-                    <div class="setting-header">
-                        <span class="setting-title">Spoken Notifications</span>
-                    </div>
-                    <p class="setting-description">The manager turns terminal completions into short spoken summaries (Kokoro text-to-speech) that show in the Notifications tab and read out automatically.</p>
+                    <!-- ── Voice Input ── -->
+                    <section class="settings-section" data-section="voice" id="settings-section-voice" role="tabpanel" aria-labelledby="settings-nav-voice" tabindex="0" hidden>
+                        <div class="settings-section-head"><h4 class="settings-section-title">Voice Input</h4></div>
 
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <input type="checkbox" id="tts-autoplay-enabled" checked>
-                            <span class="setting-text">Read notifications aloud</span>
-                        </label>
-                        <p class="setting-help">When on, new notifications play automatically. Turn off to only show them in the list (replay any row by hand).</p>
-                    </div>
-
-                    <div class="sound-category">
-                        <label class="sound-category-label">Preferred Voice</label>
-                        <div class="sound-selection-row">
-                            <select id="tts-voice-select" class="setting-select" data-test-id="tts-voice-select">
-                                <option value="af_heart">Heart (US ♀)</option>
+                        <!-- Voice Input Settings -->
+                        <div class="setting-group">
+                            <label class="setting-label">
+                                <span class="setting-title">Microphone</span>
+                            </label>
+                            <select id="microphone-select" class="setting-select" data-test-id="microphone-select">
+                                <option value="default">System default</option>
                             </select>
-                            <button type="button" id="test-tts-voice-btn" class="setting-btn setting-btn-small" data-test-id="test-tts-voice-btn">
-                                <i data-lucide="volume-2"></i>
-                                Test
-                            </button>
+                            <p class="setting-description">Input device used for voice transcription. If recordings come back silent, pick your actual microphone here.</p>
                         </div>
-                        <p class="setting-help">Default voice used when the manager doesn't pick one. The manager may still choose a different voice per notification.</p>
-                    </div>
+                    </section>
 
-                    <div class="sound-category">
-                        <label class="sound-category-label">Playback Speed: <span id="tts-playback-speed-value">1.3×</span></label>
-                        <input type="range" id="tts-playback-speed" min="0.75" max="2" step="0.05" value="1.3" class="setting-range">
-                        <p class="setting-help">How fast notifications are read back. Applied on playback, so it changes existing notifications too.</p>
-                    </div>
+                    <!-- ── Wake Word ── -->
+                    <section class="settings-section" data-section="wake-word" id="settings-section-wake-word" role="tabpanel" aria-labelledby="settings-nav-wake-word" tabindex="0" hidden>
+                        <div class="settings-section-head"><h4 class="settings-section-title">Wake Word</h4></div>
 
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <input type="checkbox" id="manager-input-enabled-setting" checked>
-                            <span class="setting-text">Send completions to manager</span>
-                        </label>
-                        <p class="setting-help">When on, every terminal that finishes is reported to the manager (which decides what to announce). Turn off on the fly when the volume gets overwhelming.</p>
-                    </div>
+                        <!-- Wake Word ("Hey Claude") Settings -->
+                        <div class="setting-group">
+                            <p class="setting-description">Always-on voice activation. Say your wake phrase, wait for the chime, then speak your command — after a pause it's transcribed and sent to the manager as a voice memo. Works even when this window is hidden.</p>
 
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <input type="checkbox" id="manager-prompt-watch-enabled" checked>
-                            <span class="setting-text">Manager answers permission prompts</span>
-                        </label>
-                        <p class="setting-help">When a terminal opens a real permission dialog or select menu, the manager is notified so it can answer. Turn off to handle prompts yourself.</p>
-                    </div>
+                            <div class="setting-row">
+                                <label class="setting-label">
+                                    <input type="checkbox" id="wake-word-enabled">
+                                    <span class="setting-text">Listen for the wake word</span>
+                                </label>
+                                <p class="setting-help">Keeps the microphone open and runs a local, offline spotter (Vosk). Nothing leaves your machine until the wake word fires.</p>
+                            </div>
 
-                    <div class="setting-row">
-                        <label class="setting-label">
-                            <input type="checkbox" id="manager-auto-pass-enabled" checked>
-                            <span class="setting-text">Recurring optimization passes</span>
-                        </label>
-                        <p class="setting-help">The manager periodically runs a standing "run a pass" instruction against the routines in its own directory. Applies from the next scheduled tick.</p>
-                    </div>
+                            <div class="setting-row">
+                                <label class="setting-label">
+                                    <input type="checkbox" id="wake-mute-during-call">
+                                    <span class="setting-text">Mute local-mic wake word while Discord bot is in a call</span>
+                                </label>
+                                <p class="setting-help">When the Discord bot is linked and in a voice channel, ignore the host microphone's wake word so saying the phrase in the room only triggers once (via the bot), not twice. Local wake word works normally when the bot isn't in a call.</p>
+                            </div>
 
-                    <div class="sound-category">
-                        <label class="sound-category-label">Pass interval: <span id="manager-pass-interval-value">60m</span></label>
-                        <input type="range" id="manager-pass-interval-minutes" min="15" max="240" step="15" value="60" class="setting-range">
-                        <p class="setting-help">How often the manager dispatches an optimization pass.</p>
-                    </div>
+                            <div class="sound-category">
+                                <label class="sound-category-label">Wake phrase</label>
+                                <input type="text" id="wake-word-phrase" class="setting-input" value="hey claude" placeholder="hey claude">
+                                <p class="setting-help">The phrase that activates listening. Lowercase, common words work best (the spotter is restricted to exactly this phrase).</p>
+                            </div>
+
+                            <div class="sound-category">
+                                <label class="sound-category-label">Stop after silence: <span id="wake-silence-value">5.0s</span></label>
+                                <input type="range" id="wake-silence-ms" min="600" max="10000" step="100" value="5000" class="setting-range">
+                                <p class="setting-help">How long a pause ends your command and sends it.</p>
+                            </div>
+
+                            <div class="sound-category">
+                                <label class="sound-category-label">Interrupt stop words</label>
+                                <div id="stop-words-list" class="stop-words-list" data-test-id="stop-words-list"></div>
+                                <div class="stop-words-add-row">
+                                    <input type="text" id="stop-word-input" class="setting-input" placeholder="Add a word (e.g. wait)" data-test-id="stop-word-input">
+                                    <button type="button" id="stop-word-add-btn" class="setting-btn setting-btn-small" data-test-id="stop-word-add-btn">Add</button>
+                                </div>
+                                <p class="setting-help">If a voice message STARTS with one of these words, the assistant's current turn is cut off (ESC to the manager) and your new message takes over. Takes effect immediately, including for the Discord bridge.</p>
+                            </div>
+
+                            <div class="sound-category">
+                                <label class="sound-category-label">Wake-word strictness: <span id="wake-threshold-value">75%</span></label>
+                                <input type="range" id="wake-threshold" min="0" max="0.95" step="0.05" value="0.75" class="setting-range">
+                                <p class="setting-help">Higher = stricter matching and fewer false activations (the spotter must be more confident it heard the phrase). Lower it if your real wake word stops being detected.</p>
+                            </div>
+
+                            <div class="sound-category">
+                                <label class="sound-category-label">Activation sound</label>
+                                <select id="wake-activation-sound" class="setting-select" data-test-id="wake-activation-sound">
+                                    <option value="screenshot.wav">screenshot.wav</option>
+                                </select>
+                                <p class="setting-help">Plays when the wake word is heard and it starts listening for your command.</p>
+                            </div>
+
+                            <div class="sound-category">
+                                <label class="sound-category-label">End-of-command sound</label>
+                                <select id="wake-stop-sound" class="setting-select" data-test-id="wake-stop-sound">
+                                    <option value="hud4.wav">hud4.wav</option>
+                                </select>
+                                <p class="setting-help">Plays when it stops listening and sends your command.</p>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- ── Spoken Notifications ── -->
+                    <section class="settings-section" data-section="notifications" id="settings-section-notifications" role="tabpanel" aria-labelledby="settings-nav-notifications" tabindex="0" hidden>
+                        <div class="settings-section-head"><h4 class="settings-section-title">Spoken Notifications</h4></div>
+
+                        <!-- Spoken Notifications (Kokoro TTS) Settings -->
+                        <div class="setting-group">
+                            <p class="setting-description">The manager turns terminal completions into short spoken summaries (Kokoro text-to-speech) that show in the Notifications tab and read out automatically.</p>
+
+                            <div class="setting-row">
+                                <label class="setting-label">
+                                    <input type="checkbox" id="tts-autoplay-enabled" checked>
+                                    <span class="setting-text">Read notifications aloud</span>
+                                </label>
+                                <p class="setting-help">When on, new notifications play automatically. Turn off to only show them in the list (replay any row by hand).</p>
+                            </div>
+
+                            <div class="sound-category">
+                                <label class="sound-category-label">Preferred Voice</label>
+                                <div class="sound-selection-row">
+                                    <select id="tts-voice-select" class="setting-select" data-test-id="tts-voice-select">
+                                        <option value="af_heart">Heart (US ♀)</option>
+                                    </select>
+                                    <button type="button" id="test-tts-voice-btn" class="setting-btn setting-btn-small" data-test-id="test-tts-voice-btn">
+                                        <i data-lucide="volume-2"></i>
+                                        Test
+                                    </button>
+                                </div>
+                                <p class="setting-help">Default voice used when the manager doesn't pick one. The manager may still choose a different voice per notification.</p>
+                            </div>
+
+                            <div class="sound-category">
+                                <label class="sound-category-label">Playback Speed: <span id="tts-playback-speed-value">1.3×</span></label>
+                                <input type="range" id="tts-playback-speed" min="0.75" max="2" step="0.05" value="1.3" class="setting-range">
+                                <p class="setting-help">How fast notifications are read back. Applied on playback, so it changes existing notifications too.</p>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- ── Manager ── -->
+                    <section class="settings-section" data-section="manager" id="settings-section-manager" role="tabpanel" aria-labelledby="settings-nav-manager" tabindex="0" hidden>
+                        <div class="settings-section-head"><h4 class="settings-section-title">Manager</h4></div>
+
+                        <!-- Split out of the Spoken Notifications group: these steer the
+                             manager instance itself, not text-to-speech playback. -->
+                        <div class="setting-group">
+                            <p class="setting-description">What the manager session is told about, and how often it runs on its own.</p>
+
+                            <div class="setting-row">
+                                <label class="setting-label">
+                                    <input type="checkbox" id="manager-input-enabled-setting" checked>
+                                    <span class="setting-text">Send completions to manager</span>
+                                </label>
+                                <p class="setting-help">When on, every terminal that finishes is reported to the manager (which decides what to announce). Turn off on the fly when the volume gets overwhelming.</p>
+                            </div>
+
+                            <div class="setting-row">
+                                <label class="setting-label">
+                                    <input type="checkbox" id="manager-prompt-watch-enabled" checked>
+                                    <span class="setting-text">Manager answers permission prompts</span>
+                                </label>
+                                <p class="setting-help">When a terminal opens a real permission dialog or select menu, the manager is notified so it can answer. Turn off to handle prompts yourself.</p>
+                            </div>
+
+                            <div class="setting-row">
+                                <label class="setting-label">
+                                    <input type="checkbox" id="manager-auto-pass-enabled" checked>
+                                    <span class="setting-text">Recurring optimization passes</span>
+                                </label>
+                                <p class="setting-help">The manager periodically runs a standing "run a pass" instruction against the routines in its own directory. Applies from the next scheduled tick.</p>
+                            </div>
+
+                            <div class="sound-category">
+                                <label class="sound-category-label">Pass interval: <span id="manager-pass-interval-value">60m</span></label>
+                                <input type="range" id="manager-pass-interval-minutes" min="15" max="240" step="15" value="60" class="setting-range">
+                                <p class="setting-help">How often the manager dispatches an optimization pass.</p>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- ── Discord Bridge ── -->
+                    <section class="settings-section" data-section="discord" id="settings-section-discord" role="tabpanel" aria-labelledby="settings-nav-discord" tabindex="0" hidden>
+                        <div class="settings-section-head"><h4 class="settings-section-title">Discord Bridge</h4></div>
+
+                        <!-- Discord Voice Bridge link key -->
+                        <div class="setting-group">
+                            <p class="setting-description">Connect the Discord voice bot to this session: in your server, run <code>/link</code> with the key below. It encodes only the local control port + a revocable link-token — never your control token. The key is tied to the current session and updates here automatically; click Regenerate for a fresh one (the previous key stops working).</p>
+
+                            <div class="sound-category">
+                                <label class="sound-category-label">Discord link key</label>
+                                <div class="setting-input-group">
+                                    <input type="text" id="discord-link-key" class="setting-input" readonly value="Loading…" data-test-id="discord-link-key">
+                                    <button type="button" id="discord-link-copy-btn" class="setting-btn setting-btn-small" data-test-id="discord-link-copy-btn">Copy</button>
+                                    <button type="button" id="discord-link-regen-btn" class="setting-btn setting-btn-small" title="Mint a fresh key (invalidates the previous one)" data-test-id="discord-link-regen-btn">Regenerate</button>
+                                </div>
+                                <p class="setting-help">In Discord, paste this after <strong>/link</strong> — or just type <strong>/resume</strong> to rejoin without it.</p>
+                                <p class="setting-help" id="discord-link-status">Loading the current link key…</p>
+                            </div>
+                        </div>
+                    </section>
+
+                    <p class="settings-no-results" id="settings-no-results" hidden>No settings match that search.</p>
                 </div>
-
-
-                
-                
             </div>
         </div>
     </div>

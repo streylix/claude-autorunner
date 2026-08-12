@@ -5619,3 +5619,277 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     vertical-align: middle;
     background-color: var(--border-secondary);
 }
+
+/* ─── Settings modal: two-pane categorized layout ───────────────────────────
+   Left rail lists the categories and holds the search box; the right pane
+   shows exactly one category at a time. While a search is active the rail
+   selection clears and every section with a match is shown at once, so hits
+   from different categories appear together under their own headings.
+   Modelled on the BananaBread settings modal (.settings-nav / .settings-section).
+   Purely presentational: every control keeps the id its renderer.js wiring
+   looks up, so this file must not need to know about individual settings. */
+
+.settings-modal .modal-content {
+    width: 92%;
+    max-width: 900px;
+    height: 82vh;
+    max-height: 740px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.settings-modal .modal-header {
+    flex-shrink: 0;
+}
+
+.settings-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    padding: 0;
+}
+
+/* ---- Left rail ---- */
+
+.settings-nav {
+    width: 236px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 14px 10px;
+    border-right: 1px solid var(--border-primary);
+    background-color: var(--bg-secondary);
+    overflow-y: auto;
+}
+
+.settings-nav-search {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
+    padding: 7px 10px;
+    margin-bottom: 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    transition: border-color 0.15s;
+}
+
+.settings-nav-search:focus-within {
+    border-color: var(--accent-primary);
+}
+
+.settings-nav-search svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: var(--text-quaternary);
+}
+
+.settings-nav-search input {
+    width: 100%;
+    min-width: 0;
+    background: none;
+    border: none;
+    outline: none;
+    padding: 0;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: inherit;
+}
+
+.settings-nav-search input::placeholder {
+    color: var(--text-quaternary);
+}
+
+/* Strip the WebKit search affordances so the field matches the app's inputs. */
+.settings-nav-search input::-webkit-search-decoration,
+.settings-nav-search input::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+}
+
+.settings-nav-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-nav-label {
+    padding: 12px 10px 5px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    color: var(--text-quaternary);
+}
+
+.settings-nav-label:first-child {
+    padding-top: 0;
+}
+
+.settings-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 8px 10px;
+    margin-bottom: 2px;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-tertiary);
+    font-size: 13px;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s;
+}
+
+.settings-nav-item svg {
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    opacity: 0.85;
+}
+
+.settings-nav-item span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.settings-nav-item:hover {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.settings-nav-item.active {
+    background-color: var(--bg-quaternary);
+    color: var(--text-primary);
+}
+
+.settings-nav-item:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
+}
+
+/* BananaBread pins a Save button here; this app persists on change, so the
+   slot carries the note that says so. */
+.settings-nav-save {
+    margin-top: auto;
+    padding: 12px 10px 2px;
+}
+
+.settings-autosave-note {
+    display: block;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-quaternary);
+}
+
+/* ---- Right pane ---- */
+
+.settings-content {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 20px 26px 28px;
+}
+
+.settings-section[hidden],
+.settings-content [hidden] {
+    display: none;
+}
+
+.settings-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 18px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.settings-section-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* While searching, several sections stack in the pane at once; space them so
+   the headings read as separators rather than as one run-on list. */
+.settings-content.is-searching .settings-section + .settings-section {
+    margin-top: 26px;
+}
+
+/* The shared .setting-row/.sound-category rules only carry bottom margin, which
+   left every block butted against the description above it once groups were no
+   longer separated by the old single-column run. */
+.settings-content .setting-row,
+.settings-content .sound-category {
+    margin-top: 14px;
+}
+
+.settings-content .setting-subgroup > .sound-category:first-child {
+    margin-top: 10px;
+}
+
+.settings-no-results {
+    margin: 0;
+    padding: 32px 0;
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-quaternary);
+}
+
+/* ---- Narrow windows: rail collapses to a scrolling strip above the pane ---- */
+
+@media (max-width: 760px), (max-height: 520px) {
+    .settings-modal .modal-content {
+        width: 96%;
+        height: 90vh;
+        max-height: none;
+    }
+
+    .settings-body {
+        flex-direction: column;
+    }
+
+    .settings-nav {
+        width: auto;
+        flex-shrink: 0;
+        border-right: none;
+        border-bottom: 1px solid var(--border-primary);
+        overflow-y: visible;
+    }
+
+    .settings-nav-list {
+        flex-direction: row;
+        gap: 4px;
+        overflow-x: auto;
+        padding-bottom: 2px;
+    }
+
+    /* The group labels are vertical-list furniture; drop them in strip mode. */
+    .settings-nav-label {
+        display: none;
+    }
+
+    .settings-nav-item {
+        width: auto;
+        flex-shrink: 0;
+        margin-bottom: 0;
+    }
+
+    .settings-nav-save {
+        margin-top: 10px;
+        padding: 0 2px;
+    }
+
+    .settings-content {
+        padding: 18px 18px 24px;
+    }
+}
