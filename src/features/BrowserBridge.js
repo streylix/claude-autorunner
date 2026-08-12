@@ -32,7 +32,23 @@
  * frame.contentWindow` never matches and the trust has to run the other way —
  * the token is posted TO the stage frame and only ever read by whoever is on it.
  */
-const crypto = require('crypto');
+// Token minting has to work in both renderer targets: Electron's node-integrated
+// renderer and the remote browser bundle, which has no Node builtins. Web Crypto
+// covers both — getRandomValues, unlike subtle, is not gated on a secure context,
+// so it works on the file:// window too. The Node path is only a fallback, and its
+// specifier is deliberately not a literal: esbuild resolves require() statically,
+// so a literal would break the browser build on a branch that never runs there.
+const NODE_CRYPTO = 'crypto';
+
+const randomHex = (bytes) => {
+    const webCrypto = globalThis.crypto;
+    if (!webCrypto || typeof webCrypto.getRandomValues !== 'function') {
+        return require(NODE_CRYPTO).randomBytes(bytes).toString('hex');
+    }
+    const buf = new Uint8Array(bytes);
+    webCrypto.getRandomValues(buf);
+    return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+};
 
 const CARD_URL = 'browser.html';
 
@@ -146,7 +162,7 @@ class BrowserBridge {
     /** Mint a token and hand it to the stage frame — never to the requester. */
     handshake() {
         if (!this.stageIsCard()) return;
-        this.token = crypto.randomBytes(24).toString('hex');
+        this.token = randomHex(24);
         this.post({ source: 'browser-host', op: 'welcome', token: this.token, home: HOME });
     }
 
