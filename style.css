@@ -4993,6 +4993,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     transform: translateY(100%);
     visibility: hidden;
     overflow: hidden;
+    /* Parked a full sidebar-height below the fold. A hidden-but-laid-out box
+       down there still counts toward the sidebar's scrollable overflow, which
+       gave the sidebar a second screen of nothing to scroll into. Taken out of
+       layout until .vibe-active puts it back. */
+    display: none;
 }
 
 /* .vibe-active is on for the duration of the animation and while open; it
@@ -5002,6 +5007,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .sidebar.vibe-active > .vibe-panel {
+    display: flex;
     visibility: visible;
     transition: transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
     will-change: transform;

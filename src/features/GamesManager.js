@@ -65,6 +65,14 @@ class GamesManager {
         this.cards = new Map();
         this.emptyEl = null;
         this.focusPollTimer = null;
+
+        // Thumbnails are live copies of the games, and a game loop runs at
+        // full frame rate even inside a display:none iframe — Chromium does
+        // not throttle same-origin frames that are merely hidden. Two idle
+        // thumbnails were measured costing ~14% GPU + ~7% renderer CPU with
+        // the panel closed. So thumbs only hold a document while they are
+        // actually on screen: panel open AND shelf not collapsed.
+        this.panelOpen = false;
     }
 
     initialize() {
@@ -98,10 +106,16 @@ class GamesManager {
         // Opening the panel should land the player in the game, not in the app.
         if (this.eventBus) {
             this.eventBus.on('games:panel-opened', () => {
+                this.panelOpen = true;
+                this.syncThumbLiveness();
                 this.focusGame();
                 this.startFocusWatch();
             });
-            this.eventBus.on('games:panel-closed', () => this.stopFocusWatch());
+            this.eventBus.on('games:panel-closed', () => {
+                this.panelOpen = false;
+                this.syncThumbLiveness();
+                this.stopFocusWatch();
+            });
         }
     }
 
@@ -125,6 +139,8 @@ class GamesManager {
             this.flap.title = collapsed ? 'Show the games shelf' : 'Collapse the games shelf';
         }
         try { localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0'); } catch (_) { /* private mode */ }
+        // A collapsed shelf hides every card, so its game loops must stop too.
+        this.syncThumbLiveness();
     }
 
     toggleCollapsed() {
@@ -267,8 +283,11 @@ class GamesManager {
                 // Only a genuine file change re-points the thumbnail.
                 if (entry.mtime !== game.mtime) {
                     entry.mtime = game.mtime;
+                    entry.game = game;
                     entry.art.classList.remove('has-shot');
-                    entry.shot.src = this.thumbUrl(game);
+                    // A suspended thumb picks the new bytes up on resume —
+                    // thumbUrl() reads the mtime recorded here.
+                    if (this.thumbsLive()) entry.shot.src = this.thumbUrl(game);
                 }
             }
 
@@ -343,6 +362,9 @@ class GamesManager {
         shot.setAttribute('scrolling', 'no');
         shot.setAttribute('loading', 'lazy');
         shot.addEventListener('load', () => {
+            // Suspension navigates to about:blank, which also fires load — that
+            // one must not dress the card up as a rendered thumbnail.
+            if (!shot.getAttribute('src') || shot.getAttribute('src') === 'about:blank') return;
             art.classList.add('has-shot');
             // Thumbnails are separate documents from the stage, so they never
             // saw the host's theme push and would sit in light mode in a dark
@@ -355,7 +377,9 @@ class GamesManager {
                 }, '*');
             } catch (_) { /* frame went away; the card keeps its plain surface */ }
         });
-        shot.src = this.thumbUrl(game);
+        // No src until the card is actually visible (see syncThumbLiveness) —
+        // a thumb is a running game, and it must not run behind a closed panel.
+        if (this.thumbsLive()) shot.src = this.thumbUrl(game);
         art.appendChild(shot);
 
         const name = document.createElement('span');
@@ -369,7 +393,32 @@ class GamesManager {
         card.append(art, name, sub);
         card.addEventListener('click', () => this.select(game.id));
 
-        return { card, art, shot, name, sub, title: game.title, mtime: game.mtime };
+        return { card, art, shot, name, sub, title: game.title, mtime: game.mtime, game };
+    }
+
+    // ---------- thumbnail liveness ----------
+    //
+    // A thumbnail is a live copy of the game, and iframes hidden by
+    // display:none still run rAF at full rate. So thumbs hold a document only
+    // while genuinely on screen; otherwise they park at about:blank. Games are
+    // stateless demos at their ?thumb= entry point, so a reload on reveal is
+    // the intended behavior, and the 520ms panel slide covers the load.
+
+    thumbsLive() {
+        return this.panelOpen && !(this.shelf && this.shelf.classList.contains('collapsed'));
+    }
+
+    syncThumbLiveness() {
+        const live = this.thumbsLive();
+        for (const entry of this.cards.values()) {
+            if (live) {
+                const want = this.thumbUrl(entry.game);
+                if (entry.shot.getAttribute('src') !== want) entry.shot.src = want;
+            } else if (entry.shot.getAttribute('src')) {
+                entry.art.classList.remove('has-shot');
+                entry.shot.src = 'about:blank';
+            }
+        }
     }
 
     select(id) {
