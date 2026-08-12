@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, powerSaveBlocker, Notification, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, powerSaveBlocker, Notification, shell, session } = require('electron');
+const { getBuildInfo, describeBuild } = require('./src/build-info');
 const path = require('path');
 const pty = require('node-pty');
 const os = require('os');
@@ -572,13 +573,21 @@ app.whenReady().then(async () => {
     // Snapshot + control dispatch, shared by the HookServer (HTTP control API)
     // and the RemoteServer (WebSocket bridge) so both surfaces behave
     // identically. Hoisted out of the HookServer config for exactly that reuse.
-    const getStateSnapshot = () => enrichSnapshot(
-      rendererStateCache,
-      (id) => {
-        const p = ptyProcesses.get(id);
-        return p ? p.pid : undefined;
-      }
-    );
+    const getStateSnapshot = () => {
+      const snapshot = enrichSnapshot(
+        rendererStateCache,
+        (id) => {
+          const p = ptyProcesses.get(id);
+          return p ? p.pid : undefined;
+        }
+      );
+      // Which code is running (see src/build-info.js). Sits next to the
+      // renderer's own `rendererBuild` in the same payload: main and renderer
+      // are always the same checkout, so a mismatch in their mtimes/tags means
+      // the renderer is serving stale parsed code — and a `dir` that isn't the
+      // repo you edited means `electron .` was launched from another checkout.
+      return snapshot ? { ...snapshot, build: getBuildInfo() } : snapshot;
+    };
     const controlDispatch = (action, payload) => {
       if (action === 'terminal-keys' || action === 'terminal-claude') {
         const ptyFor = (id) => ptyProcesses.get(id) || ptyProcesses.get(Number(id));
@@ -898,8 +907,27 @@ app.whenReady().then(async () => {
   }
 
   createTray();
+
+  // Log which code this process is running, and drop V8's compiled-code cache
+  // before the window loads. The cache clear is belt-and-braces: Electron keys
+  // the code cache on script identity and normally recompiles edited files on
+  // its own, so this is NOT the cure for "my renderer changes didn't take" —
+  // the `[Build]` line below is what actually diagnoses that. Clearing costs one
+  // recompile of local files at startup and removes the possibility entirely.
+  // Failures here must never block startup, hence the catch.
+  try {
+    console.log(`[Build] ${describeBuild('MAIN_BUILD')}`);
+  } catch (e) { /* ignore */ }
+  try {
+    await session.defaultSession.clearCodeCaches({});
+    await session.defaultSession.clearCache();
+    console.log('[Main] Renderer caches cleared before window load');
+  } catch (error) {
+    try { console.error('[Main] Cache clear failed (continuing):', error); } catch (e) { /* ignore */ }
+  }
+
   createWindow();
-  
+
   // Set dock icon (macOS specific)
   if (process.platform === 'darwin') {
     try {

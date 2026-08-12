@@ -291,7 +291,13 @@ class MessageQueueManager {
         // definitive 'shell' blocks; 'claude'/'unknown'/undefined fail open so a
         // transient detection gap never freezes legitimate injection. Urgent keeps
         // its documented bypass (a remote SSH'd Claude is detected locally as shell).
-        if ((message.type || 'normal') !== 'urgent' && this.terminalStateManager) {
+        // The manager (999) is exempt for the same reason it bypasses the gate: it
+        // is a hidden PTY whose runtime detection can read 'shell', and holding its
+        // inbound reports here would silently re-create the stuck-queue bug the
+        // gate bypass exists to fix. Its own disable switch is checked above.
+        if ((message.type || 'normal') !== 'urgent'
+            && terminalId !== MANAGER_TERMINAL_ID
+            && this.terminalStateManager) {
             const terminal = this.terminalStateManager.getTerminal(terminalId);
             if (terminal && terminal.runtime === 'shell') {
                 this.logAction(`Held: terminal ${terminalId} is a bare shell (no Claude session) — message not injected`, 'warning');

@@ -94,3 +94,73 @@ test('urgent is STILL blocked when there is no target terminal (the only hard bl
   assert.strictEqual(r.allowed, false);
   assert.match(r.reason, /no target terminal/);
 });
+
+// ===== manager (999) instant delivery =====
+// Reports bound for the manager must not sit in the queue. The manager parks at
+// 'prompted' between turns, so the normal status gate stranded completions there.
+// 999 clears the SOFT gates only — the usage limit still holds it (see below).
+
+test('NORMAL message to the manager (999) is allowed while it is "prompted"', () => {
+  const r = evaluateInjectionGate({ ...CLEAR, terminalId: 999, status: 'prompted', messageType: 'normal' });
+  assert.deepStrictEqual(r, { allowed: true, reason: 'ok' }, 'manager-bound normal must not be held at prompted');
+});
+
+test('manager (999) bypasses every SOFT gate: countdown, pause, shell, prompted', () => {
+  const r = evaluateInjectionGate({
+    usageLimitWaiting: false,
+    timerRunning: true,
+    injectionPaused: true,
+    terminalId: 999,
+    status: 'prompted',
+    runtime: 'shell',
+    messageType: 'normal',
+  });
+  assert.deepStrictEqual(r, { allowed: true, reason: 'ok' });
+});
+
+test('manager (999) bypasses each soft gate individually', () => {
+  const MGR = { ...CLEAR, terminalId: 999 };
+  assert.strictEqual(evaluateInjectionGate({ ...MGR, timerRunning: true }).allowed, true);
+  assert.strictEqual(evaluateInjectionGate({ ...MGR, injectionPaused: true }).allowed, true);
+  assert.strictEqual(evaluateInjectionGate({ ...MGR, runtime: 'shell' }).allowed, true);
+  assert.strictEqual(evaluateInjectionGate({ ...MGR, status: 'prompted' }).allowed, true);
+});
+
+// The usage limit is where manager traffic parts ways with urgent: the manager
+// can't act on a report mid-wait, so holding until reset beats buffering turns.
+test('usage limit STILL holds a manager (999) message — it is not a soft gate', () => {
+  const r = evaluateInjectionGate({ ...CLEAR, terminalId: 999, usageLimitWaiting: true, messageType: 'normal' });
+  assert.strictEqual(r.allowed, false, 'manager must wait out a usage limit');
+  assert.match(r.reason, /usage limit/);
+});
+
+test('usage limit beats the 999 bypass even with every soft gate clear', () => {
+  const r = evaluateInjectionGate({
+    usageLimitWaiting: true,
+    timerRunning: false,
+    injectionPaused: false,
+    terminalId: 999,
+    status: '...',
+    runtime: 'claude',
+    messageType: 'normal',
+  });
+  assert.strictEqual(r.allowed, false);
+  assert.match(r.reason, /usage limit/);
+});
+
+test('urgent to 999 still overrides the usage limit (urgent keeps its full bypass)', () => {
+  const r = evaluateInjectionGate({ ...CLEAR, terminalId: 999, usageLimitWaiting: true, messageType: 'urgent' });
+  assert.deepStrictEqual(r, { allowed: true, reason: 'ok' });
+});
+
+test('the 999 bypass does NOT leak to worker terminals', () => {
+  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, terminalId: 99, status: 'prompted' }).allowed, false);
+  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, terminalId: 9990, status: 'prompted' }).allowed, false);
+  assert.strictEqual(evaluateInjectionGate({ ...CLEAR, terminalId: 1, status: 'prompted' }).allowed, false);
+});
+
+test('no-target still beats the manager bypass', () => {
+  const r = evaluateInjectionGate({ ...CLEAR, terminalId: null });
+  assert.strictEqual(r.allowed, false);
+  assert.match(r.reason, /no target terminal/);
+});

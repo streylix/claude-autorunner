@@ -793,6 +793,10 @@ class WakeWordManager {
             terminalId: MANAGER_TERMINAL_ID,
             type: 'urgent'
         });
+        // A spoken memo is the user being present, same as typing: it resets
+        // the fleet inactivity clock and aborts an in-flight manager
+        // checkpoint/clear cycle (ManagerCheckpointManager).
+        this.eventBus.emit('user:activity', { source: 'voice' });
         this._log('📨 Sent your voice memo to the manager (999).', 'success');
     }
 

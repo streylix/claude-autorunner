@@ -6,6 +6,253 @@ project's current git branch.
 
 ---
 
+## 2026-08-11 — Restarts were loading a DIFFERENT checkout; build identity is now reportable, and manager (999) traffic bypasses the queue gate (branch `ssh-view`, uncommitted)
+
+**Request (Ethan).** Two problems. First, the blocker: a restart at 13:35
+did not activate renderer changes — the old-format completion push
+("Terminal N just finished. Its last message:") kept firing even though
+`renderer.js` had `COMPLETION_PUSH_VIA_STOP_HOOK = false` and the new
+`LongExecutionWatchManager` / `ManagerCheckpointManager` were wired in.
+The suspected cause was a stale Electron code cache (`~/.config/auto-injector/Code Cache`
+is dated 2026-06-08 and `main.js` never cleared it). Second: messages
+addressed to the manager terminal must not sit in the queue.
+
+**Investigation (the cache was a red herring).** `completion:recorded`
+has exactly one emitter — `renderer.js:493`, behind the disabled flag —
+so a live old-format push meant old code, which was right. But the cause
+was not caching. Reading `/proc/<pid>/cwd` for the running Electron
+process gave the answer in one line:
+
+    /proc/1903600/cwd -> /media/ethan/smalls/aci-serve
+
+`electron .` resolves `.` against the **shell's cwd**, not the repo. The
+app was being launched from `/media/ethan/smalls/aci-serve` — a
+detached-HEAD git **worktree** of this same repository, pinned at
+`471d9ed`, two commits behind. That checkout has no
+`LongExecutionWatchManager.js`, no `ManagerCheckpointManager.js`, and no
+`COMPLETION_PUSH_VIA_STOP_HOOK` flag at all, so the Stop-hook push there
+is unconditionally live. Restarts were loading fresh code the whole time
+— just fresh code from the wrong directory. Both checkouts share one
+Electron userData dir, so nothing looked wrong from the outside, and the
+live app had no way to say where its code came from. That missing answer
+is what let the wrong theory survive.
+
+**Fix — build identity (the actual fix).** New `src/build-info.js`
+reports the loaded code's identity: a hand-bumped `BUILD_TAG`, the
+directory the code was loaded from, the git HEAD of that directory
+(worktree-aware — it follows the `gitdir:` pointer when `.git` is a
+file), and the mtimes of `renderer.js` / `main.js`. It is surfaced three
+ways so it is visible whatever you have access to:
+
+- `renderer.js` logs `RENDERER_BUILD_<tag> dir=… git=… renderer.js=<mtime>`
+  the moment the file is parsed — the direct proof a restart re-parsed it;
+- `main.js` logs the same as `[Build] MAIN_BUILD_…` at startup;
+- `GET /state` on the control API now carries `build` (main's view) beside
+  `rendererBuild` (the renderer's own), so the manager can query it.
+
+Against the two checkouts the marker reads, respectively,
+`dir=/media/ethan/smalls/claude-autorunner git=ssh-view@7b800ee4c0d2` and
+`dir=/media/ethan/smalls/aci-serve git=(detached)@471d9eddbc26` — which
+would have identified this in one query.
+
+**Fix — cache clearing (belt-and-braces).** `main.js` now awaits
+`session.defaultSession.clearCodeCaches({})` + `clearCache()` before
+`createWindow()`, wrapped so a failure can never block startup. This was
+not the cause and is not the cure; it costs one recompile of local files
+per launch and closes the door on the theory permanently.
+
+**Fix — instant manager delivery.** `evaluateInjectionGate` gave normal
+messages the full gate treatment, including "blocked while the
+destination is `prompted`". The manager parks at `prompted` between turns
+as a matter of course, so a completion push aimed at 999 could wait
+indefinitely for a state it may never reach on its own — it got stuck in
+the queue. Inbound manager traffic is not queued work competing for a
+worker's attention; it is the reporting channel (completions, stuck
+watches, voice memos, Discord relays), and the manager's own judgment is
+the brake on what it acts on. So destination 999 now bypasses the **soft**
+gates: status (`prompted`), timer countdown, injection paused, bare-shell.
+
+What still holds a manager message, deliberately:
+
+- **no target terminal** — the one hard block, unchanged;
+- **the usage limit** — checked *ahead of* the 999 bypass. This is where
+  manager traffic parts ways with urgent, which does override it. Ethan's
+  call, and the right one: during a usage-limit wait the manager can't act
+  on a report anyway, so holding until reset is cleaner than buffering
+  turns it will only read late;
+- **the "manager input disabled" switch** — checked in
+  `canInjectToTerminal` *before* the policy runs, so the bypass cannot
+  defeat it, and re-checked in `_injectToTerminal`, the single sink every
+  injection path flows through.
+
+Final precedence in `evaluateInjectionGate`: no-target → urgent bypass →
+usage limit → **999 bypass** → countdown → paused → bare-shell → status.
+
+One further hole was closed while proving this end to end: the bare-shell
+re-check inside `_injectToTerminal` would still have silently held
+manager messages, since 999 is a hidden PTY whose runtime detection can
+read `shell` — which would have re-created the exact stuck-queue symptom
+one layer below the gate. 999 is now exempt there too.
+
+**Tests.** `src/messaging/injection-gate.test.js` gains manager cases:
+allowed while `prompted`; allowed with every soft gate hostile at once and
+each one individually; **held** by a usage limit (alone, and with every
+soft gate clear); urgent-to-999 still overrides the usage limit; the
+bypass does not leak to terminal 1/99/9990; no-target still wins. New
+`src/messaging/manager-gate.test.js` covers the layer above the pure
+policy — normal-to-999-while-prompted is allowed, while a usage-limit
+wait holds it, and both normal and urgent to 999 are held when manager
+input is disabled. Full local suite: **140/140 pass**.
+
+**Still needed from a human (not done here — the app is live).** The
+running app must be launched from this checkout, or the `aci-serve`
+worktree brought up to date; the code changes above take effect on the
+next restart either way. After the restart, `GET /state` (or the renderer
+console) reporting `tag=20260811-longexec-mgrgate-1` with
+`dir=/media/ethan/smalls/claude-autorunner` confirms the new code loaded.
+
+---
+
+## 2026-08-11 — Manager checkpoints its session to notes after 90 min idle, then clears itself (branch `ssh-view`, uncommitted)
+
+**Request (Ethan, via the manager).** When nothing has happened for "an
+hour or two", have the manager write up what it did this session into its
+notes, wait until it has actually finished writing, and only then `/clear`
+its context — so the next session starts clean without losing what the
+last one learned. It must never clear while the user is around.
+
+**Investigation.** The app had no notion of "the user is here": the
+message box, terminal keystrokes and voice memos all just called
+`addMessage`, indistinguishable from the automated dispatches
+(completion pushes, stuck notes, the pass loop) that also queue messages.
+Two useful facts settled the design. Queue injection writes to the PTY
+via `ipc.send('terminal-input', …)` and never passes through xterm's
+`onData` (`renderer.js` ~1977) — so `onData` fires for real keystrokes
+and pastes ONLY, making it a clean human-presence signal. And the
+manager's own PTY output is already on the bus as `terminal:data` for
+999, which is exactly the "is it still writing?" signal this needs.
+
+**Fix.** A canonical `user:activity` event is now emitted from the three
+genuine-user entry points — terminal keystrokes (`renderer.js` ~1977),
+the message box's `handleAddMessage`, and `WakeWordManager`'s voice memo
+— and new `src/features/ManagerCheckpointManager.js` runs the cycle on a
+30s clock (constructed/started in `renderer.js` beside the change
+watcher):
+
+- **idle** (armed) — the inactivity clock resets on `user:activity` or on
+  output from any NON-999 terminal. The manager's own output pointedly
+  does not count, or its housekeeping would hold the clock open forever.
+- 90 min silent (`INACTIVITY_THRESHOLD_MS`) → **checkpointing**: dispatch
+  "Jot down everything you did this session in the notes." to 999 through
+  the normal queue path.
+- 999 goes active-then-quiet → **clearing**: dispatch `/clear`.
+- `/clear` injects → **disarmed**, and it stays disarmed through any
+  amount of further idle time. Only genuinely new activity re-arms it, so
+  it cannot loop-clear.
+
+"Active-then-quiet" reuses the change watcher's constants directly:
+`QUIET_DEBOUNCE_MS` for quiet, and `RUNNING_THRESHOLD_MS` as a floor on
+how long 999 must have been writing. That floor matters — injecting the
+prompt echoes it into 999's own PTY, so without it an echo followed by a
+slow turn start would read as "notes written" and clear the manager
+before it wrote anything. A suspiciously short write is discarded and the
+flow keeps waiting; if the manager never really answers, a 10-minute
+timeout gives up WITHOUT clearing. Both bail-outs err the same way: a
+missed clear is harmless, a premature one loses the session.
+
+**The abort.** Any `user:activity` during checkpointing or clearing kills
+the cycle immediately and pulls whatever it queued back out (matched on
+999 + this module's own exact constant strings, so a user's message is
+never in scope) — including a `/clear` already sitting in the queue. The
+manager is never cleared mid-conversation. Worker output alone does not
+abort; a background job finishing is not the user coming back.
+
+**Tests.** `tests/unit/manager-checkpoint.test.js` — 17 cases on a mocked
+clock: threshold arming, manager-output-doesn't-count, active-then-quiet
+clearing exactly once, the echo guard, both abort paths, disarm/re-arm,
+manager-not-running, mid-cycle manager stop, and the kill switch
+(`managerInactivityCheckpointEnabled`). All pass. **Takes effect at the
+next app restart.**
+
+---
+
+## 2026-08-11 — Terminal status is now driven by SCREEN CHANGE, not Claude hooks; long executions report when they stop (branch `ssh-view`, uncommitted)
+
+**Request (manager, terminal 999).** The Claude Code hooks toggle
+running/idle unreliably: a missed `Stop` pins a terminal at "running"
+forever (so the injection gate refuses to feed it), and a missed
+`UserPromptSubmit` leaves a busy terminal looking idle (so a prompt gets
+injected into a live turn). Replace that toggle with a lightweight
+watcher that reads ACTUAL screen change, and have it report to the
+manager when a long execution stops. Must stay extremely light — no
+polling, no hashing on a fast timer.
+
+**Investigation.** The renderer already emits exactly the signal needed:
+`renderer.js`'s `terminal-data` IPC handler (~line 353) fires once per
+PTY output chunk and emits `terminal:data` on the bus — i.e. one event
+per screen change, already on the hot path for every terminal.
+`StuckWatchManager` (`src/features/StuckWatchManager.js`) established the
+shape for a periodic watcher that feeds off bus events, dispatches to the
+manager via `managerInstance.dispatch()` (999 is rejected by the HTTP
+control API, so dispatch is the only route), and de-dupes per episode.
+Its one flaw: it never prunes per-terminal state when a terminal closes.
+
+**Fix.** New `src/features/LongExecutionWatchManager.js`, constructed and
+started in `renderer.js` alongside `StuckWatchManager` (~line 181). The
+hot path does one Map write per chunk — a timestamp, nothing else. All
+judgement happens on a single coarse 1s interval:
+
+- output that keeps arriving for **10s** (`RUNNING_THRESHOLD_MS`) →
+  status `running`, emitted with `source: 'change-watch'`
+- a **5s** gap (`QUIET_DEBOUNCE_MS`) ends the episode. If we owned the
+  `running`, status goes back to `'...'` and **one** report is pushed to
+  the manager with the cleaned tail of the visible screen (last 15
+  non-empty lines / 800 chars, box-drawing chrome and 3+ dash runs
+  stripped) via the existing `readTerminalScreen()`.
+- an episode that ends before 10s resets silently — no status write, no
+  report. Quick turns are noise.
+
+Guards: terminal **999** is never tracked, never written, never
+reported; `prompted` / `error` / `injecting` set by other sources are
+never overridden; and the watcher only clears a `running` it set itself
+(ownership drops the moment any other source writes status). On
+`terminal:closed` it deletes that terminal's state — the pruning
+StuckWatch omits.
+
+The quiet window is deliberately 5s rather than the 2.5s first built: a
+mid-turn gap misread as "stopped" costs a spurious manager report and
+running→idle→running flapping, which is a worse failure than learning
+about a real stop 2.5s later.
+
+Two things were switched off so the watcher is the single authority.
+`HOOK_STATUS_MAP` in the `claude-hook-event` handler lost its
+`prompt-submit → running` and `stop → '...'` entries (`notification →
+prompted` stays — it's the one dependable hook, and it's the awaiting-
+input signal nothing else can see). And the Stop-hook completion push
+(`completion:recorded` → `ManagerInstance.onTerminalCompletion`) is
+disabled behind `COMPLETION_PUSH_VIA_STOP_HOOK = false` in renderer.js,
+so completions are reported once, by the watcher, not twice.
+`ManagerInstance`'s completion logic is left intact and still unit-tested
+— only the emission is cut, so this reverts with a one-word edit.
+
+**Effect.** The manager stops hearing about every trivial sub-10s turn
+and starts hearing about substantial executions when they actually
+finish — judged by the screen going quiet, which is observable, rather
+than by a hook that may never fire. Terminals no longer get stranded in a
+false "running" that blocks injection.
+
+**Tests.** `tests/unit/long-execution-watch.test.js` — 17 cases on a
+mocked clock (no timers armed): promotion at 10s, silent sub-threshold
+bursts, idle + exactly-one-report on stop, the snippet cleaner, 999
+exclusion, protected-status and ownership guards, close-pruning, and the
+disable switch. All pass; the 164-case `src/features` + `discord-bridge`
+suites still pass. Config lives at the top of the module
+(`RUNNING_THRESHOLD_MS`, `QUIET_DEBOUNCE_MS`, `EVAL_INTERVAL_MS`,
+`REPORT_MAX_LINES`), and `managerLongExecutionWatchEnabled` turns the
+whole thing off. **Takes effect at the next app restart.**
+
+---
+
 ## 2026-07-30 — Completion push now sends the live screen-buffer tail, not a transcript lookup (branch `ssh-view`, uncommitted)
 
 **Request (Ethan).** Replace the completion-push text source. Instead of
@@ -4499,3 +4746,68 @@ restart window.
   green; full suite `node --test src/features/ src/main/` = 184/184 pass.
 - Files: `src/features/StuckWatchManager.js` (+ test),
   `src/features/ManagerInstance.js` (+ dedup test), `renderer.js`.
+
+## 2026-08-07 — Manager nightly `/clear` (daily context reset at local midnight)
+
+**Why.** The manager (999) is a long-lived session that accumulates context all
+day — completion pushes from every terminal, prompt-watch notes, stuck-watch
+notes. It now clears itself once a night so each day starts lean, instead of the
+operator remembering to do it by hand.
+
+- **Scheduler** (`src/features/ManagerInstance.js`, sibling to the pass loop):
+  `startNightlyClear()` / `stopNightlyClear()` / `_armNightlyClear()` /
+  `dispatchNightlyClear()`. At the configured hour (default 0 = local midnight)
+  it enqueues the literal message `/clear` to terminal 999.
+- **Mechanism: the queue, not a direct PTY write.** The clear goes through the
+  same `dispatch()` → `messageQueueManager.addMessage()` path the old
+  `dispatchPass()` used. That matters because the queue's injection gate only
+  injects when the target terminal is idle: a clear armed for midnight lands at
+  the first idle moment at-or-after midnight and can never truncate a turn the
+  manager is in the middle of. Writing `/clear\r` straight to the PTY via
+  `pty-control` would mean reimplementing that idle check here and would still
+  race a turn that starts between the check and the write.
+- **Midnight alignment via self-rescheduling `setTimeout`, not a 24h
+  `setInterval`.** Each night it recomputes the ms until the next local
+  hour:00 using the existing cross-midnight builder
+  `resetTime24ToDate()` from `src/utils/usage-limit-parser.js` (constructs
+  hour:00 on today's local calendar date, rolls to tomorrow if already past).
+  Recomputing the wall-clock target rather than adding a fixed 86,400,000 ms is
+  what keeps it pinned to 00:00 across DST — on a 23- or 25-hour day the next
+  delay is simply shorter or longer. When re-arming immediately after a fire it
+  looks ahead from now+60s, so a timer landing a hair early cannot re-target the
+  midnight that just passed and clear twice for one night.
+- **A confirming Enter after the injected `/clear`.** Claude Code pops its
+  slash-command palette as `/clear` is typed; if that palette is still open when
+  the injector's Enter (sent 150ms after the text) lands, the Enter is consumed
+  accepting the highlighted entry and the command sits unsent in the input box.
+  `onMessageInjected()` follows the manager's own `/clear` with one more Enter
+  ~900ms later. Both paths converge: if `/clear` already ran, the extra Enter
+  hits an empty prompt and does nothing; if the palette ate the first one, this
+  submits it. Scoped by terminal id AND content, so ordinary injection is
+  untouched.
+- **Settings, safe defaults.** `managerNightlyClearEnabled` (default ON — only
+  an explicit `false` disables) and `managerNightlyClearHour` (default 0,
+  out-of-range values fall back to 0), read the same way
+  `managerPassIntervalMinutes` was: `appStateStore.getState()` first, then
+  `ipc.invoke('db-get-setting', …)`. No settings-panel UI was added; set them
+  with `db-set-setting` if the default midnight isn't wanted.
+- **Lifecycle / double-arm guard.** Armed in `start()` (right after the
+  now-permanently-disabled `stopPassLoop()` call, and after the Remote Mode
+  early-return, so only the local renderer that owns the manager schedules a
+  clear — a browser viewer must not also fire one into the shared session).
+  Cancelled in `stop()`. `startNightlyClear()` calls `stopNightlyClear()` first,
+  so re-entry never leaves two timers running. `dispatchNightlyClear()` also
+  skips if a `/clear` is still sitting in 999's queue.
+- **Tests**: `src/features/ManagerInstance.nightlyClear.test.js` (16 tests,
+  mirrors the dedup test's fake-bus/gui style) — next-fire lands on the upcoming
+  local midnight, stays on 00:00 across a full year of dates (a fixed-24h
+  scheduler would drift on the DST day), fires → enqueues `/clear` to 999,
+  re-arms for the FOLLOWING midnight, don't-stack guard, disabled-setting
+  respected, out-of-range hour clamped, confirming Enter fires only for the
+  manager's own `/clear`. Full suite `node --test src/features/ src/main/
+  src/messaging/ src/utils/` = **215/215 pass**.
+- **Activation**: takes effect on the next app restart (the scheduler is armed
+  in `ManagerInstance.start()`). Not restarted as part of this change — a
+  restart also restarts the manager.
+- Files: `src/features/ManagerInstance.js`,
+  `src/features/ManagerInstance.nightlyClear.test.js` (new).

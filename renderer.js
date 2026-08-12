@@ -1,4 +1,15 @@
 const { ipcRenderer } = require('electron');
+
+// Build identity, logged the moment this file is parsed. If a restart is
+// supposed to activate renderer changes, THIS line is the proof it did: it
+// carries the build tag, the directory the code was loaded from, the git HEAD
+// of that directory, and renderer.js's mtime. `electron .` resolves `.` against
+// the shell's cwd, so the app can silently run a different checkout than the one
+// you edited — check `dir=` here before suspecting anything else. See
+// src/build-info.js.
+const { getBuildInfo, describeBuild } = require('./src/build-info');
+console.log(`🏷️  ${describeBuild('RENDERER_BUILD')}`);
+
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { SearchAddon } = require('@xterm/addon-search');
@@ -27,6 +38,8 @@ const ActionLogManager = require('./src/features/ActionLogManager');
 const ManagerInstance = require('./src/features/ManagerInstance');
 const PromptWatchManager = require('./src/features/PromptWatchManager');
 const StuckWatchManager = require('./src/features/StuckWatchManager');
+const LongExecutionWatchManager = require('./src/features/LongExecutionWatchManager');
+const ManagerCheckpointManager = require('./src/features/ManagerCheckpointManager');
 const WakeWordManager = require('./src/features/WakeWordManager');
 const RemoteMicSink = require('./src/features/RemoteMicSink');
 const DiscordLinkKeyManager = require('./src/features/DiscordLinkKeyManager');
@@ -180,6 +193,27 @@ class TerminalGUI {
         // until the manager is running, so arming it here is safe.
         this.stuckWatchManager = new StuckWatchManager(this.eventBus, this.appStateStore, this);
         this.stuckWatchManager.start();
+
+        // Screen-change driven running/idle status. Replaces the Claude Stop /
+        // UserPromptSubmit hooks, which toggled unreliably: this watches the
+        // terminal:data stream (one event per screen change) and calls a
+        // terminal 'running' once output has kept coming for 10s, then back to
+        // idle when it goes quiet — pushing ONE "execution stopped" report with
+        // the screen tail to the manager. It is now the sole authority for
+        // running <-> idle and the sole completion reporter; 'prompted' is
+        // still hook-driven (see the claude-hook-event handler below).
+        this.longExecutionWatchManager = new LongExecutionWatchManager(this.eventBus, this.appStateStore, this);
+        this.longExecutionWatchManager.start();
+
+        // Inactivity checkpoint: after the whole fleet has been silent for 90
+        // minutes (no user input anywhere, no worker output — the manager's own
+        // output does NOT count), ask the manager to write this session into
+        // its notes, wait for it to actually finish writing (active-then-quiet,
+        // same quiet definition the change watcher uses), then /clear it. Any
+        // genuine user input at any point aborts the cycle and pulls whatever
+        // it queued — the manager is never cleared mid-conversation.
+        this.managerCheckpointManager = new ManagerCheckpointManager(this.eventBus, this.appStateStore, this);
+        this.managerCheckpointManager.start();
 
         // Always-on "Hey Claude" wake word → records a command → routes it to
         // the manager (999) as a voice memo. Off until enabled in settings.
@@ -395,10 +429,16 @@ class TerminalGUI {
         // Claude Code hook events: ground-truth state pushed by hooks running
         // inside app-spawned terminals (via main's HookServer)
         ipcRenderer.on('claude-hook-event', (event, payload) => {
+            // Only 'notification' still drives status. 'prompt-submit'->running
+            // and 'stop'->idle were removed: Claude Code fires them
+            // unreliably (missed stops pin a terminal 'running' forever, missed
+            // prompt-submits make a busy terminal look injectable), so
+            // running <-> idle is now owned entirely by
+            // LongExecutionWatchManager, which watches real screen change.
+            // 'notification' stays — it is the one dependable awaiting-input
+            // signal, and the watcher never overrides 'prompted'.
             const HOOK_STATUS_MAP = {
-                'prompt-submit': 'running',
-                'notification': 'prompted',
-                'stop': '...' // '...' is the app's stale/idle state convention
+                'notification': 'prompted'
             };
             if (!this.terminals.has(payload.terminalId)) return;
 
@@ -443,7 +483,15 @@ class TerminalGUI {
             // hook (Claude Code can fire several for one logical turn), producing
             // a stale/wrong-turn completion push. The screen buffer is always the
             // terminal's actual CURRENT state, so there's no "which message" bug.
-            if (payload.event === 'stop') {
+            // DISABLED — superseded by LongExecutionWatchManager, which reports
+            // a stopped execution off real screen change instead of the Stop
+            // hook. Leaving this live would double-report every finish (and
+            // re-report the ones the Stop hook fires several times for). The
+            // net change: quick sub-10s turns no longer wake the manager at
+            // all; only executions that ran >=10s and then stopped do.
+            // Flip to true to fall back to hook-driven completion pushes.
+            const COMPLETION_PUSH_VIA_STOP_HOOK = false;
+            if (COMPLETION_PUSH_VIA_STOP_HOOK && payload.event === 'stop') {
                 const tailChars = Number(this.appStateStore.getState('managerCompletionTailChars')) || 1500;
                 const screenResult = this.readTerminalScreen(payload.terminalId, { scrollback: true });
                 const tailText = (screenResult && screenResult.ok && screenResult.screen) || '';
@@ -649,6 +697,11 @@ class TerminalGUI {
                 queuedMessages: queue.length,
                 queue,
                 terminals,
+                // Identity of the RENDERER code that produced this snapshot, so
+                // GET /state answers "did the restart load my changes?" without
+                // needing the renderer console. Main reports its own build
+                // alongside it as `build` (see main.js getStateSnapshot).
+                rendererBuild: getBuildInfo(),
                 updatedAt: Date.now()
             });
         };
@@ -705,6 +758,9 @@ class TerminalGUI {
                         // Selector choice wins; falls back to the active terminal
                         terminalId: this.queueTargetTerminalId ?? this.activeTerminalId
                     });
+                    // Genuine user input — resets the fleet inactivity clock and
+                    // aborts an in-flight manager checkpoint/clear cycle.
+                    this.eventBus.emit('user:activity', { source: 'message-box' });
                     messageInput.value = '';
                     this.clearAttachments();
                     autoSizeInput(); // collapse back to one row after sending
@@ -1936,13 +1992,17 @@ class TerminalGUI {
             terminal.focus(); // blinking caret from the first paint
         }
         
-        // Set up data handler (main expects an { terminalId, data } payload)
+        // Set up data handler (main expects an { terminalId, data } payload).
+        // This fires ONLY for real keystrokes/pastes in the pane — queue
+        // injection writes to the PTY through ipc directly and never reaches
+        // xterm's onData — so it is a clean "the human is here" signal.
         terminal.onData((data) => {
             ipcRenderer.send('terminal-input', { terminalId, data });
             this.terminalStateManager.updateTerminal(terminalId, {
                 lastInput: data,
                 updatedAt: Date.now()
             });
+            this.eventBus.emit('user:activity', { source: 'terminal-input', terminalId });
         });
 
         // Keep the PTY dimensions in sync with the xterm viewport
