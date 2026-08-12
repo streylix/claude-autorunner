@@ -5,8 +5,10 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional
 
-from faster_whisper import WhisperModel
-import torch
+# faster_whisper and torch are imported inside the methods that need them,
+# not at module top: torch alone costs ~600MB RSS, and this module is pulled
+# in whenever Django boots (views.py imports the singleton below). The
+# backend must stay cheap for users who never touch voice features.
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +34,6 @@ def _preload_cuda12_libs():
                     ctypes.CDLL(so, mode=ctypes.RTLD_GLOBAL)
                 except OSError:
                     pass
-
-
-if torch.cuda.is_available():
-    _preload_cuda12_libs()
 
 
 # Hallucination post-filter (confidence-based). Whisper mislabels non-speech
@@ -92,6 +90,9 @@ class WhisperTranscriptionService:
     (CTranslate2). Quantized int8_float16 keeps large-v3 resident at ~2-3GB
     VRAM instead of the ~10GB an fp16 openai-whisper load would hold, while
     decoding faster than the old 'base' model.
+
+    Nothing heavy is imported until a transcription is actually requested —
+    see _resolve_device() and _load().
     """
 
     def __init__(self):
@@ -99,11 +100,24 @@ class WhisperTranscriptionService:
         # Guards the check-and-load in _get_model so concurrent requests don't
         # trigger duplicate (expensive) model loads or race on self.models.
         self._model_lock = threading.Lock()
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Whisper service initialized on device: {self.device}")
+        # Resolved on first model load (needs torch); None until then.
+        self.device = None
 
-    def _load(self, model_name: str) -> WhisperModel:
+    def _resolve_device(self):
+        if self.device is None:
+            import torch
+            if torch.cuda.is_available():
+                # Must run before the first CT2 load — see _preload_cuda12_libs.
+                _preload_cuda12_libs()
+                self.device = "cuda"
+            else:
+                self.device = "cpu"
+            logger.info(f"Whisper service initialized on device: {self.device}")
+        return self.device
+
+    def _load(self, model_name: str) -> "WhisperModel":
         """Load one CT2 model, degrading quantization/device instead of dying."""
+        from faster_whisper import WhisperModel
         if self.device == "cuda":
             for compute_type in ("int8_float16", "int8"):
                 try:
@@ -118,7 +132,7 @@ class WhisperTranscriptionService:
         logger.info(f"Loaded {model_name} on cpu (int8)")
         return model
 
-    def _get_model(self, model_name: str) -> WhisperModel:
+    def _get_model(self, model_name: str) -> "WhisperModel":
         """Load and cache Whisper models (thread-safe)."""
         # Fast path: already cached, no lock needed.
         if model_name in self.models:
@@ -130,6 +144,7 @@ class WhisperTranscriptionService:
             if model_name in self.models:
                 return self.models[model_name]
 
+            self._resolve_device()
             logger.info(f"Loading Whisper model: {model_name}")
             try:
                 self.models[model_name] = self._load(model_name)

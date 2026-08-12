@@ -232,16 +232,19 @@ def health_check(request):
     Health check endpoint for voice transcription service
     """
     try:
-        # Test if Whisper can be loaded. Uses large-v3 (what transcribe_audio
-        # actually runs), so hitting this endpoint doubles as the warm-up load.
-        test_model = transcription_service._get_model('large-v3')
+        # Cheap availability probe only. This endpoint gets hit at app startup
+        # and by monitors; it must NOT call _get_model() — that would pull the
+        # large-v3 weights and pin torch + the model for a service the user may
+        # never touch. Loading happens lazily on the first real transcription.
+        import importlib.util
+        whisper_available = importlib.util.find_spec('faster_whisper') is not None
 
         return Response({
-            'success': True,
+            'success': whisper_available,
             'status': 'Voice transcription service is running',
             'available_models': ['tiny', 'base', 'small', 'medium', 'large-v3'],
             'device': transcription_service.device,
-            'whisper_loaded': test_model is not None
+            'whisper_loaded': bool(transcription_service.models)
         }, status=status.HTTP_200_OK)
         
     except Exception as e:
