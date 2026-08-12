@@ -1,18 +1,19 @@
 {
   "name": "auto-injector",
   "version": "1.0.0",
-  "description": "Automated message injection terminal with queuing system",
+  "description": "Run a fleet of Claude Code sessions in one window: terminal grid, idle-time prompt injection, a manager Claude instance, and a local voice layer (wake word, push-to-talk, spoken notifications)",
   "main": "main.js",
   "author": {
-    "name": "Auto-Injector",
-    "email": "auto-injector@example.com"
+    "name": "streylix"
   },
   "license": "MIT",
   "keywords": [
+    "claude-code",
     "terminal",
-    "gui",
+    "automation",
     "queue",
-    "automation"
+    "voice",
+    "electron"
   ],
   "scripts": {
     "start": "electron .",
@@ -25,6 +26,10 @@
     "dist": "npm run build",
     "rebuild": "electron-rebuild",
     "download-models": "node scripts/download-models.js",
+    "ssh-view": "node scripts/ssh-view.js",
+    "build-remote": "esbuild renderer.js --bundle --outfile=dist-remote/renderer.bundle.js --format=iife --platform=browser --external:electron --external:fs --external:path --external:vosk-browser --define:__dirname='\"/\"' --define:__filename='\"/renderer.js\"'",
+    "remote": "npm run build-remote && CCBOT_REMOTE=1 electron .",
+    "remote-url": "node scripts/remote-url.js",
     "postinstall": "electron-rebuild && (node scripts/download-models.js || true)"
   },
   "build": {
@@ -112,7 +117,9 @@
     "@electron/rebuild": "^4.0.4",
     "electron": "^27.0.0",
     "electron-builder": "^24.6.4",
+    "esbuild": "^0.28.1",
     "playwright": "^1.55.0",
+    "ssh2": "^1.17.0",
     "yargs": "^18.0.0"
   },
   "dependencies": {
@@ -123,6 +130,7 @@
     "@xterm/xterm": "^5.3.0",
     "lucide": "^0.460.0",
     "node-pty": "^1.0.0",
-    "vosk-browser": "^0.0.8"
+    "vosk-browser": "^0.0.8",
+    "ws": "^8.21.0"
   }
 }

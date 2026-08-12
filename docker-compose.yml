@@ -27,6 +27,10 @@ services:
       # proxy masquerades all host/LAN traffic to the same gateway IP inside the
       # container, so an in-container IP filter cannot distinguish the two).
       - "127.0.0.1:8123:8123"
+      # Also bind the llmapi docker network's host-side gateway so llmapi's web
+      # container can proxy Kokoro TTS / Whisper STT for its chat voice features.
+      # 172.21.0.1 is a host-internal bridge interface — still zero LAN exposure.
+      - "172.21.0.1:8123:8123"
     environment:
       # Discrete PG vars consumed by terminal_backend/settings.py.
       POSTGRES_DB: ${POSTGRES_DB:-ccbot}
@@ -42,11 +46,20 @@ services:
       SECRET_KEY: ${SECRET_KEY:-}
       # Optional API auth; unset = current loopback-only/no-token behavior.
       CCBOT_API_TOKEN: ${CCBOT_API_TOKEN:-}
+      # Accept requests arriving via the llmapi-bridge gateway bind above.
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1,172.21.0.1"
       # Expose the host NVIDIA GPU to this container (host already runs the nvidia
       # container runtime). Lets the CUDA torch build see the RTX 3090 for Kokoro
       # TTS / Whisper; harmless on hosts without a GPU.
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      # CPU Vosk wake-word model for /api/voice/wake-check/ (mounted read-only
+      # below). Lets the bridge gate on the wake word without the GPU Whisper.
+      VOSK_MODEL_PATH: /models/vosk-model-small-en-us.tar.gz
+    volumes:
+      # Reuse the desktop app's shipped Vosk model — no duplicate download, and
+      # the model stays out of the image (build context is ./backend).
+      - ./assets/models:/models:ro
     depends_on:
       db:
         condition: service_healthy

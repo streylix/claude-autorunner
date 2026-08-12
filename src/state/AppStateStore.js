@@ -55,7 +55,7 @@ class AppStateStore {
                 },
                 voice: {
                     enabled: false,
-                    whisperModel: 'base',
+                    whisperModel: 'large-v3',
                     language: 'en'
                 },
                 completion: {
@@ -509,7 +509,7 @@ class AppStateStore {
                 },
                 voice: {
                     enabled: false,
-                    whisperModel: 'base',
+                    whisperModel: 'large-v3',
                     language: 'en'
                 },
                 completion: {

@@ -15,10 +15,14 @@ const PROMPT_SCREEN = [
 const PLAIN_SCREEN = ['Working on it…', '✻ Thinking (esc to interrupt)'].join('\n');
 
 // Build a mock environment. `screen` is what readTerminalScreen returns.
-function makeEnv({ screen = PROMPT_SCREEN, running = true, settings = {} } = {}) {
+// A mutable clock (advance) and screen (setScreen) let the debounce be tested
+// without real timers.
+function makeEnv({ screen = PROMPT_SCREEN, running = true, settings = {}, debounceMs } = {}) {
   const handlers = {};
   const dispatched = [];
   const logs = [];
+  let now = 1000;            // arbitrary non-zero base for the injected clock
+  let currentScreen = screen;
   const eventBus = {
     on: (name, cb) => { (handlers[name] = handlers[name] || []).push(cb); },
     emit: (name, payload) => { if (name === 'log:action') logs.push(payload); },
@@ -26,13 +30,21 @@ function makeEnv({ screen = PROMPT_SCREEN, running = true, settings = {} } = {})
   };
   const appStateStore = { getState: (k) => settings[k] };
   const gui = {
-    readTerminalScreen: () => (screen == null ? { ok: false } : { ok: true, screen }),
+    readTerminalScreen: () => (currentScreen == null ? { ok: false } : { ok: true, screen: currentScreen }),
     managerInstance: { running, dispatch: (note) => { dispatched.push(note); return true; } },
     terminalStateManager: { getTerminal: (id) => ({ title: `Worker ${id}` }) },
   };
-  // schedule runs synchronously so tests need no timers
-  const mgr = new PromptWatchManager(eventBus, appStateStore, gui, { schedule: (fn) => fn() });
-  return { mgr, eventBus, dispatched, logs };
+  // schedule runs synchronously and the clock is injected so tests need no timers
+  const mgr = new PromptWatchManager(eventBus, appStateStore, gui, {
+    schedule: (fn) => fn(),
+    now: () => now,
+    minNotifyIntervalMs: debounceMs, // undefined -> manager's default window
+  });
+  return {
+    mgr, eventBus, dispatched, logs,
+    advance: (ms) => { now += ms; },
+    setScreen: (s) => { currentScreen = s; },
+  };
 }
 
 test('notifies the manager once for a real prompt, with question + options + title', () => {
@@ -63,12 +75,34 @@ test('de-dupes: the same prompt only notifies once', () => {
   assert.strictEqual(dispatched.length, 1);
 });
 
-test('re-notifies after the terminal leaves the prompted state', () => {
-  const { mgr, dispatched } = makeEnv();
+test('re-notifies the same prompt only after the debounce window elapses', () => {
+  const { mgr, dispatched, advance } = makeEnv({ debounceMs: 5000 });
   mgr.checkAndNotify(3, null);
   assert.strictEqual(dispatched.length, 1);
-  // terminal answered -> goes back to running; key resets
+  // terminal answered -> goes back to running, then the same prompt reappears
   mgr.onStatusChanged({ terminalId: 3, status: 'running', source: 'claude-hook' });
+  mgr.checkAndNotify(3, null);
+  assert.strictEqual(dispatched.length, 1); // still within the window -> suppressed
+  advance(5001);
+  mgr.checkAndNotify(3, null);
+  assert.strictEqual(dispatched.length, 2);
+});
+
+test('debounce: a flickering prompt (leave + re-enter within the window) does not re-notify', () => {
+  const { mgr, dispatched } = makeEnv({ debounceMs: 5000 });
+  mgr.onStatusChanged({ terminalId: 3, status: 'prompted', source: 'claude-hook', detail: {} });
+  // menu redraws: terminal briefly drops out of prompted then comes back, same menu
+  mgr.onStatusChanged({ terminalId: 3, status: '...', source: 'claude-hook' });
+  mgr.onStatusChanged({ terminalId: 3, status: 'prompted', source: 'claude-hook', detail: {} });
+  assert.strictEqual(dispatched.length, 1);
+});
+
+test('debounce: a different prompt notifies immediately even within the window', () => {
+  const { mgr, dispatched, setScreen } = makeEnv({ debounceMs: 5000 });
+  mgr.checkAndNotify(3, null);
+  assert.strictEqual(dispatched.length, 1);
+  // a genuinely different menu opens before the window elapses
+  setScreen(['Allow write to this file?', '❯ 1. Yes', '  2. No'].join('\n'));
   mgr.checkAndNotify(3, null);
   assert.strictEqual(dispatched.length, 2);
 });

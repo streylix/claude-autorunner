@@ -2,6 +2,8 @@
  * VoiceManager - Handles voice recording and transcription functionality
  * Consolidates voice/Whisper integration from renderer.js
  */
+const { BACKEND_URL } = require('../utils/backend-url');
+
 class VoiceManager {
     constructor(eventBus, appStateStore) {
         this.eventBus = eventBus;
@@ -46,14 +48,25 @@ class VoiceManager {
 
         // Pick up the persisted microphone choice on load and live changes
         // from the settings modal (PreferenceManager events).
+        //
+        // NOT in Remote Mode: the shared preference names a device on the
+        // DESKTOP, which doesn't exist in the viewing browser. There the picker
+        // calls setMicrophoneDevice() directly with one of THIS browser's
+        // devices (renderer.js keeps it in localStorage, per-viewer).
         this.eventBus.on('preferences:applied', (prefs) => {
+            if (this._isRemote()) return;
             if (prefs && prefs.microphoneDeviceId) {
                 this.setMicrophoneDevice(prefs.microphoneDeviceId);
             }
         });
         this.eventBus.on('preference:changed', ({ key, value }) => {
+            if (this._isRemote()) return;
             if (key === 'microphoneDeviceId') this.setMicrophoneDevice(value);
         });
+    }
+
+    _isRemote() {
+        return typeof window !== 'undefined' && !!window.__CCBOT_REMOTE__;
     }
 
     setMicrophoneDevice(deviceId) {
@@ -275,8 +288,12 @@ class VoiceManager {
         const formData = new FormData();
         // Field name must match the backend serializer (audio_file = FileField()).
         formData.append('audio_file', audioBlob, `recording.${ext}`);
+        // The server forces large-v3 + English anyway; sent explicitly so the
+        // request documents what it gets.
+        formData.append('model', 'large-v3');
+        formData.append('language', 'en');
 
-        const response = await fetch('http://localhost:8123/api/voice/transcribe/', {
+        const response = await fetch(`${BACKEND_URL}/api/voice/transcribe/`, {
             method: 'POST',
             body: formData
         });
@@ -407,7 +424,7 @@ class VoiceManager {
     
     async checkBackendHealth() {
         try {
-            const response = await fetch('http://localhost:8123/api/voice/health/', {
+            const response = await fetch(`${BACKEND_URL}/api/voice/health/`, {
                 method: 'GET',
                 signal: AbortSignal.timeout(3000)
             });

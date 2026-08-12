@@ -12,14 +12,26 @@ asgiref==3.8.1
 sqlparse==0.5.0
 tzdata==2024.1
 
-# Voice transcription (Whisper). torch is large; the Docker image installs the
-# CPU-only torch wheel (see backend/Dockerfile) to keep the image smaller.
-# Remaining whisper deps (tiktoken, numba, llvmlite, regex, more-itertools)
-# are resolved transitively by openai-whisper. ffmpeg-python shells out to the
-# ffmpeg binary that the Dockerfile installs.
-openai-whisper
+# Voice transcription: faster-whisper (CTranslate2). Replaced openai-whisper —
+# quantized int8_float16 runs large-v3 in ~2-3GB VRAM instead of ~10GB, and
+# decodes faster than the old 'base'. torch stays: device detection here plus
+# Kokoro TTS below. ffmpeg-python shells out to the ffmpeg binary that the
+# Dockerfile installs.
+faster-whisper>=1.2.1
+# CUDA-12 runtime libs for ctranslate2: the torch cu13 wheel only ships
+# libcublas.so.13 (under nvidia/cu13/), but CT2 dlopens libcublas.so.12 and
+# libcudnn*.so.9 at inference time. transcription_service preloads these by
+# absolute path via ctypes; harmless on CPU-only hosts.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9,<10
 torch>=2.2.0
 ffmpeg-python==0.2.0
+
+# Lightweight CPU wake-word spotting (Vosk). Powers /api/voice/wake-check/ so
+# callers (e.g. the Discord bridge) can gate on a wake word WITHOUT running the
+# GPU Whisper model on every utterance. Ships its own libvosk wheel (CPU-only,
+# no ffi-napi unlike the Node binding); reuses the app's small en-us model.
+vosk==0.3.45
 
 # Text-to-speech (Kokoro-82M). Reuses the CPU torch wheel above. kokoro pulls
 # misaki[en] (g2p) + spacy; the Dockerfile installs the espeak-ng + libsndfile

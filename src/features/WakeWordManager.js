@@ -66,6 +66,14 @@ const SPEECH_IDLE_MS = 600;
 // raised gate up briefly past the clip's end for the buffer/reverb tail.
 const RMS_BARGE_IN_THRESHOLD = 0.030;
 const TTS_ECHO_TAIL_MS = 400;
+// Discord-bot presence. When the "mute wake word while the bot is in a call"
+// preference is on, we poll the backend for whether the Discord bridge is
+// active (linked + in a voice channel) and suppress the LOCAL wake word so the
+// same spoken phrase doesn't trigger twice (once via the bot, once via the host
+// mic). The backend reports inactive if the bridge stops heartbeating, so a
+// crashed/closed bridge can never leave the local wake word stuck muted.
+const { BACKEND_URL } = require('../utils/backend-url');
+const BOT_STATUS_POLL_MS = 3000;
 
 class WakeWordManager {
     constructor(eventBus, appStateStore, gui) {
@@ -130,6 +138,12 @@ class WakeWordManager {
         // NotificationManager's tts:playback events.
         this._ttsPlaybackActive = false;
         this._ttsEchoTailTimer = null;
+        // Wake-word mute while the Discord bot is in a call (anti double-trigger).
+        // muteWhileBotActive is the user preference; _botInCall is the live state
+        // polled from the backend bridge-status endpoint while enabled.
+        this.muteWhileBotActive = false;
+        this._botInCall = false;
+        this._botPollTimer = null;
         // What started the current capture: 'wake' (wake word) or 'post-notification'
         // (auto-opened right after a notification finished reading out). Drives how the
         // transcript is framed for the manager; reset to 'wake' after each capture.
@@ -138,6 +152,17 @@ class WakeWordManager {
         // user to START talking before closing quietly). Wake uses the long default;
         // post-notification uses the configured stop-after-silence.
         this._noSpeechMs = NO_SPEECH_TIMEOUT_MS;
+        // ---- Remote Mode client-mic forwarding (docs/REMOTE_MODE.md §10) ----
+        // While a Remote Mode viewer streams ITS microphone over the WS, that
+        // stream becomes the pipeline's input (which-mic rule: remote wins; the
+        // local mic is ignored until it detaches). Frames arrive as Float32 via
+        // pushRemotePcm() from RemoteMicSink — same VAD, same recognizer, same
+        // Whisper POST as local audio.
+        this._remoteSource = false;  // a remote client's mic is attached as THE input
+        this._remoteOnly = false;    // this session exists FOR the remote source (local wake pref off / no local mic opened)
+        this._remoteRate = 16000;    // sample rate of the incoming remote PCM
+        this._remoteCapture = false; // the in-flight capture is remote-sourced (PCM accumulation, no MediaRecorder)
+        this._remotePcm = [];        // Int16Array chunks of the remote utterance being captured
 
         this._setupPreferenceListeners();
 
@@ -172,13 +197,19 @@ class WakeWordManager {
             this.phrase = String(prefs.wakeWordPhrase).trim().toLowerCase() || 'hey claude';
             phraseChanged = true;
         }
-        if (prefs.wakeSilenceMs != null) this.silenceMs = Math.max(1000, Number(prefs.wakeSilenceMs) || 5000);
+        // Floor 600ms — matches the slider minimum and the Discord bridge's clamp,
+        // so the ONE wakeSilenceMs setting behaves identically on both voice paths.
+        if (prefs.wakeSilenceMs != null) this.silenceMs = Math.max(600, Number(prefs.wakeSilenceMs) || 5000);
         if (prefs.wakeMatchThreshold != null) {
             const t = Number(prefs.wakeMatchThreshold);
             if (Number.isFinite(t)) this.matchThreshold = Math.min(0.95, Math.max(0, t));
         }
         if (prefs.wakeActivationSound) this.activationSound = prefs.wakeActivationSound;
         if (prefs.wakeStopSound) this.stopSound = prefs.wakeStopSound;
+        if (prefs.wakeMuteDuringCall != null) {
+            this.muteWhileBotActive = !!prefs.wakeMuteDuringCall;
+            if (this.enabled) this._syncBotPoll(); // start/stop polling to match
+        }
         if (prefs.microphoneDeviceId != null && prefs.microphoneDeviceId !== this.microphoneDeviceId) {
             this.microphoneDeviceId = prefs.microphoneDeviceId;
             micChanged = true;
@@ -202,7 +233,14 @@ class WakeWordManager {
     // ---- lifecycle -----------------------------------------------------------
 
     async enable() {
-        if (this.state !== 'idle') return;
+        if (this.state !== 'idle') {
+            // A remote-only session is already running the pipeline (remote mic
+            // attached with the local pref off). Record the pref so the local
+            // mic takes over when the remote source detaches — but do NOT open
+            // the local mic now: the remote stream owns the input.
+            if (this._remoteOnly) this.enabled = true;
+            return;
+        }
         this.enabled = true;
         try {
             this._log('🟣 Wake word: starting listener…', 'info');
@@ -212,6 +250,7 @@ class WakeWordManager {
             this.state = 'listening';
             this._log(`🟣 Wake word active — say "${this.phrase}"`, 'success');
             this.eventBus.emit('wake:state', { state: 'listening', phrase: this.phrase });
+            this._syncBotPoll(); // begin watching the Discord bot if the mute pref is on
         } catch (err) {
             this.enabled = false;
             this.state = 'idle';
@@ -223,11 +262,20 @@ class WakeWordManager {
 
     disable() {
         this.enabled = false;
+        this._stopBotPoll();
+        this._botInCall = false;
         this._stopCommandCapture(true); // abort any in-flight capture
         this._teardownAudio();
         this.state = 'idle';
+        this._remoteOnly = false;
         this._log('⚪ Wake word stopped', 'info');
         this.eventBus.emit('wake:state', { state: 'idle' });
+        // A remote viewer is still streaming its mic: the pipeline must keep
+        // serving it. Re-bootstrap as a remote-only session (no local mic).
+        if (this._remoteSource) {
+            this._remoteSource = false;
+            this.attachRemoteSource();
+        }
     }
 
     async _loadModel() {
@@ -316,6 +364,10 @@ class WakeWordManager {
     // ---- live audio ----------------------------------------------------------
 
     _onAudioFrame(frame) {
+        // Which-mic rule (REMOTE_MODE.md §10): while a remote client streams its
+        // microphone, THAT stream is the pipeline's input and local mic frames
+        // are ignored — except to let an already-running LOCAL capture finish.
+        if (this._remoteSource && !(this.state === 'capturing' && !this._remoteCapture)) return;
         // RMS for the VAD, computed every frame regardless of mode.
         let sum = 0;
         for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
@@ -486,9 +538,55 @@ class WakeWordManager {
 
     _onWakeDetected() {
         if (this.state !== 'listening') return;
+        if (this._isWakeMuted()) {
+            // The Discord bot is in a call and the user opted to route the wake
+            // word through it only — ignore the local mic so it can't double-fire.
+            this._log('🔇 Wake word heard but muted — Discord bot is in a call (no double trigger).', 'info');
+            return;
+        }
         this._captureSource = 'wake';
         this._log(`🎙️ Heard "${this.phrase}" — listening for your command…`, 'success');
         this._beginCapture();
+    }
+
+    /** Suppress the local wake word only when the user opted in AND the bot is live. */
+    _isWakeMuted() {
+        return this.muteWhileBotActive && this._botInCall;
+    }
+
+    // ---- Discord-bot presence polling (drives _botInCall) --------------------
+
+    /** Poll the backend only while it can matter: enabled AND the pref is on. */
+    _syncBotPoll() {
+        if (this.enabled && this.muteWhileBotActive) this._startBotPoll();
+        else { this._stopBotPoll(); this._botInCall = false; }
+    }
+
+    _startBotPoll() {
+        if (this._botPollTimer) return;
+        this._pollBotStatus();
+        this._botPollTimer = setInterval(() => this._pollBotStatus(), BOT_STATUS_POLL_MS);
+        if (this._botPollTimer && typeof this._botPollTimer.unref === 'function') this._botPollTimer.unref();
+    }
+
+    _stopBotPoll() {
+        if (this._botPollTimer) { clearInterval(this._botPollTimer); this._botPollTimer = null; }
+    }
+
+    async _pollBotStatus() {
+        try {
+            const res = await fetch(`${BACKEND_URL}/api/voice/bridge-status/`);
+            if (!res.ok) throw new Error(`status ${res.status}`);
+            this._applyBotStatus(await res.json());
+        } catch (_) {
+            // Fail-safe: if the backend is unreachable, never leave the wake word
+            // muted — treat the bot as not in a call so the local mic keeps working.
+            this._botInCall = false;
+        }
+    }
+
+    _applyBotStatus(data) {
+        this._botInCall = !!(data && data.active);
     }
 
     // Auto-open a command capture WITHOUT a wake word, right after a notification
@@ -524,14 +622,23 @@ class WakeWordManager {
             this._voiceRun = 0;
             this._noSpeechMs = opts.noSpeechMs || NO_SPEECH_TIMEOUT_MS;
 
-            const mimeType = this.gui.voiceManager
-                ? this.gui.voiceManager.getSupportedMimeType()
-                : 'audio/webm';
-            // Reuse the already-open mic stream — no second getUserMedia.
-            this.mediaRecorder = new MediaRecorder(this.audioStream, { mimeType });
-            this.mediaRecorder.ondataavailable = (ev) => { if (ev.data.size > 0) this.commandChunks.push(ev.data); };
-            this.mediaRecorder.onstop = () => this._onCommandRecorded(mimeType);
-            this.mediaRecorder.start();
+            if (this._remoteSource) {
+                // Remote-sourced capture: there is no MediaStream for network
+                // audio, so instead of MediaRecorder the PCM frames are
+                // accumulated in pushRemotePcm() and encoded to a WAV when the
+                // VAD stops the capture (see _onRemoteCommandRecorded).
+                this._remoteCapture = true;
+                this._remotePcm = [];
+            } else {
+                const mimeType = this.gui.voiceManager
+                    ? this.gui.voiceManager.getSupportedMimeType()
+                    : 'audio/webm';
+                // Reuse the already-open mic stream — no second getUserMedia.
+                this.mediaRecorder = new MediaRecorder(this.audioStream, { mimeType });
+                this.mediaRecorder.ondataavailable = (ev) => { if (ev.data.size > 0) this.commandChunks.push(ev.data); };
+                this.mediaRecorder.onstop = () => this._onCommandRecorded(mimeType);
+                this.mediaRecorder.start();
+            }
 
             // VAD poll: stop on trailing silence / hard cap / no-speech timeout.
             this._vadTimer = setInterval(() => this._checkVad(), 200);
@@ -569,6 +676,16 @@ class WakeWordManager {
     // abort=true: discard audio and just resume listening.
     _stopCommandCapture(abort = false) {
         if (this._vadTimer) { clearInterval(this._vadTimer); this._vadTimer = null; }
+        if (this._remoteCapture) {
+            // Remote-sourced capture: no MediaRecorder to stop — hand the
+            // accumulated PCM to the transcribe path (or discard on abort).
+            this._remoteCapture = false;
+            const chunks = this._remotePcm;
+            this._remotePcm = [];
+            if (abort) { this._resumeListening(); return; }
+            this._onRemoteCommandRecorded(chunks);
+            return;
+        }
         this._abortCapture = abort;
         if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
             try { this.mediaRecorder.stop(); } catch (_) { this._resumeListening(); }
@@ -627,7 +744,10 @@ class WakeWordManager {
 
     _resumeListening() {
         this._captureSource = 'wake'; // post-notification is one-shot; default back
-        if (!this.enabled) { this.state = 'idle'; return; }
+        // A remote-only session (remote client mic with the local wake pref off)
+        // stays alive for as long as the remote source is attached.
+        const sessionAlive = this.enabled || (this._remoteSource && this._remoteOnly);
+        if (!sessionAlive) { this.state = 'idle'; return; }
         // Fresh recognizer clears any buffered audio so we don't re-trigger.
         this._rebuildRecognizer()
             .then(() => {
@@ -673,7 +793,179 @@ class WakeWordManager {
             terminalId: MANAGER_TERMINAL_ID,
             type: 'urgent'
         });
+        // A spoken memo is the user being present, same as typing: it resets
+        // the fleet inactivity clock and aborts an in-flight manager
+        // checkpoint/clear cycle (ManagerCheckpointManager).
+        this.eventBus.emit('user:activity', { source: 'voice' });
         this._log('📨 Sent your voice memo to the manager (999).', 'success');
+    }
+
+    // ---- remote client microphone as the pipeline input (REMOTE_MODE.md §10) --
+
+    /** True while a Remote Mode viewer's mic is the pipeline's input. */
+    isRemoteSourceActive() {
+        return this._remoteSource;
+    }
+
+    /**
+     * A Remote Mode client started streaming its microphone. From now on that
+     * stream is THE input (which-mic rule): local mic frames are ignored. If no
+     * local session is running (wake pref off — or the app host is headless
+     * with no mic at all), spin up a REMOTE-ONLY session: load the model and
+     * recognizer but never open the local microphone.
+     */
+    async attachRemoteSource() {
+        if (this._remoteSource) return;
+        this._remoteSource = true;
+        if (this.state === 'idle') {
+            try {
+                this._log('🟣 Remote mic attached — starting the wake pipeline on the remote stream…', 'info');
+                await this._loadModel();
+                await this._rebuildRecognizer();
+                this._remoteOnly = true;
+                this.state = 'listening';
+                this._log(`🟣 Wake word active on the REMOTE viewer's microphone — say "${this.phrase}"`, 'success');
+                this.eventBus.emit('wake:state', { state: 'listening', phrase: this.phrase });
+            } catch (err) {
+                this._remoteSource = false;
+                this._log(`❌ Remote mic attach failed: ${err.message}`, 'error');
+                this.eventBus.emit('wake:state', { state: 'error', error: err.message });
+            }
+            return;
+        }
+        // A local session is already live: the remote stream simply takes over
+        // as the input; the local mic stays open but its frames are dropped
+        // (see _onAudioFrame) until the remote source detaches.
+        this._log('🎙️ Remote mic attached — wake input source → remote viewer (local mic ignored)', 'info');
+    }
+
+    /**
+     * The streaming client stopped (toggle, disconnect, or another client took
+     * over and this one was denied). Restore local behavior exactly as before.
+     */
+    detachRemoteSource() {
+        if (!this._remoteSource) return;
+        this._remoteSource = false;
+        if (this.state === 'capturing' && this._remoteCapture) {
+            // Discard the in-flight remote capture inline (no MediaRecorder to
+            // stop, and the teardown below must not race a listener rebuild).
+            if (this._vadTimer) { clearInterval(this._vadTimer); this._vadTimer = null; }
+            this._remoteCapture = false;
+            this._remotePcm = [];
+            this._log('⚠️ Remote mic detached mid-capture — capture discarded', 'warning');
+            if (!this._remoteOnly) this._resumeListening(); // the local session takes back over
+        }
+        if (this._remoteOnly) {
+            this._remoteOnly = false;
+            this._teardownAudio(); // recognizer only — no local mic was ever opened
+            this.state = 'idle';
+            this.eventBus.emit('wake:state', { state: 'idle' });
+            if (this.enabled) {
+                // The local wake pref is on (it was enabled while the remote
+                // session ran): hand the pipeline back to the local microphone.
+                this.enabled = false;
+                this.enable();
+            } else {
+                this._log('⚪ Remote mic detached — wake pipeline idle (local wake word is off)', 'info');
+            }
+        } else if (this.enabled) {
+            this._log('🎙️ Remote mic detached — wake input source → local microphone', 'info');
+        }
+    }
+
+    /**
+     * One frame of remote microphone audio (Float32 [-1,1], mono). Runs the
+     * exact same stages as a local mic frame: speech signal, recognizer feed
+     * while listening, VAD + PCM accumulation while capturing. Frames are
+     * ~85 ms (client-side chunking) so the sustained-run VAD tuning matches.
+     */
+    pushRemotePcm(float32, sampleRate) {
+        if (!this._remoteSource || !float32 || !float32.length) return;
+        const rate = Number(sampleRate) > 0 ? Number(sampleRate) : this._remoteRate;
+        this._remoteRate = rate;
+
+        let sum = 0;
+        for (let i = 0; i < float32.length; i++) sum += float32[i] * float32[i];
+        const rms = Math.sqrt(sum / float32.length);
+
+        this._updateSpeechSignal(rms);
+
+        if (this.state === 'listening' && this.recognizer) {
+            this.recognizer.acceptWaveformFloat(float32, rate);
+        } else if (this.state === 'capturing' && this._remoteCapture) {
+            if (rms > RMS_VOICE_THRESHOLD) {
+                // Same sustained-run gate as the local capture VAD.
+                this._voiceRun++;
+                if (this._voiceRun >= VOICE_RUN_FRAMES) {
+                    this._heardSpeech = true;
+                    this._lastVoiceAt = performance.now();
+                }
+            } else {
+                this._voiceRun = 0;
+            }
+            // Accumulate the utterance as PCM16 (MediaRecorder needs a
+            // MediaStream, which a network source doesn't have).
+            const i16 = new Int16Array(float32.length);
+            for (let i = 0; i < float32.length; i++) {
+                let s = Math.round(float32[i] * 32768);
+                if (s > 32767) s = 32767;
+                else if (s < -32768) s = -32768;
+                i16[i] = s;
+            }
+            this._remotePcm.push(i16);
+        }
+    }
+
+    // Remote-capture counterpart of _onCommandRecorded: encode the accumulated
+    // PCM as a WAV and run it through the SAME Whisper path (transcribeBlob →
+    // POST /api/voice/transcribe/ on the app host's loopback) and the SAME
+    // voice-memo framing to the manager.
+    async _onRemoteCommandRecorded(chunks) {
+        this.state = 'transcribing';
+        this.eventBus.emit('wake:state', { state: 'transcribing' });
+        this._playChime(this.stopSound);
+        try {
+            const wav = this._encodeWavPcm16(chunks, this._remoteRate);
+            const blob = new Blob([wav], { type: 'audio/wav' });
+            this._log('🔄 Transcribing your command (remote mic)…', 'info');
+            const text = await this.gui.voiceManager.transcribeBlob(blob, 'audio/wav');
+            if (text) {
+                this._log(`✅ You said (remote mic): "${text}"`, 'success');
+                this._sendToManager(text);
+            } else {
+                this._log('⚠️ Could not transcribe the command (no speech detected).', 'warning');
+            }
+        } catch (err) {
+            this._log(`❌ Transcription failed: ${err.message}`, 'error');
+        } finally {
+            this._resumeListening();
+        }
+    }
+
+    /** Int16Array chunks → mono PCM16 RIFF/WAVE bytes. */
+    _encodeWavPcm16(chunks, rate) {
+        const total = chunks.reduce((n, c) => n + c.length, 0);
+        const buf = new ArrayBuffer(44 + total * 2);
+        const view = new DataView(buf);
+        const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+        writeStr(0, 'RIFF');
+        view.setUint32(4, 36 + total * 2, true);
+        writeStr(8, 'WAVE');
+        writeStr(12, 'fmt ');
+        view.setUint32(16, 16, true);       // PCM chunk size
+        view.setUint16(20, 1, true);        // PCM
+        view.setUint16(22, 1, true);        // mono
+        view.setUint32(24, rate, true);
+        view.setUint32(28, rate * 2, true); // byte rate
+        view.setUint16(32, 2, true);        // block align
+        view.setUint16(34, 16, true);       // bits/sample
+        writeStr(36, 'data');
+        view.setUint32(40, total * 2, true);
+        let off = 44;
+        for (const c of chunks) {
+            for (let i = 0; i < c.length; i++) { view.setInt16(off, c[i], true); off += 2; }
+        }
+        return new Uint8Array(buf);
     }
 
     // ---- helpers -------------------------------------------------------------

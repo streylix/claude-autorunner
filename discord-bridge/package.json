@@ -1,14 +1,18 @@
 {
   "name": "ccbot-discord-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Discord voice bridge for the auto-injector: talk to manager terminal 999 from a Discord voice channel, hear its TTS replies back.",
+  "description": "Standalone Discord voice bridge for the auto-injector: wake-word voice control of manager terminal 999 from a Discord voice channel, with session-key linking and full system-audio playback.",
   "type": "commonjs",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "check": "node --check src/index.js && node --check src/ttsPoller.js && node --check src/audioPlayer.js && node --check src/voiceReceive.js && node --check src/transcribe.js && node --check src/controlApi.js && node --check src/dave.js && node --check src/log.js && node --check src/wav.js && node --check src/doctor.js && node --check config.js",
-    "doctor": "node src/doctor.js"
+    "check": "for f in config.js src/*.js tools/*.js; do node --check \"$f\" || exit 1; done; echo 'all node --check OK'",
+    "doctor": "node src/doctor.js",
+    "link-key": "node tools/make-link-key.js",
+    "post-image": "node tools/post-image.js",
+    "post-video": "node tools/post-video.js",
+    "post-text": "node tools/post-text.js"
   },
   "engines": {
     "node": ">=20"

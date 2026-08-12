@@ -27,6 +27,14 @@ class MessageQueueManager {
         // ipc wrapper: { send, on, removeListener } built by the renderer.
         this.ipc = ipc || null;
 
+        // Remote Mode (docs/REMOTE_MODE.md): in a browser-served renderer the
+        // queue is a live VIEW, but the injection engine and queue persistence
+        // stay exclusively in the local Electron renderer — two engines against
+        // the same PTYs would double-inject, and two writers would clobber the
+        // store. Adds made remotely are forwarded to the authoritative local
+        // queue over the WS bridge (see addMessageToQueue).
+        this.isRemote = typeof window !== 'undefined' && !!window.__CCBOT_REMOTE__;
+
         // Operational flags formerly read off the renderer context.
         // These are now owned by the message system itself.
         this.timerExpired = false;
@@ -37,7 +45,6 @@ class MessageQueueManager {
         this.attachedFiles = [];
         this.imagePreviews = [];
         this.backendAPIClient = null; // set by renderer if/when available
-        this.injectionManager = null; // set by renderer if/when available
         this.preferences = {};
         // Default priority applied to user-entered messages; set by the input-bar
         // type selector (renderer). Programmatic adds pass their own type.
@@ -151,26 +158,6 @@ class MessageQueueManager {
             this.clearQueue();
         });
         
-        // Listen for injection events
-        this.eventBus.on('injection:start', () => {
-            this.startSequentialInjection();
-        });
-        
-        this.eventBus.on('injection:pause', () => {
-            this.pauseInjectionExecution();
-        });
-        
-        this.eventBus.on('injection:resume', () => {
-            this.resumeInjectionExecution();
-        });
-        
-        this.eventBus.on('injection:cancel', () => {
-            this.cancelSequentialInjection();
-        });
-        
-        this.eventBus.on('injection:manual', () => {
-            this.manualInjectNextMessage();
-        });
     }
     
     // Getter for message queue from AppStateStore
@@ -209,7 +196,7 @@ class MessageQueueManager {
     /**
      * Send raw input to a terminal via the injected ipc wrapper.
      * The main-process 'terminal-input' handler expects a single object
-     * payload { terminalId, data } (see main.js / ipc-handler.js), NOT
+     * payload { terminalId, data } (see main.js), NOT
      * positional args.
      */
     sendTerminalInput(terminalId, data) {
@@ -280,6 +267,12 @@ class MessageQueueManager {
      * for the duration so a second message can't pile in on top of it.
      */
     _injectToTerminal(message, terminalId) {
+        // Remote Mode: never inject from a browser renderer. This is the single
+        // sink every injection path (auto, "Send now", inject-next) flows
+        // through, so one guard here disables the whole engine remotely.
+        // Silent: the auto path probes on every idle transition and would spam
+        // the log; injectMessageNow surfaces the explanation for explicit sends.
+        if (this.isRemote) return;
         // Universal manager-input guard. canInjectToTerminal already blocks the
         // auto path, but injectMessageNow ("Send now" / force) bypasses the gate
         // entirely — so re-check here, the single sink every injection flows
@@ -298,7 +291,13 @@ class MessageQueueManager {
         // definitive 'shell' blocks; 'claude'/'unknown'/undefined fail open so a
         // transient detection gap never freezes legitimate injection. Urgent keeps
         // its documented bypass (a remote SSH'd Claude is detected locally as shell).
-        if ((message.type || 'normal') !== 'urgent' && this.terminalStateManager) {
+        // The manager (999) is exempt for the same reason it bypasses the gate: it
+        // is a hidden PTY whose runtime detection can read 'shell', and holding its
+        // inbound reports here would silently re-create the stuck-queue bug the
+        // gate bypass exists to fix. Its own disable switch is checked above.
+        if ((message.type || 'normal') !== 'urgent'
+            && terminalId !== MANAGER_TERMINAL_ID
+            && this.terminalStateManager) {
             const terminal = this.terminalStateManager.getTerminal(terminalId);
             if (terminal && terminal.runtime === 'shell') {
                 this.logAction(`Held: terminal ${terminalId} is a bare shell (no Claude session) — message not injected`, 'warning');
@@ -356,6 +355,10 @@ class MessageQueueManager {
      * carriage-return submit convention.
      */
     injectMessageNow(messageId) {
+        if (this.isRemote) {
+            this.logAction('Injection runs on the app host — the message will send from there when its terminal idles', 'info');
+            return;
+        }
         const message = this.messageQueue.find(m => m.id === messageId);
         if (!message) return;
         const tid = message.terminalId || this.activeTerminalId;
@@ -462,6 +465,9 @@ class MessageQueueManager {
      * Returns true on success. (TODO: wire to a richer atomic-write path if needed.)
      */
     async saveQueuedMessagesWithAtomicWrite() {
+        // Remote Mode: the local renderer owns queue persistence; a remote
+        // view writing its partial copy would clobber the real queue on disk.
+        if (this.isRemote) return true;
         if (this.ipc && typeof this.ipc.invoke === 'function') {
             try {
                 await this.ipc.invoke('db-set-setting', 'messageQueue', JSON.stringify(this.messageQueue));
@@ -506,6 +512,25 @@ class MessageQueueManager {
             return this.addMessageToQueue(data.content, data.terminalId, data.type);
         }
         return this.addMessageToQueue(data);
+    }
+
+    /**
+     * REMOTE VIEWS ONLY: replace this renderer's queue with the authoritative
+     * one pushed by main ('remote-queue-sync' — fed from the local renderer's
+     * state snapshots, which fire on every queue mutation). This is a pure
+     * mirror: no persistence, no injection, no re-broadcast — just state +
+     * display, so the remote panel reflects add / inject / remove / clear
+     * within push latency instead of showing already-delivered messages.
+     */
+    applyRemoteQueueMirror(queue) {
+        if (!this.isRemote) return; // the local renderer OWNS the queue
+        this.messageQueue = (Array.isArray(queue) ? queue : []).map((m) => ({
+            id: m.id,
+            content: typeof m.content === 'string' ? m.content : '',
+            terminalId: m.terminalId,
+            type: m.type === 'urgent' ? 'urgent' : 'normal'
+        }));
+        this.eventBus.emit('message:queue-updated', { queue: this.messageQueue });
     }
 
     /**
@@ -732,83 +757,30 @@ class MessageQueueManager {
         this.reorderMessage(fromIndex, toIndex);
     }
     
-    /**
-     * Inject a specific message by ID
-     */
-    injectSpecificMessage(messageId) {
-        const queue = this.messageQueue;
-        const messageIndex = queue.findIndex(m => m.id === messageId);
-        
-        if (messageIndex === -1) return;
-
-        const terminalId = queue[messageIndex].terminalId || this.activeTerminalId;
-
-        // R3 gate (manual path): block + warn.
-        const gate = this.canInjectToTerminal(terminalId);
-        if (!gate.allowed) {
-            this.logAction(`Manual injection blocked: ${gate.reason}`, 'warning');
-            return;
-        }
-
-        const [message] = queue.splice(messageIndex, 1);
-        this.messageQueue = queue;
-
-        if (terminalId) {
-            this.sendTerminalInput(terminalId, message.content + '\n');
-
-            this.injectionCount++;
-            this.eventBus.emit('message:injected', { message, terminalId });
-        }
-
-        this.updateQueueDisplay();
-    }
-
-    validateMessageIds() {
-        const ids = this.messageQueue.map(m => m.id);
-        const uniqueIds = new Set(ids);
-        if (ids.length !== uniqueIds.size) {
-            console.error('Duplicate message IDs detected:', ids);
-            console.error('Message queue:', this.messageQueue);
-        }
-        return ids.length === uniqueIds.size;
-    }
-    
-    setTerminalForNextMessage(terminalId) {
-        // Request the renderer/UI to switch to the specified terminal.
-        this.eventBus.emit('terminal:select:request', { terminalId });
-        this.eventBus.emit('ui:update-terminal-selector');
-        this.logAction(`Terminal ${terminalId} selected for next message`, 'info');
-    }
-    
-    queueContinueMessage() {
-        // Auto-queue a "continue" message to resume conversation flow when usage limit resets
-        const continueMessage = {
-            id: this.generateMessageId(),
-            content: 'continue',
-            terminalId: this.activeTerminalId,
-            timestamp: Date.now(),
-            wrapWithPlan: this.planModeEnabled,
-            isAutoContinue: true
-        };
-        
-        // Add to the front of the queue so it executes first when timer expires
-        const queue = [...this.messageQueue];
-        queue.unshift(continueMessage);
-        this.messageQueue = queue;
-        
-        // Emit events for UI updates
-        this.eventBus.emit('message:queue-updated', { queue: this.messageQueue });
-        this.eventBus.emit('ui:update-status');
-        
-        this.logAction('Auto-queued "continue" message to resume conversation flow when usage limit resets', 'info');
-    }
-    
-    async addMessageToQueue(providedContent = null, providedTerminalId = null, providedType = null) {
+    async addMessageToQueue(providedContent = null, providedTerminalId = null, providedType = null, opts = {}) {
         const input = document.getElementById('message-input');
         const content = providedContent !== null ? providedContent.trim() : input.value.trim();
 
         // Validate content is not empty or just whitespace
         if (!this.isValidMessageContent(content)) {
+            return;
+        }
+
+        // Remote Mode: a browser-originated add is forwarded to the
+        // AUTHORITATIVE local queue over the WS bridge (RemoteServer re-emits
+        // it as the same queue-add-request push the control API uses). The
+        // local renderer queues + persists + injects it, and the resulting
+        // broadcast echo (opts.fromBroadcast) lands back here for display —
+        // so we do NOT also add it locally now, or it would show twice.
+        if (this.isRemote && !opts.fromBroadcast) {
+            const targetId = providedTerminalId != null ? providedTerminalId : this.activeTerminalId;
+            this.ipc.send('remote-queue-add', {
+                terminalId: targetId,
+                content,
+                type: MessageQueueManager.normalizeType(providedType != null ? providedType : this.selectedMessageType)
+            });
+            if (providedContent === null && input) input.value = '';
+            this.logAction(`Message sent to the app host's queue for Terminal ${targetId}`, 'info');
             return;
         }
 
@@ -1082,6 +1054,7 @@ class MessageQueueManager {
      * gated independently so eligible ones fire together.
      */
     async startSequentialInjection() {
+        if (this.isRemote) return; // injection engine lives in the local renderer only
         if (this.messageQueue.length === 0) {
             this.logAction('Injection requested but no messages to inject', 'warning');
             return;
@@ -1154,17 +1127,12 @@ class MessageQueueManager {
                 this.injectMessageAndContinueQueue();
             });
         } else {
-            // Use injection manager for proper plan mode delay handling
-            if (this.injectionManager) {
-                this.injectionManager.scheduleNextInjection();
-            } else {
-                // Fallback to direct scheduling
-                this.scheduleNextInjection();
-            }
+            this.scheduleNextInjection();
         }
     }
     
     injectMessageAndContinueQueue() {
+        if (this.isRemote) return; // injection engine lives in the local renderer only
         // Implementation would continue here...
         // This is a complex method that handles the actual message injection
         // For brevity, I'm showing the structure but not the full implementation
@@ -1266,6 +1234,7 @@ class MessageQueueManager {
      */
     
     async saveToMessageHistory(message, terminalId = null, counter = null) {
+        if (this.isRemote) return; // history is recorded by the injecting (local) renderer
         const historyItem = {
             id: message.id,
             content: message.content,
@@ -1413,7 +1382,7 @@ class MessageQueueManager {
 
     /**
      * Schedule the next queued injection after a delay, re-checking the R3 gate
-     * at fire time. Used as the fallback when no external injectionManager is set.
+     * at fire time.
      */
     scheduleNextInjection() {
         if (this.injectionTimer) {
@@ -1424,52 +1393,6 @@ class MessageQueueManager {
             this.injectionTimer = null;
             this.injectMessageAndContinueQueue();
         }, delayMs);
-    }
-
-    /**
-     * Manually inject the next queued message (toolbar / shortcut). Honors the
-     * R3 gate via injectNextMessage, which warns + blocks when not allowed.
-     */
-    manualInjectNextMessage() {
-        this.injectNextMessage();
-    }
-    
-    pauseInjectionExecution() {
-        this.injectionPaused = true;
-        this.eventBus.emit('injection:paused');
-        this.logAction('Injection execution paused', 'info');
-    }
-    
-    resumeInjectionExecution() {
-        this.injectionPaused = false;
-        this.eventBus.emit('injection:resumed');
-        this.logAction('Injection execution resumed', 'info');
-    }
-    
-    cancelSequentialInjection() {
-        this.injectionInProgress = false;
-        this.injectionPaused = false;
-        this.isInjecting = false;
-        
-        // Clear all timers and intervals
-        if (this.injectionTimer) {
-            clearTimeout(this.injectionTimer);
-            this.injectionTimer = null;
-        }
-        
-        if (this.currentTypeInterval) {
-            clearInterval(this.currentTypeInterval);
-            this.currentTypeInterval = null;
-        }
-        
-        // Clear injection tracking
-        this.currentlyInjectingTerminals.clear();
-        this.currentlyInjectingMessages.clear();
-        this.currentlyInjectingMessageId = null;
-        
-        this.eventBus.emit('injection:cancelled');
-        this.eventBus.emit('ui:update-timer');
-        this.logAction('Sequential injection cancelled', 'warning');
     }
 
     /**

@@ -63,6 +63,11 @@ typings/
 .env.development.local
 .env.test.local
 .env.production.local
+.env.test
+
+# Isolated test-interface sandbox artifacts (Phase 2 test harness)
+/.ccbot-test/
+
 
 # Local bot configuration
 .bot-config
@@ -247,6 +252,11 @@ scripts/*
 # …but the model-bootstrap script MUST travel with the repo, or fresh
 # checkouts can't fetch the gitignored speech models (see assets/models/).
 !scripts/download-models.js
+# …and the read-only SSH mirror CLI (npm run ssh-view) must ship with the repo.
+!scripts/ssh-view.js
+# …and the Remote Mode askpass helper (secret-free; echoes $CCBOT_SSH_PASSWORD
+# back to ssh) must ship, or password auth in the client can't work.
+!scripts/ssh-askpass.sh
 playwright-report
 hive-mind-*
 
@@ -351,3 +361,33 @@ data/
 
 # Large speech models — fetched on install via scripts/download-models.js
 assets/models/
+dist-remote/
+!scripts/remote-url.js  # Remote Mode URL helper (npm run remote-url)
+# remote-autostart runs ON the remote to auto-start Remote Mode (client, REMOTE_MODE.md §8)
+!scripts/remote-autostart.js
+
+# tests/ is ignored above, but the Remote Mode CLIENT end-to-end harness must
+# ship with the repo (run: xvfb-run -a node tests/integration/remote-client-e2e.js).
+!tests/
+tests/*
+!tests/integration/
+tests/integration/*
+!tests/integration/remote-client-e2e.js
+!tests/integration/remote-client-reload-e2e.js
+!tests/integration/remote-tts-e2e.js
+!tests/integration/remote-mic-e2e.js
+!tests/integration/remote-meta-e2e.js
+!tests/integration/remote-queue-e2e.js
+# Canned synthesized-speech fixtures for the mic-forwarding e2e (small WAVs)
+!tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/hey-claude-16k.wav
+!tests/fixtures/command-16k.wav
+
+# Scratch output of the e2e harnesses (screenshots, transcripts, isolated configs)
+.e2e-remote-client/
+.e2e-remote-tts/
+.e2e-remote-mic/
+.e2e-remote-meta/
+.e2e-remote-queue/
+.e2e-remote-queue-probe/

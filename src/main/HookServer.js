@@ -68,8 +68,19 @@ class HookServer {
         });
     }
 
+    // Constant-time token check. A plain `!==` string compare leaks how much of
+    // the token matched via timing; use timingSafeEqual over equal-length
+    // buffers (length is checked first, which is safe — token length is fixed).
+    _tokenValid(provided) {
+        if (typeof provided !== 'string') return false;
+        const a = Buffer.from(provided);
+        const b = Buffer.from(this.token);
+        if (a.length !== b.length) return false;
+        return crypto.timingSafeEqual(a, b);
+    }
+
     handleRequest(req, res) {
-        if (req.headers['x-ccbot-token'] !== this.token) {
+        if (!this._tokenValid(req.headers['x-ccbot-token'])) {
             req.resume(); // drain body so the connection closes cleanly, not via RST
             res.writeHead(403);
             res.end();
@@ -219,7 +230,11 @@ HookServer.CONTROL_ROUTES = {
     '/terminal/claude': 'terminal-claude',
     '/terminal/transcript': 'terminal-transcript',
     '/queue/update': 'queue-update',
-    '/queue/inject-now': 'queue-inject-now'
+    '/queue/inject-now': 'queue-inject-now',
+    // Turn Remote Mode (RemoteServer) on in the RUNNING app — no restart.
+    // Handled directly in main (controlDispatch); used by the Remote Mode
+    // client's auto-start path (scripts/remote-autostart.js) over loopback.
+    '/remote/enable': 'remote-enable'
 };
 
 // Coerce any incoming queue priority to a valid value (default 'normal').
