@@ -5299,6 +5299,19 @@ Same technique as the settings-modal preview, for the same reason.
 single place to look when mute misbehaves and no chance of four subtly different
 notions of "muted".
 
+**Two kinds of muting, deliberately separate.** The app already had a
+per-terminal SOUND mute (`terminalSoundOverrides[id].muted` in `SoundManager`),
+and it is unrelated to this one. Muting a terminal's reports to the manager does
+NOT silence its audio cues, and muting its sounds does NOT stop it reporting to
+the manager — which is the right behaviour: Ethan silencing a terminal's chatter
+to the manager should not cost him his own completion beep. The state is
+independent and always was, so nothing had to change functionally. What DID
+change is the naming: `SoundManager.isTerminalMuted()` is now
+`isTerminalSoundMuted()` (definition plus its four internal call sites; it had
+no external callers). Two identically-named methods meaning different things by
+the same word is how a future edit wires up the wrong one. Both docstrings now
+name the kind of muting they mean and point at the other.
+
 **Files.** `src/state/TerminalStateManager.js`, `renderer.js`, `main.js`,
 `index.html`, `style.css`, and the four watchers:
 `src/features/ManagerInstance.js`, `src/features/StuckWatchManager.js`,

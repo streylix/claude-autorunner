@@ -2797,10 +2797,18 @@ class TerminalGUI {
     }
 
     /**
-     * Is this terminal muted — i.e. should its AUTOMATIC notifications to the
-     * manager (completion pushes, stuck-watch alerts) be dropped? The single
-     * read point for that question; everything else about the terminal
-     * (injection, /terminal/screen, /state, its transcript) ignores the flag.
+     * Is this terminal's NOTIFICATION mute on — i.e. should its automatic
+     * reports to the manager (999) be dropped? All four watchers ask this and
+     * only this: completion pushes (ManagerInstance), stuck alerts
+     * (StuckWatchManager), awaiting-input notes (PromptWatchManager) and
+     * long-execution reports (LongExecutionWatchManager). The single read point
+     * for that question; everything else about the terminal (injection,
+     * /terminal/screen, /state, its transcript) ignores the flag.
+     *
+     * NOT the same thing as SoundManager's `isTerminalSoundMuted()`, which is
+     * the per-terminal AUDIO mute. The two are deliberately independent:
+     * silencing a terminal's reports to the manager must not take away the
+     * user's own sound cues, and vice versa. Check which one you mean.
      */
     isTerminalMuted(terminalId) {
         const state = this.terminalStateManager.getTerminal(terminalId);
