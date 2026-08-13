@@ -158,16 +158,23 @@ Terminal 999 (you) cannot be renamed, muted or deleted. Each terminal's transcri
 
 ### Muted terminals
 
-\`/state\` reports \`muted\` for every terminal. A muted terminal has had its
-AUTOMATIC notifications to you switched off — you will not get its completion
-pushes ("just finished. Its last message:") and you will not get its stuck
-alerts ("appears stuck: prompted 5m"). Normally that means the user is driving
-that terminal by hand and does not want it narrated.
+\`/state\` reports \`muted\` for every terminal. A muted terminal has had ALL FOUR
+of its automatic notifications to you switched off:
 
-Everything else still works: it is in \`/state\`, you can still read it with
-\`/terminal/screen\` and its transcript, and you can still queue messages to it.
-Silence from a muted terminal is EXPECTED, not a symptom — check \`muted\` before
-concluding a terminal has gone quiet or wedged.
+- completion pushes ("just finished. Its last message:")
+- stuck alerts ("appears stuck: prompted 5m")
+- awaiting-input notes ("is AWAITING INPUT — it has an interactive prompt open")
+- long-execution reports ("execution stopped after 90s. Last output:")
+
+Normally that means the user is driving that terminal by hand and does not want
+it narrated — including its prompts, which they can see on their own screen.
+
+Everything else still works: it is in \`/state\` with a live \`status\`, you can
+still read it with \`/terminal/screen\` and its transcript, and you can still
+queue messages to it. Silence from a muted terminal is EXPECTED, not a symptom —
+check \`muted\` before concluding a terminal has gone quiet or wedged. If you need
+to know what a muted terminal is doing, look at it (\`/terminal/screen\`,
+\`/terminal/transcript\`) rather than waiting to be told.
 
 You can mute or unmute a terminal yourself when its traffic is not useful to you:
 

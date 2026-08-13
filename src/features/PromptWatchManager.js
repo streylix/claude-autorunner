@@ -60,6 +60,15 @@ class PromptWatchManager {
     if (terminalId === MANAGER_TERMINAL_ID) return;
     const mgr = this.gui.managerInstance;
     if (!mgr || !mgr.running) return; // nobody to notify
+    // Muted terminal: the user is driving it themselves and can see the menu on
+    // their own screen. Gated at fire time (not when the transition was
+    // scheduled), so a mute applied during the paint delay still takes effect.
+    // The debounce entry is dropped with it: leaving a stale key behind would
+    // wrongly suppress the FIRST real prompt after an unmute.
+    if (this.gui.isTerminalMuted && this.gui.isTerminalMuted(terminalId)) {
+      this._lastNotify.delete(terminalId);
+      return;
+    }
 
     const dump = this.gui.readTerminalScreen(terminalId);
     if (!dump || !dump.ok || !dump.screen) return;

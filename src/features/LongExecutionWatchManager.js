@@ -161,10 +161,20 @@ class LongExecutionWatchManager {
     });
   }
 
-  /** One line + a cleaned screen tail, queued for the manager (999). */
+  /**
+   * One line + a cleaned screen tail, queued for the manager (999).
+   *
+   * Muted terminals return before the dispatch — and ONLY the dispatch. The
+   * caller has already run _setStatus(id, '...') and goes on to delete the
+   * episode either way, so a muted terminal's running/idle status is still
+   * tracked exactly as before (status feeds the display and the injection
+   * gate; mute must not touch it). Because the episode is consumed regardless,
+   * nothing accumulates while silenced and unmuting cannot dump a backlog.
+   */
   _reportStopped(id, terminal, seconds) {
     const mgr = this.gui.managerInstance;
     if (!mgr || !mgr.running) return; // nobody to notify
+    if (this.gui.isTerminalMuted && this.gui.isTerminalMuted(id)) return;
     const title = (terminal && terminal.title) || `Terminal ${id}`;
     const dir = terminal && terminal.directory ? ` in ${terminal.directory}` : '';
 

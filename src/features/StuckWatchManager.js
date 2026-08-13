@@ -89,7 +89,7 @@ class StuckWatchManager {
       // them thinking, not a terminal that needs rescuing. Drop the episode
       // state too, so unmuting starts clean rather than firing a note about a
       // condition that has been true the whole time it was silenced.
-      if (data && data.muted) {
+      if (this.gui.isTerminalMuted && this.gui.isTerminalMuted(id)) {
         this._notified.delete(id);
         return;
       }

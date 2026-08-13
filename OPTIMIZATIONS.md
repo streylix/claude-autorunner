@@ -5173,7 +5173,7 @@ operator remembering to do it by hand.
   wiring in `main.js`, `renderer.js`, `src/features/GamesManager.js` and the
   `.gitignore` carve-out.
 
-## 2026-08-13 — Per-terminal MUTE: silence one terminal's reports to the manager (CODE READY, NOT YET APPLIED — needs a restart Ethan schedules)
+## 2026-08-13 — Per-terminal MUTE: silence ALL FOUR of a terminal's automatic reports to the manager (CODE READY, NOT YET APPLIED — needs a restart Ethan schedules)
 
 **The problem.** Ethan drove one of his own terminals by hand for hours. Every
 turn it finished pushed a completion into the manager's queue, and on top of
@@ -5183,26 +5183,46 @@ terminal. His ask: "maybe you should be allowed to mute terminals from sending
 things to you, via a button at the terminal header somewhere, that either I or
 you can toggle on/off."
 
-**What mute does.** A per-terminal flag that suppresses exactly two things, and
-nothing else:
+**What mute does.** A per-terminal flag that suppresses ALL FOUR of the
+automatic notification paths a worker terminal has into the manager's queue —
+not two. Muting a terminal makes it stop reporting itself, full stop:
 
-1. the completion push — `ManagerInstance.onTerminalCompletion()`, the
+1. **completion pushes** — `ManagerInstance.onTerminalCompletion()`, the
    "Terminal N ("title") just finished. Its last message:" note queued to 999
    on every Stop hook;
-2. the stuck alerts — `StuckWatchManager.sweep()`, the "appears stuck:
-   prompted Nm / running Nm with no output / queued message blocked Nm" line.
+2. **stuck alerts** — `StuckWatchManager.sweep()`, the "appears stuck: prompted
+   Nm / running Nm with no output / queued message blocked Nm" line;
+3. **awaiting-input notes** — `PromptWatchManager.checkAndNotify()`, the
+   "Terminal N is AWAITING INPUT — it has an interactive prompt open" note with
+   the question and its options;
+4. **long-execution reports** — `LongExecutionWatchManager._reportStopped()`,
+   the "execution stopped after Ns. Last output:" note with a screen tail.
 
-Both were found and gated; there was no third source of automatic 999 traffic
-from a worker terminal in scope. (Two others exist and are deliberately left
-alone for now, since the ask was specifically about these: `PromptWatchManager`
-for on-screen menus and `LongExecutionWatchManager` for finished long runs.)
+The first version shipped only 1 and 2, because those were the two paths behind
+the complaint. That was too narrow and the manager said so: the feature Ethan
+asked for is "mute terminals from sending things to you", and a mute that still
+lets a terminal ping about its own on-screen prompts is leaky — he would have
+hit exactly that noise the first time he muted his terminal and kept working in
+it. If he is driving a terminal by hand he can see its prompt himself; that is
+the premise of muting it. 3 and 4 were folded in on the same reasoning.
+
+**Those four are the complete set.** Everything else that reaches 999 is either
+the user talking to the manager directly (the message box; `WakeWordManager`'s
+voice memos, which are urgent-priority and must never be muted) or the manager's
+own housekeeping, which is not attributable to any terminal (`dispatchPass`, the
+nightly `/clear`, `ManagerCheckpointManager`'s fleet-idle checkpoint). None of
+those are a terminal reporting itself, so none are in scope for mute.
 
 **What mute pointedly does NOT do.** It is outbound-to-manager only. The
 manager can still queue messages into a muted terminal — the injection gate has
 no notion of mute and never gained one — can still read it with
-`/terminal/screen`, still sees it in `/state`, and Claude Code keeps writing its
-transcript. The terminal behaves normally in every other respect; it just stops
-narrating itself.
+`/terminal/screen`, still sees it in `/state` with a live `status`, and Claude
+Code keeps writing its transcript. In particular `LongExecutionWatchManager` is
+the sole authority for the running↔idle status, and mute stops only its
+*report*, never its status writes: status feeds the terminal display AND the
+injection gate, so silencing that would have been a functional change wearing a
+notification change's clothes. The terminal behaves normally in every other
+respect; it just stops narrating itself.
 
 **Where the state lives.** `muted` is a field on the terminal's record in
 `TerminalStateManager`, defaulting to false. It rides along with title and
@@ -5229,20 +5249,41 @@ nothing there. Its header renders no mute button at all, `setTerminalMetadata`
 refuses the flag for 999, and `/terminal/update` rejects it with an explicit
 error rather than silently accepting it.
 
-**One subtlety worth keeping.** When a muted terminal is skipped in the stuck
-sweep, its de-dupe episode is cleared too. Without that, unmuting a terminal
-that had been sitting "prompted" for an hour would immediately fire a note about
-a condition that had been true the whole time it was silenced. Unmuting starts
-clean; the next genuinely new stuck episode still alerts.
+**The subtlety that matters most: unmuting must not dump a backlog.** Three of
+the four watchers keep per-terminal episode/de-dupe state, and each had to be
+handled so that lifting a mute does not immediately fire notes about conditions
+that were true the whole time the terminal was silenced:
 
-**Verification.** `src/features/terminal-mute.test.js` (9 tests): completion
-push suppressed when muted / unaffected when not / restored on unmute; stuck
-alert suppressed while an unmuted terminal in the same sweep still alerts; the
-unmute-doesn't-backfire case above; `muted` defaults false and round-trips
-through `TerminalStateManager`; `POST /terminal/update {muted}` carries the flag
-over real HTTP to the control handler; and the injection gate returns an
-identical verdict with and without mute, i.e. mute is not one of its inputs.
-Full suite `node --test src/features/ src/main/ src/messaging/` = 249/249 pass.
+- *Stuck sweep* — skipping a muted terminal clears its notified-episode key.
+  Without that, unmuting a terminal that had been sitting "prompted" for an hour
+  would fire instantly. Unmuting starts clean; the next genuinely new stuck
+  episode still alerts.
+- *Prompt watch* — the muted skip drops the terminal's debounce entry. Here the
+  failure mode is the mirror image: a stale key left behind would be inside the
+  8s cooldown and would *swallow* the first real prompt after an unmute.
+- *Long execution* — the episode is deleted whether or not it was reported, so
+  nothing accumulates while silenced and only the NEXT execution reports. No
+  change was needed; it is pinned by a test so a future edit cannot regress it.
+
+The completion push keeps no episode state (it is fired per Stop hook), so there
+is nothing to clear — its dedup history is per-text and unaffected.
+
+**Verification.** `src/features/terminal-mute.test.js` (17 tests): each of the
+four paths suppressed when muted and unaffected when not; an unmuted terminal in
+the same stuck sweep still alerting while its muted neighbour is silent; all
+three backlog cases above, including the prompt-watch swallow (which fails
+without the debounce clear); long-execution status transitions asserted
+IDENTICAL muted vs unmuted (`['running', '...']`), proving mute touches only the
+report; `muted` defaults false and round-trips through `TerminalStateManager`;
+`POST /terminal/update {muted}` carrying the flag over real HTTP to the control
+handler; and `evaluateInjectionGate` returning an identical verdict with and
+without mute, i.e. mute is not one of its inputs. Non-effects re-checked after
+folding in paths 3 and 4: no `muted` reference exists anywhere in
+`src/messaging/` (injection), `transcript-reader.js`, or `HookServer.js`, and
+`readTerminalScreen` — what `/terminal/screen` calls — has no mute check.
+(Prompt watch no longer reads the screen for a muted terminal, but that is its
+own internal read; the manager's `/terminal/screen` endpoint is untouched.)
+Full suite `node --test src/features/ src/main/ src/messaging/` = 257/257 pass.
 The remote bundle (`esbuild renderer.js`) still builds.
 
 **Reviewed without restarting.** A restart kills the manager session, so the
@@ -5253,9 +5294,18 @@ terminals (unmuted, muted, hover, and the manager with no button) and — with
 `--shot` — screenshots both themes to `docs/screenshots/terminal-mute-{dark,light}.png`.
 Same technique as the settings-modal preview, for the same reason.
 
+**One read point.** All four watchers ask the same question the same way —
+`gui.isTerminalMuted(id)`, evaluated at fire time, never cached — so there is a
+single place to look when mute misbehaves and no chance of four subtly different
+notions of "muted".
+
 **Files.** `src/state/TerminalStateManager.js`, `renderer.js`, `main.js`,
-`index.html`, `style.css`, `src/features/ManagerInstance.js`,
-`src/features/StuckWatchManager.js`, `src/main/manager-session.js` (role doc →
-v10, so the manager learns the endpoint and the `/state` field),
+`index.html`, `style.css`, and the four watchers:
+`src/features/ManagerInstance.js`, `src/features/StuckWatchManager.js`,
+`src/features/PromptWatchManager.js`,
+`src/features/LongExecutionWatchManager.js`. Plus `src/main/manager-session.js`
+(role doc → v10: the endpoint, the `/state` field, and the fact that all four
+paths go quiet, so the manager treats a muted terminal's silence as expected and
+looks at it directly when it needs to know),
 `src/features/terminal-mute.test.js` (new),
 `scripts/build-terminal-header-preview.js` (new).

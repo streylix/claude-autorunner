@@ -17,6 +17,8 @@ const http = require('node:http');
 const HookServer = require('../main/HookServer');
 const ManagerInstance = require('./ManagerInstance');
 const StuckWatchManager = require('./StuckWatchManager');
+const PromptWatchManager = require('./PromptWatchManager');
+const LongExecutionWatchManager = require('./LongExecutionWatchManager');
 const TerminalStateManager = require('../state/TerminalStateManager');
 const { evaluateInjectionGate } = require('../messaging/injection-gate');
 
@@ -83,6 +85,9 @@ function makeStuckEnv(terminals) {
     managerInstance: { running: true, dispatch: (note) => { dispatched.push(note); return true; } },
     terminalStateManager: { getAllTerminals: () => new Map(terminals) },
     messageQueueManager: { messageQueue: [], canInjectToTerminal: () => ({ allowed: true }) },
+    // All four watchers ask this one question; the flag lives on the terminal
+    // record, exactly as the renderer's isTerminalMuted reads it.
+    isTerminalMuted: (id) => !!(terminals.get(id) || {}).muted,
   };
   const mgr = new StuckWatchManager(eventBus, { getState: () => undefined }, gui, { now: () => now });
   return { mgr, eventBus, dispatched, advance: (ms) => { now += ms; } };
@@ -141,6 +146,161 @@ test('state: muted defaults false and round-trips through TerminalStateManager',
   assert.strictEqual(tsm.getTerminal(1).muted, true);
   tsm.updateTerminal(1, { muted: false });
   assert.strictEqual(tsm.getTerminal(1).muted, false);
+});
+
+// ---- (c) prompt-watch "awaiting input" notes ------------------------------
+
+const PROMPT_SCREEN = [
+  'Do you want to proceed?',
+  '❯ 1. Yes',
+  '  2. No, and tell Claude what to do differently (esc)',
+].join('\n');
+
+function makePromptEnv({ muted = new Set() } = {}) {
+  const handlers = {};
+  const dispatched = [];
+  let now = 1000;
+  const eventBus = {
+    on: (name, cb) => { (handlers[name] = handlers[name] || []).push(cb); },
+    emit: () => {},
+    fire: (name, payload) => (handlers[name] || []).forEach((cb) => cb(payload)),
+  };
+  const gui = {
+    readTerminalScreen: () => ({ ok: true, screen: PROMPT_SCREEN }),
+    managerInstance: { running: true, dispatch: (note) => { dispatched.push(note); return true; } },
+    terminalStateManager: { getTerminal: (id) => ({ title: `Worker ${id}` }) },
+    isTerminalMuted: (id) => muted.has(id),
+  };
+  const mgr = new PromptWatchManager(eventBus, { getState: () => undefined }, gui, {
+    schedule: (fn) => fn(),
+    now: () => now,
+  });
+  return { mgr, dispatched, muted, advance: (ms) => { now += ms; } };
+}
+
+test('prompt watch: a muted terminal opening a real menu notifies nobody', () => {
+  const env = makePromptEnv({ muted: new Set([3]) });
+  env.mgr.checkAndNotify(3, { message: 'Claude needs your permission to use Bash' });
+  assert.strictEqual(env.dispatched.length, 0);
+});
+
+test('prompt watch: an unmuted terminal still notifies', () => {
+  const env = makePromptEnv({ muted: new Set([3]) });
+  env.mgr.checkAndNotify(4, { message: 'Claude needs your permission to use Bash' });
+  assert.strictEqual(env.dispatched.length, 1);
+  assert.match(env.dispatched[0], /Terminal 4 \("Worker 4"\) is AWAITING INPUT/);
+});
+
+test('prompt watch: unmuting does not replay the prompt that was silenced', () => {
+  // Nothing is queued while muted, so an unmute on its own is silent — the
+  // note only comes back on a genuinely NEW prompt check.
+  const env = makePromptEnv({ muted: new Set([3]) });
+  env.mgr.checkAndNotify(3, {});
+  assert.strictEqual(env.dispatched.length, 0);
+  env.muted.delete(3);
+  assert.strictEqual(env.dispatched.length, 0);
+  env.mgr.checkAndNotify(3, {});
+  assert.strictEqual(env.dispatched.length, 1);
+});
+
+test('prompt watch: the debounce entry is cleared while muted, so the first prompt after an unmute is not swallowed', () => {
+  // Without the clear, the pre-mute key would still be inside the 8s window and
+  // would suppress the first real prompt the user hears about after unmuting.
+  const env = makePromptEnv();
+  env.mgr.checkAndNotify(3, {});
+  assert.strictEqual(env.dispatched.length, 1);
+  env.muted.add(3);
+  env.mgr.checkAndNotify(3, {});           // silenced, and drops the debounce key
+  assert.strictEqual(env.dispatched.length, 1);
+  env.muted.delete(3);
+  env.mgr.checkAndNotify(3, {});           // same prompt, still inside the window
+  assert.strictEqual(env.dispatched.length, 2);
+});
+
+// ---- (d) long-execution "execution stopped" reports ------------------------
+
+// Drives the watcher's real state machine on an injected clock: an output
+// episode long enough to be promoted to 'running', then silence long enough to
+// close it — which is what triggers the report.
+function makeLongEnv({ muted = new Set() } = {}) {
+  const handlers = {};
+  const dispatched = [];
+  const statuses = [];
+  let now = 1000;
+  const eventBus = {
+    on: (name, cb) => { (handlers[name] = handlers[name] || []).push(cb); },
+    emit: () => {},
+    fire: (name, payload) => (handlers[name] || []).forEach((cb) => cb(payload)),
+  };
+  const record = { id: 3, title: 'ethan', status: null, directory: '/tmp/x' };
+  const gui = {
+    readTerminalScreen: () => ({ ok: true, screen: 'npm test\nPASS 249 tests' }),
+    managerInstance: { running: true, dispatch: (note) => { dispatched.push(note); return true; } },
+    terminalStateManager: {
+      getTerminal: (id) => (id === 3 ? record : null),
+      setTerminalStatus: (id, status) => {
+        const prev = record.status;
+        record.status = status;
+        statuses.push(status);
+        return prev;
+      },
+    },
+    isTerminalMuted: (id) => muted.has(id),
+  };
+  const mgr = new LongExecutionWatchManager(eventBus, { getState: () => undefined }, gui, { now: () => now });
+  const advance = (ms) => { now += ms; };
+  // One full episode: 8s of output, promoted at the 10s mark, then silence.
+  const runOneExecution = () => {
+    eventBus.fire('terminal:data', { terminalId: 3, data: 'x' });
+    advance(4000);
+    eventBus.fire('terminal:data', { terminalId: 3, data: 'x' });
+    advance(4000);
+    eventBus.fire('terminal:data', { terminalId: 3, data: 'x' });
+    advance(2000);
+    mgr.evaluate();          // -> running
+    advance(6000);
+    mgr.evaluate();          // quiet -> idle + report
+  };
+  return { mgr, dispatched, statuses, muted, record, runOneExecution };
+}
+
+test('long execution: a muted terminal finishing a long run reports nothing', () => {
+  const env = makeLongEnv({ muted: new Set([3]) });
+  env.runOneExecution();
+  assert.strictEqual(env.dispatched.length, 0);
+});
+
+test('long execution: an unmuted terminal still reports', () => {
+  const env = makeLongEnv();
+  env.runOneExecution();
+  assert.strictEqual(env.dispatched.length, 1);
+  assert.match(env.dispatched[0], /Terminal 3 \("ethan"\).*execution stopped after 8s/s);
+});
+
+test('long execution: mute suppresses ONLY the report — status tracking is untouched', () => {
+  // Status is not cosmetic here: it feeds the terminal display AND the
+  // injection gate. A mute that stopped the running/idle transitions would be
+  // a functional change, not a notification change.
+  const muted = makeLongEnv({ muted: new Set([3]) });
+  muted.runOneExecution();
+  const loud = makeLongEnv();
+  loud.runOneExecution();
+  assert.deepStrictEqual(muted.statuses, ['running', '...']);
+  assert.deepStrictEqual(muted.statuses, loud.statuses);
+  assert.strictEqual(muted.record.status, '...');
+});
+
+test('long execution: unmuting does not dump the run that finished while muted', () => {
+  // The episode is consumed whether or not it was reported, so nothing is
+  // pending at unmute time; only the NEXT execution reports.
+  const env = makeLongEnv({ muted: new Set([3]) });
+  env.runOneExecution();
+  assert.strictEqual(env.dispatched.length, 0);
+  env.muted.delete(3);
+  env.mgr.evaluate();
+  assert.strictEqual(env.dispatched.length, 0);
+  env.runOneExecution();
+  assert.strictEqual(env.dispatched.length, 1);
 });
 
 // ---- control API ----------------------------------------------------------
