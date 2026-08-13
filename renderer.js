@@ -661,8 +661,8 @@ class TerminalGUI {
         });
         // Live metadata sync: another attached renderer renamed/recolored a
         // terminal — apply it here too. fromSync stops the re-broadcast echo.
-        ipcRenderer.on('remote-terminal-meta', (event, { terminalId, title, color } = {}) => {
-            this.setTerminalMetadata(terminalId, { title, color }, { fromSync: true });
+        ipcRenderer.on('remote-terminal-meta', (event, { terminalId, title, color, muted } = {}) => {
+            this.setTerminalMetadata(terminalId, { title, color, muted }, { fromSync: true });
         });
         // Live message-queue mirror (remote views only): main pushes the
         // authoritative queue whenever it changes (add / inject / remove /
@@ -707,7 +707,11 @@ class TerminalGUI {
                     directory: data.directory || null,
                     sessionId: data.sessionId || null,
                     transcriptPath: data.transcriptPath || null,
-                    title: data.title || `Terminal ${id}`
+                    title: data.title || `Terminal ${id}`,
+                    // Muted terminals still appear here in full. The flag is
+                    // exposed so the manager can tell "deliberately silenced"
+                    // apart from "nothing is happening".
+                    muted: data.muted === true
                 });
             });
             // Full queue detail for GET /queue and the manager's edit endpoint.
@@ -1303,6 +1307,15 @@ class TerminalGUI {
                 if (closeBtn) {
                     const terminalId = parseInt(closeBtn.dataset.terminalId);
                     this.closeTerminal(terminalId);
+                }
+
+                // Click the header bell to mute/unmute this terminal's
+                // automatic notifications to the manager.
+                const muteBtn = e.target.closest('.terminal-mute-btn');
+                if (muteBtn) {
+                    const terminalId = parseInt(muteBtn.dataset.terminalId, 10);
+                    if (Number.isFinite(terminalId)) this.toggleTerminalMute(terminalId);
+                    return;
                 }
 
                 // Click the header color dot to recolor the terminal.
@@ -2192,12 +2205,17 @@ class TerminalGUI {
             // Manager (locked) gets no close button - it's managed by the app.
             const closeBtnHtml = options.lockTitle ? '' :
                 `<button class="icon-btn close-terminal-btn hotkey-enabled" title="Close terminal" data-terminal-id="${terminalId}" data-test-id="close-terminal-btn"><i data-lucide="x"></i></button>`;
+            // The manager (999, lockTitle) gets no mute button: it is the
+            // RECIPIENT of the notifications mute suppresses, so the control
+            // would be meaningless there.
+            const muteBtnHtml = options.lockTitle ? '' : this.muteButtonHtml(terminalId);
             header.innerHTML = `
                 <div class="terminal-title-wrapper">
                     <span class="terminal-color-dot" style="background-color: ${dotColor};"></span>
                     <span class="terminal-title${options.lockTitle ? '' : ' editable'}" contenteditable="false"></span>
                 </div>
                 <div class="terminal-header-right">
+                    ${muteBtnHtml}
                     <span class="terminal-status" data-terminal-status="${terminalId}"></span>
                     ${closeBtnHtml}
                 </div>`;
@@ -2329,8 +2347,12 @@ class TerminalGUI {
             terminal,
             directory: options.directory || process.cwd(),
             title: options.title,
-            color: terminalColor
+            color: terminalColor,
+            muted: options.muted === true
         });
+        // Paint the mute chrome from the restored flag. Also covers the static
+        // terminal-1 wrapper from index.html, whose button ships unmuted.
+        this.applyMuteChrome(terminalId);
 
         // Spawn the PTY in main (channel + payload shape match main.js's handler)
         ipcRenderer.send('terminal-start', { terminalId, directory: options.directory || null });
@@ -2545,7 +2567,8 @@ class TerminalGUI {
                 id,
                 title: state.title || `Terminal ${id}`,
                 color: state.color || this.getTerminalColor(id),
-                directory: state.directory || null
+                directory: state.directory || null,
+                muted: state.muted === true
             });
         });
         this.persistSetting('terminalMetadata', meta);
@@ -2577,6 +2600,7 @@ class TerminalGUI {
                     title: t.title || undefined,
                     color: t.color || undefined,
                     directory: t.directory || undefined,
+                    muted: t.muted === true,
                     skipActive: i !== valid.length - 1 // focus the last restored terminal
                 });
             });
@@ -2736,13 +2760,18 @@ class TerminalGUI {
      * received broadcast: it must NOT re-send, or two renderers would ping-pong
      * the same update forever.
      */
-    setTerminalMetadata(terminalId, { title, color } = {}, { fromSync = false } = {}) {
+    setTerminalMetadata(terminalId, { title, color, muted } = {}, { fromSync = false } = {}) {
         const terminalData = this.terminals.get(terminalId);
         if (!terminalData) return false;
 
         const updates = {};
         if (typeof title === 'string' && title.trim()) updates.title = title.trim();
         if (typeof color === 'string' && color.trim()) updates.color = color.trim();
+        // The manager is the recipient of the muted notifications; muting it
+        // would silence nothing, so the flag is refused rather than stored.
+        if (typeof muted === 'boolean' && terminalId !== ManagerInstance.TERMINAL_ID) {
+            updates.muted = muted;
+        }
         if (Object.keys(updates).length === 0) return false;
 
         this.terminalStateManager.updateTerminal(terminalId, updates);
@@ -2756,6 +2785,7 @@ class TerminalGUI {
             const dot = wrapper.querySelector('.terminal-color-dot');
             if (dot) dot.style.backgroundColor = updates.color;
         }
+        if (updates.muted !== undefined) this.applyMuteChrome(terminalId);
 
         this.eventBus.emit('terminal:metadata', { terminalId, ...updates });
         if (terminalId === this.queueTargetTerminalId) this.updateSelectorDisplay(terminalId);
@@ -2764,6 +2794,64 @@ class TerminalGUI {
             try { ipcRenderer.send('terminal-meta-changed', { terminalId, ...updates }); } catch (_) { /* unit tests */ }
         }
         return true;
+    }
+
+    /**
+     * Is this terminal muted — i.e. should its AUTOMATIC notifications to the
+     * manager (completion pushes, stuck-watch alerts) be dropped? The single
+     * read point for that question; everything else about the terminal
+     * (injection, /terminal/screen, /state, its transcript) ignores the flag.
+     */
+    isTerminalMuted(terminalId) {
+        const state = this.terminalStateManager.getTerminal(terminalId);
+        return !!(state && state.muted);
+    }
+
+    /** Header mute button markup (never rendered for the manager). */
+    muteButtonHtml(terminalId) {
+        return `<button class="icon-btn terminal-mute-btn" data-terminal-id="${terminalId}" data-test-id="terminal-mute-btn" title="Mute manager notifications"><i data-lucide="bell"></i></button>`;
+    }
+
+    /**
+     * Paint a terminal's mute state onto its header. Muted is meant to be
+     * readable across the whole grid at a glance, so it is not a tint: the
+     * header gets a `muted` class that turns the button into a filled amber
+     * MUTED pill (see style.css), and the icon swaps to bell-off.
+     */
+    applyMuteChrome(terminalId) {
+        const terminalData = this.terminals.get(terminalId);
+        if (!terminalData || !terminalData.container) return;
+        const header = terminalData.container.querySelector('.terminal-header');
+        const btn = terminalData.container.querySelector('.terminal-mute-btn');
+        const muted = this.isTerminalMuted(terminalId);
+        if (header) header.classList.toggle('muted', muted);
+        if (!btn) return;
+        btn.classList.toggle('muted', muted);
+        btn.title = muted
+            ? 'Muted — this terminal is not notifying the manager. Click to unmute.'
+            : 'Mute manager notifications';
+        btn.setAttribute('aria-pressed', muted ? 'true' : 'false');
+        // Rebuild the icon in place: lucide replaces the <i> with an <svg>, so
+        // re-insert the placeholder before asking it to render again.
+        btn.innerHTML = `<i data-lucide="${muted ? 'bell-off' : 'bell'}"></i>`;
+        if (window.lucide) window.lucide.createIcons({ nameAttr: 'data-lucide', root: btn });
+    }
+
+    /**
+     * Flip a terminal's mute flag from the header button. Goes through
+     * setTerminalMetadata so it takes the same path as title/color: state
+     * update, DOM, persistence, /state snapshot and remote sync.
+     */
+    toggleTerminalMute(terminalId) {
+        if (terminalId === ManagerInstance.TERMINAL_ID) return; // recipient, not a source
+        const next = !this.isTerminalMuted(terminalId);
+        if (!this.setTerminalMetadata(terminalId, { muted: next })) return;
+        this.eventBus.emit('log:action', {
+            message: next
+                ? `Terminal ${terminalId} muted — its completions and stuck alerts will not reach the manager`
+                : `Terminal ${terminalId} unmuted — it will notify the manager again`,
+            type: next ? 'warning' : 'info'
+        });
     }
 
     /**
@@ -2915,9 +3003,16 @@ class TerminalGUI {
         if (action === 'terminal-update') {
             const terminalId = parseInt(payload.terminalId, 10);
             if (terminalId === ManagerInstance.TERMINAL_ID) {
-                return { ok: false, error: 'the manager terminal cannot be renamed' };
+                return { ok: false, error: 'the manager terminal cannot be renamed or muted' };
             }
-            const ok = this.setTerminalMetadata(terminalId, { title: payload.title, color: payload.color });
+            const ok = this.setTerminalMetadata(terminalId, {
+                title: payload.title,
+                color: payload.color,
+                // `muted` silences this terminal's automatic notifications TO
+                // the manager (completion pushes + stuck alerts) and nothing
+                // else. Same shape as title/color: absent = leave unchanged.
+                muted: typeof payload.muted === 'boolean' ? payload.muted : undefined
+            });
             return ok ? { ok: true, terminalId } : { ok: false, error: 'terminal not found or nothing to update' };
         }
 

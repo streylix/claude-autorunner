@@ -85,6 +85,14 @@ class StuckWatchManager {
     const now = this._now();
     this.gui.terminalStateManager.getAllTerminals().forEach((data, id) => {
       if (id === MANAGER_TERMINAL_ID) return;
+      // Muted terminal: the user is driving it themselves, so "prompted 5m" is
+      // them thinking, not a terminal that needs rescuing. Drop the episode
+      // state too, so unmuting starts clean rather than firing a note about a
+      // condition that has been true the whole time it was silenced.
+      if (data && data.muted) {
+        this._notified.delete(id);
+        return;
+      }
       const facts = this._stuckFacts(id, now);
       if (!facts.length) {
         this._notified.delete(id); // healthy -> episode over

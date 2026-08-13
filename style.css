@@ -5893,3 +5893,63 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         padding: 18px 18px 24px;
     }
 }
+
+/* ---- Per-terminal mute (header bell) ------------------------------------
+   Muted = this terminal's automatic notifications to the manager (completion
+   pushes + stuck alerts) are suppressed. It has to be readable across a grid
+   of four terminals without clicking anything, so muted is not a tint: the
+   bell becomes a filled amber MUTED pill and the whole header takes an amber
+   wash. Unmuted is a plain, quiet icon button like the close (x) beside it. */
+.terminal-mute-btn {
+    flex-shrink: 0;
+}
+
+.terminal-mute-btn:hover {
+    color: var(--accent-warning);
+    background-color: color-mix(in srgb, var(--accent-warning) 14%, transparent);
+}
+
+.terminal-mute-btn.muted {
+    /* .icon-btn pins every icon button to a 28px square; the pill has to grow
+       past that to fit its label, so both axes are released here. */
+    width: auto;
+    height: 22px;
+    background-color: var(--accent-warning);
+    color: var(--bg-primary);
+    border-radius: 999px;
+    padding: 0 9px 0 7px;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1;
+}
+
+.terminal-mute-btn.muted::after {
+    content: 'MUTED';
+}
+
+.terminal-mute-btn.muted:hover {
+    background-color: var(--accent-warning);
+    color: var(--bg-primary);
+    filter: brightness(1.12);
+}
+
+.terminal-mute-btn.muted svg,
+.terminal-mute-btn.muted i {
+    width: 13px;
+    height: 13px;
+}
+
+/* The header itself carries the state too, so a muted terminal is obvious even
+   when the pill is at the far edge of a wide pane. */
+.terminal-header.muted {
+    background-color: color-mix(in srgb, var(--accent-warning) 16%, var(--bg-primary));
+    border-bottom: 1px solid color-mix(in srgb, var(--accent-warning) 55%, transparent);
+}
+
+/* A muted terminal's title is dimmed to match: the pane reads as "parked"
+   from across the grid, before you've read a single word of it. */
+.terminal-header.muted .terminal-title {
+    color: color-mix(in srgb, var(--accent-warning) 70%, var(--text-secondary));
+}

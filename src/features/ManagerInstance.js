@@ -87,6 +87,12 @@ class ManagerInstance {
         if (!this.running || !this.completionWatchEnabled) return;
         if (!data || data.terminalId == null) return;
         if (data.terminalId === MANAGER_TERMINAL_ID) return; // never react to self
+        // Muted terminal (header bell / POST /terminal/update {muted}): the
+        // human is driving it and does not want every turn announced here.
+        // Suppressed at the push, not at the source — completion:recorded still
+        // fires for sounds/history, and everything else about the terminal
+        // (injection, /state, /terminal/screen, transcript) is untouched.
+        if (this.gui.isTerminalMuted && this.gui.isTerminalMuted(data.terminalId)) return;
         const terminal = this.gui.terminalStateManager.getTerminal(data.terminalId);
         const title = (terminal && terminal.title) || `Terminal ${data.terminalId}`;
         const dir = data.directory ? ` in ${data.directory}` : '';

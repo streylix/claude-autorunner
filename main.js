@@ -554,7 +554,8 @@ app.whenReady().then(async () => {
       broadcastToRenderers('remote-terminal-meta', {
         terminalId: payload.terminalId,
         title: typeof payload.title === 'string' ? payload.title : undefined,
-        color: typeof payload.color === 'string' ? payload.color : undefined
+        color: typeof payload.color === 'string' ? payload.color : undefined,
+        muted: typeof payload.muted === 'boolean' ? payload.muted : undefined
       });
     });
 

@@ -32,7 +32,7 @@ function hasResumableSession(managerDir) {
 // Bump this when the role doc below changes so existing manager directories
 // (which already have a CLAUDE.md) get refreshed instead of keeping a stale
 // copy that's missing newer endpoints. The marker line is written verbatim.
-const MANAGER_MD_VERSION = 'v9';
+const MANAGER_MD_VERSION = 'v10';
 const MANAGER_MD_MARKER = `<!-- ccbot-manager-md:${MANAGER_MD_VERSION} -->`;
 
 const MANAGER_CLAUDE_MD = `${MANAGER_MD_MARKER}
@@ -100,7 +100,7 @@ All endpoints are under \`http://127.0.0.1:$CCBOT_PORT\`:
 | POST | \`/queue/inject-now\`| \`{messageId}\`                      | Force-inject a queued message immediately, bypassing all gates |
 | POST | \`/terminal/create\` | \`{directory?, title?, color?}\`     | Open a new terminal (starts as a bare shell) |
 | POST | \`/terminal/claude\` | \`{terminalId, action}\`             | Start/resume/restart Claude in a terminal (action: start|resume|restart) |
-| POST | \`/terminal/update\` | \`{terminalId, title?, color?}\`     | Rename / recolor a terminal |
+| POST | \`/terminal/update\` | \`{terminalId, title?, color?, muted?}\` | Rename / recolor / mute a terminal |
 | POST | \`/terminal/delete\` | \`{terminalId}\`                     | Close a terminal |
 | POST | \`/terminal/screen\` | \`{terminalId, scrollback?}\`        | Dump a terminal's live screen text |
 
@@ -153,8 +153,33 @@ curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/terminal/claude" \\
   -d '{"terminalId": "3", "action": "start"}'
 \`\`\`
 
-Terminal 999 (you) cannot be renamed or deleted. Each terminal's transcriptPath
+Terminal 999 (you) cannot be renamed, muted or deleted. Each terminal's transcriptPath
 (from \`/state\`) is a JSONL file you can read for the full conversation.
+
+### Muted terminals
+
+\`/state\` reports \`muted\` for every terminal. A muted terminal has had its
+AUTOMATIC notifications to you switched off — you will not get its completion
+pushes ("just finished. Its last message:") and you will not get its stuck
+alerts ("appears stuck: prompted 5m"). Normally that means the user is driving
+that terminal by hand and does not want it narrated.
+
+Everything else still works: it is in \`/state\`, you can still read it with
+\`/terminal/screen\` and its transcript, and you can still queue messages to it.
+Silence from a muted terminal is EXPECTED, not a symptom — check \`muted\` before
+concluding a terminal has gone quiet or wedged.
+
+You can mute or unmute a terminal yourself when its traffic is not useful to you:
+
+\`\`\`bash
+curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/terminal/update" \\
+  -H "X-CCBOT-Token: $CCBOT_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"terminalId": "3", "muted": true}'    # false to unmute
+\`\`\`
+
+The user can also toggle it from the bell button in the terminal's header, and
+the setting survives a restart — so do not unmute a terminal the user muted
+unless they ask.
 
 ### The dimmed prompt-line autosuggestion is NOT the user
 

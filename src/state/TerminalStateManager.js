@@ -38,6 +38,11 @@ class TerminalStateManager {
             chunkId: config.chunkId || null,
             color: config.color || null,
             title: config.title || `Terminal ${id}`,
+            // Muted = this terminal's AUTOMATIC notifications to the manager
+            // (999) are suppressed: the completion push and the stuck-watch
+            // alerts. Nothing else changes — the manager can still inject into
+            // it, read its screen and see it in /state. Default off.
+            muted: config.muted === true,
             createdAt: Date.now(),
             updatedAt: Date.now(),
             metrics: {

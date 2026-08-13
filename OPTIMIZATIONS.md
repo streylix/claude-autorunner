@@ -5172,3 +5172,90 @@ operator remembering to do it by hand.
   `src/features/MoonlightBridge.js`, `tests/unit/moonlight-*.test.js`, plus the
   wiring in `main.js`, `renderer.js`, `src/features/GamesManager.js` and the
   `.gitignore` carve-out.
+
+## 2026-08-13 — Per-terminal MUTE: silence one terminal's reports to the manager (CODE READY, NOT YET APPLIED — needs a restart Ethan schedules)
+
+**The problem.** Ethan drove one of his own terminals by hand for hours. Every
+turn it finished pushed a completion into the manager's queue, and on top of
+that the stuck watchdog kept filing `appears stuck: prompted 5m` — which was
+just Ethan thinking. None of it was useful: the manager was not managing that
+terminal. His ask: "maybe you should be allowed to mute terminals from sending
+things to you, via a button at the terminal header somewhere, that either I or
+you can toggle on/off."
+
+**What mute does.** A per-terminal flag that suppresses exactly two things, and
+nothing else:
+
+1. the completion push — `ManagerInstance.onTerminalCompletion()`, the
+   "Terminal N ("title") just finished. Its last message:" note queued to 999
+   on every Stop hook;
+2. the stuck alerts — `StuckWatchManager.sweep()`, the "appears stuck:
+   prompted Nm / running Nm with no output / queued message blocked Nm" line.
+
+Both were found and gated; there was no third source of automatic 999 traffic
+from a worker terminal in scope. (Two others exist and are deliberately left
+alone for now, since the ask was specifically about these: `PromptWatchManager`
+for on-screen menus and `LongExecutionWatchManager` for finished long runs.)
+
+**What mute pointedly does NOT do.** It is outbound-to-manager only. The
+manager can still queue messages into a muted terminal — the injection gate has
+no notion of mute and never gained one — can still read it with
+`/terminal/screen`, still sees it in `/state`, and Claude Code keeps writing its
+transcript. The terminal behaves normally in every other respect; it just stops
+narrating itself.
+
+**Where the state lives.** `muted` is a field on the terminal's record in
+`TerminalStateManager`, defaulting to false. It rides along with title and
+colour everywhere those already travel: persisted in the `terminalMetadata`
+setting (so it survives a restart), restored through `createTerminal`, synced to
+other renderers over `remote-terminal-meta`, and pushed into main's `/state`
+snapshot. No new store, no new setting key, no new IPC channel.
+
+**Two ways to toggle it.**
+
+- *The header button.* A bell beside the close (x). Muted is deliberately not a
+  subtle tint — Ethan needs to see which terminals are silenced across a grid of
+  four without clicking anything — so the bell turns into a filled amber
+  **MUTED** pill, the header takes an amber wash and the title goes amber with
+  it. Unmuted is a plain quiet icon button.
+- *The control API.* `POST /terminal/update {terminalId, muted}` — the existing
+  rename/recolour endpoint, extended the same way title and colour are handled
+  rather than getting an endpoint of its own. `GET /state` reports `muted` per
+  terminal, which is the point: the manager has to be able to tell "deliberately
+  silenced" apart from "nothing is happening", or silence means nothing.
+
+**Terminal 999 cannot be muted.** It is the recipient, so the control would do
+nothing there. Its header renders no mute button at all, `setTerminalMetadata`
+refuses the flag for 999, and `/terminal/update` rejects it with an explicit
+error rather than silently accepting it.
+
+**One subtlety worth keeping.** When a muted terminal is skipped in the stuck
+sweep, its de-dupe episode is cleared too. Without that, unmuting a terminal
+that had been sitting "prompted" for an hour would immediately fire a note about
+a condition that had been true the whole time it was silenced. Unmuting starts
+clean; the next genuinely new stuck episode still alerts.
+
+**Verification.** `src/features/terminal-mute.test.js` (9 tests): completion
+push suppressed when muted / unaffected when not / restored on unmute; stuck
+alert suppressed while an unmuted terminal in the same sweep still alerts; the
+unmute-doesn't-backfire case above; `muted` defaults false and round-trips
+through `TerminalStateManager`; `POST /terminal/update {muted}` carries the flag
+over real HTTP to the control handler; and the injection gate returns an
+identical verdict with and without mute, i.e. mute is not one of its inputs.
+Full suite `node --test src/features/ src/main/ src/messaging/` = 249/249 pass.
+The remote bundle (`esbuild renderer.js`) still builds.
+
+**Reviewed without restarting.** A restart kills the manager session, so the
+button was reviewed from a standalone extract instead: `scripts/build-terminal-header-preview.js`
+pulls the real header markup out of `index.html`, the real stylesheet, and the
+real `muteButtonHtml()` / `applyMuteChrome()` out of `renderer.js`, renders four
+terminals (unmuted, muted, hover, and the manager with no button) and — with
+`--shot` — screenshots both themes to `docs/screenshots/terminal-mute-{dark,light}.png`.
+Same technique as the settings-modal preview, for the same reason.
+
+**Files.** `src/state/TerminalStateManager.js`, `renderer.js`, `main.js`,
+`index.html`, `style.css`, `src/features/ManagerInstance.js`,
+`src/features/StuckWatchManager.js`, `src/main/manager-session.js` (role doc →
+v10, so the manager learns the endpoint and the `/state` field),
+`src/features/terminal-mute.test.js` (new),
+`scripts/build-terminal-header-preview.js` (new).
