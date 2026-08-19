@@ -14,6 +14,7 @@
 
 const { config } = require('../config');
 const { interruptStopWords } = require('./appSettings');
+const replyContext = require('./replyContext');
 const log = require('./log');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -35,7 +36,10 @@ function firstToken(text) {
 //   source 'voice' → voice-memo wrapper (spoken/auto-transcribed)
 //   source 'typed' → typed-message wrapper (verbatim text)
 //   source 'file'  → file wrapper (the local path(s), + any caption)
-function frameMemo(text, source = 'voice', paths = []) {
+// replyTo (optional, {author, text|describe}) appends a short quote of the
+// message the user was REPLYING to, so the manager knows what "that one" meant.
+// Absent → the line is exactly what it was before replies were understood.
+function frameMemo(text, source = 'voice', paths = [], replyTo = null) {
   const clean = String(text || '').replace(/\s+/g, ' ').trim();
   let out;
   if (source === 'file') {
@@ -48,7 +52,7 @@ function frameMemo(text, source = 'voice', paths = []) {
   } else {
     out = `${config.voiceMemoMarker} "${clean}"`;
   }
-  return out.replace(/[\r\n]+$/g, '');
+  return (out + replyContext.format(replyTo)).replace(/[\r\n]+$/g, '');
 }
 
 function baseUrl(target) {
@@ -125,7 +129,8 @@ async function checkState(target) {
 }
 
 // Deliver a message to the manager terminal. opts.source ∈ 'voice'|'typed'|'file'
-// picks the framing; opts.paths carries saved file paths for the 'file' source.
+// picks the framing; opts.paths carries saved file paths for the 'file' source;
+// opts.replyTo (see replyContext) quotes the message the user replied to.
 async function sendVoiceMemo(target, text, opts = {}) {
   if (!target || !target.port || !target.token) {
     return { ok: false, error: 'not linked to a session' };
@@ -136,7 +141,7 @@ async function sendVoiceMemo(target, text, opts = {}) {
   // Text is required except for a pure file drop (which has paths but maybe no caption).
   if (!clean && !(source === 'file' && paths.length)) return { ok: false, error: 'empty message' };
 
-  const framed = frameMemo(clean, source, paths);
+  const framed = frameMemo(clean, source, paths, opts.replyTo || null);
   const mgrId = target.managerId || 999;
 
   // STOP-WORD INTERRUPT (voice only): a spoken message that BEGINS with a

@@ -32,6 +32,7 @@ const { startBridgeStatusReporter } = require('./bridgeStatus');
 const TextMirror = require('./textMirror');
 const ImageOutbox = require('./imageOutbox');
 const mediaInbox = require('./mediaInbox');
+const replyContext = require('./replyContext');
 
 // The privileged Message Content intent must be enabled in the Discord developer
 // portal. Probe it with a throwaway login so the REAL client never crash-loops if
@@ -175,8 +176,20 @@ async function main() {
         if (skipped.length) message.reply(`⚠️ Couldn't take that: ${skipped.map((s) => s.reason).join(', ')}`).catch(() => {});
         return;
       }
+      // REPLY CONTEXT: if this message replies to another one, quote a snippet of
+      // it so the manager knows what the user is pointing at. Discord usually
+      // hydrates the referenced message inline (discord.js parks it in the channel
+      // cache); when it doesn't, fetch it. A deleted or unfetchable reference just
+      // yields null and the memo is framed exactly as a non-reply.
+      let replyTo = null;
+      const refId = message.reference?.messageId;
+      if (refId) {
+        const ref = message.channel?.messages?.cache?.get(refId) ||
+          await message.fetchReference().catch(() => null);
+        replyTo = replyContext.fromMessage(ref);
+      }
       // Frame by source: attachment(s) → 'file' (with saved path[s]); plain text → 'typed'.
-      const res = await linkManager.forward(text, { source: saved.length ? 'file' : 'typed', paths: saved });
+      const res = await linkManager.forward(text, { source: saved.length ? 'file' : 'typed', paths: saved, replyTo });
       message.react(res && res.ok ? '✅' : '❌').catch(() => {});
     } catch (err) {
       log.warn('messageCreate handler error:', err.message);

@@ -6,6 +6,65 @@ project's current git branch.
 
 ---
 
+## 2026-08-19 — Replying to a Discord message now forwards a quote of what you replied to (branch `dev`)
+
+**Request (Ethan).** When he replies to a specific message in the Discord
+channel, the manager should see a snippet of the message he replied to
+alongside his text, instead of guessing from context.
+
+**What was wrong.** The bridge forwarded typed messages, voice transcripts
+and file drops to terminal 999, but dropped Discord's reply metadata
+entirely — nothing in the codebase read `message.reference`. So a reply
+like "just the diagram" or "no, the other one" reached the manager as bare
+text with the pointer stripped off. The manager had to guess which of
+several recent things was meant, and sometimes guessed wrong.
+
+**The change.** A reply now carries a short quote of the message it points
+at, appended to the existing wrapper line:
+
+    💬 Typed message from the user (Discord): "just the diagram" ↩ replying to claude-code-bot: an image
+    💬 Typed message from the user (Discord): "scratch that" ↩ replying to Ethan: "here is the plan for tomorrow"
+
+Details that matter:
+
+- **~200 characters, one line.** Longer quotes are cut on a word boundary
+  and end in an ellipsis. All whitespace collapses to spaces — the whole
+  memo must stay on ONE line, because Claude's TUI treats an embedded
+  newline as submit.
+- **No empty quotes.** A referenced message that is pure media or a link
+  embed is described in words ("an image", "a video", "2 images", "an
+  embed") rather than quoted as an empty pair of quotes.
+- **Works both directions.** Replies to the bot's own posts and to Ethan's
+  own messages both resolve an author name (server nickname, then Discord
+  display name, then handle).
+- **Fetches when needed.** Discord usually hydrates the referenced message
+  inline; when it doesn't, the bridge fetches it. A deleted or unfetchable
+  reference degrades silently to no quote.
+- **Non-replies are untouched.** A message that isn't a reply is framed
+  byte-for-byte as before — covered by a test that compares the new
+  4-argument `frameMemo` against the old 3-argument call for every source.
+
+**Where it lives.** New `discord-bridge/src/replyContext.js` holds both
+halves — turning a discord.js message into a plain `{author, text|describe}`
+object, and formatting that object into the suffix. `controlApi.frameMemo`
+takes the plain object only, so it stays free of discord.js and stays
+testable; `src/index.js` resolves the reference in the `messageCreate`
+handler. `linkManager.forward` needed no change — it already passes its
+options straight through. 12 new tests in `src/replyContext.test.js`;
+33/33 pass across the bridge suite.
+
+**Deployment note.** The running bridge is the systemd unit
+`ccbot-discord-bridge`, whose WorkingDirectory is the `claude-autorunner`
+worktree (branch `ssh-view`), not this one. The committed
+`discord-bridge/` trees on `dev` and `ssh-view` were identical, but that
+worktree carries ~280 lines of *uncommitted* bridge work plus several
+untracked modules (`conversationLog.js`, `singleInstance.js`,
+`eventDedupe.js`). So this change was moved over as a **patch**, never a
+file copy or a `git checkout` of the path — either of those would have
+destroyed that uncommitted work.
+
+---
+
 ## 2026-08-11 — Restarts were loading a DIFFERENT checkout; build identity is now reportable, and manager (999) traffic bypasses the queue gate (branch `ssh-view`, uncommitted)
 
 **Request (Ethan).** Two problems. First, the blocker: a restart at 13:35
