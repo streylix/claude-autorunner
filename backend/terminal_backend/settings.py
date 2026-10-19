@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     "voice_transcription",  # audio transcribing
     "text_to_speech",       # Kokoro TTS + spoken notifications
     "frontend_control",     # frontend log shipping API
+    "conversation_log",     # durable log of every message + open-ask extraction
 
     # REMOVED: admin, channels, terminal, settings, todos, user_settings
     # No WebSocket consumers remain, so channels/CHANNEL_LAYERS are gone.
@@ -83,6 +84,8 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",  # Required by rest_framework
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Returns freed heap to the OS after voice/TTS requests (see memory.py).
+    "terminal_backend.memory.TrimHeapMiddleware",
 ]
 
 ROOT_URLCONF = "terminal_backend.urls"

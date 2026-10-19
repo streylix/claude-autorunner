@@ -14,6 +14,8 @@
 
 const { config } = require('../config');
 const { interruptStopWords } = require('./appSettings');
+const replyContext = require('./replyContext');
+const { originTag } = require('./channelRouting');
 const log = require('./log');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -34,37 +36,101 @@ function firstToken(text) {
 // treats an embedded newline as submit — so whitespace is collapsed to spaces.
 //   source 'voice' → voice-memo wrapper (spoken/auto-transcribed)
 //   source 'typed' → typed-message wrapper (verbatim text)
+//   source 'synthetic' → bridge self-test wrapper (NOT from the user)
 //   source 'file'  → file wrapper (the local path(s), + any caption)
-function frameMemo(text, source = 'voice', paths = []) {
+// replyTo (optional, {author, text|describe}) appends a short quote of the
+// message the user was REPLYING to, so the manager knows what "that one" meant.
+// Absent → the line is exactly what it was before replies were understood.
+// T792: `origin` (channelRouting) names where a message came from when it was
+// NOT #claude-voice; null keeps today's wrapper byte-for-byte.
+function frameMemo(text, source = 'voice', paths = [], replyTo = null, origin = null) {
   const clean = String(text || '').replace(/\s+/g, ' ').trim();
   let out;
   if (source === 'file') {
     const list = (paths || []).join(' | ');
     const n = (paths || []).length;
-    const lead = `${config.fileMemoMarker} ${n === 1 ? 'a file' : `${n} files`} (Discord): ${list}`;
+    const lead = `${config.fileMemoMarker} ${n === 1 ? 'a file' : `${n} files`} (Discord${originTag(origin)}): ${list}`;
     out = clean ? `${lead} — message: "${clean}"` : lead;
   } else if (source === 'typed') {
-    out = `${config.typedMemoMarker} "${clean}"`;
+    out = origin
+      ? `${config.typedMemoMarker.replace('(Discord)', `(Discord${originTag(origin)})`)} "${clean}"`
+      : `${config.typedMemoMarker} "${clean}"`;
+  } else if (source === 'synthetic') {
+    // Bridge SELF-TEST (e.g. tools/t636-roundtrip.sh): framed so the receiving
+    // agent never reads it as something the user said.
+    out = `${config.syntheticMemoMarker} "${clean}"`;
   } else {
     out = `${config.voiceMemoMarker} "${clean}"`;
   }
-  return out.replace(/[\r\n]+$/g, '');
+  return (out + replyContext.format(replyTo)).replace(/[\r\n]+$/g, '');
 }
 
 function baseUrl(target) {
   return `http://${target.host || '127.0.0.1'}:${target.port}`;
 }
 
-// One POST to /terminal/keys.
-async function sendKeys(target, keys) {
+// One POST to /terminal/keys, to ANY terminal (the stand-in start path types
+// into the new Codex terminal this way — see standIn.js).
+async function sendKeysTo(target, terminalId, keys) {
   const res = await fetch(`${baseUrl(target)}/terminal/keys`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-CCBOT-Token': target.token },
-    body: JSON.stringify({ terminalId: target.managerId || 999, keys }),
+    body: JSON.stringify({ terminalId, keys }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
     throw new Error(`HTTP ${res.status} ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+// Keys to the target's delivery terminal (the manager, or — while a stand-in is
+// active — the stand-in; LinkManager substitutes managerId, see effectiveTarget).
+async function sendKeys(target, keys) {
+  return sendKeysTo(target, target.managerId || 999, keys);
+}
+
+// POST /terminal/create {directory,title,color} → { terminalId }. The app spawns
+// the PTY with CCBOT_PORT/CCBOT_TOKEN/CCBOT_TERMINAL_ID in its env.
+async function createTerminal(target, { directory, title, color } = {}) {
+  const res = await fetch(`${baseUrl(target)}/terminal/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CCBOT-Token': target.token },
+    body: JSON.stringify({ directory, title, color }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+// POST /terminal/delete {terminalId}. An already-missing terminal is reported
+// as { deleted: false }, not thrown — the caller's goal (it's gone) is met.
+async function deleteTerminal(target, terminalId) {
+  const res = await fetch(`${baseUrl(target)}/terminal/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CCBOT-Token': target.token },
+    body: JSON.stringify({ terminalId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    if (/not found/i.test(data.error || '')) return { deleted: false, terminalId };
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return { deleted: true, terminalId };
+}
+
+// POST /queue/add with an explicit priority (the app refuses 999 here).
+async function queueAdd(target, { terminalId, content, type = 'normal' }) {
+  const res = await fetch(`${baseUrl(target)}/queue/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CCBOT-Token': target.token },
+    body: JSON.stringify({ terminalId, content, type }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `HTTP ${res.status}`);
   }
   return data;
 }
@@ -113,6 +179,52 @@ async function purgeManagerQueue(target, mgrId) {
   return removed;
 }
 
+// Read a terminal's LIVE rendered screen (POST /terminal/screen) — the xterm
+// buffer as the user sees it, which the transcript JSONL does not contain.
+// Read-only: it never types anything into the terminal. Returns the screen text;
+// throws with a human-readable reason if the app is unreachable or refuses.
+async function getScreen(target, terminalId, opts = {}) {
+  if (!target || !target.port || !target.token) throw new Error('not linked to a session');
+  let res;
+  try {
+    res = await fetch(`${baseUrl(target)}/terminal/screen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CCBOT-Token': target.token },
+      body: JSON.stringify({ terminalId: String(terminalId), scrollback: !!opts.scrollback }),
+    });
+  } catch (err) {
+    throw new Error(`control API unreachable on 127.0.0.1:${target.port} (${err.message}) — is the app running?`);
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `control API returned HTTP ${res.status}`);
+  }
+  return {
+    screen: typeof data.screen === 'string' ? data.screen : '',
+    rows: data.rows,
+    cols: data.cols,
+    terminalId: data.terminalId,
+  };
+}
+
+// Full /state read: every terminal the app knows about, as-is (no filtering
+// or sorting — callers do that). Backs /terminals and the /prompt terminal-id
+// validation, both of which need a snapshot taken at the moment of the call.
+async function getFullState(target) {
+  if (!target || !target.port || !target.token) throw new Error('not linked to a session');
+  let res;
+  try {
+    res = await fetch(`${baseUrl(target)}/state`, {
+      headers: { 'X-CCBOT-Token': target.token },
+    });
+  } catch (err) {
+    throw new Error(`control API unreachable on 127.0.0.1:${target.port} (${err.message}) — is the app running?`);
+  }
+  if (!res.ok) throw new Error(`control API /state returned HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data.terminals) ? data.terminals : [];
+}
+
 // Read-only health check used to validate a link before accepting it.
 async function checkState(target) {
   const res = await fetch(`${baseUrl(target)}/state`, {
@@ -125,7 +237,8 @@ async function checkState(target) {
 }
 
 // Deliver a message to the manager terminal. opts.source ∈ 'voice'|'typed'|'file'
-// picks the framing; opts.paths carries saved file paths for the 'file' source.
+// picks the framing; opts.paths carries saved file paths for the 'file' source;
+// opts.replyTo (see replyContext) quotes the message the user replied to.
 async function sendVoiceMemo(target, text, opts = {}) {
   if (!target || !target.port || !target.token) {
     return { ok: false, error: 'not linked to a session' };
@@ -136,7 +249,7 @@ async function sendVoiceMemo(target, text, opts = {}) {
   // Text is required except for a pure file drop (which has paths but maybe no caption).
   if (!clean && !(source === 'file' && paths.length)) return { ok: false, error: 'empty message' };
 
-  const framed = frameMemo(clean, source, paths);
+  const framed = frameMemo(clean, source, paths, opts.replyTo || null, opts.origin || null);
   const mgrId = target.managerId || 999;
 
   // STOP-WORD INTERRUPT (voice only): a spoken message that BEGINS with a
@@ -190,4 +303,67 @@ async function sendVoiceMemo(target, text, opts = {}) {
   }
 }
 
-module.exports = { frameMemo, firstToken, checkState, sendVoiceMemo };
+// Type ONE raw line at the manager's prompt, UNWRAPPED (no memo framing), then
+// submit it — e.g. '/clear', which Claude Code must see verbatim to run its own
+// slash command. Same target resolution and text-then-enter timing as
+// sendVoiceMemo; no stop-word handling (that is a voice-only concern).
+async function sendRawLine(target, line) {
+  if (!target || !target.port || !target.token) {
+    return { ok: false, error: 'not linked to a session' };
+  }
+  const mgrId = target.managerId || 999;
+  try {
+    await sendKeys(target, [line]);
+    await sleep(config.submitDelayMs);
+    await sendKeys(target, ['enter']);
+    log.success(`raw line submitted to terminal ${mgrId}: "${String(line).slice(0, 90)}"`);
+    return { ok: true };
+  } catch (err) {
+    log.error('control API raw line failed:', err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+// Queue a message to a NON-manager terminal (POST /queue/add) — the app's
+// injection gate waits for that terminal to go idle before typing it in,
+// unlike /terminal/keys (sendVoiceMemo's path for 999), which types
+// immediately. UNLIKE sendVoiceMemo, this never frames the text (T505 — the
+// owner: "the /prompt command shouldn't do the wrap. regular messages r
+// fine tho"). /prompt to a specific terminal delivers EXACTLY what was
+// typed — plain text or a slash command — with no marker, no quoting, and
+// no reply-context suffix; the 999 path (sendVoiceMemo/frameMemo) is
+// unaffected and keeps framing everything, unchanged. A caption plus
+// attached file(s) are joined with the raw, unmarked path(s) so the
+// destination terminal still knows what arrived; text alone is queued
+// byte-for-byte as typed. 'normal' priority — same as before.
+async function queueMemo(target, terminalId, text, opts = {}) {
+  if (!target || !target.port || !target.token) {
+    return { ok: false, error: 'not linked to a session' };
+  }
+  const paths = opts.paths || [];
+  const clean = String(text || '').trim();
+  if (!clean && !paths.length) return { ok: false, error: 'empty message' };
+
+  const content = [clean, ...paths].filter(Boolean).join(' ');
+  try {
+    const res = await fetch(`${baseUrl(target)}/queue/add`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CCBOT-Token': target.token },
+      body: JSON.stringify({ terminalId, content, type: 'normal' }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    log.success(`raw message queued to terminal ${terminalId} (type: normal): "${content.slice(0, 90)}"`);
+    return { ok: true };
+  } catch (err) {
+    log.error('control API queue-add failed:', err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+module.exports = {
+  frameMemo, firstToken, checkState, sendVoiceMemo, sendRawLine, getScreen, getFullState, queueMemo,
+  sendKeysTo, createTerminal, deleteTerminal, queueAdd,
+};

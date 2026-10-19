@@ -1,6 +1,6 @@
 'use strict';
 
-// INBOUND media (user → manager): downloads image/video attachments the user
+// INBOUND media (user → manager): downloads image/video/audio attachments the user
 // sends (via /prompt or a plain message drop) to a known local dir, so the
 // manager — running on the same machine — can open them by path.
 //
@@ -13,25 +13,51 @@ const crypto = require('crypto');
 const { config } = require('../config');
 const log = require('./log');
 
-const IMAGE_EXT = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic', '.tiff'];
-const VIDEO_EXT = ['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.gifv'];
-const DOC_EXT = ['.txt', '.md', '.markdown'];
+// WHAT WE ACCEPT — one table, so adding a type is one line here. It used to be
+// four conditions inside kindOf(), which is how .html stayed unsupported
+// without anyone noticing.
+const ACCEPTED = [
+  { kind: 'image', exts: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic', '.tiff'], contentTypes: ['image/'] },
+  { kind: 'video', exts: ['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.gifv'], contentTypes: ['video/'] },
+  { kind: 'audio', exts: ['.ogg', '.oga', '.m4a', '.mp3', '.wav', '.opus', '.aac', '.flac'], contentTypes: ['audio/'] },
+  // The manager reads these off disk by path; .html earns its place because a
+  // saved page is how a list of links gets handed over.
+  { kind: 'text', exts: ['.txt', '.md', '.markdown', '.html', '.htm'], contentTypes: ['text/plain', 'text/markdown', 'text/html'] },
+];
 
 function kindOf(att) {
   const ct = (att.contentType || '').toLowerCase();
   const ext = (path.extname(att.name || '') || '').toLowerCase();
-  if (ct.startsWith('image/') || IMAGE_EXT.includes(ext)) return 'image';
-  if (ct.startsWith('video/') || VIDEO_EXT.includes(ext)) return 'video';
-  if (ct.startsWith('text/plain') || ct.startsWith('text/markdown') || DOC_EXT.includes(ext)) return 'text';
+  for (const type of ACCEPTED) {
+    if (type.contentTypes.some((prefix) => ct.startsWith(prefix))) return type.kind;
+    if (ext && type.exts.includes(ext)) return type.kind;
+  }
   return null;
 }
 
-// Is this attachment an image, video, or text/markdown doc we accept?
+// Is this attachment an image, video, audio, or text document we accept?
 function isMedia(att) { return kindOf(att) !== null; }
+
+// Why an attachment was not accepted, in words for the person who sent it.
+function rejectionReason(att) {
+  const ext = (path.extname(att.name || '') || '').toLowerCase();
+  const ct = (att.contentType || '').split(';')[0].trim().toLowerCase();
+  const what = ext || ct || 'unknown type';
+  const docs = ACCEPTED.find((t) => t.kind === 'text').exts.join(', ');
+  return `unsupported file type ${what} — I can take images, video, audio, or text documents (${docs})`;
+}
+
+// The sentence the sender sees when something they sent was not taken. One
+// wording for every inbound path, so a rejection is never reported in one place
+// and silent in another.
+function skippedNotice(skipped) {
+  if (!skipped || !skipped.length) return '';
+  return `⚠️ Couldn't take ${skipped.map((s) => `${s.name} — ${s.reason}`).join(', ')}`;
+}
 
 async function _saveOne(att, destDir) {
   const kind = kindOf(att);
-  if (!kind) return { ok: false, name: att.name, reason: 'not an image/video/text file' };
+  if (!kind) return { ok: false, name: att.name, reason: 'not an image/video/audio/text file' };
   if (att.size && att.size > config.inboundMediaMaxBytes) {
     return { ok: false, name: att.name, reason: `too large to download (${(att.size / 1e6).toFixed(1)}MB > ${(config.inboundMediaMaxBytes / 1e6).toFixed(0)}MB)` };
   }
@@ -62,17 +88,27 @@ async function _saveOne(att, destDir) {
 // Save a list/collection of attachments. Returns { saved: [paths], skipped: [{name,reason}] }.
 async function saveAttachments(attachments, destDir = config.mediaInboxDir, max = config.inboundMaxMedia) {
   const all = Array.from(attachments && attachments.values ? attachments.values() : (attachments || []));
-  const media = all.filter(isMedia).slice(0, max);
   const saved = [];
   const skipped = [];
-  for (const att of media) {
+  // NOTHING IS DISCARDED WITHOUT A WORD: an unrecognised file used to be dropped
+  // by `all.filter(isMedia)` before _saveOne could report it.
+  const accepted = [];
+  for (const att of all) {
+    if (isMedia(att)) accepted.push(att);
+    else {
+      const reason = rejectionReason(att);
+      skipped.push({ name: att.name || '(unnamed file)', reason });
+      log.warn(`rejected inbound attachment ${att.name || '(unnamed)'} — ${reason}`);
+    }
+  }
+  for (const att of accepted.slice(0, max)) {
     const r = await _saveOne(att, destDir);
     if (r.ok) saved.push(r.path); else skipped.push({ name: r.name, reason: r.reason });
   }
   // Note any media beyond the per-message cap.
-  const overflow = all.filter(isMedia).length - media.length;
+  const overflow = accepted.length - Math.min(accepted.length, max);
   if (overflow > 0) skipped.push({ name: `+${overflow} more`, reason: `over the ${max}-file cap` });
   return { saved, skipped };
 }
 
-module.exports = { saveAttachments, isMedia, kindOf };
+module.exports = { saveAttachments, isMedia, kindOf, rejectionReason, skippedNotice, ACCEPTED };

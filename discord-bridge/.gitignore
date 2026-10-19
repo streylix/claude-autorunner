@@ -3,3 +3,4 @@ node_modules/
 *.log
 tmp/
 recordings/
+channel-ignore.json

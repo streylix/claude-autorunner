@@ -143,6 +143,17 @@ def speak(request):
     notification.audio_path = rel_path
     notification.save(update_fields=["audio_path"])
 
+    # Mirror into the DURABLE conversation log before _prune() can ever reach
+    # this row. That log has no cap and holds only the string key "tts:<pk>"
+    # (never a FK), so the message outlives the notification it came from.
+    # Best-effort: a logging failure must never fail a successful speak().
+    try:
+        from conversation_log.recording import record_tts_notification
+
+        record_tts_notification(notification)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("conversation_log: failed to log TTS notification: %s", exc)
+
     _prune()
 
     payload = _serialize(notification)

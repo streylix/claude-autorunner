@@ -23,6 +23,7 @@ const { config, validate } = require('../config');
 const log = require('./log');
 const dave = require('./dave');
 const LinkManager = require('./linkManager');
+const StandIn = require('./standIn');
 const VoiceReceiver = require('./voiceReceive');
 const BridgeSession = require('./session');
 const { WakeSpotter } = require('./wakeWord');
@@ -31,7 +32,13 @@ const auth = require('./auth');
 const { startBridgeStatusReporter } = require('./bridgeStatus');
 const TextMirror = require('./textMirror');
 const ImageOutbox = require('./imageOutbox');
-const mediaInbox = require('./mediaInbox');
+const singleInstance = require('./singleInstance');
+const EventDedupe = require('./eventDedupe');
+const TtsPoller = require('./ttsPoller');
+const { userLeftTrackedChannel, shouldAutoFollow } = require('./voiceFollowGuard');
+const { makeReplyMirrorNotifier } = require('./replyMirror');
+const ChannelIgnore = require('./channelIgnore');
+const { makeMessageHandler } = require('./inboundText');
 
 // The privileged Message Content intent must be enabled in the Discord developer
 // portal. Probe it with a throwaway login so the REAL client never crash-loops if
@@ -59,16 +66,53 @@ async function main() {
     problems.forEach((p) => log.error('  - ' + p));
     process.exit(1);
   }
+
+  // ONE bridge per bot token. Discord fans every gateway event out to EVERY live
+  // session, so a second process on this token would download every attachment
+  // twice, forward every message to the manager twice, and post every outbox
+  // descriptor twice. First one up owns the token; anyone else stops here.
+  const lock = singleInstance.acquire(config.instanceLockPath);
+  if (!lock.ok) {
+    log.error(`Another bridge is already running on this bot token (pid ${lock.pid}) — refusing to start.`);
+    log.error('  Two live bridges make Discord deliver every message to both, so the manager acts on');
+    log.error(`  everything twice. Stop the other one first:  kill ${lock.pid}`);
+    log.error('  (The supported instance is the systemd unit: systemctl --user restart ccbot-discord-bridge.service)');
+    process.exit(1);
+  }
+  if (lock.degraded) log.warn(`single-instance lock unavailable (${lock.degraded}) — starting anyway.`);
+  process.on('exit', () => lock.release());
+
   dave.report();
 
   const linkManager = new LinkManager();
+  // T636: Codex stand-in for the manager (/manager codex | claude). Its state
+  // is on disk, so a restart keeps routing to an active stand-in; LinkManager
+  // re-validates it against /state every time a link is established.
+  const standIn = new StandIn();
+  linkManager.standIn = standIn;
+  if (standIn.activeTerminalId()) log.info(`stand-in: stored record found — terminal ${standIn.activeTerminalId()} (validated on link).`);
   const wakeSpotter = new WakeSpotter(config.wake().phrase); // kept in sync with the app per-utterance
   const receiver = new VoiceReceiver({ linkManager, wakeSpotter });
   const textMirror = new TextMirror();
+  // T792: per-channel off switch (/manager-ignore). #claude-voice is protected.
+  const channelIgnore = new ChannelIgnore({
+    file: config.channelIgnorePath,
+    isProtected: (id) => String(id) === String(textMirror.channel && textMirror.channel.id) ||
+      (!!config.textChannelId && String(id) === String(config.textChannelId)),
+  });
+  log.info(`channel ignore list: ${config.channelIgnorePath} (${channelIgnore.list().filter((r) => r.state === 'ignored').length} ignored).`);
   const session = new BridgeSession({ receiver, textMirror });
   // Watch the local outbox for manager-dropped images → post them to the channel.
   const imageOutbox = new ImageOutbox({ textMirror });
   imageOutbox.start();
+  // T521 (c3): the written "Replied:" copy, decoupled from voice. Runs for the
+  // life of the process — NOT tied to session.join()/leave() — so it keeps
+  // posting even while the bridge has left on the authorized user leaving.
+  // watchOnly: never fetches/plays the clip; BridgeSession's own poller (while
+  // actually connected) still owns that, gated by session.canPlayAudio().
+  const replyMirrorPoller = new TtsPoller({ watchOnly: true, onNotification: makeReplyMirrorNotifier(textMirror) });
+  await replyMirrorPoller.seed();
+  replyMirrorPoller.start();
   // Heartbeat the bridge's in-voice state to the backend so the desktop app can
   // mute its local-mic wake word while the bot is in a call (no double trigger).
   startBridgeStatusReporter({ linkManager, session });
@@ -116,16 +160,45 @@ async function main() {
   // recovers after a service restart without anyone typing /resume. Debounced so
   // overlapping voice events can't double-join; every step is best-effort.
   let followJoinInFlight = false;
+  let leaveInFlight = false;
   client.on('voiceStateUpdate', (oldState, newState) => {
     try {
       if (newState.guild?.id !== config.guildId) return;
       if (newState.id === client.user?.id) return; // ignore the bot itself
       receiver.setMute(newState.id, !!(newState.selfMute || newState.serverMute));
+
+      // T521 (c2): the authorized user left the channel we're bridging — leave
+      // too (and stop sending any audio; see session.canPlayAudio()). Anyone
+      // else leaving, or the authorized user leaving a channel that isn't
+      // ours, changes nothing.
+      if (!leaveInFlight && userLeftTrackedChannel({
+        trackedChannelId: session.channelId,
+        userId: newState.id,
+        oldChannelId: oldState.channelId,
+        newChannelId: newState.channelId,
+        isAuthorized: auth.isAuthorized,
+      })) {
+        leaveInFlight = true;
+        log.info(`authorized user left voice channel ${session.channelId} — leaving too.`);
+        session.leave()
+          .catch((e) => log.warn('leave-on-user-leave failed:', e.message))
+          .finally(() => { leaveInFlight = false; });
+        return;
+      }
+
       if (process.env.DISABLE_VOICE_AUTOFOLLOW === '1') return; // voice auto-join disabled (was churning + starving text posts)
       if (followJoinInFlight) return;
-      if (!newState.channelId || oldState.channelId === newState.channelId) return; // joins/moves only
-      if (!auth.isAuthorized(newState.id)) return;
-      if (!linkManager.isLinked() || session.isActive()) return;
+      // AUTO-FOLLOW (c4): when the authorized user joins (or moves into) a
+      // voice channel while the bridge is linked but idle, join them
+      // automatically — so voice recovers (after a leave-on-leave, or a
+      // service restart) with no manual step beyond the join itself.
+      if (!shouldAutoFollow({
+        newChannelId: newState.channelId,
+        oldChannelId: oldState.channelId,
+        isAuthorized: auth.isAuthorized(newState.id),
+        isLinked: linkManager.isLinked(),
+        sessionActive: session.isActive(),
+      })) return;
       followJoinInFlight = true;
       log.info(`auto-follow: authorized user joined voice ${newState.channelId} — joining them (linked, idle).`);
       session.join(newState.guild, newState.channelId)
@@ -137,51 +210,23 @@ async function main() {
     }
   });
 
-  // AUTO-FORWARD: any plain TEXT and/or image/video the user posts in the
-  // text-mirror channel is forwarded to the manager automatically (no /prompt
-  // needed), exactly like a voice memo. Media is saved locally and its path is
-  // appended.
-  //
-  // FEEDBACK-LOOP GUARD: never forward the bot's OWN messages — its Heard/Replied
-  // mirrors, image posts, and manager-text posts (Feature B). Filter on author ==
-  // the bot's own id AND ignore any bot/webhook author.
-  client.on('messageCreate', async (message) => {
-    try {
-      if (message.author?.id === client.user?.id) return; // our own message → never loop back
-      if (message.author?.bot || message.webhookId) return; // other bots / webhooks
-      if (message.guildId !== config.guildId) return;
-      // AUTHORIZATION: only allow-listed users' messages are auto-forwarded to
-      // the manager. Unauthorized posts are ignored silently (no channel spam);
-      // they can run any slash command to see how to allow themselves.
-      if (!auth.isAuthorized(message.author?.id)) return;
-      const ch = textMirror.channel;
-      const inMirror = (ch && message.channelId === ch.id) ||
-        (config.textChannelId && message.channelId === config.textChannelId);
-      if (!inMirror) return;
+  // AUTO-FORWARD (src/inboundText.js): his text/attachments from #claude-voice
+  // — and since T792 from any other text channel or thread, named by source —
+  // reach the manager. Channels he switched off with /manager-ignore are
+  // dropped there, before forwarding or logging.
+  const seenEvents = new EventDedupe();
+  client.on('messageCreate', makeMessageHandler({ client, textMirror, linkManager, channelIgnore, seenEvents }));
 
-      const media = message.attachments ? [...message.attachments.values()].filter(mediaInbox.isMedia) : [];
-      const text = (message.content || '').trim();
-      if (!media.length && !text) return; // nothing forwardable (e.g. a non-media file only)
-
-      // Auto-forward only when linked; unlinked → skip silently (no channel spam).
-      if (!linkManager.isLinked()) return;
-
-      let saved = [];
-      let skipped = [];
-      if (media.length) { const r = await mediaInbox.saveAttachments(media); saved = r.saved; skipped = r.skipped; }
-
-      if (!text && !saved.length) { // media present but all failed to download, and no text
-        message.react('⚠️').catch(() => {});
-        if (skipped.length) message.reply(`⚠️ Couldn't take that: ${skipped.map((s) => s.reason).join(', ')}`).catch(() => {});
-        return;
-      }
-      // Frame by source: attachment(s) → 'file' (with saved path[s]); plain text → 'typed'.
-      const res = await linkManager.forward(text, { source: saved.length ? 'file' : 'typed', paths: saved });
-      message.react(res && res.ok ? '✅' : '❌').catch(() => {});
-    } catch (err) {
-      log.warn('messageCreate handler error:', err.message);
-    }
-  });
+  // T792: be a member of every thread so its messages reach us — new ones as
+  // they are created, existing active ones once at login (see onReady).
+  const joinThread = (thread) => {
+    if (!thread || thread.guildId !== config.guildId || thread.joined || !thread.joinable) return;
+    if (channelIgnore.isIgnored(thread.id, thread.parentId)) return;
+    thread.join()
+      .then(() => log.info(`joined thread "${thread.name}" (${thread.id}) — reading it.`))
+      .catch((e) => log.warn(`could not join thread ${thread.id}: ${e.message}`));
+  };
+  client.on('threadCreate', (thread) => joinThread(thread));
 
   let ready = false;
   const onReady = async () => {
@@ -203,12 +248,18 @@ async function main() {
     } else {
       log.success(`authorization active — ${auth.allowList().length} allowed user id(s).`);
     }
+    log.info('voice leave-on-leave armed — the bridge disconnects (and sends no audio) when the authorized user leaves its channel.');
     // Resolve the text-mirror channel NOW (at login), so text/image posting, the
     // mirror, and inbound message forwarding all work whenever the bot is LINKED —
     // no voice channel required. (Only live audio capture needs a voice channel.)
     try {
       const guild = client.guilds.cache.get(config.guildId) || await client.guilds.fetch(config.guildId);
       if (guild) await textMirror.resolve(guild);
+      // T792: join the already-active threads so their messages reach us.
+      if (guild) {
+        const active = await guild.channels.fetchActiveThreads().catch(() => null);
+        if (active && active.threads) for (const t of active.threads.values()) joinThread(t);
+      }
     } catch (e) { log.warn('text mirror resolve at login failed:', e.message); }
     // AUTO-RESUME: after a service restart, re-link the last saved session and —
     // if that user is sitting in a voice channel right now — rejoin it, so a
@@ -240,8 +291,14 @@ async function main() {
   client.once('ready', onReady);
 
   client.on('interactionCreate', (interaction) => {
+    // Same guard as messageCreate: /prompt carries attachments, so a doubled
+    // interaction would also save + forward twice.
+    if (seenEvents.seen(interaction.id)) {
+      log.warn(`duplicate interactionCreate for ${interaction.id} — dropped (already handled).`);
+      return;
+    }
     log.info(`interaction received: type=${interaction.type} command=${interaction.commandName || '-'} from ${interaction.user?.tag || '?'}`);
-    commands.handle(interaction, { linkManager, session }).catch((err) => {
+    commands.handle(interaction, { linkManager, session, standIn, textMirror, channelIgnore }).catch((err) => {
       log.error('command handler error:', err.stack || err.message);
       if (interaction.isRepliable && interaction.isRepliable()) {
         const msg = '❌ Something went wrong handling that command.';

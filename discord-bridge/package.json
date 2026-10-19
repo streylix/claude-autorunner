@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "check": "for f in config.js src/*.js tools/*.js; do node --check \"$f\" || exit 1; done; echo 'all node --check OK'",
+    "test": "node --test src/",
     "doctor": "node src/doctor.js",
     "link-key": "node tools/make-link-key.js",
     "post-image": "node tools/post-image.js",

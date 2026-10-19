@@ -12,12 +12,34 @@
 //                stored session is no longer valid.
 //   /leave       Leave voice and unlink.
 //   /status      Show link + voice + audio-mode + wake-word state.
+//   /dump <id>   RAW dump of the tail of a terminal's live screen (read-only).
+//   /clear       Run Claude Code's own /clear in the manager (resets its context).
+//   /terminals   List every terminal known to the app: id, title, status.
+//   /manager codex|claude|status   T636: start a Codex stand-in for the manager
+//                (new terminal in the manager's dir, primed with its context;
+//                Discord messages route there), hand back to 999, or show
+//                where messages currently go.
+//   /manager-ignore | /manager-listen | /manager-channels   T792: switch the
+//                manager reading this channel/thread off or on, or list the
+//                state (stored in channel-ignore.json; #claude-voice is protected).
 
 const { SlashCommandBuilder } = require('discord.js');
 const { config } = require('../config');
 const resumeStore = require('./resumeStore');
 const mediaInbox = require('./mediaInbox');
 const auth = require('./auth');
+
+// /dump sizing. Discord's hard message cap is 2000 chars; the code fence and the
+// header line eat into that, so the default tail leaves comfortable headroom and
+// the requested size is clamped to what can actually be delivered.
+const DUMP_DEFAULT_CHARS = 1800;
+const DUMP_MAX_CHARS = 1900;
+const DUMP_MIN_CHARS = 100;
+const DISCORD_MAX_CONTENT = 2000;
+
+// /prompt targets the manager (999) by default — unchanged behaviour when
+// the new `terminal` option is omitted.
+const DEFAULT_PROMPT_TERMINAL = 999;
 
 const definitions = [
   new SlashCommandBuilder()
@@ -49,8 +71,159 @@ const definitions = [
       o.setName('text').setDescription('Your message to the manager').setRequired(false))
     .addAttachmentOption((o) =>
       o.setName('media').setDescription('An image or video to send along').setRequired(false))
+    .addIntegerOption((o) =>
+      o.setName('terminal').setDescription('Terminal to send to (default: 999, the manager)').setRequired(false))
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('terminals')
+    .setDescription('List every terminal known to the app: id, title, status')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('dump')
+    .setDescription("Raw dump of the tail of a terminal's live screen (999 = the manager)")
+    .addIntegerOption((o) =>
+      o.setName('terminal_id').setDescription('Terminal to read — 999 is the manager').setRequired(true))
+    .addIntegerOption((o) =>
+      o.setName('chars').setDescription(`How many trailing chars (default ${DUMP_DEFAULT_CHARS}, max ${DUMP_MAX_CHARS})`).setRequired(false))
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('clear')
+    .setDescription("Run Claude Code's /clear in the manager — resets its context")
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('manager')
+    .setDescription('Who answers Discord: the Claude manager (999) or a Codex stand-in')
+    .addSubcommand((s) => s.setName('codex')
+      .setDescription("Start a Codex terminal with the manager's context and route Discord messages to it"))
+    .addSubcommand((s) => s.setName('claude')
+      .setDescription('Hand back to the Claude manager (999) and close the Codex stand-in'))
+    .addSubcommand((s) => s.setName('status')
+      .setDescription('Show which terminal Discord messages currently go to'))
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('manager-ignore')
+    .setDescription('Stop the manager reading your messages in THIS channel or thread')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('manager-listen')
+    .setDescription('Let the manager read your messages in THIS channel or thread again')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('manager-channels')
+    .setDescription('List the channels and threads the manager is not reading')
     .toJSON(),
 ];
+
+// /manager-channels reply. Pure. rows = channelIgnore.list().
+function formatChannelList(rows) {
+  const ignored = rows.filter((r) => r.state === 'ignored');
+  const listening = rows.filter((r) => r.state === 'listening');
+  if (!ignored.length && !listening.length) {
+    return '👂 The manager reads your messages in every channel and thread. ' +
+      'Run **/manager-ignore** inside one to switch it off.';
+  }
+  const line = (r) => `• <#${r.id}> (${r.name ? `${r.name}, ` : ''}id ${r.id})`;
+  const out = [];
+  if (ignored.length) out.push(`🙈 **Ignored, not reading** (${ignored.length}):`, ...ignored.map(line));
+  if (listening.length) out.push('👂 **Reading anyway** (threads inside an ignored channel):', ...listening.map(line));
+  out.push('Everything else, including #claude-voice, is read. **/manager-listen** inside a channel turns it back on.');
+  return out.join('\n');
+}
+
+// /manager-ignore and /manager-listen run INSIDE the channel or thread they
+// act on. #claude-voice is refused by the store (isProtected).
+async function handleChannelSwitch(interaction, ctx) {
+  const { channelIgnore } = ctx;
+  if (!channelIgnore) {
+    await interaction.reply({ content: '❌ The per-channel switch is not available in this bridge build.', ephemeral: true });
+    return;
+  }
+  if (interaction.commandName === 'manager-channels') {
+    await interaction.reply({ content: formatChannelList(channelIgnore.list()), ephemeral: true });
+    return;
+  }
+  const ch = interaction.channel;
+  const id = (ch && ch.id) || interaction.channelId;
+  if (!id) {
+    await interaction.reply({ content: '❌ Run this inside the channel or thread you mean.', ephemeral: true });
+    return;
+  }
+  const thread = !!(ch && typeof ch.isThread === 'function' && ch.isThread());
+  const name = (ch && ch.name) || id;
+  const where = thread ? `thread **${name}**` : `<#${id}>`;
+  if (interaction.commandName === 'manager-ignore') {
+    const r = channelIgnore.ignore(id, name);
+    if (!r.ok) {
+      await interaction.reply({ content: `❌ Refused: ${r.reason} It's how you reach the manager.`, ephemeral: true });
+      return;
+    }
+    await interaction.reply({
+      content: r.changed
+        ? `🙈 The manager will no longer read your messages in ${where} (#${name}). **/manager-listen** here turns it back on.`
+        : `ℹ️ ${where} (#${name}) was already ignored.`,
+      ephemeral: true,
+    });
+    return;
+  }
+  const r = channelIgnore.listen(id, name, { parentId: thread ? ch.parentId : null });
+  if (thread && ch.joinable && !ch.joined && typeof ch.join === 'function') ch.join().catch(() => {});
+  await interaction.reply({
+    content: r.changed
+      ? `👂 The manager reads your messages in ${where} (#${name}) again.`
+      : `ℹ️ The manager already reads ${where} (#${name}).`,
+    ephemeral: true,
+  });
+}
+
+// One line describing the stand-in state. Pure — unit-tested in
+// commands.manager.test.js; also appended to /status.
+function formatStandInStatus(standInStatus, managerId) {
+  if (standInStatus && standInStatus.active) {
+    return `🤖 **Stand-in:** Codex in terminal ${standInStatus.terminalId} — Discord messages route there ` +
+      `(manager ${managerId} bypassed${standInStatus.confirmed === false ? '; Codex start was not confirmed on screen' : ''}). ` +
+      '**/manager claude** hands back.';
+  }
+  return `🧠 **Stand-in:** none — Discord messages go to the Claude manager (${managerId}). **/manager codex** starts a Codex stand-in.`;
+}
+
+// Build the /dump reply from a raw screen. Pure — unit-tested in commands.dump.test.js.
+// Takes the LAST `chars` characters, fences them, and guarantees the result fits
+// inside Discord's 2000-char message cap.
+function formatDump(screen, terminalId, chars) {
+  const want = Number.isFinite(chars) && chars > 0
+    ? Math.min(Math.max(Math.trunc(chars), DUMP_MIN_CHARS), DUMP_MAX_CHARS)
+    : DUMP_DEFAULT_CHARS;
+  const raw = String(screen == null ? '' : screen);
+  if (!raw.trim()) return `🖥️ **Terminal ${terminalId}** — screen is empty.`;
+
+  const header = `🖥️ **Terminal ${terminalId}** — last ${want} chars:\n`;
+  // A ``` inside the output would break out of the fence; a zero-width space
+  // between the backticks keeps the dump looking raw without escaping it away.
+  const fence = (s) => '```\n' + s.replace(/```/g, '`​``') + '\n```';
+  // Budget the tail so header + fence + tail can never exceed the hard cap.
+  const budget = Math.min(want, DISCORD_MAX_CONTENT - header.length - 10);
+  let tail = raw.slice(-budget);
+  let out = header + fence(tail);
+  // The zero-width escaping can push it over; trim from the FRONT until it fits.
+  while (out.length > DISCORD_MAX_CONTENT && tail.length > 1) {
+    tail = tail.slice(out.length - DISCORD_MAX_CONTENT || 1);
+    out = header + fence(tail);
+  }
+  return out;
+}
+
+// Build the /terminals reply from a raw GET /state terminals array. Pure —
+// unit-tested in commands.terminals.test.js. Sorted by id, one line each;
+// shows the row count alongside the /state count so the two are visibly the
+// same (no filtering happens between the read and the reply).
+function formatTerminals(terminals) {
+  const stateCount = Array.isArray(terminals) ? terminals.length : 0;
+  const rows = (Array.isArray(terminals) ? terminals.slice() : [])
+    .sort((a, b) => Number(a.id) - Number(b.id))
+    .map((t) => `\`${t.id}\` — ${t.title || '(untitled)'} — ${t.status}`);
+  const header = `🖥️ **Terminals** — ${rows.length} of ${stateCount} (from /state)`;
+  return rows.length ? `${header}:\n${rows.join('\n')}` : `${header}.`;
+}
 
 // Shared: after a successful link, join the invoking user's CURRENT voice
 // channel and report. Returns nothing — it edits the (deferred) reply itself.
@@ -99,6 +272,78 @@ async function handle(interaction, ctx) {
   }
 
   const { linkManager, session } = ctx;
+
+  if (['manager-ignore', 'manager-listen', 'manager-channels'].includes(interaction.commandName)) {
+    await handleChannelSwitch(interaction, ctx);
+    return;
+  }
+
+  if (interaction.commandName === 'clear') {
+    // Claude Code's REAL /clear, typed raw (no "Typed message" wrapper) at the
+    // manager's prompt. Authorization already happened above; the link check is
+    // the same one /prompt makes.
+    if (!linkManager.isLinked()) {
+      await interaction.reply({ content: '❌ Not linked — run **/link** or **/resume** first.', ephemeral: true });
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const res = await linkManager.sendRaw('/clear');
+    await interaction.editReply(res && res.ok
+      ? '🧹 Sent /clear to the manager — its context is reset.'
+      : `❌ Failed to send /clear: ${(res && res.error) || 'unknown error'}`);
+    return;
+  }
+
+  if (interaction.commandName === 'manager') {
+    const { standIn } = ctx;
+    const sub = interaction.options.getSubcommand();
+    const managerId = (linkManager.status && linkManager.status().managerId) || 999;
+    if (sub === 'status') {
+      await interaction.reply({
+        content: formatStandInStatus(standIn && standIn.status ? standIn.status() : null, managerId),
+        ephemeral: true,
+      });
+      return;
+    }
+    if (!standIn) {
+      await interaction.reply({ content: '❌ The stand-in feature is not available in this bridge build.', ephemeral: true });
+      return;
+    }
+    if (!linkManager.isLinked()) {
+      await interaction.reply({ content: '❌ Not linked — run **/link** or **/resume** first.', ephemeral: true });
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    if (sub === 'codex') {
+      const r = await standIn.start(linkManager.target);
+      if (!r || !r.ok) {
+        await interaction.editReply(`❌ Couldn't start the Codex stand-in: ${(r && r.error) || 'unknown error'}`);
+        return;
+      }
+      const confirmed = (r.confirmed
+        ? 'Codex is up on its screen.'
+        : `⚠️ Could not confirm Codex on its screen yet — check **/dump terminal_id:${r.terminalId}**.`)
+        + (r.trustPrompt ? ' (Its "Trust this folder?" dialog appeared and was answered.)' : '');
+      await interaction.editReply(r.alreadyActive
+        ? `🤖 Codex stand-in is already active in terminal ${r.terminalId} — Discord messages route there, not to ${managerId}. **/manager claude** hands back.`
+        : `🤖 Codex stand-in started in terminal ${r.terminalId} — Discord messages now route there instead of ${managerId}. ${confirmed} **/manager claude** hands back.`);
+      return;
+    }
+    if (sub === 'claude') {
+      const r = await standIn.stop(linkManager.target);
+      if (!r || !r.wasActive) {
+        await interaction.editReply(`ℹ️ No stand-in is active — Discord messages already go to the Claude manager (${managerId}).`);
+        return;
+      }
+      const closed = r.deleted
+        ? `Codex terminal ${r.terminalId} closed.`
+        : `⚠️ Codex terminal ${r.terminalId} could not be closed (${r.error || 'unknown'}) — close it by hand.`;
+      await interaction.editReply(`🧠 Handed back to the Claude manager (${managerId}) — Discord messages route there again. ${closed}`);
+      return;
+    }
+    await interaction.editReply('❌ Usage: **/manager codex**, **/manager claude**, or **/manager status**.');
+    return;
+  }
 
   if (interaction.commandName === 'link') {
     await interaction.deferReply({ ephemeral: true });
@@ -158,11 +403,31 @@ async function handle(interaction, ctx) {
     }
     const text = (interaction.options.getString('text') || '').trim();
     const media = interaction.options.getAttachment('media');
+    const terminalOpt = interaction.options.getInteger('terminal');
+    const targetTerminal = Number.isInteger(terminalOpt) ? terminalOpt : DEFAULT_PROMPT_TERMINAL;
     if (!text && !media) {
       await interaction.reply({ content: '❌ Give me some text and/or attach an image/video.', ephemeral: true });
       return;
     }
     await interaction.deferReply({ ephemeral: true });
+
+    // A non-manager target must exist RIGHT NOW — validated against a fresh
+    // /state read, before anything is saved or queued. 999 skips this (it's
+    // always the manager and can't appear/disappear from /state).
+    if (targetTerminal !== DEFAULT_PROMPT_TERMINAL) {
+      let terminals;
+      try {
+        terminals = await linkManager.listTerminals();
+      } catch (err) {
+        await interaction.editReply(`❌ Couldn't validate terminal ${targetTerminal}: ${err.message}`);
+        return;
+      }
+      const validIds = terminals.map((t) => Number(t.id)).sort((a, b) => a - b);
+      if (!validIds.includes(targetTerminal)) {
+        await interaction.editReply(`❌ Unknown terminal ${targetTerminal}. Valid ids: ${validIds.join(', ') || '(none)'}.`);
+        return;
+      }
+    }
 
     let saved = [];
     let skipped = [];
@@ -176,14 +441,61 @@ async function handle(interaction, ctx) {
     }
     // Frame by source: a file attachment → 'file' (with the saved path[s]); plain
     // text → 'typed' (verbatim, not "spoken/transcribed").
-    const res = await linkManager.forward(text, { source: saved.length ? 'file' : 'typed', paths: saved });
+    const opts = { source: saved.length ? 'file' : 'typed', paths: saved };
+    const res = targetTerminal === DEFAULT_PROMPT_TERMINAL
+      ? await linkManager.forward(text, opts)
+      : await linkManager.queueToTerminal(targetTerminal, text, opts);
     if (res && res.ok) {
       const bits = [];
       if (text) bits.push('text');
       if (saved.length) bits.push(`${saved.length} file(s)`);
-      await interaction.editReply(`✅ Sent to the manager (${bits.join(' + ')}).${skipped.length ? ` ⚠️ skipped: ${skipped.map((s) => `${s.name} (${s.reason})`).join(', ')}` : ''}`);
+      const dest = targetTerminal === DEFAULT_PROMPT_TERMINAL ? 'the manager' : `terminal ${targetTerminal}`;
+      await interaction.editReply(`✅ Sent to ${dest} (${bits.join(' + ')}).${skipped.length ? ` ⚠️ skipped: ${skipped.map((s) => `${s.name} (${s.reason})`).join(', ')}` : ''}`);
     } else {
       await interaction.editReply(`❌ Failed to send: ${(res && res.error) || 'unknown error'}`);
+    }
+    return;
+  }
+
+  if (interaction.commandName === 'terminals') {
+    // READ-ONLY listing of every terminal /state knows about. Authorization
+    // already happened at the top of handle() — same gate as every other
+    // privileged command.
+    if (!linkManager.isLinked()) {
+      await interaction.reply({ content: '❌ Not linked — run **/link** or **/resume** first.', ephemeral: true });
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const terminals = await linkManager.listTerminals();
+      await interaction.editReply(formatTerminals(terminals));
+    } catch (err) {
+      await interaction.editReply(`❌ Couldn't list terminals: ${err.message}`);
+    }
+    return;
+  }
+
+  if (interaction.commandName === 'dump') {
+    // READ-ONLY view of a terminal's live screen. Authorization already happened
+    // at the top of handle() — same gate as every other privileged command.
+    if (!linkManager.isLinked()) {
+      await interaction.reply({ content: '❌ Not linked — run **/link** or **/resume** first.', ephemeral: true });
+      return;
+    }
+    const terminalId = interaction.options.getInteger('terminal_id');
+    if (!Number.isInteger(terminalId) || terminalId < 0) {
+      await interaction.reply({
+        content: '❌ Usage: **/dump terminal_id:<number>** (999 = the manager), optionally **chars:<n>**.',
+        ephemeral: true,
+      });
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const { screen } = await linkManager.readScreen(terminalId);
+      await interaction.editReply(formatDump(screen, terminalId, interaction.options.getInteger('chars')));
+    } catch (err) {
+      await interaction.editReply(`❌ Couldn't read terminal ${terminalId}: ${err.message}`);
     }
     return;
   }
@@ -219,6 +531,7 @@ async function handle(interaction, ctx) {
       `**Text mirror:** ${config.textMirrorEnabled ? `on → #${config.textChannelName}${config.textChannelId ? ' (by id)' : ''}` : 'off'}`,
     ];
     if (s.linked) lines.push(`**Key:** ${s.expiresAt ? `expires ${new Date(s.expiresAt).toLocaleTimeString()}` : 'valid until restart or Regenerate (no time limit)'}`);
+    if (s.linked) lines.push(formatStandInStatus(s.standIn, s.managerId || 999));
     const saved = resumeStore.recall(interaction.user.id);
     lines.push(`**Resume:** ${saved ? '✅ saved — run /resume to reconnect without a key' : '❌ none yet — /link once to enable /resume'}`);
     await interaction.reply({ content: lines.join('\n'), ephemeral: true });
@@ -226,4 +539,4 @@ async function handle(interaction, ctx) {
   }
 }
 
-module.exports = { definitions, register, handle };
+module.exports = { definitions, register, handle, formatDump, formatTerminals, formatStandInStatus, formatChannelList };

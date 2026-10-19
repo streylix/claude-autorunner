@@ -26,9 +26,13 @@ class VoicePlayer {
     this.queue = [];
     this.playing = false;
     this.connection = null;
-    this._holdCheck = null;   // BARGE-IN: () => bool — true while the user is talking
+    this._holdCheck = null;   // BARGE-IN: () => bool — true while the user is talking/writing
+    this._holdMaxMs = config.bargeInMaxHoldMs;
     this._holdSince = 0;
     this._holdTimer = null;
+    this._holdCapLogged = false;
+    this._pausedByHold = false; // we paused the player because the user is writing
+    this._pausedAt = 0;
     this.liveMuted = false;   // BARGE-IN (system mode): zero-fill the live stream
 
     this.player.on('error', (err) => log.error('audio player error:', err.message));
@@ -42,6 +46,12 @@ class VoicePlayer {
   attach(connection) {
     this.connection = connection;
     connection.subscribe(this.player);
+    // HOLD loop: pause/resume playback and release held bursts/clips as the
+    // hold check flips. 100ms granularity.
+    if (!this._holdTimer) {
+      this._holdTimer = setInterval(() => this._applyHold(), 100);
+      if (this._holdTimer.unref) this._holdTimer.unref();
+    }
   }
 
   // Enqueue a WAV buffer for playback (TTS mode, FIFO).
@@ -105,7 +115,7 @@ class VoicePlayer {
 
     // Kill any previous gated source (parec restart): its burst ends now.
     if (this._liveGate) this._liveGate.dead = true;
-    const gate = { dead: false, burst: null, burstStartedAt: 0, burstBytes: 0, silentMs: 0, preroll: [], prerollBytes: 0, resource: null };
+    const gate = { dead: false, deferred: false, burst: null, burstStartedAt: 0, burstBytes: 0, silentMs: 0, preroll: [], prerollBytes: 0, resource: null };
     this._liveGate = gate;
 
     const endBurst = (why) => {
@@ -130,9 +140,19 @@ class VoicePlayer {
       // burst close after the hangover. Unmute re-opens on the next loud chunk.
       const loud = !this.liveMuted && this._chunkPeak(chunk, threshold);
       if (gate.burst) {
+        // Audio queued but not yet played out (a HELD burst, or one paused mid-
+        // way). While it exceeds the hangover, silent chunks are dropped so the
+        // backlog drains in the bot's pauses — and the burst never ends (and
+        // never gets replaced) with held audio still inside it.
+        const backlogMs = gate.burstBytes / BYTES_PER_MS - (gate.resource ? gate.resource.playbackDuration : 0);
         if (loud) {
           gate.silentMs = 0;
           gate.burst.write(chunk);
+          gate.burstBytes += chunk.length;
+        } else if (backlogMs > hangoverMs) {
+          // behind — skip this silent chunk
+        } else if (gate.deferred) {
+          gate.burst.write(chunk); // held burst: keep the short pause, never end it
           gate.burstBytes += chunk.length;
         } else {
           gate.silentMs += chunk.length / BYTES_PER_MS;
@@ -159,6 +179,12 @@ class VoicePlayer {
         gate.burst.write(chunk);
         gate.burstBytes += chunk.length;
         gate.silentMs = 0;
+        if (this._holdNow()) {
+          // HELD: buffer the burst; _applyHold plays it when the user is done.
+          gate.deferred = true;
+          log.info('⏸️ bot audio held — the user is talking; it plays when they finish.');
+          return;
+        }
         try {
           gate.resource = createAudioResource(gate.burst, { inputType: StreamType.Raw });
           this.player.play(gate.resource);
@@ -217,22 +243,60 @@ class VoicePlayer {
   // BARGE-IN: gate the START of a clip while the user is still talking. Only
   // delays starting the NEXT clip (never restarts a playing one), so it can't
   // loop. Plays anyway after bargeInMaxHoldMs so a reply is never starved.
-  setHoldCheck(fn) { this._holdCheck = fn; }
+  //
+  // HOLD (always-listen): while the hold check is true (the user is writing an
+  // utterance), playback is HELD — never dropped: a clip or burst that is
+  // playing is PAUSED, a new one isn't started, and all of it plays once the
+  // check goes false. `maxMs` only guards a wedged check.
+  setHoldCheck(fn, maxMs = config.bargeInMaxHoldMs) { this._holdCheck = fn; this._holdMaxMs = maxMs; }
+
+  _holdNow() {
+    let held = false;
+    if (config.bargeInEnabled && this._holdCheck) {
+      try { held = !!this._holdCheck(); } catch (_) { held = false; }
+    }
+    if (!held) { this._holdSince = 0; this._holdCapLogged = false; return false; }
+    if (!this._holdSince) this._holdSince = Date.now();
+    if (Date.now() - this._holdSince < this._holdMaxMs) return true;
+    if (!this._holdCapLogged) {
+      this._holdCapLogged = true;
+      log.warn(`hold cap reached (${Math.round(this._holdMaxMs / 1000)}s) — playing held bot audio now.`);
+    }
+    return false;
+  }
+
+  _applyHold() {
+    if (this._holdNow()) {
+      if (!this._pausedByHold && this.player.state.status === AudioPlayerStatus.Playing && this.player.pause(true)) {
+        this._pausedByHold = true;
+        this._pausedAt = Date.now();
+        log.info('⏸️ bot audio paused — the user started talking; it resumes when they finish.');
+      }
+      return;
+    }
+    if (this._pausedByHold) {
+      this._pausedByHold = false;
+      this.player.unpause();
+      log.info(`▶️ held bot audio resumed after ${Date.now() - this._pausedAt}ms.`);
+    }
+    const gate = this._liveGate;
+    if (gate && gate.deferred && gate.burst && !gate.dead) {
+      gate.deferred = false;
+      try {
+        gate.resource = createAudioResource(gate.burst, { inputType: StreamType.Raw });
+        this.player.play(gate.resource);
+        this.playing = true;
+        log.info(`▶️ held burst released — ${Math.round(gate.burstBytes / 192)}ms of bot audio queued.`);
+      } catch (err) {
+        log.error('held burst release failed:', err.message);
+      }
+    }
+    if (!this.playing && this.queue.length) this._next();
+  }
 
   _next() {
     if (this.playing || this.queue.length === 0) return;
-    if (config.bargeInEnabled && this._holdCheck && this._holdCheck()) {
-      if (!this._holdSince) this._holdSince = Date.now();
-      if (Date.now() - this._holdSince < config.bargeInMaxHoldMs) {
-        if (!this._holdTimer) {
-          this._holdTimer = setTimeout(() => { this._holdTimer = null; this._next(); }, 250);
-          if (this._holdTimer.unref) this._holdTimer.unref();
-        }
-        return; // hold for a silence gap before reading the notification aloud
-      }
-      log.info('barge-in: reached the hold cap — playing the queued notification now.');
-    }
-    this._holdSince = 0;
+    if (this._holdNow()) return; // _applyHold starts it once the user is done
     const { wavBuffer, label } = this.queue.shift();
     try {
       const resource = createAudioResource(Readable.from(wavBuffer), {
@@ -257,8 +321,9 @@ class VoicePlayer {
 
   stop() {
     this.queue = [];
-    if (this._holdTimer) { clearTimeout(this._holdTimer); this._holdTimer = null; }
+    if (this._holdTimer) { clearInterval(this._holdTimer); this._holdTimer = null; }
     this._holdSince = 0;
+    this._pausedByHold = false;
     this.player.stop(true);
   }
 }

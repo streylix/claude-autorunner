@@ -6,18 +6,28 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from faster_whisper import WhisperModel
-import torch
 
 logger = logging.getLogger(__name__)
+
+# Which device CTranslate2 runs Whisper on. Explicit rather than probed:
+# CTranslate2 ships its own CUDA runtime and does not use torch, but this gate
+# used to read torch.cuda.is_available(). The image now installs the CPU-only
+# torch build (for Kokoro TTS — see text_to_speech/tts_service.py), which would
+# have made that probe permanently False and silently dropped large-v3 onto the
+# CPU. Whisper's GPU use is unaffected by torch's build, so it is selected here
+# directly. _load() still degrades to CPU int8 if the CUDA load fails, so a
+# GPU-less host works on the default.
+WHISPER_DEVICE = (os.environ.get("WHISPER_DEVICE", "cuda").strip().lower() or "cuda")
 
 
 def _preload_cuda12_libs():
     """
     ctranslate2 dlopens libcublas.so.12 / libcudnn*.so.9 at inference time.
-    The torch wheel in this image ships CUDA-13 libs (nvidia/cu13/...), so the
-    CUDA-12 copies come from the nvidia-cublas-cu12 / nvidia-cudnn-cu12 pip
-    wheels — preload them by absolute path so the dynamic loader resolves the
-    sonames without LD_LIBRARY_PATH plumbing.
+    torch is now the CPU-only build and ships no CUDA libs at all, so the
+    nvidia-cublas-cu12 / nvidia-cudnn-cu12 pip wheels are the sole source of
+    these — preload them by absolute path so the dynamic loader resolves the
+    sonames without LD_LIBRARY_PATH plumbing. Keep those two pinned in
+    requirements.txt: nothing else pulls them in now.
     """
     try:
         import nvidia
@@ -34,7 +44,7 @@ def _preload_cuda12_libs():
                     pass
 
 
-if torch.cuda.is_available():
+if WHISPER_DEVICE == "cuda":
     _preload_cuda12_libs()
 
 
@@ -99,7 +109,7 @@ class WhisperTranscriptionService:
         # Guards the check-and-load in _get_model so concurrent requests don't
         # trigger duplicate (expensive) model loads or race on self.models.
         self._model_lock = threading.Lock()
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = WHISPER_DEVICE
         logger.info(f"Whisper service initialized on device: {self.device}")
 
     def _load(self, model_name: str) -> WhisperModel:
