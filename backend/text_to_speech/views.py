@@ -16,9 +16,10 @@ import uuid
 
 from django.conf import settings
 from django.http import FileResponse, Http404
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, throttle_classes
 from rest_framework.response import Response
 
+from terminal_backend.api_security import TTSSpeakThrottle
 from .models import Notification, TTSConfig
 from .voices import DEFAULT_VOICE, VOICES, is_valid_voice
 from .tts_service import tts_service
@@ -78,6 +79,7 @@ def _delete_audio(n: Notification):
 
 
 @api_view(["POST"])
+@throttle_classes([TTSSpeakThrottle])
 def speak(request):
     """Synthesize text to speech, persist it, and return the notification."""
     data = request.data or {}

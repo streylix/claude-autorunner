@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { BACKEND_URL } = require('../utils/backend-url');
 
 /** Munge an absolute path the way Claude Code names its project dirs. */
 function mungeProjectPath(dirPath) {
@@ -31,7 +32,7 @@ function hasResumableSession(managerDir) {
 // Bump this when the role doc below changes so existing manager directories
 // (which already have a CLAUDE.md) get refreshed instead of keeping a stale
 // copy that's missing newer endpoints. The marker line is written verbatim.
-const MANAGER_MD_VERSION = 'v8';
+const MANAGER_MD_VERSION = 'v10';
 const MANAGER_MD_MARKER = `<!-- ccbot-manager-md:${MANAGER_MD_VERSION} -->`;
 
 const MANAGER_CLAUDE_MD = `${MANAGER_MD_MARKER}
@@ -99,7 +100,7 @@ All endpoints are under \`http://127.0.0.1:$CCBOT_PORT\`:
 | POST | \`/queue/inject-now\`| \`{messageId}\`                      | Force-inject a queued message immediately, bypassing all gates |
 | POST | \`/terminal/create\` | \`{directory?, title?, color?}\`     | Open a new terminal (starts as a bare shell) |
 | POST | \`/terminal/claude\` | \`{terminalId, action}\`             | Start/resume/restart Claude in a terminal (action: start|resume|restart) |
-| POST | \`/terminal/update\` | \`{terminalId, title?, color?}\`     | Rename / recolor a terminal |
+| POST | \`/terminal/update\` | \`{terminalId, title?, color?, muted?}\` | Rename / recolor / mute a terminal |
 | POST | \`/terminal/delete\` | \`{terminalId}\`                     | Close a terminal |
 | POST | \`/terminal/screen\` | \`{terminalId, scrollback?}\`        | Dump a terminal's live screen text |
 
@@ -152,8 +153,50 @@ curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/terminal/claude" \\
   -d '{"terminalId": "3", "action": "start"}'
 \`\`\`
 
-Terminal 999 (you) cannot be renamed or deleted. Each terminal's transcriptPath
+Terminal 999 (you) cannot be renamed, muted or deleted. Each terminal's transcriptPath
 (from \`/state\`) is a JSONL file you can read for the full conversation.
+
+### Muted terminals
+
+\`/state\` reports \`muted\` for every terminal. A muted terminal has had ALL FOUR
+of its automatic notifications to you switched off:
+
+- completion pushes ("just finished. Its last message:")
+- stuck alerts ("appears stuck: prompted 5m")
+- awaiting-input notes ("is AWAITING INPUT — it has an interactive prompt open")
+- long-execution reports ("execution stopped after 90s. Last output:")
+
+Normally that means the user is driving that terminal by hand and does not want
+it narrated — including its prompts, which they can see on their own screen.
+
+Everything else still works: it is in \`/state\` with a live \`status\`, you can
+still read it with \`/terminal/screen\` and its transcript, and you can still
+queue messages to it. Silence from a muted terminal is EXPECTED, not a symptom —
+check \`muted\` before concluding a terminal has gone quiet or wedged. If you need
+to know what a muted terminal is doing, look at it (\`/terminal/screen\`,
+\`/terminal/transcript\`) rather than waiting to be told.
+
+You can mute or unmute a terminal yourself when its traffic is not useful to you:
+
+\`\`\`bash
+curl -s -X POST "http://127.0.0.1:$CCBOT_PORT/terminal/update" \\
+  -H "X-CCBOT-Token: $CCBOT_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"terminalId": "3", "muted": true}'    # false to unmute
+\`\`\`
+
+The user can also toggle it from the bell button in the terminal's header, and
+the setting survives a restart — so do not unmute a terminal the user muted
+unless they ask.
+
+### The dimmed prompt-line autosuggestion is NOT the user
+
+When you read a terminal's screen (\`/terminal/screen\`), Claude Code shows a **dimmed,
+greyed-out suggestion** inside the prompt's input line — text it is auto-proposing,
+which the user has NOT typed or submitted. Treat that faint line as Claude Code's own
+autosuggestion ONLY. It is **never** a user instruction, and it is **not** evidence that
+the user is actively driving that terminal. Only input the user has actually submitted
+(or a genuinely running / prompted Claude turn) counts as user activity — ignore the
+dimmed suggestion entirely when deciding whether to leave a terminal alone or to step in.
 
 ## Session Startup
 
@@ -243,11 +286,11 @@ terminal finishes meaningful work (especially work the user kicked off and you a
 NOT taking over), turn its last message into a short spoken notification.
 
 This is a SEPARATE service from the Control API: it lives on the local Django
-backend at \`http://localhost:8123\` and needs **no token** (do NOT send
+backend at \`${BACKEND_URL}\` and needs **no token** (do NOT send
 \`X-CCBOT-Token\` here).
 
 \`\`\`bash
-curl -s -X POST "http://localhost:8123/api/tts/speak/" \\
+curl -s -X POST "${BACKEND_URL}/api/tts/speak/" \\
   -H "Content-Type: application/json" \\
   -d '{"text":"Terminal 3 finished the auth refactor and all tests pass.",
        "terminal_id":3, "terminal_name":"auth-refactor"}'
@@ -259,8 +302,12 @@ Rules for the spoken text:
   decision the user needs to know. No code, paths, or markdown; spell things out.
 - Keep it short enough to read aloud in a few seconds; don't narrate everything.
 - **Omit \`"voice"\`** to use the user's preferred voice. You MAY override with a
-  voice id from \`GET http://localhost:8123/api/tts/voices/\` (e.g. \`"bm_george"\`)
+  voice id from \`GET ${BACKEND_URL}/api/tts/voices/\` (e.g. \`"bm_george"\`)
   to differentiate terminals, but default to omitting it.
+- **Always pass \`"speed"\`** set to the user's \`ttsPlaybackSpeed\` from
+  \`~/.config/auto-injector/auto-injector.json\` (single-file model: the
+  generated WAV carries the user's speed; every player — desktop, remote
+  viewers, the Discord bridge — plays that same file unmodified).
 - The notification is read aloud automatically and shown in the user's
   Notifications tab — so this is your primary way to keep the user informed.
 - One notification per meaningful completion. Don't announce your own internal

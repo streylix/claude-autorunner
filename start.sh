@@ -411,9 +411,10 @@ echo "📝 Note: If you see errors above, the backend may still work."
 echo "   The frontend will run with or without the backend."
 echo ""
 
-# NOTE: removed the dead legacy Python Discord-bot launcher
-# (.bot-config / discord_bot.py / run_bot.sh) — it was inert (only ran when a
-# .bot-config existed) and is not part of the app.
+# NOTE: the legacy Python Discord bot (.bot-config / discord_bot.py) was
+# retired — the current Discord integration is the standalone Node bridge in
+# discord-bridge/ (its own systemd service; see discord-bridge/SETUP.md).
+# start.sh deliberately does not manage it.
 
 # Start Auto-Injector app
 echo "🖥️  Starting Auto-Injector app..."

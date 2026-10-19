@@ -6,6 +6,8 @@
 
 /* Theme Variables */
 :root {
+    --app-footer-height: 24px;
+
     /* Dark theme (default) — cool graphite.
        Depth from lightness steps, not shadows:
        bg-secondary (deepest chrome) < bg-primary (panels) < bg-tertiary (cards) < bg-quaternary (hover).
@@ -204,7 +206,7 @@ body {
 }
 
 .app-container {
-    height: 100vh;
+    height: calc(100vh - var(--app-footer-height));
     display: flex;
     flex-direction: column;
 }
@@ -2921,6 +2923,12 @@ button#voice-btn.voice-button.processing:hover,
     color: var(--text-primary);
 }
 
+/* Copy-to-clipboard confirmation flash (Discord link key, etc.) */
+.setting-btn.copied {
+    border-color: var(--accent-success);
+    color: var(--accent-success);
+}
+
 .setting-btn i {
     width: 16px;
     height: 16px;
@@ -4460,4 +4468,1488 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .attachment-chip button:hover {
     color: #f4f4f5;
+}
+
+/* ==== Remote connection (VS Code Remote-SSH style status bar) ====
+   A full-width footer bar, docked to the bottom of the window like VS
+   Code's status bar, whose leftmost segment is the remote indicator +
+   connect panel + the embedded remote view
+   (src/features/RemoteConnectionUI.js). Stacking: view (9000) < footer bar
+   (9100) < panel (9200) — the footer bar always floats above the embedded
+   remote view so there is always a way back to the local interface. */
+
+.app-footer-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: var(--app-footer-height);
+    z-index: 9100;
+    display: flex;
+    align-items: stretch;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-primary);
+    -webkit-app-region: drag;
+}
+
+.remote-indicator {
+    -webkit-app-region: no-drag;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    background: var(--accent-secondary);
+    color: #ffffff;
+    border: none;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.92;
+}
+
+.remote-indicator:hover {
+    opacity: 1;
+}
+
+.remote-indicator.remote-connected {
+    background: #1e7e46; /* VS Code-remote green: unmistakably "attached" */
+}
+
+.remote-indicator.remote-connecting {
+    background: var(--accent-warning);
+    color: #1a1a1e;
+}
+
+.remote-indicator.remote-error {
+    background: var(--accent-error);
+    color: #1a1a1e;
+}
+
+#remote-indicator-label:empty {
+    display: none;
+}
+
+.remote-panel {
+    position: fixed;
+    left: 10px;
+    bottom: calc(var(--app-footer-height) + 10px);
+    z-index: 9200;
+    width: 340px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    padding: 12px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+}
+
+.remote-panel.hidden {
+    display: none;
+}
+
+.remote-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.remote-panel-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.remote-panel-hint {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin: 0 0 10px 0;
+    line-height: 1.45;
+}
+
+.remote-panel-hint code {
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+
+.remote-field-row {
+    display: flex;
+    gap: 8px;
+}
+
+.remote-field {
+    margin-bottom: 8px;
+    flex-shrink: 0;
+}
+
+.remote-field-grow {
+    flex: 1;
+    min-width: 0;
+}
+
+.remote-field-port {
+    width: 72px;
+}
+
+.remote-field label {
+    display: block;
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    margin-bottom: 3px;
+}
+
+.remote-label-soft {
+    color: var(--text-quaternary);
+    font-weight: 400;
+}
+
+.remote-field input {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 5px;
+    color: var(--text-primary);
+    font-size: 12px;
+    padding: 6px 8px;
+    outline: none;
+}
+
+.remote-field input:focus {
+    border-color: var(--accent-primary);
+}
+
+.remote-advanced-toggle {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    margin: 2px 0 8px 0;
+}
+
+.remote-advanced-toggle:hover {
+    color: var(--text-primary);
+}
+
+.remote-advanced-box.hidden {
+    display: none;
+}
+
+.remote-connect-btn,
+.remote-disconnect-btn {
+    width: 100%;
+    padding: 7px 0;
+    border: none;
+    border-radius: 6px;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.remote-connect-btn {
+    background: var(--accent-primary);
+    color: #ffffff;
+}
+
+.remote-connect-btn:hover {
+    background: var(--accent-secondary);
+}
+
+.remote-connect-btn:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+.remote-disconnect-btn {
+    background: var(--accent-error);
+    color: #1a1a1e;
+}
+
+.remote-connected-box.hidden {
+    display: none;
+}
+
+/* ==== Top-middle ssh command bar — the PRIMARY connect input ==== */
+
+.remote-command-bar {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9300; /* above the embedded view + indicator: always reachable */
+    width: min(620px, calc(100vw - 40px));
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    padding: 10px 12px;
+    box-shadow: 0 10px 36px rgba(0, 0, 0, 0.5);
+}
+
+.remote-command-bar.hidden {
+    display: none;
+}
+
+.remote-command-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.remote-command-prompt {
+    color: var(--text-quaternary);
+    font-family: 'SF Mono', 'Fira Code', Consolas, 'Courier New', monospace;
+    font-size: 14px;
+    user-select: none;
+}
+
+#remote-command-input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: 'SF Mono', 'Fira Code', Consolas, 'Courier New', monospace;
+    font-size: 13px;
+    padding: 8px 10px;
+    outline: none;
+}
+
+#remote-command-input:focus {
+    border-color: var(--accent-secondary);
+}
+
+#remote-command-input:disabled {
+    opacity: 0.6;
+}
+
+.remote-command-connect {
+    background: var(--accent-primary);
+    border: none;
+    border-radius: 6px;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 8px 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.remote-command-connect:hover {
+    background: var(--accent-secondary);
+}
+
+.remote-command-connect:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+/* Key→password fallback row (hidden until key auth fails or the Advanced
+   "use password" box is ticked) */
+.remote-password-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.remote-password-row.hidden {
+    display: none;
+}
+
+.remote-password-label {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+#remote-password-input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 13px;
+    padding: 7px 10px;
+    outline: none;
+}
+
+#remote-password-input:focus {
+    border-color: var(--accent-secondary);
+}
+
+#remote-password-input:disabled {
+    opacity: 0.6;
+}
+
+/* "Use password authentication" opt-in inside the Advanced fold-out */
+.remote-check-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.remote-check-row input[type="checkbox"] {
+    margin: 0;
+    accent-color: var(--accent-primary);
+}
+
+.remote-command-hintline {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 6px;
+}
+
+.remote-command-hint {
+    font-size: 10.5px;
+    color: var(--text-quaternary);
+    line-height: 1.45;
+}
+
+.remote-command-bar .remote-advanced-toggle {
+    flex-shrink: 0;
+    margin: 0;
+}
+
+.remote-command-bar .remote-advanced-box {
+    margin-top: 8px;
+    border-top: 1px solid var(--border-primary);
+    padding-top: 8px;
+}
+
+.remote-command-bar .remote-recents-list {
+    margin-top: 8px;
+}
+
+.remote-connected-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 0 0 10px 0;
+    line-height: 1.45;
+    word-break: break-all;
+}
+
+.remote-panel-status {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 8px;
+    line-height: 1.45;
+    word-break: break-word;
+}
+
+.remote-panel-status:empty {
+    display: none;
+}
+
+.remote-panel-status.remote-status-error {
+    color: var(--accent-error);
+}
+
+.remote-recents-list {
+    margin-top: 10px;
+    border-top: 1px solid var(--border-primary);
+    padding-top: 8px;
+}
+
+.remote-recents-list.hidden {
+    display: none;
+}
+
+.remote-recents-title {
+    font-size: 10.5px;
+    color: var(--text-quaternary);
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.remote-recent-row {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 12px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.remote-recent-row:hover {
+    background: var(--bg-quaternary);
+    color: var(--text-primary);
+}
+
+/* The embedded remote view: covers the whole app while connected, but stops
+   short of the footer bar so the local footer stays visible underneath. */
+.remote-view-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: var(--app-footer-height);
+    z-index: 9000;
+    background: var(--bg-secondary);
+}
+
+.remote-view-container.hidden {
+    display: none;
+}
+
+.remote-view-container iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: block;
+}
+
+/* ---- Interrupt stop words (settings): editable chip list ---- */
+.stop-words-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 6px 0;
+}
+
+.stop-word-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px 2px 10px;
+    border-radius: 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.stop-word-remove {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 0 2px;
+}
+
+.stop-word-remove:hover {
+    color: var(--accent-danger, #ff5f57);
+}
+
+.stop-words-add-row {
+    display: flex;
+    gap: 6px;
+}
+
+.stop-words-add-row .setting-input {
+    flex: 1;
+}
+
+.stop-words-empty {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-style: italic;
+}
+
+/* ============================================================
+   Vibe Blast — the hold-to-Send easter egg
+   ============================================================
+   The reveal reads as one continuous vertical push: every existing sidebar
+   child slides up by the sidebar's own height while the game rides in from
+   below. Both halves move by the SAME pixel amount (--vibe-shift, set from
+   JS) rather than by percentages, because percentage transforms resolve
+   against each element's own height and the children would visibly shear
+   apart mid-flight.
+*/
+.vibe-panel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    /* --vibe-top tracks the sidebar's scrollTop so the panel lands on the
+       visible area even if the sidebar itself was scrolled. */
+    top: var(--vibe-top, 0px);
+    height: var(--vibe-shift, 100%);
+    /* Below .resize-handle (z-index 100) so the resize grip stays usable. */
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border-primary);
+    transform: translateY(100%);
+    visibility: hidden;
+    overflow: hidden;
+    /* Parked a full sidebar-height below the fold. A hidden-but-laid-out box
+       down there still counts toward the sidebar's scrollable overflow, which
+       gave the sidebar a second screen of nothing to scroll into. Taken out of
+       layout until .vibe-active puts it back. */
+    display: none;
+}
+
+/* .vibe-active is on for the duration of the animation and while open; it
+   carries the transitions so the sidebar's children are untouched at rest. */
+.sidebar.vibe-active {
+    overflow: hidden;
+}
+
+.sidebar.vibe-active > .vibe-panel {
+    display: flex;
+    visibility: visible;
+    transition: transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+}
+
+.sidebar.vibe-active > *:not(.vibe-panel):not(.resize-handle) {
+    transition: transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+}
+
+/* While the window is actively being resized, --vibe-shift changes every
+   frame. The slide transition is driven by that same value, so leaving it on
+   would make the panel chase the window edge half a second behind. Suppressed
+   for the duration of the drag, then restored. */
+.sidebar.vibe-resizing > .vibe-panel,
+.sidebar.vibe-resizing > *:not(.vibe-panel):not(.resize-handle) {
+    transition: none;
+}
+
+.sidebar.vibe-open > *:not(.vibe-panel):not(.resize-handle) {
+    transform: translateY(calc(-1 * var(--vibe-shift, 100%)));
+}
+
+.sidebar.vibe-open > .vibe-panel {
+    transform: translateY(0);
+}
+
+/* ---------- the flap ---------- */
+.vibe-flap {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    padding: 7px 0 9px;
+    border: none;
+    border-bottom: 1px solid var(--border-primary);
+    border-radius: 0;
+    background: linear-gradient(180deg, var(--bg-tertiary), var(--bg-secondary));
+    color: var(--text-tertiary);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color 0.2s, background-color 0.2s;
+}
+
+.vibe-flap:hover {
+    color: var(--text-primary);
+    background: linear-gradient(180deg, var(--bg-quaternary), var(--bg-tertiary));
+}
+
+.vibe-flap:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -3px;
+}
+
+.vibe-flap-grip {
+    width: 34px;
+    height: 4px;
+    border-radius: 99px;
+    background: var(--border-secondary);
+    transition: background-color 0.2s, width 0.2s;
+}
+
+.vibe-flap:hover .vibe-flap-grip {
+    background: var(--accent-primary);
+    width: 46px;
+}
+
+.vibe-stage {
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+}
+
+.vibe-stage iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: block;
+    background: var(--bg-primary);
+}
+
+/* The hold itself is deliberately silent — no ring, no progress, no tell.
+   An easter egg that announces itself while you are merely pressing Send is
+   not an easter egg, and the button must look completely ordinary to anyone
+   who is not already looking for this. */
+
+@media (prefers-reduced-motion: reduce) {
+    .sidebar.vibe-active > .vibe-panel,
+    .sidebar.vibe-active > *:not(.vibe-panel):not(.resize-handle) {
+        transition-duration: 1ms;
+    }
+}
+
+/* ============================================================
+   Games shelf — the Hulu-style rail under the game stage
+   ============================================================
+   Vibe Blast is no longer "the easter egg", it is the first card in a
+   library. Everything else in the rail is discovered from games/ at
+   runtime, so this styling has to work for a list of one or of twenty.
+*/
+.games-shelf {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border-primary);
+    background: var(--bg-secondary);
+    padding: 8px 0 10px;
+}
+
+.games-shelf-head {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    /* No bottom padding: the grip is centred against this element's padding
+       box, so any padding here would push it off the label's optical centre.
+       The gap below the head lives on the rail's padding-top instead. */
+    padding: 0 12px;
+    gap: 6px;
+}
+
+/* The flap. Same grip-bar language as .vibe-flap at the top of the panel, so
+   the panel reads as two pull-tabs: one back to the queue, one for the shelf. */
+.games-flap {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    /* Label sits left; the grip is centred against the whole bar (below), not
+       against this button, so the folder icon on the right can't push it off
+       centre. */
+    justify-content: flex-start;
+    padding: 3px 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    transition: color 0.15s ease;
+}
+
+.games-flap:hover {
+    color: var(--text-primary);
+}
+
+.games-flap:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+/* Absolute, so it centres on .games-shelf-head (the nearest positioned
+   ancestor) rather than on the flap button's own content box. */
+.games-flap-grip {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 34px;
+    height: 3px;
+    border-radius: 99px;
+    background: var(--border-secondary);
+    transition: background-color 0.2s, width 0.2s;
+}
+
+.games-flap:hover .games-flap-grip {
+    background: var(--accent-primary);
+    width: 46px;
+}
+
+.games-shelf-title {
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: inherit;
+}
+
+.games-folder-btn {
+    background: none;
+    border: none;
+    padding: 2px;
+    color: var(--text-quaternary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    border-radius: 4px;
+    transition: color 0.15s, background-color 0.15s;
+}
+
+.games-folder-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-quaternary);
+}
+
+.games-folder-btn i {
+    width: 14px;
+    height: 14px;
+}
+
+/* One turn per click, so an instant rescan still reads as having happened. */
+.games-folder-btn.spinning i {
+    animation: games-refresh-spin 0.5s linear;
+}
+
+@keyframes games-refresh-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .games-folder-btn.spinning i { animation: none; }
+}
+
+/* The rail itself. Horizontal scroll with snap, so flicking through the
+   library lands on a card rather than between two. */
+.games-rail {
+    display: flex;
+    gap: 10px;
+    /* The 7px top absorbs the spacing the head used to carry. */
+    padding: 7px 12px 4px;
+    max-height: 220px;
+    transition: max-height 0.25s ease, opacity 0.2s ease,
+                padding-top 0.25s ease, padding-bottom 0.25s ease;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x proximity;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-secondary) transparent;
+}
+
+.games-rail::-webkit-scrollbar {
+    height: 6px;
+}
+
+.games-rail::-webkit-scrollbar-thumb {
+    background: var(--border-secondary);
+    border-radius: 99px;
+}
+
+.games-rail::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.game-card {
+    flex: 0 0 auto;
+    /* Fixed width is what makes the names ellipsise instead of stretching the
+       rail — every card is the same landscape tile regardless of its title. */
+    width: 152px;
+    scroll-snap-align: start;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+}
+
+/* The cover box: a fixed 16:9 tile. Everything inside is clipped to it, so a
+   game that renders at any size still occupies exactly this footprint.
+
+   The surface behind the render is a plain app colour — no gradient, no
+   lettering. It is visible only in the instant before a thumbnail paints, and
+   anything decorative there reads as a flash of the "wrong" card. */
+.game-card-art {
+    position: relative;
+    width: 152px;
+    height: 86px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--bg-tertiary);
+    /* Keep the fill out from under the transparent border, or it shows through
+       as a ring around every rendered thumbnail. */
+    background-clip: padding-box;
+    border: 1px solid transparent;
+    transition: transform 0.16s ease, border-color 0.16s ease;
+}
+
+/* The live render of the game's own HTML. Laid out at 4x the tile and scaled
+   down, so the game sees a realistic viewport and we get a zoomed-out view of
+   it rather than a cropped top-left corner. */
+.game-card-shot {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 608px;
+    height: 344px;
+    border: 0;
+    transform: scale(0.25);
+    transform-origin: top left;
+    /* Clicks belong to the card button, not the game inside the thumbnail. */
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    background: var(--bg-primary);
+}
+
+.game-card-art.has-shot .game-card-shot {
+    opacity: 1;
+}
+
+.game-card:hover .game-card-art {
+    transform: translateY(-2px);
+}
+
+.game-card.active .game-card-art {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 1px var(--accent-primary);
+}
+
+.game-card-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+
+.game-card.active .game-card-name {
+    color: var(--text-primary);
+}
+
+.game-card-sub {
+    font-size: 9px;
+    color: var(--text-quaternary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+
+.game-card:focus-visible .game-card-art {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+}
+
+.games-rail-empty {
+    flex: 1 1 auto;
+    align-self: center;
+    font-size: 10px;
+    line-height: 1.5;
+    color: var(--text-quaternary);
+    padding: 4px 2px;
+}
+
+/* Focus nudge over the stage. Games bind WASD/arrows, and those keys only
+   reach the game while the iframe holds focus — so say so when it doesn't,
+   rather than letting keypresses vanish. */
+.games-focus-hint {
+    position: absolute;
+    left: 50%;
+    bottom: 10px;
+    transform: translateX(-50%);
+    z-index: 2;
+    pointer-events: none;
+    padding: 4px 10px;
+    border-radius: 99px;
+    background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
+    border: 1px solid var(--border-primary);
+    color: var(--text-tertiary);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+/* Collapsed shelf: everything folds away — rail, label, chevron, folder button —
+   leaving ONLY the grip as a pull-tab. The whole bottom bar reduces to a few
+   pixels so the stage gets essentially the entire panel. */
+.games-shelf.collapsed .games-rail {
+    max-height: 0;
+    opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+}
+
+.games-shelf.collapsed {
+    padding: 0;
+}
+
+.games-shelf.collapsed .games-shelf-head {
+    padding: 0;
+    gap: 0;
+}
+
+.games-shelf.collapsed .games-shelf-title,
+.games-shelf.collapsed .games-folder-btn {
+    display: none;
+}
+
+/* The grip is already centred on the bar; collapsing just leaves it alone. */
+.games-shelf.collapsed .games-flap {
+    padding: 5px 0 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .games-rail,
+    .games-flap-grip {
+        transition-duration: 1ms;
+    }
+}
+
+/* ---------- the Browser card's page ---------- */
+/* A <webview> only exists in the main frame, so the Browser card cannot hold
+   its own page — the card draws chrome around an empty well and BrowserBridge
+   floats this element over it, in page coordinates it recomputes each frame.
+   Hence position: fixed with no geometry here; the JS writes all four numbers.
+
+   z-index sits above the panel (60) and its resize handle (100) but below the
+   app's modals (1000+), so a dialog still covers the page rather than losing to
+   a guest process that paints on its own layer. */
+.browser-game-view {
+    position: fixed;
+    z-index: 500;
+    border: none;
+    background: var(--bg-primary);
+}
+
+/* Hidden, never removed: detaching a webview tears down the guest, which would
+   mean losing the scroll position and the session on every panel close.
+   visibility keeps it alive and silent (BrowserBridge also mutes it). */
+.browser-game-view.hidden {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* ============================================================
+   Scratchpad — live-preview markdown editor (left sidebar tab)
+   ============================================================
+   Everything here is expressed in the palette tokens from
+   COLOR_PALETTE.md, so the light theme ([data-theme="light"] swaps the
+   same variables) needs no overrides of its own. The only hardcoded
+   values are alpha washes layered ON TOP of a token, which read
+   correctly against both a dark and a light background.
+*/
+.scratchpad-view {
+    background-color: var(--bg-primary);
+}
+
+.scratchpad-editor {
+    flex: 1;
+    /* min-height:0 lets the editor actually shrink inside the flex column
+       instead of overflowing the sidebar. */
+    min-height: 0;
+    overflow: auto;
+    cursor: text;
+}
+
+.scratchpad-error {
+    padding: 16px;
+    color: var(--text-tertiary);
+    font-size: 12px;
+}
+
+/* ---- CodeMirror shell ---- */
+.scratchpad-editor .cm-editor {
+    height: 100%;
+    background-color: transparent;
+    color: var(--text-primary);
+    /* Notes are read, not scanned like log output — this runs at roughly 2x
+       the sidebar's usual 13px. Every other size in this block is em-relative,
+       so headings, code, bullets and checkboxes all track this one number. */
+    font-size: 26px;
+}
+
+.scratchpad-editor .cm-editor.cm-focused {
+    /* CodeMirror's default focus ring fights the sidebar chrome. */
+    outline: none;
+}
+
+.scratchpad-editor .cm-scroller {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.65;
+    padding: 14px 16px 40px;
+}
+
+.scratchpad-editor .cm-content {
+    caret-color: var(--accent-primary);
+    padding: 0;
+}
+
+.scratchpad-editor .cm-line {
+    padding: 0;
+}
+
+.scratchpad-editor .cm-cursor {
+    border-left-color: var(--accent-primary);
+}
+
+.scratchpad-editor .cm-selectionBackground,
+.scratchpad-editor .cm-content ::selection {
+    background-color: var(--terminal-selection);
+}
+
+.scratchpad-editor .cm-placeholder {
+    color: var(--text-quaternary);
+}
+
+/* ---- Inline formatting ---- */
+.scratchpad-editor .cm-md-bold { font-weight: 700; color: var(--text-primary); }
+.scratchpad-editor .cm-md-italic { font-style: italic; }
+.scratchpad-editor .cm-md-strike { text-decoration: line-through; color: var(--text-tertiary); }
+
+.scratchpad-editor .cm-md-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background-color: var(--bg-quaternary);
+    color: var(--accent-magenta);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.92em;
+}
+
+.scratchpad-editor .cm-md-linktext {
+    color: var(--accent-primary);
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* ---- Headings ---- */
+.scratchpad-editor .cm-md-h1 { font-size: 1.7em; font-weight: 700; line-height: 1.3; }
+.scratchpad-editor .cm-md-h2 { font-size: 1.45em; font-weight: 700; line-height: 1.35; }
+.scratchpad-editor .cm-md-h3 { font-size: 1.25em; font-weight: 600; }
+.scratchpad-editor .cm-md-h4 { font-size: 1.1em; font-weight: 600; }
+.scratchpad-editor .cm-md-h5 { font-size: 1em; font-weight: 600; }
+.scratchpad-editor .cm-md-h6 { font-size: 0.95em; font-weight: 600; color: var(--text-secondary); }
+
+/* ---- Blockquote ---- */
+.scratchpad-editor .cm-md-quote {
+    border-left: 3px solid var(--accent-purple);
+    padding-left: 0.85em;
+    color: var(--text-secondary);
+}
+
+/* ---- Fenced code ---- */
+.scratchpad-editor .cm-md-fenced {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background-color: var(--bg-secondary);
+    font-size: 0.92em;
+}
+
+/* The ``` fence rows themselves. Collapsed rather than emptied: a plain
+   replace would leave two blank rows sitting inside the code block. The
+   rule only applies while the caret is outside the block, so the fences
+   are always reachable for editing. */
+.scratchpad-editor .cm-md-fence-line {
+    display: none;
+}
+
+/* ---- Lists ---- */
+.scratchpad-editor .cm-md-bullet {
+    color: var(--text-tertiary);
+}
+
+.scratchpad-editor .cm-md-task {
+    /* Plain inline, so the box aligns itself against the text baseline via the
+       length offset below. An inline-flex wrapper would interpose its own
+       baseline and the box would sit slightly high on every line. */
+    display: inline;
+    margin-right: 0.35em;
+}
+
+.scratchpad-editor .cm-md-task-box {
+    appearance: none;
+    -webkit-appearance: none;
+    /* Form controls do NOT inherit font-size, so without this the em units
+       below resolve against the browser's default ~13px control font and the
+       box stays tiny no matter how large the editor text gets. */
+    font-size: inherit;
+    /* em, not px, so the box stays proportional to the text size above. */
+    width: 0.95em;
+    height: 0.95em;
+    /* Drop the box below the baseline by half its overhang above the x-height,
+       which optically centres it against the lowercase letters beside it. */
+    vertical-align: -0.2em;
+    margin: 0;
+    border: 0.07em solid var(--border-secondary);
+    border-radius: 0.18em;
+    background-color: var(--bg-tertiary);
+    cursor: pointer;
+    position: relative;
+}
+
+.scratchpad-editor .cm-md-task-box:checked {
+    background-color: var(--accent-success);
+    border-color: var(--accent-success);
+}
+
+.scratchpad-editor .cm-md-task-box:checked::after {
+    content: '';
+    position: absolute;
+    left: 0.32em;
+    top: 0.11em;
+    width: 0.2em;
+    height: 0.45em;
+    border: solid var(--bg-primary);
+    border-width: 0 0.12em 0.12em 0;
+    transform: rotate(45deg);
+}
+
+/* ---- Horizontal rule ---- */
+.scratchpad-editor .cm-md-rule {
+    display: inline-block;
+    width: 100%;
+    height: 1px;
+    vertical-align: middle;
+    background-color: var(--border-secondary);
+}
+
+/* ─── Settings modal: two-pane categorized layout ───────────────────────────
+   Left rail lists the categories and holds the search box; the right pane
+   shows exactly one category at a time. While a search is active the rail
+   selection clears and every section with a match is shown at once, so hits
+   from different categories appear together under their own headings.
+   Modelled on the BananaBread settings modal (.settings-nav / .settings-section).
+   Purely presentational: every control keeps the id its renderer.js wiring
+   looks up, so this file must not need to know about individual settings. */
+
+.settings-modal .modal-content {
+    width: 92%;
+    max-width: 900px;
+    height: 82vh;
+    max-height: 740px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.settings-modal .modal-header {
+    flex-shrink: 0;
+}
+
+.settings-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    padding: 0;
+}
+
+/* ---- Left rail ---- */
+
+.settings-nav {
+    width: 236px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 14px 10px;
+    border-right: 1px solid var(--border-primary);
+    background-color: var(--bg-secondary);
+    overflow-y: auto;
+}
+
+.settings-nav-search {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
+    padding: 7px 10px;
+    margin-bottom: 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    transition: border-color 0.15s;
+}
+
+.settings-nav-search:focus-within {
+    border-color: var(--accent-primary);
+}
+
+.settings-nav-search svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: var(--text-quaternary);
+}
+
+.settings-nav-search input {
+    width: 100%;
+    min-width: 0;
+    background: none;
+    border: none;
+    outline: none;
+    padding: 0;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: inherit;
+}
+
+.settings-nav-search input::placeholder {
+    color: var(--text-quaternary);
+}
+
+/* Strip the WebKit search affordances so the field matches the app's inputs. */
+.settings-nav-search input::-webkit-search-decoration,
+.settings-nav-search input::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+}
+
+.settings-nav-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-nav-label {
+    padding: 12px 10px 5px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    color: var(--text-quaternary);
+}
+
+.settings-nav-label:first-child {
+    padding-top: 0;
+}
+
+.settings-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 8px 10px;
+    margin-bottom: 2px;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-tertiary);
+    font-size: 13px;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s;
+}
+
+.settings-nav-item svg {
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    opacity: 0.85;
+}
+
+.settings-nav-item span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.settings-nav-item:hover {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.settings-nav-item.active {
+    background-color: var(--bg-quaternary);
+    color: var(--text-primary);
+}
+
+.settings-nav-item:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
+}
+
+/* BananaBread pins a Save button here; this app persists on change, so the
+   slot carries the note that says so. */
+.settings-nav-save {
+    margin-top: auto;
+    padding: 12px 10px 2px;
+}
+
+.settings-autosave-note {
+    display: block;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-quaternary);
+}
+
+/* ---- Right pane ---- */
+
+.settings-content {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 20px 26px 28px;
+}
+
+.settings-section[hidden],
+.settings-content [hidden] {
+    display: none;
+}
+
+.settings-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 18px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.settings-section-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* While searching, several sections stack in the pane at once; space them so
+   the headings read as separators rather than as one run-on list. */
+.settings-content.is-searching .settings-section + .settings-section {
+    margin-top: 26px;
+}
+
+/* The shared .setting-row/.sound-category rules only carry bottom margin, which
+   left every block butted against the description above it once groups were no
+   longer separated by the old single-column run. */
+.settings-content .setting-row,
+.settings-content .sound-category {
+    margin-top: 14px;
+}
+
+.settings-content .setting-subgroup > .sound-category:first-child {
+    margin-top: 10px;
+}
+
+.settings-no-results {
+    margin: 0;
+    padding: 32px 0;
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-quaternary);
+}
+
+/* ---- Narrow windows: rail collapses to a scrolling strip above the pane ---- */
+
+@media (max-width: 760px), (max-height: 520px) {
+    .settings-modal .modal-content {
+        width: 96%;
+        height: 90vh;
+        max-height: none;
+    }
+
+    .settings-body {
+        flex-direction: column;
+    }
+
+    .settings-nav {
+        width: auto;
+        flex-shrink: 0;
+        border-right: none;
+        border-bottom: 1px solid var(--border-primary);
+        overflow-y: visible;
+    }
+
+    .settings-nav-list {
+        flex-direction: row;
+        gap: 4px;
+        overflow-x: auto;
+        padding-bottom: 2px;
+    }
+
+    /* The group labels are vertical-list furniture; drop them in strip mode. */
+    .settings-nav-label {
+        display: none;
+    }
+
+    .settings-nav-item {
+        width: auto;
+        flex-shrink: 0;
+        margin-bottom: 0;
+    }
+
+    .settings-nav-save {
+        margin-top: 10px;
+        padding: 0 2px;
+    }
+
+    .settings-content {
+        padding: 18px 18px 24px;
+    }
+}
+
+/* ---- Per-terminal mute (header bell) ------------------------------------
+   Muted = this terminal's automatic notifications to the manager (completion
+   pushes + stuck alerts) are suppressed. It has to be readable across a grid
+   of four terminals without clicking anything, so muted is not a tint: the
+   bell becomes a filled amber MUTED pill and the whole header takes an amber
+   wash. Unmuted is a plain, quiet icon button like the close (x) beside it. */
+.terminal-mute-btn {
+    flex-shrink: 0;
+}
+
+.terminal-mute-btn:hover {
+    color: var(--accent-warning);
+    background-color: color-mix(in srgb, var(--accent-warning) 14%, transparent);
+}
+
+.terminal-mute-btn.muted {
+    /* .icon-btn pins every icon button to a 28px square; the pill has to grow
+       past that to fit its label, so both axes are released here. */
+    width: auto;
+    height: 22px;
+    background-color: var(--accent-warning);
+    color: var(--bg-primary);
+    border-radius: 999px;
+    padding: 0 9px 0 7px;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1;
+}
+
+.terminal-mute-btn.muted::after {
+    content: 'MUTED';
+}
+
+.terminal-mute-btn.muted:hover {
+    background-color: var(--accent-warning);
+    color: var(--bg-primary);
+    filter: brightness(1.12);
+}
+
+.terminal-mute-btn.muted svg,
+.terminal-mute-btn.muted i {
+    width: 13px;
+    height: 13px;
+}
+
+/* The header itself carries the state too, so a muted terminal is obvious even
+   when the pill is at the far edge of a wide pane. */
+.terminal-header.muted {
+    background-color: color-mix(in srgb, var(--accent-warning) 16%, var(--bg-primary));
+    border-bottom: 1px solid color-mix(in srgb, var(--accent-warning) 55%, transparent);
+}
+
+/* A muted terminal's title is dimmed to match: the pane reads as "parked"
+   from across the grid, before you've read a single word of it. */
+.terminal-header.muted .terminal-title {
+    color: color-mix(in srgb, var(--accent-warning) 70%, var(--text-secondary));
 }

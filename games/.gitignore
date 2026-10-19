@@ -1,0 +1,12 @@
+# The games library is local content, not source.
+#
+# Games are dropped in here at runtime — by the manager instance (999) writing
+# a file, or by hand. They are deliberately NOT tracked: the library is whatever
+# this machine happens to have. This .gitignore is the one tracked file in the
+# directory, which is what keeps the directory itself in the repo so a fresh
+# clone still has somewhere to put games.
+#
+# Vibe Blast is the exception and lives at the app root as a tracked file —
+# it is the built-in, always-present game.
+*
+!.gitignore

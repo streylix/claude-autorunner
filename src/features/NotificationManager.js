@@ -9,10 +9,47 @@
  *
  * Playback speed is applied client-side via HTMLAudioElement.playbackRate, so the
  * "Playback Speed" setting affects existing notifications too (no re-synthesis).
+ *
+ * Remote Mode (docs/REMOTE_MODE.md §9): in a browser / embedded remote client the
+ * Django backend is NOT reachable (it lives on the app host's loopback), so there
+ * is no polling there. Instead main forwards each fresh notification — metadata
+ * plus the synthesized audio bytes — over the authenticated WebSocket as a
+ * 'remote-tts-notification' push, and playback happens on the device actually
+ * showing the interface (see initializeRemote). The LOCAL renderer keeps
+ * playing too (DUAL OUTPUT): anything capturing the desktop's audio sink —
+ * the Discord bridge with AUDIO_SOURCE=system, a person at the machine —
+ * still hears every notification while remote viewer(s) are attached.
  */
 
-const BASE_URL = 'http://localhost:8123';
+const { BACKEND_URL: BASE_URL } = require('../utils/backend-url');
+
+// True when this renderer is a Remote Mode client (browser tab or the client
+// GUI's embedded iframe). Set by remote-bootstrap.js before any bundle code runs.
+const IS_REMOTE = typeof window !== 'undefined' && !!window.__CCBOT_REMOTE__;
+
+// ipcRenderer, lazily: the real one in the local Electron renderer, the wsIpc
+// WebSocket shim in a remote client (remote-bootstrap.js), null in unit tests.
+function getIpcRenderer() {
+    try { return require('electron').ipcRenderer; } catch (_) { return null; }
+}
 const POLL_INTERVAL_MS = 3000;
+// After every speaking source clears, wait this long before releasing held
+// notifications. Combined with WakeWordManager's SPEECH_IDLE_MS (~600ms) trailing
+// silence, this gives a ~1.3s total quiet window before a deferred notification
+// reads out — so the assistant doesn't jump in the instant the user pauses.
+const SPEAKING_RELEASE_MS = 700;
+// Hard loop guard. A clip interrupted by speech/noise RESUMES from where it
+// paused (it never restarts from 0). But if the same clip keeps getting
+// interrupted — continuous talking, background noise, or the TTS output echoing
+// back into the mic — we must not defer it forever. After this many
+// interruptions we stop deferring and play the clip THROUGH to completion (we
+// never drop it). NEVER replay it from the start.
+const MAX_HOLDS_PER_MESSAGE = 3;
+// If a clip is held (paused for a barge-in) but the user just keeps talking so it
+// never clears, resume it anyway after this long and play it THROUGH. Completion
+// is the priority: a notification must never loop and never stall indefinitely,
+// no matter how long the user talks.
+const MAX_HELD_MS = 4000;
 
 class NotificationManager {
     constructor(eventBus, appStateStore) {
@@ -28,6 +65,11 @@ class NotificationManager {
         this.playbackRate = 1.3;
         this.autoplay = true;
         this.muted = false;
+        // BARGE-IN: when the user starts speaking over an in-flight readout, STOP
+        // that message for good (no resume) so the interaction is a real
+        // back-and-forth. false restores the legacy hold-and-resume behaviour
+        // (pause, then finish the clip once the user is quiet).
+        this.bargeInInterrupt = true;
 
         // Single reused audio element + a small FIFO so notifications don't
         // overlap when several arrive at once.
@@ -36,13 +78,246 @@ class NotificationManager {
         this.audio.addEventListener('error', () => this._onPlaybackEnded());
         this.playQueue = [];
         this.playing = false;
+        // True while the current clip is a user-requested replay (vs a first autoplay).
+        // Gates auto-wake-after-notification so replays never re-open the reply window.
+        this._currentIsReplay = false;
 
         // Short heads-up chime played right before each spoken notification so
         // the user knows one is about to read out.
         this.headsUp = new Audio('assets/soundeffects/click2.wav');
         this.headsUp.volume = 0.5;
 
+        // ---- Remote Mode audio routing (docs/REMOTE_MODE.md §9) --------------
+        // DUAL OUTPUT: remote viewer(s) get the audio bytes over the WS and play
+        // them on the viewing device, AND the local renderer keeps auto-playing
+        // on the desktop's default sink — the Discord bridge (AUDIO_SOURCE=system)
+        // and anyone at the machine must never go silent just because a remote
+        // viewer is attached. remoteSinkActive only tracks attach state for the
+        // action log; it no longer gates playback anywhere.
+        this.remoteSinkActive = false;      // local only: ≥1 remote client attached
+        this._remoteBlobUrls = new Map();   // remote only: id -> blob: URL
+        this._gestureArmed = false;         // remote only: awaiting a user gesture to unlock audio
+
+        // ---- talk-over prevention ------------------------------------------
+        // Hold spoken notifications while the user is talking and resume after a
+        // short trailing silence — never play over them, never drop them.
+        // `_speakingSources` tracks every reason we currently believe the user is
+        // speaking; while it's non-empty (or the post-silence release timer is
+        // still pending) the play queue holds instead of draining.
+        this._speakingSources = new Set();
+        this._speakingReleaseTimer = null;
+        // A notification paused mid-readout, awaiting resume. Kept OUT of the play
+        // queue (so it can't be enqueued twice) and resumed from its current
+        // position — the audio element keeps its src + currentTime while held.
+        this._held = null;             // { id } or null
+        this._holdCounts = new Map();  // id -> times interrupted (loop guard)
+        this._playThrough = new Set(); // ids committed to finish without further holds
+        this._heldWatchdog = null;     // forces a stuck-held clip to resume (no stall)
+
         this._setupPreferenceListeners();
+        this._setupSpeakingGate();
+    }
+
+    /**
+     * Wire the "is the user speaking" inputs that gate playback:
+     *   - speech:active / speech:idle  — continuous RMS voice activity (WakeWordManager)
+     *   - wake:state capturing|transcribing — an active voice-command window
+     *   - voice:button-state recording|processing — manual push-to-talk (VoiceManager)
+     * Any active source holds the queue; when the last one clears we wait
+     * SPEAKING_RELEASE_MS of silence, then drain in order.
+     */
+    _setupSpeakingGate() {
+        this.eventBus.on('speech:active', () => this._addSpeakingSource('rms'));
+        this.eventBus.on('speech:idle', () => this._removeSpeakingSource('rms'));
+
+        this.eventBus.on('wake:state', ({ state } = {}) => {
+            if (state === 'capturing' || state === 'transcribing') this._addSpeakingSource('capture');
+            else this._removeSpeakingSource('capture'); // 'listening' | 'idle'
+        });
+
+        this.eventBus.on('voice:button-state', (state) => {
+            if (state === 'recording' || state === 'processing') this._addSpeakingSource('manual');
+            else this._removeSpeakingSource('manual'); // 'ready' | 'error'
+        });
+    }
+
+    _addSpeakingSource(source) {
+        // A new utterance starts: cancel any pending release so we stay held.
+        if (this._speakingReleaseTimer) { clearTimeout(this._speakingReleaseTimer); this._speakingReleaseTimer = null; }
+        const wasSpeaking = this._isUserSpeaking();
+        this._speakingSources.add(source);
+        // The user started talking mid-readout. Barge-in (default): STOP the
+        // message outright so they can cut in naturally. Legacy mode: hold it and
+        // resume from the same spot once they're quiet.
+        if (!wasSpeaking && this.playing) {
+            if (this.bargeInInterrupt) this._interruptCurrentPlayback(source);
+            else this._holdCurrentPlayback();
+        }
+    }
+
+    /**
+     * BARGE-IN: stop the in-flight readout for good — no hold, no resume, no
+     * replay. The notification is finalized as played (it was consciously talked
+     * over, and it must not read out again later), and the log notes roughly
+     * where it was cut. Play-through clips are NOT exempt here: barge-in is an
+     * explicit user action, unlike the echo/noise the play-through flag guards
+     * against. Pre-start holding (never BEGIN a readout while the user talks)
+     * lives in _drainQueue and is unchanged.
+     */
+    _interruptCurrentPlayback(source) {
+        const id = this._currentId;
+        const wasReplay = this._currentIsReplay;
+        const cur = Number(this.audio.currentTime) || 0;
+        const dur = Number(this.audio.duration);
+        const where = Number.isFinite(dur) && dur > 0
+            ? `~${cur.toFixed(1)}s/${dur.toFixed(1)}s (~${Math.min(99, Math.round((cur / dur) * 100))}%)`
+            : `~${cur.toFixed(1)}s`;
+        try { this.audio.pause(); } catch (_) {}
+        try { this.headsUp.pause(); this.headsUp.currentTime = 0; } catch (_) {}
+        this._held = null;
+        this._clearHeldWatchdog();
+        this.playing = false;
+        this._currentId = null;
+        this._currentIsReplay = false;
+        this._emitPlaybackState(false);
+        if (id != null) {
+            this._log(`✋ barge-in (${source || 'speech'}): stopped the readout at ${where} — you have the floor.`, 'info');
+            // First read-outs are consumed; replays were already played.
+            if (!wasReplay) this._finalizePlayed(id);
+        }
+        // NOTE: deliberately NO 'notification:read-complete' here — that event
+        // opens the hands-free reply window, but the user is ALREADY talking.
+    }
+
+    _removeSpeakingSource(source) {
+        if (!this._speakingSources.delete(source)) return;
+        if (this._speakingSources.size > 0) return; // still speaking via another source
+        // Last source cleared — start the trailing-silence release. If the user
+        // speaks again before it fires, _addSpeakingSource cancels it.
+        if (this._speakingReleaseTimer) clearTimeout(this._speakingReleaseTimer);
+        this._speakingReleaseTimer = setTimeout(() => {
+            this._speakingReleaseTimer = null;
+            this._drainQueue();
+        }, SPEAKING_RELEASE_MS);
+    }
+
+    /** True while we should hold notifications: actively speaking OR in the release window. */
+    _isUserSpeaking() {
+        return this._speakingSources.size > 0 || this._speakingReleaseTimer != null;
+    }
+
+    /**
+     * Pause the in-flight notification because the user just started speaking.
+     * The clip is NOT re-queued and NOT rewound: the audio element keeps its src
+     * and currentTime, so it RESUMES from this exact spot once the user is silent
+     * (see _drainQueue).
+     *
+     * Completion is the priority — a notification must always finish and may never
+     * loop or stall indefinitely. So the hold is bounded two ways: a clip that is
+     * interrupted MAX_HOLDS_PER_MESSAGE times, or that stays held past MAX_HELD_MS
+     * because the user keeps talking, is flagged "play through" and resumed to the
+     * end, ignoring further speech. A play-through clip is never paused again.
+     */
+    _holdCurrentPlayback() {
+        const id = this._currentId;
+        // Never interrupt a clip we've committed to playing through.
+        if (id != null && this._playThrough.has(id)) return;
+        try { this.audio.pause(); } catch (_) {}
+        try { this.headsUp.pause(); this.headsUp.currentTime = 0; } catch (_) {}
+        if (id == null || this._currentIsReplay) {
+            this.playing = false;
+            this._currentId = null;
+            this._emitPlaybackState(false);
+            return;
+        }
+        const count = (this._holdCounts.get(id) || 0) + 1;
+        this._holdCounts.set(id, count);
+        this._held = { id };
+        this.playing = false;
+        this._currentId = null;
+        this._emitPlaybackState(false);
+        if (count >= MAX_HOLDS_PER_MESSAGE) {
+            // Interrupted too many times — stop deferring and PLAY IT THROUGH to
+            // completion (never drop it), ignoring further speech.
+            this._playThrough.add(id);
+            this._forceResumeHeld();
+        } else {
+            // Bounded hold: if the user keeps talking and it never resumes on its
+            // own, the watchdog forces it through so it can't stall.
+            this._armHeldWatchdog();
+        }
+    }
+
+    _armHeldWatchdog() {
+        this._clearHeldWatchdog();
+        const t = setTimeout(() => this._onHeldWatchdog(), MAX_HELD_MS);
+        if (t && typeof t.unref === 'function') t.unref();
+        this._heldWatchdog = t;
+    }
+
+    _clearHeldWatchdog() {
+        if (this._heldWatchdog) { clearTimeout(this._heldWatchdog); this._heldWatchdog = null; }
+    }
+
+    /** The held clip never cleared (the user kept talking) — force it through. */
+    _onHeldWatchdog() {
+        if (!this._held) { this._clearHeldWatchdog(); return; }
+        this._playThrough.add(this._held.id);
+        this._forceResumeHeld();
+    }
+
+    /** Resume the held clip even if the user is still speaking (completion wins). */
+    _forceResumeHeld() {
+        this._clearHeldWatchdog();
+        if (this.muted || this.playing || !this._held) return;
+        this._resumeHeld();
+    }
+
+    /** Resume the held clip in place — no chime, no src reload, no rewind. */
+    _resumeHeld() {
+        this._clearHeldWatchdog();
+        if (!this._held) return false;
+        const { id } = this._held;
+        this._held = null;
+        const n = this.items.get(id);
+        if (!n || !n.audio_url) return false;
+        this.playing = true;
+        this._currentId = id;
+        this._currentIsReplay = false;
+        const p = this.audio.play();
+        if (p && p.catch) p.catch(() => this._onPlaybackEnded());
+        this._emitPlaybackState(true);
+        return true;
+    }
+
+    /** Tell the rest of the app whether TTS audio is producing sound, so the
+     *  wake-word VAD can raise its gate and ignore the echo (see
+     *  WakeWordManager._setTtsPlayback). */
+    _emitPlaybackState(active) {
+        try { this.eventBus.emit('tts:playback', { active: !!active }); } catch (_) {}
+    }
+
+    /**
+     * Mark a notification played (server-side, best-effort) and forget its hold
+     * count + play-through + UI state. Used on natural completion.
+     */
+    _finalizePlayed(id) {
+        if (id == null) return;
+        this._holdCounts.delete(id);
+        this._playThrough.delete(id);
+        if (IS_REMOTE) {
+            // The backend lives on the app host's loopback — unreachable from a
+            // remote client. Route the played-mark through the WS bridge; main
+            // POSTs it to the backend on our behalf (see 'remote-tts-played').
+            const ipc = getIpcRenderer();
+            if (ipc) { try { ipc.send('remote-tts-played', { id }); } catch (_) { /* ignore */ } }
+        } else {
+            fetch(`${BASE_URL}/api/tts/notifications/${id}/played/`, { method: 'POST' }).catch(() => {});
+        }
+        try {
+            const row = document.querySelector(`.notification-item[data-id="${id}"]`);
+            if (row) row.classList.add('played');
+        } catch (_) {}
     }
 
     _setupPreferenceListeners() {
@@ -51,6 +326,7 @@ class NotificationManager {
             if (!prefs) return;
             if (prefs.ttsPlaybackSpeed != null) this.setPlaybackRate(prefs.ttsPlaybackSpeed);
             if (prefs.ttsAutoplayEnabled != null) this.autoplay = !!prefs.ttsAutoplayEnabled;
+            if (prefs.ttsBargeInInterrupt != null) this.bargeInInterrupt = !!prefs.ttsBargeInInterrupt;
             // Restore the persisted mute state (survives navigation/restart).
             if (prefs.notificationsMuted != null) this._applyMutedState(!!prefs.notificationsMuted);
         });
@@ -59,6 +335,7 @@ class NotificationManager {
         this.eventBus.on('preference:changed', ({ key, value }) => {
             if (key === 'ttsPlaybackSpeed') this.setPlaybackRate(value);
             else if (key === 'ttsAutoplayEnabled') this.autoplay = !!value;
+            else if (key === 'ttsBargeInInterrupt') this.bargeInInterrupt = !!value;
             else if (key === 'notificationsMuted') this._applyMutedState(!!value);
         });
     }
@@ -67,6 +344,83 @@ class NotificationManager {
         await this.loadHistory();
         this.startPolling();
         this._wireToolbar();
+        this._wireRemoteSinkSignal();
+    }
+
+    /**
+     * Remote Mode boot (browser tab / embedded client iframe) — used INSTEAD of
+     * initialize(). No backend polling here: main pushes each fresh notification
+     * (metadata + synthesized audio bytes, base64) over the authenticated
+     * WebSocket, and playback happens HERE — on the device showing the interface.
+     */
+    initializeRemote() {
+        this._wireToolbar();
+        const ipc = getIpcRenderer();
+        if (!ipc) return;
+        ipc.on('remote-tts-notification', (_event, payload) => {
+            try {
+                this._onRemoteTtsPush(payload);
+            } catch (err) {
+                console.error('[remote-tts] failed to handle pushed notification:', err);
+            }
+        });
+        console.log('[remote-tts] client sink ready (voice notifications will play on this device)');
+    }
+
+    /** A notification (with its audio bytes) pushed to this remote client. */
+    _onRemoteTtsPush(payload) {
+        const n = payload && payload.notification;
+        if (!n || n.id == null || this.items.has(n.id)) return;
+        let url = null;
+        if (payload.audioBase64) {
+            const bin = atob(payload.audioBase64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            url = URL.createObjectURL(new Blob([bytes], { type: payload.mime || 'audio/wav' }));
+            this._remoteBlobUrls.set(n.id, url);
+            console.log(`[remote-tts] notification ${n.id} received over WS (${bytes.length} audio bytes)`);
+        }
+        const item = Object.assign({}, n, { audio_url: url });
+        this._renderItem(item, { prepend: true });
+        this.lastSeenId = Math.max(this.lastSeenId, n.id);
+        if (this.autoplay) this._enqueuePlay(item);
+    }
+
+    /**
+     * LOCAL renderer only: track whether any Remote Mode client is attached.
+     * Main pushes 'remote-clients-changed' on every attach/detach and answers
+     * the 'remote-clients-count' invoke for the boot-time state. While ≥1 is
+     * attached, the client(s) are the audio sink and local autoplay holds.
+     */
+    _wireRemoteSinkSignal() {
+        const ipc = getIpcRenderer();
+        if (!ipc) return;
+        try {
+            let pushSeen = false; // a live push always beats the boot-time invoke
+            ipc.on('remote-clients-changed', (_event, payload) => {
+                pushSeen = true;
+                this._setRemoteSinkActive(!!(payload && payload.count > 0));
+            });
+            if (typeof ipc.invoke === 'function') {
+                ipc.invoke('remote-clients-count')
+                    .then((r) => {
+                        // Stale-guard: if an attach/detach push already arrived,
+                        // this snapshot is older than what we know — drop it.
+                        if (pushSeen) return;
+                        if (r && typeof r.count === 'number') this._setRemoteSinkActive(r.count > 0);
+                    })
+                    .catch(() => {});
+            }
+        } catch (_) { /* non-Electron host (unit tests) */ }
+    }
+
+    _setRemoteSinkActive(active) {
+        if (this.remoteSinkActive === !!active) return;
+        this.remoteSinkActive = !!active;
+        this._log(
+            `notifications: ${this.remoteSinkActive ? 'remote viewer(s) attached — audio plays here AND on the viewing device(s)' : 'no remote viewers — audio plays here only'}`,
+            'info'
+        );
     }
 
     // ---- backend I/O ---------------------------------------------------------
@@ -112,6 +466,9 @@ class NotificationManager {
         for (const n of fresh) {
             this._renderItem(n, { prepend: true });
             this.lastSeenId = Math.max(this.lastSeenId, n.id);
+            // DUAL OUTPUT: play locally even with remote viewer(s) attached —
+            // the desktop sink feeds the Discord bridge; the viewers get their
+            // own copy over the WS (tts-remote-forwarder).
             if (this.autoplay) this._enqueuePlay(n);
         }
     }
@@ -120,18 +477,33 @@ class NotificationManager {
 
     _enqueuePlay(n) {
         if (!n.audio_url) return;
+        // De-dupe: never queue something already playing, held, or already queued.
+        if (this._currentId === n.id) return;
+        if (this._held && this._held.id === n.id) return;
+        if (this.playQueue.some((q) => q.id === n.id)) return;
         this.playQueue.push(n);
         this._drainQueue();
     }
 
     _drainQueue() {
         if (this.playing || this.muted) return;
+        // Hold while the user is speaking (or within the trailing-silence window):
+        // the queue keeps its items and drains once _removeSpeakingSource's release
+        // timer fires. Never talk over the user; never drop the notification.
+        if (this._isUserSpeaking()) return;
+        // Resume an interrupted clip first — continue from where it paused (src and
+        // currentTime are untouched), no chime, no restart from 0.
+        if (this._held) {
+            if (this._resumeHeld()) return;
+            // Item vanished — fall through to the normal queue.
+        }
         const n = this.playQueue.shift();
         if (!n) return;
         this.playing = true;
         this._currentId = n.id;
+        this._currentIsReplay = false; // queue playback = first read-out
         // Heads-up chime first, then the spoken notification.
-        this._playHeadsUpThen(() => this._startAudio(n.audio_url));
+        this._playHeadsUpThen(() => this._startAudio(n.audio_url, n));
     }
 
     // Play the heads-up chime and invoke cb exactly once when it finishes
@@ -151,38 +523,101 @@ class NotificationManager {
         }
     }
 
-    _startAudio(url) {
+    _startAudio(url, n) {
         try {
-            this.audio.src = BASE_URL + url;
-            this.audio.playbackRate = this.playbackRate;
+            // blob:/data: URLs (Remote Mode pushes raw bytes) and absolute URLs
+            // play as-is; backend-relative paths get the backend origin.
+            this.audio.src = /^(blob:|data:|https?:)/.test(url) ? url : BASE_URL + url;
+            // SINGLE-FILE MODEL: the generator synthesizes at the user's speed
+            // (callers pass ttsPlaybackSpeed), and every consumer — this
+            // renderer, remote viewers, the Discord bridge — plays that SAME
+            // file unmodified. A clip that carries its own synthesis speed
+            // plays at 1.0; only legacy speed-1.0 rows get the client rate so
+            // old history still sounds right.
+            this._currentSynthSpeed = Number(n && n.speed) || 1;
+            this.audio.playbackRate = this._currentSynthSpeed > 1.01 ? 1.0 : this.playbackRate;
             const p = this.audio.play();
-            if (p && p.catch) p.catch(() => this._onPlaybackEnded());
+            if (p && p.then) {
+                p.then(() => {
+                    if (IS_REMOTE && this._currentId != null) {
+                        console.log(`[remote-tts] playback started on this device for notification ${this._currentId}`);
+                    }
+                }).catch((err) => this._onPlayRejected(err));
+            }
+            this._emitPlaybackState(true);
         } catch (err) {
             this._onPlaybackEnded();
         }
     }
 
+    /**
+     * play() rejected. In a plain-browser remote client the FIRST play can be
+     * blocked by the autoplay policy until the user interacts with the page —
+     * don't consume the clip: requeue it at the front and retry on the first
+     * gesture. Any other rejection falls through to the normal ended path.
+     */
+    _onPlayRejected(err) {
+        const blocked = IS_REMOTE && err && err.name === 'NotAllowedError';
+        if (!blocked) return this._onPlaybackEnded();
+        const id = this._currentId;
+        const n = id != null ? this.items.get(id) : null;
+        this.playing = false;
+        this._currentId = null;
+        this._currentIsReplay = false;
+        this._emitPlaybackState(false);
+        if (n && n.audio_url) this.playQueue.unshift(n);
+        console.log('[remote-tts] autoplay blocked by the browser — will play on the first click/keypress');
+        if (!this._gestureArmed) {
+            this._gestureArmed = true;
+            const unlock = () => {
+                this._gestureArmed = false;
+                document.removeEventListener('pointerdown', unlock, true);
+                document.removeEventListener('keydown', unlock, true);
+                this._drainQueue();
+            };
+            document.addEventListener('pointerdown', unlock, true);
+            document.addEventListener('keydown', unlock, true);
+        }
+    }
+
     _onPlaybackEnded() {
+        const finishedId = this._currentId;
+        const wasReplay = this._currentIsReplay;
         if (this._currentId != null) {
-            // Best-effort: mark as played server-side.
-            fetch(`${BASE_URL}/api/tts/notifications/${this._currentId}/played/`, { method: 'POST' }).catch(() => {});
-            const row = document.querySelector(`.notification-item[data-id="${this._currentId}"]`);
-            if (row) row.classList.add('played');
+            this._finalizePlayed(this._currentId); // mark played + clear hold count
             this._currentId = null;
         }
+        if (this._held && this._held.id === finishedId) { this._held = null; this._clearHeldWatchdog(); }
+        this._currentIsReplay = false;
         this.playing = false;
+        this._emitPlaybackState(false);
+        // Snapshot BEFORE draining (drain shifts the queue): only open a reply window
+        // when this was the last notification to read out.
+        const moreQueued = this.playQueue.length > 0 || this._held != null;
         this._drainQueue();
+        // Auto-wake-after-notification: a notification's FIRST read-out just finished
+        // and nothing else is queued — tell WakeWordManager to open a brief hands-free
+        // reply window so the user can answer without the wake word. Skipped on replay
+        // and while muted. WakeWordManager only acts if its spotter is enabled + idle.
+        if (finishedId != null && !wasReplay && !moreQueued && !this.muted) {
+            this.eventBus.emit('notification:read-complete', { id: finishedId });
+        }
     }
 
     /** Explicit user replay of one row — plays now, regardless of mute/queue. */
     replay(id) {
         const n = this.items.get(id);
         if (!n || !n.audio_url) return;
-        // Interrupt whatever is playing.
+        // Interrupt whatever is playing and abandon any clip held for resume —
+        // the user explicitly chose this one, and the shared audio element is
+        // about to load a different src.
         try { this.audio.pause(); } catch (_) {}
+        this._held = null;
+        this._clearHeldWatchdog();
         this.playing = true;
         this._currentId = id;
-        this._startAudio(n.audio_url);
+        this._currentIsReplay = true; // explicit replay: must NOT trigger auto-wake
+        this._startAudio(n.audio_url, n);
     }
 
     // ---- settings hooks (called from renderer) -------------------------------
@@ -191,7 +626,11 @@ class NotificationManager {
         const r = Number(rate);
         if (!Number.isFinite(r)) return;
         this.playbackRate = Math.min(2, Math.max(0.5, r));
-        if (this.playing) this.audio.playbackRate = this.playbackRate;
+        // Never re-time a clip that was synthesized at the user's speed (see
+        // _startAudio) — the slider affects the SYNTHESIS of future clips.
+        if (this.playing && (this._currentSynthSpeed || 1) <= 1.01) {
+            this.audio.playbackRate = this.playbackRate;
+        }
     }
 
     setAutoplay(enabled) { this.autoplay = !!enabled; }
@@ -210,6 +649,8 @@ class NotificationManager {
             try { this.audio.pause(); } catch (_) {}
             try { this.headsUp.pause(); } catch (_) {}
             this.playing = false;
+            this._clearHeldWatchdog();
+            this._emitPlaybackState(false);
         } else {
             this._drainQueue();
         }
@@ -226,7 +667,9 @@ class NotificationManager {
         if (icon) icon.setAttribute('data-lucide', this.muted ? 'volume-x' : 'volume-2');
         const label = btn.querySelector('.mute-toggle-label');
         if (label) label.textContent = this.muted ? 'Muted' : 'Sound on';
-        if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
+        if (window.lucide && window.lucide.createIcons) {
+            window.lucide.createIcons({ nameAttr: 'data-lucide', root: btn });
+        }
     }
 
     /** User-driven mute change: apply AND persist to preferences. */
@@ -239,6 +682,7 @@ class NotificationManager {
 
     /** Persist the user's preferred default voice to the backend config. */
     async setPreferredVoice(voice) {
+        if (IS_REMOTE) return; // backend unreachable from a remote client (and localhost = the WRONG machine)
         try {
             await fetch(`${BASE_URL}/api/tts/config/`, {
                 method: 'PUT',
@@ -252,17 +696,19 @@ class NotificationManager {
 
     /** Synthesize a short sample in `voice` and play it (settings "Test" button). */
     async testVoice(voice) {
+        if (IS_REMOTE) return; // backend unreachable from a remote client
         try {
             const res = await fetch(`${BASE_URL}/api/tts/speak/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: 'This is how notifications will sound.', voice, source: 'test' }),
+                // SINGLE-FILE MODEL: bake the user's speed into the sample so
+                // the test sounds exactly like real notifications everywhere.
+                body: JSON.stringify({ text: 'This is how notifications will sound.', voice, speed: this.playbackRate, source: 'test' }),
             });
             const data = await res.json();
             if (data && data.audio_url) {
                 // Don't route test clips through the persisted-row queue.
                 const a = new Audio(BASE_URL + data.audio_url);
-                a.playbackRate = this.playbackRate;
                 a.play().catch(() => {});
             }
         } catch (err) {
@@ -271,9 +717,17 @@ class NotificationManager {
     }
 
     async clearAll() {
-        try {
-            await fetch(`${BASE_URL}/api/tts/notifications/`, { method: 'DELETE' });
-        } catch (_) {}
+        // Remote client: never fetch localhost from the viewer's machine (that
+        // is the CLIENT's loopback, not the backend). Clear the local view only.
+        if (!IS_REMOTE) {
+            try {
+                await fetch(`${BASE_URL}/api/tts/notifications/`, { method: 'DELETE' });
+            } catch (_) {}
+        }
+        for (const u of this._remoteBlobUrls.values()) {
+            try { URL.revokeObjectURL(u); } catch (_) { /* ignore */ }
+        }
+        this._remoteBlobUrls.clear();
         this.items.clear();
         const list = document.getElementById('todo-list');
         if (list) list.innerHTML = '';
@@ -345,7 +799,11 @@ class NotificationManager {
         else if (prepend) list.appendChild(row);
         else list.appendChild(row);
 
-        if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
+        // Scope the icon render to this row — a bare createIcons() rescans the
+        // whole document, and loadHistory() renders up to 100 rows at boot.
+        if (window.lucide && window.lucide.createIcons) {
+            window.lucide.createIcons({ nameAttr: 'data-lucide', root: row });
+        }
         if (this.searchTerm) this._applySearch();
     }
 

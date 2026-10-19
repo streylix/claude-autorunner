@@ -27,6 +27,14 @@ class MessageQueueManager {
         // ipc wrapper: { send, on, removeListener } built by the renderer.
         this.ipc = ipc || null;
 
+        // Remote Mode (docs/REMOTE_MODE.md): in a browser-served renderer the
+        // queue is a live VIEW, but the injection engine and queue persistence
+        // stay exclusively in the local Electron renderer — two engines against
+        // the same PTYs would double-inject, and two writers would clobber the
+        // store. Adds made remotely are forwarded to the authoritative local
+        // queue over the WS bridge (see addMessageToQueue).
+        this.isRemote = typeof window !== 'undefined' && !!window.__CCBOT_REMOTE__;
+
         // Operational flags formerly read off the renderer context.
         // These are now owned by the message system itself.
         this.timerExpired = false;
@@ -87,6 +95,7 @@ class MessageQueueManager {
         this.currentlyInjectingMessageId = null;
         this.safetyCheckCount = 0;
         this.currentTypeInterval = null;
+        this._busyRetryTimer = null; // single pending "terminals busy" retry (never stacks)
         
         // Message editing state
         this.editingMessageId = null;
@@ -233,8 +242,14 @@ class MessageQueueManager {
         if (tid == null) return;
         if (this.currentlyInjectingTerminals.has(tid)) return; // already busy on this terminal
 
+        // Exclude messages already mid-injection: a target-less message
+        // resolves (msg.terminalId || activeTerminalId) at pick time, so when
+        // the active terminal changes during the in-flight typing, this picker
+        // used to re-match the SAME message against the new terminal and
+        // double-inject it.
         const message = this.messageQueue.find(
-            msg => (msg.terminalId || this.activeTerminalId) === tid
+            msg => !this.currentlyInjectingMessages.has(msg.id)
+                && (msg.terminalId || this.activeTerminalId) === tid
         );
         if (!message) return;
 
@@ -259,6 +274,12 @@ class MessageQueueManager {
      * for the duration so a second message can't pile in on top of it.
      */
     _injectToTerminal(message, terminalId) {
+        // Remote Mode: never inject from a browser renderer. This is the single
+        // sink every injection path (auto, "Send now", inject-next) flows
+        // through, so one guard here disables the whole engine remotely.
+        // Silent: the auto path probes on every idle transition and would spam
+        // the log; injectMessageNow surfaces the explanation for explicit sends.
+        if (this.isRemote) return;
         // Universal manager-input guard. canInjectToTerminal already blocks the
         // auto path, but injectMessageNow ("Send now" / force) bypasses the gate
         // entirely — so re-check here, the single sink every injection flows
@@ -267,6 +288,28 @@ class MessageQueueManager {
         if (terminalId === MANAGER_TERMINAL_ID && this.isManagerInputDisabled()) {
             this.logAction('Manager input disabled — message held, not injected to the manager (999)', 'info');
             return;
+        }
+        // Bare-shell guard re-check (P4). canInjectToTerminal enforces this on the
+        // auto path, but injectMessageNow / "Send now" / the control-API inject-now
+        // route bypass the gate entirely and flow straight here. For a NON-urgent
+        // message, refuse to type into a terminal with no live Claude session
+        // (definitive runtime 'shell') — otherwise the prompt text + carriage
+        // return runs as host shell commands. Mirrors evaluateInjectionGate: only a
+        // definitive 'shell' blocks; 'claude'/'unknown'/undefined fail open so a
+        // transient detection gap never freezes legitimate injection. Urgent keeps
+        // its documented bypass (a remote SSH'd Claude is detected locally as shell).
+        // The manager (999) is exempt for the same reason it bypasses the gate: it
+        // is a hidden PTY whose runtime detection can read 'shell', and holding its
+        // inbound reports here would silently re-create the stuck-queue bug the
+        // gate bypass exists to fix. Its own disable switch is checked above.
+        if ((message.type || 'normal') !== 'urgent'
+            && terminalId !== MANAGER_TERMINAL_ID
+            && this.terminalStateManager) {
+            const terminal = this.terminalStateManager.getTerminal(terminalId);
+            if (terminal && terminal.runtime === 'shell') {
+                this.logAction(`Held: terminal ${terminalId} is a bare shell (no Claude session) — message not injected`, 'warning');
+                return;
+            }
         }
         this.currentlyInjectingTerminals.add(terminalId);
         this.currentlyInjectingMessages.add(message.id);
@@ -319,6 +362,10 @@ class MessageQueueManager {
      * carriage-return submit convention.
      */
     injectMessageNow(messageId) {
+        if (this.isRemote) {
+            this.logAction('Injection runs on the app host — the message will send from there when its terminal idles', 'info');
+            return;
+        }
         const message = this.messageQueue.find(m => m.id === messageId);
         if (!message) return;
         const tid = message.terminalId || this.activeTerminalId;
@@ -425,6 +472,9 @@ class MessageQueueManager {
      * Returns true on success. (TODO: wire to a richer atomic-write path if needed.)
      */
     async saveQueuedMessagesWithAtomicWrite() {
+        // Remote Mode: the local renderer owns queue persistence; a remote
+        // view writing its partial copy would clobber the real queue on disk.
+        if (this.isRemote) return true;
         if (this.ipc && typeof this.ipc.invoke === 'function') {
             try {
                 await this.ipc.invoke('db-set-setting', 'messageQueue', JSON.stringify(this.messageQueue));
@@ -469,6 +519,25 @@ class MessageQueueManager {
             return this.addMessageToQueue(data.content, data.terminalId, data.type);
         }
         return this.addMessageToQueue(data);
+    }
+
+    /**
+     * REMOTE VIEWS ONLY: replace this renderer's queue with the authoritative
+     * one pushed by main ('remote-queue-sync' — fed from the local renderer's
+     * state snapshots, which fire on every queue mutation). This is a pure
+     * mirror: no persistence, no injection, no re-broadcast — just state +
+     * display, so the remote panel reflects add / inject / remove / clear
+     * within push latency instead of showing already-delivered messages.
+     */
+    applyRemoteQueueMirror(queue) {
+        if (!this.isRemote) return; // the local renderer OWNS the queue
+        this.messageQueue = (Array.isArray(queue) ? queue : []).map((m) => ({
+            id: m.id,
+            content: typeof m.content === 'string' ? m.content : '',
+            terminalId: m.terminalId,
+            type: m.type === 'urgent' ? 'urgent' : 'normal'
+        }));
+        this.eventBus.emit('message:queue-updated', { queue: this.messageQueue });
     }
 
     /**
@@ -695,12 +764,30 @@ class MessageQueueManager {
         this.reorderMessage(fromIndex, toIndex);
     }
     
-    async addMessageToQueue(providedContent = null, providedTerminalId = null, providedType = null) {
+    async addMessageToQueue(providedContent = null, providedTerminalId = null, providedType = null, opts = {}) {
         const input = document.getElementById('message-input');
         const content = providedContent !== null ? providedContent.trim() : input.value.trim();
 
         // Validate content is not empty or just whitespace
         if (!this.isValidMessageContent(content)) {
+            return;
+        }
+
+        // Remote Mode: a browser-originated add is forwarded to the
+        // AUTHORITATIVE local queue over the WS bridge (RemoteServer re-emits
+        // it as the same queue-add-request push the control API uses). The
+        // local renderer queues + persists + injects it, and the resulting
+        // broadcast echo (opts.fromBroadcast) lands back here for display —
+        // so we do NOT also add it locally now, or it would show twice.
+        if (this.isRemote && !opts.fromBroadcast) {
+            const targetId = providedTerminalId != null ? providedTerminalId : this.activeTerminalId;
+            this.ipc.send('remote-queue-add', {
+                terminalId: targetId,
+                content,
+                type: MessageQueueManager.normalizeType(providedType != null ? providedType : this.selectedMessageType)
+            });
+            if (providedContent === null && input) input.value = '';
+            this.logAction(`Message sent to the app host's queue for Terminal ${targetId}`, 'info');
             return;
         }
 
@@ -974,6 +1061,7 @@ class MessageQueueManager {
      * gated independently so eligible ones fire together.
      */
     async startSequentialInjection() {
+        if (this.isRemote) return; // injection engine lives in the local renderer only
         if (this.messageQueue.length === 0) {
             this.logAction('Injection requested but no messages to inject', 'warning');
             return;
@@ -1051,6 +1139,7 @@ class MessageQueueManager {
     }
     
     injectMessageAndContinueQueue() {
+        if (this.isRemote) return; // injection engine lives in the local renderer only
         // Implementation would continue here...
         // This is a complex method that handles the actual message injection
         // For brevity, I'm showing the structure but not the full implementation
@@ -1062,8 +1151,13 @@ class MessageQueueManager {
         
         // R3 gate (auto path): only pick a message whose target terminal is both
         // free of an in-flight injection AND passes canInjectToTerminal (not
-        // running/prompted, no usage-limit/timer block).
+        // running/prompted, no usage-limit/timer block). Skip messages that are
+        // themselves mid-injection: a target-less message resolves its terminal
+        // at pick time (msg.terminalId || activeTerminalId), so if the active
+        // terminal changes while it is being typed, a concurrent picker used to
+        // resolve the SAME message to the NEW terminal and inject it twice.
         const messageIndex = this.messageQueue.findIndex(msg => {
+            if (this.currentlyInjectingMessages.has(msg.id)) return false;
             const terminalId = msg.terminalId || this.activeTerminalId;
             if (this.currentlyInjectingTerminals.has(terminalId)) return false;
             return this.canInjectToTerminal(terminalId).allowed;
@@ -1077,8 +1171,18 @@ class MessageQueueManager {
                 this.logAction('Injection gated (usage limit / timer) - awaiting release', 'info');
                 return;
             }
+            // Single guarded retry handle. Every entry into this branch used to
+            // spawn an INDEPENDENT unguarded setTimeout chain — chains stacked
+            // (two callers ⇒ two permanent 1Hz loops), each tick logging an
+            // action (→ a backend POST every 3s, forever, while any terminal
+            // was busy). One pending retry is all a "wait for a terminal to
+            // free up" loop needs.
+            if (this._busyRetryTimer) return;
             this.logAction('All target terminals busy or not idle - waiting...', 'info');
-            setTimeout(() => this.injectMessageAndContinueQueue(), 1000);
+            this._busyRetryTimer = setTimeout(() => {
+                this._busyRetryTimer = null;
+                this.injectMessageAndContinueQueue();
+            }, 1000);
             return;
         }
         
@@ -1152,6 +1256,7 @@ class MessageQueueManager {
      */
     
     async saveToMessageHistory(message, terminalId = null, counter = null) {
+        if (this.isRemote) return; // history is recorded by the injecting (local) renderer
         const historyItem = {
             id: message.id,
             content: message.content,

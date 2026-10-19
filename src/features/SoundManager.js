@@ -155,9 +155,17 @@ class SoundManager {
     }
 
     /**
-     * Whether a terminal is muted via override.
+     * Whether this terminal's SOUND EFFECTS are muted, via its per-terminal
+     * sound override. Audio only — completion/injection/prompted cues stop
+     * playing for this terminal and nothing else changes.
+     *
+     * NOT to be confused with the renderer's `isTerminalMuted()` (see
+     * renderer.js), which is the unrelated notification mute: whether a
+     * terminal reports itself to the MANAGER (999). The two are deliberately
+     * independent state — silencing a terminal's reports to the manager must
+     * not take away the user's own audio cues, and vice versa.
      */
-    isTerminalMuted(terminalId) {
+    isTerminalSoundMuted(terminalId) {
         const override = this.terminalSoundOverrides[terminalId];
         return !!(override && override.muted);
     }
@@ -197,7 +205,7 @@ class SoundManager {
     }
     
     playCompletionSound(terminalId = null) {
-        if (terminalId !== null && this.isTerminalMuted(terminalId)) return;
+        if (terminalId !== null && this.isTerminalSoundMuted(terminalId)) return;
         const sound = terminalId !== null
             ? this.getEffectiveSound(terminalId, 'completion')
             : this.completionSound;
@@ -207,7 +215,7 @@ class SoundManager {
     }
 
     playInjectionSound(terminalId = null) {
-        if (terminalId !== null && this.isTerminalMuted(terminalId)) return;
+        if (terminalId !== null && this.isTerminalSoundMuted(terminalId)) return;
         const sound = terminalId !== null
             ? this.getEffectiveSound(terminalId, 'injection')
             : this.injectionSound;
@@ -217,7 +225,7 @@ class SoundManager {
     }
 
     playPromptedSound(keywordDetected = false, terminalId = null) {
-        if (terminalId !== null && this.isTerminalMuted(terminalId)) return;
+        if (terminalId !== null && this.isTerminalSoundMuted(terminalId)) return;
         // Only play if not restricted to keywords, or if keyword was detected
         if (!this.promptedSoundKeywordsOnly || keywordDetected) {
             const sound = terminalId !== null
@@ -232,7 +240,7 @@ class SoundManager {
     // ======= STATUS CHANGE DETECTION =======
     checkStatusChangeSounds(previousStatus, currentStatus, terminalId) {
         if (!this.soundEnabled) return;
-        if (terminalId !== null && terminalId !== undefined && this.isTerminalMuted(terminalId)) return;
+        if (terminalId !== null && terminalId !== undefined && this.isTerminalSoundMuted(terminalId)) return;
 
         // Check for completion sound trigger
         if (this.shouldPlayCompletionSound(previousStatus, currentStatus)) {

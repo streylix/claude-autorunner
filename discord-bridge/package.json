@@ -1,0 +1,31 @@
+{
+  "name": "ccbot-discord-bridge",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Standalone Discord voice bridge for the auto-injector: wake-word voice control of manager terminal 999 from a Discord voice channel, with session-key linking and full system-audio playback.",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "for f in config.js src/*.js tools/*.js; do node --check \"$f\" || exit 1; done; echo 'all node --check OK'",
+    "doctor": "node src/doctor.js",
+    "link-key": "node tools/make-link-key.js",
+    "post-image": "node tools/post-image.js",
+    "post-video": "node tools/post-video.js",
+    "post-text": "node tools/post-text.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "comment": "VERSION PINS ARE LOAD-BEARING: @discordjs/voice MUST be >=0.19.2 — that release (PR #11449) fixes the DAVE voice-RECEIVE bug (RFC3550 padding); 0.19.0/0.19.1 capture broken audio under mandatory DAVE E2EE. @snazzah/davey auto-installs as a hard dep of voice; pinned here for clarity.",
+  "dependencies": {
+    "discord.js": "^14.26.4",
+    "@discordjs/voice": "^0.19.2",
+    "@discordjs/opus": "^0.10.0",
+    "@snazzah/davey": "^0.1.12",
+    "prism-media": "^1.3.5",
+    "sodium-native": "^4.3.1",
+    "ffmpeg-static": "^5.2.0",
+    "dotenv": "^16.4.5"
+  }
+}

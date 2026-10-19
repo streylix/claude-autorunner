@@ -60,6 +60,24 @@ hands-free.
 - System tray (queue badge, start/stop injection), optional keep-screen-awake
   while injecting, theme support.
 
+## In action
+
+**The Manager steering the fleet** — ask it to check state and hand work to a
+terminal; it reads the control API, queues the task, and the terminal picks it
+up:
+
+![Manager showcase](./docs/showcase/manager.gif)
+
+**"Hey Claude" wake word** — spoken hands-free, transcribed locally, forwarded
+to the manager as an urgent memo:
+
+![Wake word showcase](./docs/showcase/wake-word.gif)
+
+**Push-to-talk voice mode** — click the mic, speak, and the Whisper
+transcription lands in the message input ready to send:
+
+![Voice mode showcase](./docs/showcase/voice-mode.gif)
+
 ## How it works
 
 Three processes:
@@ -73,7 +91,7 @@ Three processes:
    module per feature (queue, status, sounds, voice, wake word, timer, TTS
    notifications, usage limit…).
 3. **Django backend** (Docker, port 8123) — Whisper transcription, Kokoro TTS,
-   queue persistence, and the merged log sink.
+   the wake-word check endpoint, queue persistence, and the merged log sink.
 
 The manager instance is the same trick turned inward: a Claude session whose
 "tools" are the control API — `GET /state` to see the fleet,
@@ -115,6 +133,23 @@ Everything lives in **Settings** (gear icon):
 - **Sounds** — per-event sound selection with test buttons.
 - The manager's working directory (and therefore its routines and role) is set
   via the Manager view.
+
+## Discord voice bridge (`discord-integration` branch)
+
+The `discord-integration` branch adds a standalone bridge service that puts
+the manager in a Discord voice channel: speak the wake word in the call and
+your words reach the manager; its TTS replies stream back into the channel,
+and a text channel mirrors the conversation ("Heard:" / "Replied:") with
+image/video hand-off in both directions.
+
+Security posture: the bridge holds **no app credentials at rest** (a
+rotatable link-key + 0600 local vault), reaches the app only over loopback,
+and **denies everyone by default** — you must allow-list Discord user IDs
+(`DISCORD_ALLOWED_USER_IDS`) before anyone can drive it.
+
+Start with [`discord-bridge/DISCORD_SETUP_GUIDE.md`](./discord-bridge/DISCORD_SETUP_GUIDE.md)
+(bot provisioning from zero) and [`discord-bridge/SETUP.md`](./discord-bridge/SETUP.md)
+(architecture, linking, security model).
 
 ## License
 

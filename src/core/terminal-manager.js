@@ -140,7 +140,14 @@ class TerminalManager {
             windowsMode: isWindows, // Enable Windows-specific behavior
             fastScrollModifier: isWindows ? 'shift' : 'alt', // Use Shift for fast scroll on Windows
             rightClickSelectsWord: true,
-            macOptionIsMeta: !isWindows // Only enable on non-Windows
+            macOptionIsMeta: !isWindows, // Only enable on non-Windows
+            // xterm.js already lets Shift+drag bypass a remote program's mouse
+            // tracking (e.g. an SSH'd TUI like Claude Code) to force local text
+            // selection — that's Shift on Linux/Windows, but on Mac it checks
+            // Option+drag AND this flag, which defaults false. Without it, Mac
+            // users have no drag-based way to select/copy through an SSH'd
+            // mouse-tracking program; this makes the override symmetric.
+            macOptionClickForcesSelection: true
         };
         
         const terminal = new Terminal(terminalOptions);
