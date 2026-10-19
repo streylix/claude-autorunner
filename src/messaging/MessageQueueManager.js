@@ -363,7 +363,12 @@ class MessageQueueManager {
      */
     injectMessageNow(messageId) {
         if (this.isRemote) {
-            this.logAction('Injection runs on the app host — the message will send from there when its terminal idles', 'info');
+            // Injection runs on the app host: ask it to force-send this id, then
+            // refresh the mirror so an entry the host already delivered drops
+            // out of this view instead of sitting there unsendable (T668).
+            this.ipc.send('remote-queue-inject-now', { messageId });
+            this.ipc.send('remote-queue-request');
+            this.logAction('Send-now passed to the app host', 'info');
             return;
         }
         const message = this.messageQueue.find(m => m.id === messageId);
@@ -776,9 +781,9 @@ class MessageQueueManager {
         // Remote Mode: a browser-originated add is forwarded to the
         // AUTHORITATIVE local queue over the WS bridge (RemoteServer re-emits
         // it as the same queue-add-request push the control API uses). The
-        // local renderer queues + persists + injects it, and the resulting
-        // broadcast echo (opts.fromBroadcast) lands back here for display —
-        // so we do NOT also add it locally now, or it would show twice.
+        // local renderer queues + persists + injects it, and this view shows
+        // it through the host's queue mirror (remote-queue-sync) — so we do
+        // NOT also add it locally now.
         if (this.isRemote && !opts.fromBroadcast) {
             const targetId = providedTerminalId != null ? providedTerminalId : this.activeTerminalId;
             this.ipc.send('remote-queue-add', {

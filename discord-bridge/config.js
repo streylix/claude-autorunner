@@ -174,6 +174,10 @@ const config = {
   imageDescriptorTtlMs: int(process.env.IMAGE_DESCRIPTOR_TTL_MS, 300000), // drop stale descriptors after 5 min
   imageMaxBytes: int(process.env.IMAGE_MAX_BYTES, 8 * 1024 * 1024),       // Discord free-tier safe limit
   imageMaxWidth: int(process.env.IMAGE_MAX_WIDTH, 1920),                  // downscale target if oversized
+  // TEXT-FILE SENDING: a long draft is better as ONE downloadable, editable file
+  // than as a run of chat messages, so { file, caption } descriptors post a plain
+  // -text file as an attachment. Over the cap it is REFUSED, never truncated.
+  textFileMaxBytes: int(process.env.TEXT_FILE_MAX_BYTES, 8 * 1024 * 1024), // Discord free-tier safe limit
   // VIDEO SENDING: same outbox channel as images/text. The manager drops a
   // { video, caption } descriptor; the bridge re-encodes it with ffmpeg to fit
   // under Discord's upload cap (H.264 mp4 + AAC, iteratively clamping bitrate /

@@ -40,6 +40,7 @@ const PromptWatchManager = require('./src/features/PromptWatchManager');
 const StuckWatchManager = require('./src/features/StuckWatchManager');
 const LongExecutionWatchManager = require('./src/features/LongExecutionWatchManager');
 const ManagerCheckpointManager = require('./src/features/ManagerCheckpointManager');
+const SecondManagerWatch = require('./src/features/SecondManagerWatch');
 const WakeWordManager = require('./src/features/WakeWordManager');
 const RemoteMicSink = require('./src/features/RemoteMicSink');
 const DiscordLinkKeyManager = require('./src/features/DiscordLinkKeyManager');
@@ -242,6 +243,14 @@ class TerminalGUI {
         // it queued — the manager is never cleared mid-conversation.
         this.managerCheckpointManager = new ManagerCheckpointManager(this.eventBus, this.appStateStore, this);
         this.managerCheckpointManager.start();
+
+        // Second manager: when 999 finishes a turn (the Stop hook it already
+        // fires — no new timer), sweep the CONVERSATION database for things the
+        // manager promised and never delivered, and hand them straight back to
+        // it. It reads what was said rather than what was filed, because every
+        // task dropped on 2026-09-17 was a commitment that never became a row.
+        this.secondManagerWatch = new SecondManagerWatch({ eventBus: this.eventBus, gui: this });
+        this.secondManagerWatch.start();
 
         // Always-on "Hey Claude" wake word → records a command → routes it to
         // the manager (999) as a voice memo. Off until enabled in settings.
@@ -468,6 +477,16 @@ class TerminalGUI {
             const HOOK_STATUS_MAP = {
                 'notification': 'prompted'
             };
+            // The manager's own Stop hook is the one event-driven signal that
+            // 999 finished a turn. Nothing else consumes it (COMPLETION_PUSH_VIA
+            // _STOP_HOOK is off and ManagerInstance excludes 999), so it is
+            // re-emitted here for SecondManagerWatch. Emitted ahead of the
+            // terminals.has() guard so the checker still fires on a stop that
+            // arrives while 999's entry is being (re)created.
+            if (payload.event === 'stop' && Number(payload.terminalId) === 999) {
+                this.eventBus.emit('manager:turn-stopped', { terminalId: 999 });
+            }
+
             if (!this.terminals.has(payload.terminalId)) return;
 
             // Every hook payload carries the session cwd — keep the terminal's
@@ -635,9 +654,12 @@ class TerminalGUI {
         // External queue-add requests arriving via the HookServer API
         // (POST /queue/add - e.g. the manager instance steering a terminal)
         ipcRenderer.on('queue-add-request', (event, { terminalId, content, type }) => {
-            // fromBroadcast: in a remote renderer this add is display-only (the
-            // local renderer owns injection/persistence); in the local renderer
-            // the flag is inert and this behaves exactly as before.
+            // A remote view shows the queue ONLY from the host's mirror
+            // (remote-queue-sync), which follows within milliseconds. It used to
+            // add its own copy here, with an id the host never had; if the
+            // socket dropped before the host's "delivered" push, that copy sat
+            // in the view forever and Send-now could not find it (T668).
+            if (IS_REMOTE) return;
             this.messageQueueManager.addMessageToQueue(content, terminalId, type, { fromBroadcast: true });
             this.eventBus.emit('log:action', {
                 message: `Queued ${type === 'urgent' ? 'URGENT ' : ''}message for Terminal ${terminalId} via control API`,
@@ -650,10 +672,18 @@ class TerminalGUI {
         // Build/drop a matching view here. The originator's own echo is skipped
         // by the has-check; closeTerminal's redundant terminal-close send is a
         // harmless no-op in main (the PTY is already gone).
-        ipcRenderer.on('remote-terminal-created', (event, { terminalId, directory }) => {
-            if (this.terminals.has(terminalId)) return;
+        ipcRenderer.on('remote-terminal-created', (event, { terminalId, directory, title, color, muted }) => {
             if (terminalId === ManagerInstance.TERMINAL_ID) return; // manager mounts via its own tab
-            this.createTerminal({ id: terminalId, directory: directory || undefined, skipActive: true });
+            if (this.terminals.has(terminalId)) {
+                // A view can already hold this id from before a host restart;
+                // the host's metadata wins (fromSync: no re-broadcast).
+                this.setTerminalMetadata(terminalId, { title, color, muted }, { fromSync: true });
+                return;
+            }
+            this.createTerminal({
+                id: terminalId, directory: directory || undefined, skipActive: true,
+                title: title || undefined, color: color || undefined, muted: muted === true
+            });
         });
         ipcRenderer.on('remote-terminal-closed', (event, { terminalId }) => {
             if (!this.terminals.has(terminalId)) return;
@@ -673,11 +703,27 @@ class TerminalGUI {
             const queue = payload && Array.isArray(payload.queue) ? payload.queue : [];
             this.messageQueueManager.applyRemoteQueueMirror(queue);
         });
+        // Send-now from a remote view (RemoteServer relays 'remote-queue-inject-now').
+        // Same override as POST /queue/inject-now; an id that is no longer queued
+        // was already delivered, and the view refreshes its mirror either way.
+        ipcRenderer.on('queue-inject-now-request', (event, { messageId } = {}) => {
+            if (IS_REMOTE) return;
+            const result = this.handleControlRequest('queue-inject-now', { messageId });
+            if (!result.ok) {
+                this.eventBus.emit('log:action', { message: `Send-now from a remote view: ${result.error} (already sent?)`, type: 'info' });
+            }
+        });
         if (IS_REMOTE) {
             // Boot-time catch-up: ask for the current queue now that the
             // listener above exists (a welcome-time push would have raced
             // this registration and been lost).
             ipcRenderer.send('remote-queue-request');
+            // Socket reconnects (the page is NOT reloaded): re-sync terminals,
+            // titles and the queue from the fresh welcome snapshot. The first
+            // welcome is handled by boot's restore, hence the done-flag.
+            ipcRenderer.on('remote-welcome', (event, snapshot) => {
+                if (this._remoteRestoreDone) this.reconcileRemoteSnapshot(snapshot);
+            });
         }
 
         // Control requests needing a response (terminal create/update/delete
@@ -711,7 +757,13 @@ class TerminalGUI {
                     // Muted terminals still appear here in full. The flag is
                     // exposed so the manager can tell "deliberately silenced"
                     // apart from "nothing is happening".
-                    muted: data.muted === true
+                    muted: data.muted === true,
+                    // Per-terminal "last active" (ms epoch): latest of created,
+                    // status change, PTY output, or a human keystroke. Same
+                    // value the terminal TOC sorts by. Only as fresh as the
+                    // last snapshot push (status/queue/metadata events), not
+                    // every output chunk.
+                    lastActiveAt: data.updatedAt || data.createdAt || null
                 });
             });
             // Full queue detail for GET /queue and the manager's edit endpoint.
@@ -990,6 +1042,13 @@ class TerminalGUI {
             else if (key === 'f' && (e.metaKey || shift)) {
                 e.preventDefault();
                 this.toggleTerminalSearch(this.activeTerminalId);
+            }
+            // Terminal table-of-contents: Cmd+J (mac) or Ctrl+Shift+J. Same
+            // reason as Cmd+F above: bare Ctrl+J is a newline (accept-line)
+            // and would also reach the focused PTY.
+            else if (key === 'j' && (e.metaKey || shift)) {
+                e.preventDefault();
+                if (this.toggleTerminalToc) this.toggleTerminalToc();
             }
         });
 
@@ -1448,6 +1507,8 @@ class TerminalGUI {
         this.eventBus.on('message:history-updated', () => {
             if (historyModal && historyModal.classList.contains('show')) renderHistory();
         });
+
+        this.setupTerminalToc();
 
         // ---- Microphone picker (settings modal) ----
         // Options are (re)enumerated on every settings open; the choice persists
@@ -2354,8 +2415,16 @@ class TerminalGUI {
         // terminal-1 wrapper from index.html, whose button ships unmuted.
         this.applyMuteChrome(terminalId);
 
-        // Spawn the PTY in main (channel + payload shape match main.js's handler)
-        ipcRenderer.send('terminal-start', { terminalId, directory: options.directory || null });
+        // Spawn the PTY in main (channel + payload shape match main.js's handler).
+        // title/color/muted ride along so main can hand them to remote views in
+        // remote-terminal-created; without them a view built "Terminal N" (T668).
+        ipcRenderer.send('terminal-start', {
+            terminalId,
+            directory: options.directory || null,
+            title: options.title || undefined,
+            color: terminalColor,
+            muted: options.muted === true
+        });
 
         // Set as active (manager and other background terminals skip this)
         if (!options.skipActive) {
@@ -2459,20 +2528,22 @@ class TerminalGUI {
         emptyEl.style.display = visibleCount === 0 ? 'flex' : 'none';
     }
 
-    closeTerminal(terminalId) {
+    closeTerminal(terminalId, { viewOnly = false } = {}) {
         const terminalData = this.terminals.get(terminalId);
         if (!terminalData) return;
-        
+
         // Dispose terminal
         terminalData.terminal.dispose();
         terminalData.container.remove();
-        
+
         // Remove from maps
         this.terminals.delete(terminalId);
         this.terminalStateManager.removeTerminal(terminalId);
-        
-        // Kill the PTY in main (channel + payload shape match main.js's handler)
-        ipcRenderer.send('terminal-close', { terminalId });
+
+        // Kill the PTY in main (channel + payload shape match main.js's handler).
+        // viewOnly: a remote view dropping a pane the host no longer has — it
+        // must not send a kill for an id it only believes is dead.
+        if (!viewOnly) ipcRenderer.send('terminal-close', { terminalId });
         
         // Select another terminal if this was active
         if (this.activeTerminalId === terminalId) {
@@ -2579,9 +2650,68 @@ class TerminalGUI {
      * queued messages, after terminals exist so message dots resolve their
      * terminal color). Falls back to a single fresh terminal on first run.
      */
+    /**
+     * REMOTE VIEWS ONLY: the host snapshot from the WebSocket welcome frame
+     * (remote-bootstrap.js). Invokes are held until the socket is authed, so
+     * it is normally already set by the time boot asks; null after 10s.
+     */
+    waitForRemoteSnapshot(timeoutMs = 10000) {
+        if (window.__CCBOT_REMOTE_SNAPSHOT__) return Promise.resolve(window.__CCBOT_REMOTE_SNAPSHOT__);
+        return new Promise((resolve) => {
+            const timer = setTimeout(() => resolve(null), timeoutMs);
+            ipcRenderer.once('remote-welcome', (event, snapshot) => {
+                clearTimeout(timer);
+                resolve(snapshot || null);
+            });
+        });
+    }
+
+    /**
+     * REMOTE VIEWS ONLY: after the socket reconnects, bring this view back in
+     * line with the host. Every push sent while it was down (created/closed
+     * terminals, renames, queue changes) was dropped, and nothing re-sends them.
+     */
+    reconcileRemoteSnapshot(snapshot) {
+        if (!IS_REMOTE || !snapshot || !Array.isArray(snapshot.terminals)) return;
+        const live = snapshot.terminals.filter(t => t && t.id != null && t.id !== ManagerInstance.TERMINAL_ID);
+        const liveIds = new Set(live.map(t => t.id));
+        live.forEach((t) => {
+            if (!this.terminals.has(t.id)) {
+                this.createTerminal({
+                    id: t.id, title: t.title || undefined, color: t.color || undefined,
+                    directory: t.directory || undefined, muted: t.muted === true, skipActive: true
+                });
+            } else {
+                this.setTerminalMetadata(t.id, { title: t.title, color: t.color, muted: t.muted === true }, { fromSync: true });
+            }
+        });
+        [...this.terminals.keys()].forEach((id) => {
+            if (id !== ManagerInstance.TERMINAL_ID && !liveIds.has(id)) this.closeTerminal(id, { viewOnly: true });
+        });
+        // The welcome queue may already be behind; ask for the current one.
+        ipcRenderer.send('remote-queue-request');
+    }
+
     async restoreTerminalsAndQueue() {
         let saved = await this.getPersistedSetting('terminalMetadata', []);
         if (!Array.isArray(saved)) saved = [];
+        if (IS_REMOTE) {
+            // A remote view shows the host's LIVE terminals, not the persisted
+            // workspace: the store can lag (or, with a stuck write lock, be
+            // months old), and booting from it showed old names and sent
+            // terminal-start for ids the host had closed, which spawns them (T668).
+            const live = await this.waitForRemoteSnapshot();
+            if (live && Array.isArray(live.terminals)) {
+                const savedById = new Map(saved.filter(t => t && t.id != null).map(t => [t.id, t]));
+                saved = live.terminals.map((t) => ({
+                    id: t.id,
+                    title: t.title,
+                    color: t.color || (savedById.get(t.id) || {}).color,
+                    directory: t.directory,
+                    muted: t.muted === true
+                }));
+            }
+        }
         const valid = saved.filter(t => t && t.id != null && t.id !== ManagerInstance.TERMINAL_ID);
 
         if (valid.length > 0) {
@@ -2606,11 +2736,17 @@ class TerminalGUI {
             });
             this._restoringTerminals = false;
             this.persistTerminalMetadata(); // single authoritative write
-        } else {
+        } else if (!IS_REMOTE) {
+            // First run. A remote view never creates one: that would spawn a
+            // terminal on the host just because the host had none.
             this.createTerminal();
         }
 
-        await this.messageQueueManager.restoreQueue();
+        // A remote view's queue is the host's live mirror (remote-queue-sync,
+        // requested at IPC setup); loading the persisted copy here would
+        // overwrite it with stale entries.
+        if (!IS_REMOTE) await this.messageQueueManager.restoreQueue();
+        this._remoteRestoreDone = true;
         // Rehydrate persisted message history too, so the history modal shows
         // past sessions' injected messages after a reload/restart (saveToMessageHistory
         // persists on every injection; without this load it only lived in memory).
@@ -2678,6 +2814,276 @@ class TerminalGUI {
                 }
             });
         });
+    }
+
+    /**
+     * Terminal table-of-contents (T487; spec in docs/terminal-toc-spec.md).
+     * A modal listing every terminal (color, id, name, directory, status,
+     * last active) with a type-to-filter box, status chips, a sort select
+     * and keyboard nav; picking a row jumps to that terminal. Reads
+     * this.terminals / this.terminalStateManager directly, so no IPC round
+     * trip. Opened by the header "Terminals" button or Cmd+J / Ctrl+Shift+J.
+     */
+    setupTerminalToc() {
+        const modal = document.getElementById('terminal-toc-modal');
+        const openBtn = document.getElementById('terminal-toc-btn');
+        const closeBtn = document.getElementById('terminal-toc-close');
+        const search = document.getElementById('terminal-toc-search');
+        const chips = document.getElementById('terminal-toc-chips');
+        const sortSel = document.getElementById('terminal-toc-sort');
+        const list = document.getElementById('terminal-toc-list');
+        if (!modal || !list || !search) return;
+
+        const LABELS = { running: 'Running', prompted: 'Prompted', idle: 'Idle', error: 'Error' };
+        const GROUP_ORDER = { running: 0, prompted: 1, error: 2, idle: 3 };
+        const NOTHING = { running: 'running', prompted: 'waiting on a prompt', idle: 'idle', error: 'in an error state' };
+        // 'injecting' is a sub-second sub-state, folded into Running (spec §9 #1).
+        // Anything not active ('...', 'idle', '') is Idle, as StatusManager does.
+        const bucket = (s) => (s === 'running' || s === 'injecting') ? 'running'
+            : (s === 'prompted' || s === 'error') ? s : 'idle';
+        const ago = (t) => {
+            if (!t) return '—';
+            const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+            if (s < 10) return 'just now';
+            if (s < 60) return `${s}s ago`;
+            const m = Math.round(s / 60);
+            if (m < 60) return `${m}m ago`;
+            const h = Math.round(m / 60);
+            return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+        };
+        // Filter and sort stick across opens; the search box resets.
+        const toc = { filter: 'all', sort: 'status', rows: [], selectedId: null, lastFocus: null, timer: null };
+        const isOpen = () => modal.classList.contains('show');
+
+        const collect = () => {
+            const rows = [];
+            this.terminals.forEach((_, id) => {
+                const s = this.terminalStateManager.getTerminal(id) || {};
+                rows.push({
+                    id,
+                    name: this.terminalNameFor(id),
+                    color: this.terminalColorFor(id),
+                    directory: s.directory || '',
+                    status: bucket(s.status),
+                    muted: s.muted === true,
+                    lastActive: s.updatedAt || s.createdAt || 0
+                });
+            });
+            return rows;
+        };
+
+        const emptyState = (title, text, btnLabel, onClick) => {
+            const box = document.createElement('div');
+            box.className = 'terminal-toc-empty';
+            const t = document.createElement('p');
+            t.className = 'terminal-toc-empty-title';
+            t.textContent = title;
+            const p = document.createElement('p');
+            p.className = 'terminal-toc-empty-text';
+            p.textContent = text;
+            const b = document.createElement('button');
+            b.className = 'footer-btn';
+            b.textContent = btnLabel;
+            b.addEventListener('click', onClick);
+            box.append(t, p, b);
+            list.appendChild(box);
+        };
+
+        const markSelected = () => {
+            list.querySelectorAll('.terminal-toc-row').forEach((el) => {
+                const on = Number(el.dataset.terminalId) === toc.selectedId;
+                el.classList.toggle('selected', on);
+                el.setAttribute('aria-selected', String(on));
+                if (on) el.scrollIntoView({ block: 'nearest' });
+            });
+        };
+
+        const render = () => {
+            const all = collect();
+            const counts = { all: all.length, running: 0, prompted: 0, idle: 0, error: 0 };
+            all.forEach((r) => { counts[r.status]++; });
+            if (chips) chips.querySelectorAll('[data-filter]').forEach((c) => {
+                const on = c.dataset.filter === toc.filter;
+                c.classList.toggle('active', on);
+                c.setAttribute('aria-selected', String(on));
+                const n = c.querySelector('.terminal-toc-count');
+                if (n) n.textContent = counts[c.dataset.filter];
+            });
+            if (sortSel) sortSel.value = toc.sort;
+
+            const q = search.value.trim().toLowerCase();
+            const rows = all.filter((r) => (toc.filter === 'all' || r.status === toc.filter)
+                && (!q || r.name.toLowerCase().includes(q) || r.directory.toLowerCase().includes(q) || String(r.id).includes(q)));
+            const byRecent = (a, b) => b.lastActive - a.lastActive;
+            if (toc.sort === 'recent') rows.sort(byRecent);
+            else if (toc.sort === 'name') rows.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+            else rows.sort((a, b) => (GROUP_ORDER[a.status] - GROUP_ORDER[b.status]) || byRecent(a, b));
+            toc.rows = rows;
+            if (!rows.some((r) => r.id === toc.selectedId)) toc.selectedId = rows.length ? rows[0].id : null;
+
+            list.innerHTML = '';
+            if (!all.length) {
+                // Same copy as the grid's own empty state (index.html .terminals-empty).
+                emptyState('No terminals open', 'Spin up a Claude Code session to get started.', 'New terminal', () => {
+                    close(false);
+                    this.createTerminal();
+                });
+                return;
+            }
+            if (!rows.length) {
+                const text = (toc.filter !== 'all' && !q)
+                    ? `Nothing is ${NOTHING[toc.filter]} right now.`
+                    : 'Try a different name or directory.';
+                emptyState('No terminals match this filter', text, 'Clear filter', () => {
+                    toc.filter = 'all';
+                    search.value = '';
+                    render();
+                    search.focus();
+                });
+                return;
+            }
+            rows.forEach((r) => {
+                const row = document.createElement('div');
+                row.className = 'terminal-toc-row';
+                row.setAttribute('role', 'option');
+                row.dataset.terminalId = String(r.id);
+
+                const dot = document.createElement('span');
+                dot.className = 'terminal-toc-dot';
+                dot.style.backgroundColor = r.color;
+                const idEl = document.createElement('span');
+                idEl.className = 'terminal-toc-id';
+                idEl.textContent = `#${r.id}`;
+                const main = document.createElement('span');
+                main.className = 'terminal-toc-main';
+                const name = document.createElement('span');
+                name.className = 'terminal-toc-name';
+                name.textContent = r.name; // textContent = XSS-safe
+                main.appendChild(name);
+                if (r.directory) {
+                    const dir = document.createElement('span');
+                    dir.className = 'terminal-toc-dir';
+                    dir.textContent = r.directory;
+                    dir.title = r.directory;
+                    main.appendChild(dir);
+                }
+                row.append(dot, idEl, main);
+                if (r.muted) {
+                    const bell = document.createElement('i');
+                    bell.className = 'terminal-toc-muted';
+                    bell.setAttribute('data-lucide', 'bell-off');
+                    bell.title = 'Notifications to the manager are muted';
+                    row.appendChild(bell);
+                }
+                const pill = document.createElement('span');
+                pill.className = `terminal-toc-pill ${r.status}`;
+                pill.textContent = LABELS[r.status];
+                const time = document.createElement('span');
+                time.className = 'terminal-toc-time';
+                time.textContent = ago(r.lastActive);
+                time.title = r.lastActive ? new Date(r.lastActive).toLocaleString() : '';
+                row.append(pill, time);
+
+                row.addEventListener('click', () => pick(r.id));
+                list.appendChild(row);
+            });
+            if (window.lucide) window.lucide.createIcons({ nameAttr: 'data-lucide', root: list });
+            markSelected();
+        };
+
+        const open = () => {
+            toc.lastFocus = document.activeElement;
+            search.value = '';
+            toc.selectedId = null;
+            render();
+            modal.classList.add('show');
+            search.focus();
+            // Keep the "2m ago" times honest while it stays open.
+            clearInterval(toc.timer);
+            toc.timer = setInterval(() => { if (isOpen()) render(); }, 30000);
+        };
+        const close = (restoreFocus = true) => {
+            modal.classList.remove('show');
+            clearInterval(toc.timer);
+            toc.timer = null;
+            if (restoreFocus && toc.lastFocus && document.contains(toc.lastFocus)) {
+                try { toc.lastFocus.focus(); } catch { /* element gone */ }
+            }
+        };
+        const pick = (id) => {
+            close(false);
+            this.jumpToTerminal(id);
+        };
+        const move = (delta) => {
+            if (!toc.rows.length) return;
+            const i = toc.rows.findIndex((r) => r.id === toc.selectedId);
+            const next = Math.min(toc.rows.length - 1, Math.max(0, (i < 0 ? 0 : i + delta)));
+            toc.selectedId = toc.rows[next].id;
+            markSelected();
+        };
+        this.toggleTerminalToc = () => (isOpen() ? close() : open());
+
+        if (openBtn) openBtn.addEventListener('click', () => this.toggleTerminalToc());
+        if (closeBtn) closeBtn.addEventListener('click', () => close());
+        modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+        search.addEventListener('input', () => { toc.selectedId = null; render(); });
+        if (chips) chips.addEventListener('click', (e) => {
+            const chip = e.target.closest('[data-filter]');
+            if (!chip) return;
+            toc.filter = chip.dataset.filter;
+            render();
+            search.focus();
+        });
+        if (sortSel) sortSel.addEventListener('change', () => { toc.sort = sortSel.value; render(); });
+
+        modal.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                // Escape clears the query first; an empty box closes.
+                if (e.target === search && search.value) { search.value = ''; render(); }
+                else close();
+                return;
+            }
+            if (e.target === sortSel) return; // let the select use its own arrows/Enter
+            if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+            else if (e.key === 'Enter' && e.target === search) {
+                e.preventDefault();
+                if (toc.selectedId != null) pick(toc.selectedId);
+            }
+        });
+
+        // Live-refresh while open as terminals change.
+        ['terminal:status:changed', 'terminal:created', 'terminal:closed', 'terminal:metadata', 'terminal:directory']
+            .forEach((evt) => this.eventBus.on(evt, () => { if (isOpen()) render(); }));
+    }
+
+    /**
+     * Jump to a terminal from the TOC (spec §7). Grid terminals: activate,
+     * focus, scroll its wrapper into view (it may sit in a chunk scrolled
+     * out of view) and briefly outline it. The manager (999) lives in its
+     * sidebar tab, not the grid, so do what Cmd/Ctrl+M does instead.
+     */
+    jumpToTerminal(terminalId) {
+        if (!this.terminals.has(terminalId)) return;
+        if (terminalId === ManagerInstance.TERMINAL_ID) {
+            const nav = document.getElementById('manager-nav-btn');
+            if (nav) nav.click();
+            requestAnimationFrame(() => this.setActiveTerminal(terminalId));
+            return;
+        }
+        this.setActiveTerminal(terminalId);
+        const wrapper = document.querySelector(`#terminals-container .terminal-wrapper[data-terminal-id="${terminalId}"]`);
+        if (!wrapper) return;
+        // 'nearest', not 'center': the grid scroll-snaps to whole chunks anyway,
+        // and 'center' can also scroll overflow:hidden ancestors of the app shell.
+        wrapper.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+        wrapper.classList.remove('toc-jump-flash');
+        void wrapper.offsetWidth; // restart the outline if it's still showing
+        wrapper.classList.add('toc-jump-flash');
+        clearTimeout(this._tocFlashTimer);
+        this._tocFlashTimer = setTimeout(() => wrapper.classList.remove('toc-jump-flash'), 1200);
     }
 
     setActiveTerminal(terminalId) {
@@ -3540,7 +3946,17 @@ class TerminalGUI {
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
     console.log('📄 DOMContentLoaded - Initializing TerminalGUI...');
-    
+
+    // macOS Electron draws the traffic lights over the page's top-left
+    // (titleBarStyle 'hiddenInset', main.js). The user agent, not
+    // process.platform, so the remote view embedded in the Mac app's iframe
+    // gets it too (its process.platform is 'browser'); a plain Mac browser tab
+    // has its own title bar, and no "Electron/" in its user agent.
+    const ua = navigator.userAgent || '';
+    if (/Macintosh/.test(ua) && /Electron\//.test(ua)) {
+        document.body.classList.add('mac-traffic-lights');
+    }
+
     try {
         const gui = new TerminalGUI();
         // Teardown on window close: stops the notification poller and disposes

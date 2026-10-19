@@ -5381,3 +5381,379 @@ paths go quiet, so the manager treats a muted terminal's silence as expected and
 looks at it directly when it needs to know),
 `src/features/terminal-mute.test.js` (new),
 `scripts/build-terminal-header-preview.js` (new).
+
+## 2026-08-14 — The mute bell was missing in the browser: Remote Mode was serving a two-day-old renderer
+
+**The report.** The bell was gone from the terminal header — just the colour dot,
+the title, the status and the close (x). The guess was that the status element
+had somehow overwritten it.
+
+**It hadn't.** The markup and the CSS were both fine and had been all along. The
+static Terminal-1 wrapper in `index.html` still shipped its bell, `createTerminal`
+still emitted one for every non-manager terminal, and rendering the real
+`index.html` + `style.css` in a headless browser put a 28x28 bell in the header
+with the status sitting beside it, no overlap, all the way down to a 240px-wide
+pane. Nothing was covering anything.
+
+**What was actually happening.** The header being looked at belonged to a
+terminal created *at runtime*, and it was being looked at through Remote Mode —
+the browser view. Remote Mode does not run `renderer.js`; it serves an esbuild
+bundle of it from `dist-remote/renderer.bundle.js`. That file was built on
+Aug 12 at 04:23. The mute feature landed on Aug 13 at 15:40. The bundle being
+served therefore predated the entire feature — `grep terminal-mute-btn` on it
+returned nothing, and `window.terminalGUI.muteButtonHtml` didn't exist in the
+live browser session. Terminal 1 still had a bell there only because its markup
+comes from `index.html`, which Remote Mode reads fresh on every request; every
+terminal built by the bundle's code had none.
+
+The reason it stayed stale is one line. `ensureRemoteBundle()` in `main.js` was
+written to guarantee Remote Mode never comes up serving a 404, so it built the
+bundle only when the file was *missing* and returned early whenever it existed.
+Once built, it was never built again. That failure is invisible in the worst
+way: the browser gets a perfectly working interface, just an older one, and it
+drifts further from the desktop window with every commit.
+
+**The fix.** `ensureRemoteBundle()` now compares the bundle's mtime against the
+newest `.js` under `renderer.js` and `src/`, and rebuilds when any source is
+newer — so the browser view can no longer silently lag the app. The log line
+says which of the two reasons triggered the build. The stale bundle was also
+rebuilt on the spot, which fixes the live app on the next browser page load
+without restarting anything.
+
+**Verified against the running app** through Remote Mode, no restart: the
+dynamically created terminal went from no bell to a 28x28 rendered bell;
+clicking it turned the header amber and swapped the icon to bell-off with the
+button becoming the MUTED pill (`aria-pressed="true"`), clicking again put it
+back; the status ("Running"/"Prompted"/"Injecting") never overlapped the bell at
+560/400/300/240px; and the manager (999) still has no bell at all.
+
+**Files.** `main.js` (`ensureRemoteBundle` staleness check), plus a rebuild of
+the gitignored `dist-remote/renderer.bundle.js` artifact.
+
+## 2026-09-17 — T374: SECRET_KEY no longer identical to claude-autorunner's
+
+`SECRET_KEY` in `.env` was byte-for-byte the same key `claude-autorunner/.env` uses.
+These two folders are git worktrees of the same repository, but they are separate
+deployments with separate env files, so they should not share a signing key.
+
+- **Why aci-serve's key was changed, not claude-autorunner's:** the backend that is
+  actually running, the Docker container serving port 8123, belongs to
+  **claude-autorunner**. aci-serve's own Compose stack was not running. Changing
+  aci-serve's key logged nobody out. Changing claude-autorunner's would have meant
+  recreating a live container and ending its sessions.
+- The running Electron app in this folder does not read `SECRET_KEY`, and it talks
+  to the claude-autorunner backend on 8123, so it is unaffected.
+- The new key is 64 random letters and digits, with no `$` or `#` (Docker Compose treats `$` in env values as a variable reference). The key was never printed. The change was checked by fingerprint: the file reads back correctly, and `docker compose config` hands the new key to `backend`.
+- Backup of the previous file: `.env.bak-t374-20260917-115711`. **It holds the key claude-autorunner is
+  still using live**, and nothing in `.gitignore` covered that name. So a local-only
+  ignore rule (`/.env.bak-t374-*`) was added to the repository's shared
+  `info/exclude` (under `claude-autorunner/.git/`), which applies to both worktrees
+  and is never committed. Delete the backup once you are happy with the change.
+- aci-serve's Compose stack was **not started**.
+
+## 2026-09-18 — T385: a second manager that reads the conversation, not the ledger
+
+**Why it exists.** On 2026-09-17 the manager closed twenty tasks that were ledger rows
+and dropped three things that never became rows: the Inertia build, the Vellum device
+build, and Ethan's "ensure placeholder key is diff across all projects". Every drop was
+something agreed in a message. The existing auditor reads rows, so it caught one of the
+three. A checker that reads rows inherits the manager's exact blind spot, so this one
+reads what was said.
+
+**What was added** (nothing was rebuilt — the conversation log, `Message`, `OpenAsk` and
+its status/notes fields already existed):
+
+- `src/features/second-manager/sweep.py` — reads the conversation database and returns
+  JSON. It finds promises in the manager's own outbound messages ("I will build that to
+  your phone") and asks in Ethan's inbound ones, then looks for evidence each was
+  delivered. It runs inside the backend container by being piped into `manage.py shell`,
+  so nothing has to be installed there and no image is rebuilt.
+- `src/features/SecondManagerWatch.js` — the loop. It runs the sweep when the manager
+  finishes a turn, hands back what is outstanding, and stops when nothing is left or
+  after three rounds.
+- `src/features/second-manager/loop.test.js` — proves the loop ends both ways.
+- `renderer.js` — two small edits: re-emit the manager's existing Stop hook as
+  `manager:turn-stopped`, and construct the watcher.
+
+**No new timer.** The trigger is the Claude Code Stop hook that already fires for every
+app-spawned terminal. Nothing polls.
+
+**Every reminder quotes its source** — message id, timestamp, and the text of the message
+where the promise was made, so the manager can check a reminder instead of trusting it.
+
+**It takes a reason.** Each item is a row in `OpenAsk`. Setting status to `done` or
+`dropped` with a note in `notes` stops it being raised, and because that lives in the
+database it survives a session roll. The reminder itself carries the command to do it.
+
+**Which way it errs.** Towards raising too much. A wrong reminder costs the manager one
+turn; a missed one cost Ethan ten hours on his own project. Two things that would have
+hidden a real drop were tried and reverted: widening the subject match beyond the
+promise's own words (it marked the dropped Inertia promise "delivered" off a message
+about Mac ports) and letting any later "wait..." from Ethan park everything.
+
+**Measured on the real day, not a fixture.** Over 2026-09-17 it raised 10 items: 3 were
+genuinely outstanding, including both the Inertia and the Vellum failures, and 7 were
+already done but phrased so differently that no shared wording linked promise to
+completion. Replayed as of noon that day it also raised the "ensure placeholder key"
+ask, which the hourly ask extractor missed entirely because its pattern list has no
+"ensure".
+
+**Not live yet.** The two `renderer.js` edits only take effect when the Auto-Injector
+next restarts, and restarting it kills the manager session, so it was not restarted.
+The sweep and the loop both run today outside the app.
+
+## 2026-09-22 — T446: the Discord bridge no longer swallows files it does not recognise
+
+**What went wrong.** Ethan sent an HTML page holding the Snapchat export links and
+nothing on this side recorded that a file had ever arrived — no saved file, no log
+line, no note in the channel. He found out hours later by asking. The HTML page was
+the only thing blocking the Snapchat work.
+
+**Two filters, not one.** The brief traced the discard to `saveAttachments`, which was
+correct but incomplete. There were two, and the first one ran earlier:
+
+1. `discord-bridge/src/index.js:163` filtered the attachment list with `isMedia`
+   before the inbox was called, so the file never reached the code that could report
+   it. The `return` on the next line then dropped the whole message when the file
+   arrived without a caption.
+2. `discord-bridge/src/mediaInbox.js` then filtered again inside `saveAttachments`,
+   so anything unrecognised was gone before the per-file save could record a reason.
+
+**The fix, in two parts.** The one that matters more is the first:
+
+- **Nothing is discarded silently.** Every attachment now goes to the inbox. An
+  unsupported one comes back as a skipped entry with its filename and a reason, gets
+  a warning in the bridge log, and is reported in the channel — including when the
+  message also carried text, which previously said nothing at all.
+- **`.html` and `.htm` are accepted** as text documents. The accepted types are now
+  one table at the top of `mediaInbox.js`, so adding a type is one line in one place
+  rather than three conditions spread through a function.
+
+**Tested both ways** with fixtures and a stubbed download, in
+`discord-bridge/src/mediaInbox.test.js` (8 tests, all passing): an `.html` file is
+accepted, saved with its extension intact and its contents round-tripped; a `.zip` is
+still refused and now produces a named reason; a mixed message saves the html and
+still reports the zip; the 10-file cap still reports its overflow.
+
+**Caps unchanged.** `inboundMediaMaxBytes` (25 MB) and `inboundMaxMedia` (10) were not
+touched. An HTML page of links is a few tens of KB, and the fixture saved without
+coming near either.
+
+**Not live yet.** The bridge is a long-running node process (`ccbot-discord-bridge`,
+started 2026-09-10, still on the old code) and Node loads these modules once at
+startup, so it will keep discarding files silently until someone restarts it. It was
+deliberately not restarted — it is the only channel to Ethan.
+
+**Files written**
+
+- `/mnt/smalls/aci-serve/discord-bridge/src/mediaInbox.js` (modified)
+- `/mnt/smalls/aci-serve/discord-bridge/src/index.js` (modified — inbound handler only)
+- `/mnt/smalls/aci-serve/discord-bridge/src/mediaInbox.test.js` (new)
+- `/mnt/smalls/aci-serve/OPTIMIZATIONS.md` (this entry)
+
+---
+
+## 2026-10-11 — T487: a "Terminals" table of contents to jump to any terminal (CODE READY, NOT YET APPLIED — needs the restart Ethan schedules)
+
+**Request (Ethan, via the manager).** With many terminals open it's hard to find the
+one he wants. He asked for a button that opens a list of every terminal (name, color,
+status), where clicking a row takes him to it, plus a "running only" filter and a
+"last active" sort. Approved spec and plan: `docs/terminal-toc-spec.md` (T488).
+
+**What was built.**
+
+- A **Terminals** button at the left of the top header bar. The header is a window drag
+  region, so the button opts out with `-webkit-app-region: no-drag`.
+- A modal listing every terminal, including the manager. Each row shows a color dot,
+  `#id`, name, directory, a status pill (Running / Prompted / Idle / Error), "last active"
+  ("2m ago") and a muted-bell glyph when notifications are muted.
+- A type-to-filter box (matches name, directory or id), status chips with live counts
+  (All · Running · Prompted · Idle · Error), and a sort select: "Status, then last active"
+  (default), "Last active", "Name (A–Z)".
+- Keyboard: ↑/↓ move, Enter jumps, Esc clears the box and then closes.
+- Clicking a row (or Enter) closes the modal, activates and focuses that terminal, scrolls
+  its chunk into view and briefly outlines it. The manager row instead opens the Manager
+  sidebar tab, as Cmd/Ctrl+M does, since the manager isn't in the grid.
+- Empty states: "No terminals open" with a New terminal button, versus "No terminals match
+  this filter" with a Clear filter button.
+- `GET /state` terminals now carry `lastActiveAt` (spec open decision #4's default). This
+  is added in the renderer's snapshot builder, with no change to main.js or
+  TerminalStateManager. It is only as fresh as the last snapshot push (status, queue and
+  metadata events), not every output chunk.
+
+**Spec defaults taken.** `injecting` folds into Running; muted glyph shown; Name sort
+included as a third option.
+
+**Deviation from the spec: the shortcut is Cmd+J on mac and Ctrl+Shift+J on Linux/Windows,
+not bare Ctrl+J.** The app has no xterm key handler, so a focused terminal receives every key
+before the global shortcut handler does. Bare Ctrl+J is a newline (in a shell it runs the
+current line), so it would have fired into the terminal *and* opened the modal. That is the
+same reason Cmd+F search uses Ctrl+Shift+F off-mac; this follows that precedent. Ctrl+Shift+J
+was unbound.
+
+**Verification without starting the app.** `node --check renderer.js`; postcss parse of
+style.css; index.html id uniqueness and tag balance for the new markup; and a jsdom test (in
+a scratch dir, not the repo) that loads the real index.html and runs the exact
+`setupTerminalToc` / `jumpToTerminal` source and shortcut branch extracted from renderer.js
+against stub terminals: 21 checks covering counts, all three sorts, chips, search, both empty
+states, keyboard nav, row jump, the manager row, live refresh and the shortcut keys. All pass.
+Not covered: real layout and pixels, and real scroll behavior in Electron.
+
+**Not live yet.** The running Auto-Injector reads renderer.js/index.html/style.css once at
+launch and has no source watcher, so it keeps the old UI until restarted. That restart kills
+every terminal including the manager's, so it is held for Ethan. The remote view's
+`dist-remote/renderer.bundle.js` was not rebuilt either (`npm run build-remote`), so
+Remote Mode won't show the button until someone runs that.
+
+**Files written**
+
+- `/mnt/smalls/aci-serve/index.html` (header button; `#terminal-toc-modal`)
+- `/mnt/smalls/aci-serve/style.css` (header button + no-drag; TOC modal rules; jump outline)
+- `/mnt/smalls/aci-serve/renderer.js` (shortcut branch; `setupTerminalToc()`; `jumpToTerminal()`; `lastActiveAt` in the state snapshot)
+- `/mnt/smalls/aci-serve/OPTIMIZATIONS.md` (this entry)
+
+## 2026-10-12 - Remote Mode build fix
+The remote-mode bundle failed with "Could not resolve child_process" because SecondManagerWatch.js loads it. Added --external:child_process to the build-remote script (same as fs and path); the bundle now builds. Applied in aci-serve and claude-autorunner.
+
+## 2026-10-12 — T657: the Terminals button sat under the Mac window buttons and clicking it did nothing (CODE READY, NOT YET LIVE)
+
+**Report (Ethan).** "terminals button is in the top left corner kinda shadowed by the mac buttons,
+clicking terminal selected should open the terminals menu".
+
+**Which screen he is looking at.** His Mac runs the normal desktop app, connected to this machine
+through the bottom-left Remote button. That app shows this machine's interface inside a full-window
+frame (`#remote-view-frame`). So the Terminals button he sees comes from the remote page served here,
+while the window, its red/yellow/green buttons and its window-dragging strip all belong to the Mac app.
+Evidence: the service runs headless (`xvfb-run npm start`), and at 00:37:49 the ssh log shows his Mac
+(100.111.36.56) make one short connection and then one that stays open. That is exactly what the
+Remote button does: read `session.json`, then hold an `ssh -N -L` tunnel to port 8130.
+
+**Bug 1: under the window buttons.** Nothing in the app ever made room for the Mac window buttons.
+There was no Mac-specific class or padding anywhere, and the header's only content was the title on
+the right, so nobody noticed until T487 put a button on the left. Fix: `renderer.js` adds a
+`mac-traffic-lights` class when the user agent is Mac + Electron. It uses the user agent, not
+`process.platform`, because the remote page inside the Mac app reports itself as `browser`. A Mac
+browser tab has its own title bar, so it doesn't get the class. In `style.css`,
+`.mac-traffic-lights .header-left { padding-left: 75px; }` moves the button from x=15 to x=90, 12px
+clear of a generous 0–78px box for the window buttons. That box is an estimate of where macOS puts
+them; I haven't measured it on a Mac.
+
+**Bug 2: clicking did nothing.** The click handler was fine. It is in the bundle being served, which
+was rebuilt at 00:35, after renderer.js last changed. The problem was the Mac app's own header: it is
+marked as a window-drag area (`.header { -webkit-app-region: drag; }`), and it is still laid out under
+the remote frame. Electron decides what's draggable from the top-level page only, never from inside a
+frame, and covering an element doesn't cancel its drag area. So the top 40px of the remote view was
+one big drag handle on the Mac. A click there grabs the window and never reaches the page, whatever
+the remote button's own `no-drag` says. Fix: `.remote-view-container { -webkit-app-region: no-drag; }`.
+While remote, the window now drags from the footer bar only.
+
+**Verified headless (no app start).** A scratch probe loads the real index.html with the remote view
+shown, serves the remote page from a standalone RemoteServer with a scratch bundle (the live
+`dist-remote` was not touched), and uses a Mac Electron user agent at 1400×900. With the fix: the
+button sits at x 90–183, y 6.5–32.5 (a 12px gap). At its centre, the outer page's top element is the
+frame and the frame's top element is the button. Electron's drag rule (drag adds, no-drag subtracts,
+in page order) leaves that point not draggable, and a real mouse click opens `#terminal-toc-modal`.
+Reverting each fix fails its own check: without the padding the gap is -63px, and without the no-drag
+rule the point is draggable (trail: `.header=drag`). Headless Chromium has no native window dragging,
+so the drag check is what proves bug 2, not the click. Row pick, Cmd+J and Ctrl+Shift+J also pass in
+the same probe, and the T487 jsdom test still passes all 21 checks.
+
+**Remote side now live (on reload).** With the manager's go, `dist-remote` was backed up
+(old bundle sha256 `60eea336…b714f`) and `npm run build-remote` was run, without restarting the
+service. The served bundle (sha256 `fe0fcc26…537a`, the same over HTTP as on disk) has the class. It
+loads headless with no console errors, and the button opens the list. Ethan sees the padding the next
+time his remote view reloads. The drag fix lives
+in the **Mac app's** index/style, so it only takes effect once the Mac's checkout has this change and
+that app restarts.
+
+**Files written**
+
+- `/mnt/smalls/aci-serve/renderer.js` (user-agent check that adds `mac-traffic-lights` to the body)
+- `/mnt/smalls/aci-serve/style.css` (`.mac-traffic-lights .header-left` padding; `no-drag` on `.remote-view-container`)
+- `/mnt/smalls/aci-serve/OPTIMIZATIONS.md` (this entry)
+
+## 2026-10-12 — T668: the remote view showed old terminal names and delivered messages stuck as "pending" (CODE READY, NOT YET LIVE)
+
+**Report (Ethan).** "terminal names don't get updated properly via ssh, same with messages in the
+queue … they've already been sent and force sending them doesn't do anything".
+
+**Which "via ssh".** It's the remote view, the app Ethan watches from his Mac through the ssh tunnel
+(Remote Mode). The desktop itself was right. A screenshot of the headless desktop showed real names
+and an empty queue. /state had terminal 8 as "Mass bots restyle (work laptop)", and a live urgent test
+to a throwaway terminal left /queue within 250 ms. SSH'd terminals are incidental: terminal 8 just
+happened to be created while the view was offline.
+
+**Why (four causes).**
+
+1. **The settings store has been frozen since July.** An empty lock file
+   (`~/.config/auto-injector/auto-injector.json.lock`, dated 2026-07-27) was left by a crash mid-write.
+   `AtomicStore.acquireLock` waits for the lock to go away, but nothing ever removes it
+   (`releaseLock` only deletes its own id). So every write since has timed out: 22,157
+   "Failed to acquire write lock" lines in aci-serve.log against one early run of successes. The saved
+   terminal list still says terminal 8 is "Limerence Summaries" and 9 is "Bazarr Setup". Each restart
+   brings back the July workspace (18 terminals) on the desktop.
+2. **The remote view built its terminals from that store** (`restoreTerminalsAndQueue`), not from the
+   live terminal list the server sends it on connect. So it showed the July names. For ids the host
+   had closed, it also sent `terminal-start`, which spawns them.
+3. **The remote view never caught up after a dropped connection.** Its socket reconnects every so
+   often without reloading the page; the log shows reconnects with no terminal-start burst.
+   Anything sent while it was offline (new terminals, renames, "message delivered") was lost, and
+   nothing re-sent it. Terminal 8 was created inside one of those gaps.
+4. **The view kept its own copies of queued messages.** For each control-API message it added a copy
+   with an id the host never had (`queue-add-request` → `addMessageToQueue(fromBroadcast)`). If the
+   host's "delivered" update was lost, the copy stayed. Send-now couldn't help:
+   `injectMessageNow` in a remote view only logged "Injection runs on the app host" and returned.
+   Even through POST /queue/inject-now, the host answers "message not found in queue".
+
+Also, a terminal created with a title showed as "Terminal N" in the view, because
+`remote-terminal-created` carried only the id and directory.
+
+**Fixes.**
+- `atomic-store.js`: a lock older than 30 s is a crash leftover and gets removed; a fresh lock is still
+  waited on.
+- `remote-bootstrap.js`: keeps the live snapshot from the server's welcome frame (sent on every
+  connect) and tells the renderer about each (re)connect (`remote-welcome`).
+- `renderer.js`:
+  - The remote view builds its terminals from that snapshot and never creates or starts ones the host
+    doesn't have.
+  - On reconnect it re-syncs: adds missing terminals, applies titles/colors/mute, drops panes the host
+    closed (`closeTerminal(id, { viewOnly: true })`, which sends no kill), and re-requests the queue.
+  - It no longer keeps its own queue copies; the queue comes only from the host's live copy.
+  - `terminal-start` now carries title/color/mute, and the view applies them on `remote-terminal-created`.
+- `main.js`: forwards that metadata in `remote-terminal-created`.
+- `MessageQueueManager.js` / `RemoteServer.js`: Send-now in the remote view is passed to the host
+  (`remote-queue-inject-now` → `queue-inject-now-request`), using the same path as POST
+  /queue/inject-now, so the bare-shell guard still applies. The view then refreshes its queue, so an
+  already-delivered entry disappears.
+
+**Tests (scratch, outside the repo).**
+- A headless-Chromium test runs the real RemoteServer and the remote page against a simulated host
+  and the frozen store. Old code: 1/7 (only the stable-connection control passes). New code: 7/7,
+  no console errors. Old failures:
+  - terminal 8 shows "Limerence Summaries";
+  - closed terminal 12 is shown and a spawn is requested;
+  - a new terminal shows "Terminal 10";
+  - a rename during a drop is lost;
+  - a message delivered during a drop stays listed;
+  - Send-now does nothing.
+- Unit test: a July-dated empty lock blocks writes for 15 s on old code and is cleared in 3 ms on new
+  code, while a fresh lock is still waited on. The control checks pass on both: a normal message to a
+  bare-shell terminal is still held, and an urgent one is still delivered.
+- The T487 test (21 checks) and the T657 probe still pass.
+
+**Not live.** No restart and no `build-remote` was run.
+
+## 2026-10-12 — T670: T668 steps 1 and 2 deployed, no restart
+
+- **Store unfrozen.** Backed up `~/.config/auto-injector/auto-injector.json` (sha256 `93fa7673…abd46`).
+  The lock was 0 bytes, dated 2026-07-27 20:50:15, and no process held it. At 14:07:20.61 I deleted
+  only that file. The running app's next save succeeded 41 ms later, its first in months. Terminal
+  titles are current again (8 = "Mass bots restyle (work laptop)"). Other settings kept their values
+  (ttsPlaybackSpeed 1.25, voice, chunk size, manager directory); `rightSidebarWidth` took this
+  session's 393. The message history rolled forward to today's 100 entries. The next restart now
+  restores today's terminals instead of July's. Until the T668 code is loaded by a restart, a new
+  crash leftover would freeze the store again.
+- **Remote view fixes live on reload.** Backed up `dist-remote` (old bundle `fe0fcc26…537a`) and ran
+  `npm run build-remote`: new bundle `0ed550b8…3e7e`, served as-is. The service is still PID 417244.
+  The host-side parts of T668 (titles on create, Send-now relay, stale-lock removal in code) still
+  wait for a restart.

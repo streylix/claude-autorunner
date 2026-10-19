@@ -350,6 +350,15 @@ class RemoteServer {
             return;
         }
 
+        // Send-now from a remote view: relay to the local renderer, which owns
+        // the queue and the injection engine (T668). It answers nothing; the
+        // view refreshes its mirror with remote-queue-request.
+        if (channel === 'remote-queue-inject-now') {
+            const p = args[0] || {};
+            if (p.messageId != null) this.deps.broadcastAll('queue-inject-now-request', { messageId: p.messageId });
+            return;
+        }
+
         // Remote-added queue messages route through the authoritative local
         // queue via the same push the HookServer /queue/add path uses.
         if (channel === 'remote-queue-add') {

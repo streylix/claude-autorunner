@@ -79,6 +79,12 @@
                 authed = true;
                 console.log('[remote] connected + authenticated; snapshot terminals:',
                     frame.snapshot && frame.snapshot.terminals ? frame.snapshot.terminals.length : 0);
+                // The live host state (terminals with titles, the queue) at the
+                // moment of this (re)connect. Boot reads it instead of the
+                // persisted store, and a reconnect re-syncs from it: pushes sent
+                // while the socket was down are gone for good (T668).
+                window.__CCBOT_REMOTE_SNAPSHOT__ = frame.snapshot || null;
+                dispatchPush('remote-welcome', [frame.snapshot || null]);
                 while (sendQueue.length) sock.send(sendQueue.shift());
             } else if (frame.t === 'push') {
                 dispatchPush(frame.channel, frame.args || []);

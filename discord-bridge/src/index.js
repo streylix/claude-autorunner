@@ -160,21 +160,33 @@ async function main() {
         (config.textChannelId && message.channelId === config.textChannelId);
       if (!inMirror) return;
 
-      const media = message.attachments ? [...message.attachments.values()].filter(mediaInbox.isMedia) : [];
+      // EVERY attachment goes to the inbox, accepted or not. This used to be
+      // `.filter(mediaInbox.isMedia)`, which is the second of the two filters
+      // that made an .html file vanish: saveAttachments never saw it, so it
+      // could not report it, and the `return` below then swallowed the message
+      // whole when the file arrived with no caption.
+      const attachments = message.attachments ? [...message.attachments.values()] : [];
       const text = (message.content || '').trim();
-      if (!media.length && !text) return; // nothing forwardable (e.g. a non-media file only)
+      if (!attachments.length && !text) return; // genuinely nothing to forward
 
       // Auto-forward only when linked; unlinked → skip silently (no channel spam).
       if (!linkManager.isLinked()) return;
 
       let saved = [];
       let skipped = [];
-      if (media.length) { const r = await mediaInbox.saveAttachments(media); saved = r.saved; skipped = r.skipped; }
+      if (attachments.length) { const r = await mediaInbox.saveAttachments(attachments); saved = r.saved; skipped = r.skipped; }
 
-      if (!text && !saved.length) { // media present but all failed to download, and no text
+      if (!text && !saved.length) { // attachments present but none saved, and no text
         message.react('⚠️').catch(() => {});
-        if (skipped.length) message.reply(`⚠️ Couldn't take that: ${skipped.map((s) => s.reason).join(', ')}`).catch(() => {});
+        if (skipped.length) message.reply(mediaInbox.skippedNotice(skipped)).catch(() => {});
         return;
+      }
+      // A file was rejected but the message still carries text or another file:
+      // say so anyway, in the channel, naming the file. Silence here is what
+      // cost Ethan an afternoon — he had no way to tell a dropped attachment
+      // from one that arrived.
+      if (skipped.length) {
+        message.reply(mediaInbox.skippedNotice(skipped)).catch(() => {});
       }
       // REPLY CONTEXT: if this message replies to another one, quote a snippet of
       // it so the manager knows what the user is pointing at. Discord usually

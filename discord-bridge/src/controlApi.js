@@ -117,6 +117,24 @@ async function purgeManagerQueue(target, mgrId) {
   return removed;
 }
 
+// Full /state read: every terminal the app knows about, as-is (no filtering
+// or sorting — callers do that). Backs /terminals and the /prompt terminal-id
+// validation, both of which need a snapshot taken at the moment of the call.
+async function getFullState(target) {
+  if (!target || !target.port || !target.token) throw new Error('not linked to a session');
+  let res;
+  try {
+    res = await fetch(`${baseUrl(target)}/state`, {
+      headers: { 'X-CCBOT-Token': target.token },
+    });
+  } catch (err) {
+    throw new Error(`control API unreachable on 127.0.0.1:${target.port} (${err.message}) — is the app running?`);
+  }
+  if (!res.ok) throw new Error(`control API /state returned HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data.terminals) ? data.terminals : [];
+}
+
 // Read-only health check used to validate a link before accepting it.
 async function checkState(target) {
   const res = await fetch(`${baseUrl(target)}/state`, {
@@ -195,4 +213,43 @@ async function sendVoiceMemo(target, text, opts = {}) {
   }
 }
 
-module.exports = { frameMemo, firstToken, checkState, sendVoiceMemo };
+// Queue a message to a NON-manager terminal (POST /queue/add) — the app's
+// injection gate waits for that terminal to go idle before typing it in,
+// unlike /terminal/keys (sendVoiceMemo's path for 999), which types
+// immediately. UNLIKE sendVoiceMemo, this never frames the text (T505 — the
+// owner: "the /prompt command shouldn't do the wrap. regular messages r
+// fine tho"). /prompt to a specific terminal delivers EXACTLY what was
+// typed — plain text or a slash command — with no marker, no quoting, and
+// no reply-context suffix; the 999 path (sendVoiceMemo/frameMemo) is
+// unaffected and keeps framing everything, unchanged. A caption plus
+// attached file(s) are joined with the raw, unmarked path(s) so the
+// destination terminal still knows what arrived; text alone is queued
+// byte-for-byte as typed. 'normal' priority — same as before.
+async function queueMemo(target, terminalId, text, opts = {}) {
+  if (!target || !target.port || !target.token) {
+    return { ok: false, error: 'not linked to a session' };
+  }
+  const paths = opts.paths || [];
+  const clean = String(text || '').trim();
+  if (!clean && !paths.length) return { ok: false, error: 'empty message' };
+
+  const content = [clean, ...paths].filter(Boolean).join(' ');
+  try {
+    const res = await fetch(`${baseUrl(target)}/queue/add`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CCBOT-Token': target.token },
+      body: JSON.stringify({ terminalId, content, type: 'normal' }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    log.success(`raw message queued to terminal ${terminalId} (type: normal): "${content.slice(0, 90)}"`);
+    return { ok: true };
+  } catch (err) {
+    log.error('control API queue-add failed:', err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+module.exports = { frameMemo, firstToken, checkState, sendVoiceMemo, getFullState, queueMemo };

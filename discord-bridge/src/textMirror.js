@@ -11,6 +11,14 @@
 //   3. create that channel         (needs the bot to have Manage Channels)
 // If none works, the mirror disables itself with a clear log and voice keeps
 // running. All posts are fire-and-forget — a chat failure never disrupts voice.
+//
+// NAMED CHANNELS: any post can name a DIFFERENT channel (channelFor() below,
+// reached from `--channel` on the post-* tools). That channel is looked up by
+// name, created if it doesn't exist, and cached — so repeat posts land in the
+// same place and a draft can be iterated on in its own channel without the
+// default mirror scrolling it away. If it can't be resolved or created (almost
+// always a missing Manage Channels), the post FALLS BACK to the default channel
+// and says so, in the log and back to the caller. It never silently vanishes.
 
 const fs = require('fs');
 const os = require('os');
@@ -20,6 +28,7 @@ const ffmpegPath = require('ffmpeg-static');
 const { ChannelType, PermissionsBitField, AttachmentBuilder } = require('discord.js');
 const { config } = require('../config');
 const log = require('./log');
+const { sanitizeChannelName, isTextFileName } = require('./outbox');
 
 const MAX_LEN = 1900; // Discord hard limit is 2000; leave headroom for the label.
 
@@ -30,6 +39,9 @@ class TextMirror {
   constructor() {
     this.channel = null;
     this._resolving = null;
+    this.lastPostError = null;        // why the last post was refused, for the CLI
+    this.namedChannels = new Map();   // sanitised name → resolved channel
+    this._resolvingNamed = new Map(); // sanitised name → in-flight resolve
     this._typingInterval = null;
     this._typingTimeout = null;
   }
@@ -137,20 +149,146 @@ class TextMirror {
     log.info('⌨️  typing indicator off.');
   }
 
+  // ---- named channels --------------------------------------------------
+  // Pick the channel a post should go to. Pass nothing (the voice path, and any
+  // post without --channel) and you get the default mirror channel, unchanged.
+  // Pass a name and you get that channel, created on first use and cached after.
+  //
+  // Always resolves — never throws and never returns "nothing happened". If the
+  // named channel can't be had, it hands back the DEFAULT channel with
+  // fallback:true and a human-readable reason, which the caller reports.
+  async channelFor(requested) {
+    const base = this.channel;
+    if (!this.enabled() || !base) {
+      return { channel: null, name: null, fallback: false, requested: requested || null,
+               reason: 'no text channel resolved' };
+    }
+    if (!requested) return { channel: base, name: base.name, fallback: false, requested: null, reason: null };
+
+    const want = sanitizeChannelName(requested);
+    if (!want) {
+      return { channel: base, name: base.name, fallback: true, requested: String(requested),
+               reason: `"${requested}" leaves no usable Discord channel name` };
+    }
+    if (want === base.name) {
+      return { channel: base, name: base.name, fallback: false, requested: want, reason: null };
+    }
+
+    // Cached — but drop it if the channel has since been deleted (discord.js
+    // evicts deleted channels from the guild cache), so we re-create instead of
+    // sending into a dead id.
+    const cached = this.namedChannels.get(want);
+    if (cached) {
+      if (base.guild && base.guild.channels.cache.has(cached.id)) {
+        return { channel: cached, name: cached.name, fallback: false, requested: want, reason: null };
+      }
+      this.namedChannels.delete(want);
+    }
+
+    // Share one in-flight resolve per name so two quick posts can't race into
+    // creating the channel twice.
+    let pending = this._resolvingNamed.get(want);
+    if (!pending) {
+      pending = this._resolveNamed(base.guild, want)
+        .finally(() => { this._resolvingNamed.delete(want); });
+      this._resolvingNamed.set(want, pending);
+    }
+    try {
+      const ch = await pending;
+      this.namedChannels.set(want, ch);
+      return { channel: ch, name: ch.name, fallback: false, requested: want, reason: null };
+    } catch (err) {
+      log.warn(`text mirror: can't post to #${want} (${err.message}) — using #${base.name} instead.`);
+      return { channel: base, name: base.name, fallback: true, requested: want, reason: err.message };
+    }
+  }
+
+  // Find a text channel by name in the guild, creating it if it's missing.
+  // Throws (with a reason worth showing a human) when it can't.
+  async _resolveNamed(guild, want) {
+    if (!guild) throw new Error('the bot is not in a guild yet');
+    if (!guild.channels.cache.size) { await guild.channels.fetch().catch(() => {}); }
+    const existing = guild.channels.cache.find(
+      (c) => c.type === ChannelType.GuildText && c.name === want);
+    if (existing) { log.info(`text mirror → #${existing.name} (existing named channel).`); return existing; }
+
+    const me = guild.members.me;
+    if (me && !me.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+      throw new Error('the bot lacks Manage Channels, so it cannot create that channel');
+    }
+    const opts = {
+      name: want,
+      type: ChannelType.GuildText,
+      topic: `Claude bridge — posts routed here with --channel ${want}.`,
+      reason: 'CCBOT Discord bridge named post target',
+    };
+    // Keep it beside the default mirror channel when that has a category; a full
+    // or inaccessible category shouldn't block the post, so retry at top level.
+    const parent = this.channel && this.channel.parentId;
+    let created;
+    if (parent) {
+      try { created = await guild.channels.create({ ...opts, parent }); }
+      catch (_) { created = await guild.channels.create(opts); }
+    } else {
+      created = await guild.channels.create(opts);
+    }
+    log.success(`text mirror → created #${created.name}.`);
+    return created;
+  }
+
+  // Post a plain-TEXT FILE (.md, .txt, …) as a real Discord ATTACHMENT rather
+  // than as message text. A long draft is then ONE downloadable, editable file
+  // instead of a run of chat messages — and paired with a named channel, a draft
+  // lives in its own channel and can be re-posted as it iterates. NEVER
+  // truncates: an oversized file is refused loudly instead of being cut.
+  // Returns true on a successful post. Awaitable.
+  async postFile(filePath, caption, opts) {
+    this.stopTyping(); // a reply is going out
+    const ch = (opts && opts.channel) || this.channel;
+    const fail = (reason, msg) => {
+      log.warn(`file post skipped — ${msg}`);
+      this.lastPostError = msg;
+      if (typeof this._logOut === 'function') this._logOut('file', caption, filePath, false, reason);
+      return false;
+    };
+    if (!this.enabled() || !ch) return fail('no-channel', 'no text channel resolved.');
+    if (!filePath || !fs.existsSync(filePath)) return fail('file-not-found', `file not found: ${filePath}`);
+    if (!isTextFileName(filePath)) return fail('not-text', `${path.basename(filePath)} is not a plain-text file type.`);
+    try {
+      const size = fs.statSync(filePath).size;
+      if (size === 0) return fail('empty', `${path.basename(filePath)} is empty.`);
+      if (size > config.textFileMaxBytes) {
+        return fail('too-large', `${path.basename(filePath)} is ${(size / 1e6).toFixed(2)}MB, over the ` +
+          `${(config.textFileMaxBytes / 1e6).toFixed(0)}MB cap — not posting a truncated file.`);
+      }
+      const name = path.basename(filePath).replace(/[^\w.\-]/g, '_');
+      const att = new AttachmentBuilder(filePath, { name });
+      const content = caption ? String(caption).replace(/\s+/g, ' ').trim().slice(0, MAX_LEN) : undefined;
+      await ch.send({ content, files: [att] });
+      this.lastPostError = null;
+      log.success(`📄 posted file to #${ch.name}: ${name} (${size} bytes)${caption ? ` ("${String(caption).slice(0, 60)}")` : ''}.`);
+      if (typeof this._logOut === 'function') this._logOut('file', caption, filePath, true);
+      return true;
+    } catch (err) {
+      return fail(err.message, `${path.basename(filePath)}: ${err.message}`);
+    }
+  }
+
   // Post an arbitrary TEXT message straight into the channel AS THE BOT — NOT
   // read aloud by TTS (it's a plain Discord post, never touches the notification/
   // TTS path). Lets the manager share links/text the user can see and click.
   // Chunks over Discord's 2000-char limit. Awaitable; returns true on success.
-  async postText(text) {
+  async postText(text, opts) {
     this.stopTyping(); // a reply is going out
+    const ch = (opts && opts.channel) || this.channel;
     if (!this.enabled() || !this.channel) { log.warn('manager text post skipped — no text channel.'); return false; }
     const body = String(text || '').trim();
     if (!body) return false;
     try {
       for (let i = 0; i < body.length; i += 2000) {
-        await this.channel.send({ content: body.slice(i, i + 2000) });
+        await ch.send({ content: body.slice(i, i + 2000) });
       }
-      log.success(`📝 posted manager text to #${this.channel.name} (${body.length} chars, not TTS'd).`);
+      log.success(`📝 posted manager text to #${ch.name} (${body.length} chars, not TTS'd).`);
       return true;
     } catch (err) {
       log.warn('manager text post failed:', err.message);
@@ -162,8 +300,9 @@ class TextMirror {
   // Discord's size limit: oversized images are downscaled (ffmpeg → JPEG); if
   // still too big, it errors gracefully (logged) rather than failing the send.
   // Returns true on a successful post. Awaitable (unlike the fire-and-forget text).
-  async postImage(imagePath, caption) {
+  async postImage(imagePath, caption, opts) {
     this.stopTyping(); // a reply is going out
+    const ch = (opts && opts.channel) || this.channel;
     if (!this.enabled() || !this.channel) { log.warn('image post skipped — no text channel resolved.'); return false; }
     if (!imagePath || !fs.existsSync(imagePath)) { log.warn(`image post skipped — file not found: ${imagePath}`); return false; }
 
@@ -186,8 +325,8 @@ class TextMirror {
       const name = path.basename(toSend).replace(/[^\w.\-]/g, '_');
       const att = new AttachmentBuilder(toSend, { name });
       const content = caption ? String(caption).replace(/\s+/g, ' ').trim().slice(0, MAX_LEN) : undefined;
-      await this.channel.send({ content, files: [att] });
-      log.success(`🖼️  posted image to #${this.channel.name}: ${path.basename(imagePath)}${caption ? ` ("${String(caption).slice(0, 60)}")` : ''}.`);
+      await ch.send({ content, files: [att] });
+      log.success(`🖼️  posted image to #${ch.name}: ${path.basename(imagePath)}${caption ? ` ("${String(caption).slice(0, 60)}")` : ''}.`);
       return true;
     } catch (err) {
       log.warn('image post failed:', err.message);
@@ -202,8 +341,9 @@ class TextMirror {
   // clamping bitrate / downscaling until they fit. If the source is already under
   // the cap it is sent as-is (no re-encode). Errors gracefully (logged) rather than
   // failing the send. Returns true on a successful post. Awaitable.
-  async postVideo(videoPath, caption, maxBytesOverride) {
+  async postVideo(videoPath, caption, maxBytesOverride, opts) {
     this.stopTyping(); // a reply is going out
+    const ch = (opts && opts.channel) || this.channel;
     if (!this.enabled() || !this.channel) { log.warn('video post skipped — no text channel resolved.'); return false; }
     if (!videoPath || !fs.existsSync(videoPath)) { log.warn(`video post skipped — file not found: ${videoPath}`); return false; }
 
@@ -229,8 +369,8 @@ class TextMirror {
       if (tmp) name = path.basename(videoPath, path.extname(videoPath)).replace(/[^\w.\-]/g, '_') + '.mp4';
       const att = new AttachmentBuilder(toSend, { name });
       const content = caption ? String(caption).replace(/\s+/g, ' ').trim().slice(0, MAX_LEN) : undefined;
-      await this.channel.send({ content, files: [att] });
-      log.success(`🎥 posted video to #${this.channel.name}: ${path.basename(videoPath)}${caption ? ` ("${String(caption).slice(0, 60)}")` : ''}.`);
+      await ch.send({ content, files: [att] });
+      log.success(`🎥 posted video to #${ch.name}: ${path.basename(videoPath)}${caption ? ` ("${String(caption).slice(0, 60)}")` : ''}.`);
       return true;
     } catch (err) {
       log.warn('video post failed:', err.message);
@@ -380,7 +520,12 @@ class TextMirror {
     });
   }
 
-  reset() { this.stopTyping(); this.channel = null; }
+  reset() {
+    this.stopTyping();
+    this.channel = null;
+    this.namedChannels.clear();
+    this._resolvingNamed.clear();
+  }
 }
 
 module.exports = TextMirror;

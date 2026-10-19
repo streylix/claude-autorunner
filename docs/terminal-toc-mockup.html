@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Terminal TOC — clickable mockup (T488)</title>
+<style>
+/*
+  DESIGN-ONLY MOCKUP — T488. Nothing here is wired to the real app; this file
+  is self-contained and reproduces the app's actual chrome only as much as
+  needed to demonstrate the table-of-contents interaction.
+
+  Colors and font below are lifted verbatim from /mnt/smalls/aci-serve/style.css
+  (:root custom properties, lines 15-32) and the body rule (style.css:199-204).
+  See docs/terminal-toc-spec.md for the full citation list.
+*/
+:root {
+  --bg-primary: #1a1a1e;
+  --bg-secondary: #121214;
+  --bg-tertiary: #222228;
+  --bg-quaternary: #2a2a32;
+  --text-primary: #e8e8ed;
+  --text-secondary: #c2c2c9;
+  --text-tertiary: #a0a0ab;
+  --text-quaternary: #6b6b76;
+  --border-primary: #33333c;
+  --border-secondary: #44444f;
+  --accent-primary: #4f8ff7;
+  --accent-secondary: #3a6fd0;
+  --accent-success: #34d399;
+  --accent-warning: #fbbf24;
+  --accent-error: #f87171;
+  --accent-magenta: #ff69b4;
+  --accent-purple: #A7B0ED;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace; /* style.css:200 */
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ---------- Fake app chrome (just enough to show the interaction) ---------- */
+.fake-header {
+  height: 40px;
+  background-color: var(--bg-secondary);
+  display: flex;
+  align-items: center;
+  padding: 0 15px;
+  border-bottom: 1px solid var(--border-primary);
+  gap: 10px;
+}
+.fake-header-left { flex: 1; display: flex; align-items: center; gap: 8px; }
+.toc-launcher {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  -webkit-app-region: no-drag; /* style.css:4495-4496 precedent */
+}
+.toc-launcher:hover { background: var(--bg-tertiary); color: var(--text-primary); border-color: var(--border-secondary); }
+.toc-launcher .kbd {
+  font-size: 10px;
+  color: var(--text-quaternary);
+  border: 1px solid var(--border-secondary);
+  border-radius: 3px;
+  padding: 1px 4px;
+  background: var(--bg-primary);
+}
+.fake-title { font-size: 14px; font-weight: 600; color: var(--text-secondary); }
+
+.fake-body { display: flex; height: calc(100vh - 40px); }
+.fake-sidebar {
+  width: 180px;
+  background: var(--bg-primary);
+  border-right: 1px solid var(--border-primary);
+  padding: 14px 10px;
+}
+.fake-sidebar-label { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-tertiary); margin-bottom: 10px; }
+.manager-card {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px; border-radius: 6px; border: 1px solid transparent;
+  color: var(--text-secondary); font-size: 12px;
+}
+.manager-card .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent-warning); flex-shrink: 0; }
+.manager-card.flash { border-color: var(--accent-warning); background: rgba(251,191,36,0.12); animation: flash-pulse 1.1s ease; }
+
+.fake-grid {
+  flex: 1;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: 110px;
+  gap: 10px;
+  overflow: auto;
+  align-content: start;
+}
+.term-card {
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.term-card-head { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+.term-card .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.term-card-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term-card-id { color: var(--text-quaternary); }
+.term-card-dir { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term-card.flash { border-color: var(--accent-primary); box-shadow: 0 0 0 1px var(--accent-primary); animation: flash-pulse 1.1s ease; }
+@keyframes flash-pulse {
+  0% { background: rgba(79,143,247,0.22); }
+  100% { background: var(--bg-secondary); }
+}
+
+.jump-toast {
+  position: fixed;
+  bottom: 18px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-secondary);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity .18s ease, transform .18s ease;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+.jump-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ---------- The TOC modal itself ---------- */
+.toc-overlay {
+  position: fixed; inset: 0;
+  background-color: rgba(0,0,0,0.5); /* style.css:1975 */
+  backdrop-filter: blur(2px);        /* style.css:1976 */
+  display: none;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+  z-index: 1000;
+}
+.toc-overlay.open { display: flex; }
+
+.toc-panel {
+  width: 640px;
+  max-width: 92vw;
+  max-height: 74vh;
+  background-color: var(--bg-primary);   /* style.css:1986 */
+  border: 1px solid var(--border-primary); /* style.css:1987 */
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3); /* style.css:1993 */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.toc-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-primary);
+}
+.toc-search-icon { color: var(--text-quaternary); font-size: 14px; }
+.toc-search-input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.toc-search-input::placeholder { color: var(--text-quaternary); }
+.toc-esc-hint {
+  font-size: 10px;
+  color: var(--text-quaternary);
+  border: 1px solid var(--border-secondary);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+.toc-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+}
+.toc-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.toc-chip {
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 999px;
+  padding: 4px 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.toc-chip .count { color: var(--text-quaternary); }
+.toc-chip:hover { border-color: var(--border-secondary); color: var(--text-secondary); }
+.toc-chip.active { background: var(--bg-quaternary); color: var(--text-primary); border-color: var(--accent-primary); }
+.toc-chip.active .count { color: var(--text-secondary); }
+.toc-chip .swatch { width: 7px; height: 7px; border-radius: 50%; }
+
+.toc-sort { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
+.toc-sort select {
+  font-family: inherit;
+  font-size: 11px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 5px;
+  padding: 4px 6px;
+}
+
+.toc-list { overflow-y: auto; flex: 1; }
+.toc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+}
+.toc-row:hover { background: var(--bg-tertiary); }
+.toc-row.selected { background: var(--bg-quaternary); border-left-color: var(--accent-primary); }
+.toc-row .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.toc-row .id-badge {
+  font-size: 10px;
+  color: var(--text-quaternary);
+  min-width: 26px;
+}
+.toc-row .name-col { min-width: 0; flex: 1.4; }
+.toc-row .name { font-size: 13px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toc-row .dir { font-size: 11px; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toc-row .muted-flag { color: var(--text-quaternary); font-size: 10px; flex-shrink: 0; }
+.toc-row .status-pill {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  min-width: 64px;
+  text-align: center;
+}
+.status-running { color: var(--accent-warning); background: rgba(251,191,36,0.14); }   /* style.css:305-307 */
+.status-prompted { color: var(--accent-purple); background: rgba(167,176,237,0.14); }  /* style.css:309-311 */
+.status-idle { color: var(--text-tertiary); background: rgba(160,160,171,0.10); }       /* '...' has no override -> var(--text-tertiary), style.css:301 */
+.status-error { color: var(--accent-error); background: rgba(248,113,113,0.14); }       /* no existing CSS rule; COLOR_PALETTE.md "Error" semantic */
+.toc-row .last-active { font-size: 11px; color: var(--text-tertiary); min-width: 62px; text-align: right; flex-shrink: 0; }
+
+.toc-empty {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+.toc-empty i.icon-stub {
+  display: block; margin: 0 auto 10px; width: 28px; height: 28px;
+  border: 1.5px solid var(--text-quaternary); border-radius: 6px;
+}
+.toc-empty .title { color: var(--text-secondary); font-size: 13px; margin-bottom: 4px; }
+.toc-empty .sub { font-size: 11px; }
+.toc-empty button {
+  margin-top: 12px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 5px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.toc-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 16px;
+  border-top: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+  font-size: 10.5px;
+  color: var(--text-quaternary);
+}
+.toc-footer .k { border: 1px solid var(--border-secondary); border-radius: 3px; padding: 0 4px; margin-right: 4px; color: var(--text-tertiary); }
+.toc-footer .snapshot-note { margin-left: auto; }
+</style>
+</head>
+<body>
+
+<div class="fake-header">
+  <div class="fake-header-left">
+    <!-- Real placement: index.html:27 <div class="header-left"></div> is an
+         empty flex spacer today (style.css:230-232). This button would live
+         there. It needs -webkit-app-region:no-drag because .header is a
+         drag region (style.css:214-222, main.js:396 titleBarStyle:'hiddenInset'). -->
+    <button class="toc-launcher" id="toc-launcher" title="Terminal list (Cmd/Ctrl+J)">
+      <span>☰ Terminals</span>
+      <span class="kbd">⌘J</span>
+    </button>
+  </div>
+  <div class="fake-title">Auto-Injector</div>
+</div>
+
+<div class="fake-body">
+  <div class="fake-sidebar">
+    <div class="fake-sidebar-label">Manager</div>
+    <div class="manager-card" id="manager-card">
+      <span class="dot"></span>
+      <span>Manager (999)</span>
+    </div>
+  </div>
+  <div class="fake-grid" id="fake-grid"></div>
+</div>
+
+<div class="jump-toast" id="jump-toast"></div>
+
+<!-- ================= TOC modal ================= -->
+<div class="toc-overlay" id="toc-overlay">
+  <div class="toc-panel" role="dialog" aria-label="Terminal list">
+    <div class="toc-search-row">
+      <span class="toc-search-icon">⌕</span>
+      <input class="toc-search-input" id="toc-search" placeholder="Filter terminals by name or directory…" autocomplete="off">
+      <span class="toc-esc-hint">esc</span>
+    </div>
+    <div class="toc-controls-row">
+      <div class="toc-filters" id="toc-filters"></div>
+      <div class="toc-sort">
+        <span>Sort</span>
+        <select id="toc-sort">
+          <option value="default">Status, then last active</option>
+          <option value="lastActive">Last active</option>
+          <option value="name">Name (A–Z)</option>
+        </select>
+      </div>
+    </div>
+    <div class="toc-list" id="toc-list"></div>
+    <div class="toc-footer">
+      <span><span class="k">↑↓</span>move</span>
+      <span><span class="k">↵</span>jump</span>
+      <span><span class="k">esc</span>close</span>
+      <span class="snapshot-note" id="snapshot-note"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+/*
+ * Sample data: an actual GET /state snapshot from the running app, taken
+ * 2026-09-29 via `curl -s http://127.0.0.1:$CCBOT_PORT/state -H "X-CCBOT-Token: $CCBOT_TOKEN"`.
+ * 11 terminals were live at capture time (ids 1,2,3,4,6,7,8,16,17,24,999).
+ * /state does not expose a per-terminal timestamp today (only a snapshot-level
+ * `updatedAt`, main.js:591-605 / renderer.js:756) — see spec section 6 for why
+ * "last active" below is illustrative minutes-ago, not from the live payload.
+ * Colors are computed the same way the app computes them: renderer.js:149-152
+ * palette, indexed (id-1) % 8, except 999 which is always var(--accent-warning)
+ * per renderer.js:2521-2523.
+ */
+const PALETTE = ['#007acc', '#28ca42', '#ff5f57', '#ffbe2e', '#af52de', '#5ac8fa', '#ff8c00', '#00c2a8'];
+function colorFor(id) {
+  if (id === 999) return 'var(--accent-warning)';
+  return PALETTE[(Number(id) - 1) % PALETTE.length];
+}
+
+const TERMINALS = [
+  { id: 3,   title: 'T12 Terminal TOC design (Sonnet)',  dir: '/home/you/projects/app',           status: 'running',  muted: false, lastActiveMin: 0 },
+  { id: 1,   title: 'T11 Audio tool overhaul (Fable)',    dir: '/home/you/projects/audio-tool',    status: 'running',  muted: false, lastActiveMin: 1 },
+  { id: 2,   title: 'T10 Desktop client (Opus)',          dir: '/home/you/work',                   status: 'running',  muted: false, lastActiveMin: 25 },
+  { id: 16,  title: 'Listings site',                      dir: '/home/you/projects/dashboard',     status: 'running',  muted: false, lastActiveMin: 6 },
+  { id: 8,   title: 'T9 per-task venvs',                  dir: '/home/you/projects/dashboard',     status: 'prompted', muted: false, lastActiveMin: 2 },
+  { id: 6,   title: 'Music app top songs',                dir: '/home/you/projects/music-app',     status: 'prompted', muted: true,  lastActiveMin: 22 },
+  { id: 7,   title: 'Second Manager',                     dir: '/home/you/projects',               status: 'prompted', muted: true,  lastActiveMin: 41 },
+  { id: 24,  title: 'Auditor',                             dir: '/home/you/claude-manager/auditor', status: 'prompted', muted: true, lastActiveMin: 54 },
+  { id: 4,   title: 'Web polish',                         dir: '/home/you/projects/site',          status: 'prompted', muted: true,  lastActiveMin: 72 },
+  { id: 999, title: 'Manager',                             dir: '/home/you/claude-manager',         status: '...',      muted: false, lastActiveMin: 120 },
+  { id: 17,  title: 'Terminal 17',                         dir: '/home/you/projects/audio-tool',    status: '...',      muted: true,  lastActiveMin: 300 },
+].map(t => ({ ...t, color: colorFor(t.id) }));
+
+const STATUS_ORDER = { running: 0, prompted: 1, error: 2, '...': 3 };
+const STATUS_LABEL = { running: 'Running', prompted: 'Prompted', error: 'Error', '...': 'Idle' };
+const STATUS_CLASS = { running: 'status-running', prompted: 'status-prompted', error: 'status-error', '...': 'status-idle' };
+
+function fmtAgo(min) {
+  if (min < 1) return 'now';
+  if (min < 60) return min + 'm ago';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h + 'h' + (m ? ' ' + m + 'm' : '') + ' ago';
+}
+
+let state = { query: '', filter: 'all', sort: 'default', selected: 0 };
+
+function filteredSorted() {
+  let list = TERMINALS.filter(t => {
+    if (state.filter !== 'all' && t.status !== state.filter) return false;
+    if (!state.query) return true;
+    const q = state.query.toLowerCase();
+    return t.title.toLowerCase().includes(q) || t.dir.toLowerCase().includes(q) || String(t.id).includes(q);
+  });
+  if (state.sort === 'lastActive') {
+    list = list.slice().sort((a, b) => a.lastActiveMin - b.lastActiveMin);
+  } else if (state.sort === 'name') {
+    list = list.slice().sort((a, b) => a.title.localeCompare(b.title));
+  } else {
+    list = list.slice().sort((a, b) => {
+      const s = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+      return s !== 0 ? s : a.lastActiveMin - b.lastActiveMin;
+    });
+  }
+  return list;
+}
+
+function countFor(status) {
+  return status === 'all' ? TERMINALS.length : TERMINALS.filter(t => t.status === status).length;
+}
+
+function renderFilters() {
+  const el = document.getElementById('toc-filters');
+  const chips = [
+    { key: 'all', label: 'All' },
+    { key: 'running', label: 'Running', dot: 'var(--accent-warning)' },
+    { key: 'prompted', label: 'Prompted', dot: 'var(--accent-purple)' },
+    { key: '...', label: 'Idle', dot: 'var(--text-tertiary)' },
+    { key: 'error', label: 'Error', dot: 'var(--accent-error)' },
+  ];
+  el.innerHTML = '';
+  chips.forEach(c => {
+    const btn = document.createElement('button');
+    btn.className = 'toc-chip' + (state.filter === c.key ? ' active' : '');
+    btn.innerHTML = (c.dot ? `<span class="swatch" style="background:${c.dot}"></span>` : '') +
+      `<span>${c.label}</span><span class="count">${countFor(c.key)}</span>`;
+    btn.addEventListener('click', () => { state.filter = c.key; state.selected = 0; render(); });
+    el.appendChild(btn);
+  });
+}
+
+function renderList() {
+  const rows = filteredSorted();
+  const listEl = document.getElementById('toc-list');
+  listEl.innerHTML = '';
+
+  if (TERMINALS.length === 0) {
+    listEl.innerHTML = `<div class="toc-empty">
+      <i class="icon-stub"></i>
+      <div class="title">No terminals open</div>
+      <div class="sub">Spin up a Claude Code session to get started.</div>
+    </div>`;
+    return;
+  }
+  if (rows.length === 0) {
+    listEl.innerHTML = `<div class="toc-empty">
+      <i class="icon-stub"></i>
+      <div class="title">No terminals match this filter</div>
+      <div class="sub">${state.filter !== 'all' ? `Nothing is "${STATUS_LABEL[state.filter] || state.filter}" right now.` : 'Try a different search.'}</div>
+      <button id="toc-clear-filter">Clear filter</button>
+    </div>`;
+    const clearBtn = document.getElementById('toc-clear-filter');
+    if (clearBtn) clearBtn.addEventListener('click', () => { state.filter = 'all'; state.query = ''; document.getElementById('toc-search').value = ''; render(); });
+    return;
+  }
+
+  state.selected = Math.min(state.selected, rows.length - 1);
+  rows.forEach((t, i) => {
+    const row = document.createElement('div');
+    row.className = 'toc-row' + (i === state.selected ? ' selected' : '');
+    row.dataset.id = t.id;
+    row.innerHTML = `
+      <span class="dot" style="background:${t.color}"></span>
+      <span class="id-badge">#${t.id}</span>
+      <span class="name-col">
+        <div class="name">${t.title}</div>
+        <div class="dir">${t.dir}</div>
+      </span>
+      ${t.muted ? '<span class="muted-flag" title="Muted: not reporting to the manager">🔕</span>' : ''}
+      <span class="status-pill ${STATUS_CLASS[t.status]}">${STATUS_LABEL[t.status]}</span>
+      <span class="last-active">${fmtAgo(t.lastActiveMin)}</span>
+    `;
+    row.addEventListener('click', () => jumpTo(t));
+    row.addEventListener('mousemove', () => { state.selected = i; highlightSelected(); });
+    listEl.appendChild(row);
+  });
+}
+
+function highlightSelected() {
+  document.querySelectorAll('.toc-row').forEach((el, i) => el.classList.toggle('selected', i === state.selected));
+}
+
+function render() {
+  renderFilters();
+  renderList();
+  document.getElementById('snapshot-note').textContent = `11 terminals @ /state snapshot`;
+}
+
+function openToc() {
+  document.getElementById('toc-overlay').classList.add('open');
+  const input = document.getElementById('toc-search');
+  input.value = state.query;
+  input.focus();
+  render();
+}
+function closeToc() {
+  document.getElementById('toc-overlay').classList.remove('open');
+}
+
+function showToast(msg) {
+  const t = document.getElementById('jump-toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(showToast._h);
+  showToast._h = setTimeout(() => t.classList.remove('show'), 1600);
+}
+
+function jumpTo(t) {
+  closeToc();
+  if (t.id === 999) {
+    const card = document.getElementById('manager-card');
+    card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
+    showToast('Manager has no grid tile — opened the Manager sidebar tab instead');
+    return;
+  }
+  const card = document.querySelector(`.term-card[data-id="${t.id}"]`);
+  if (card) {
+    card.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
+  }
+  showToast(`Jumped to #${t.id} · ${t.title}`);
+}
+
+function buildFakeGrid() {
+  const grid = document.getElementById('fake-grid');
+  grid.innerHTML = '';
+  TERMINALS.filter(t => t.id !== 999).forEach(t => {
+    const card = document.createElement('div');
+    card.className = 'term-card';
+    card.dataset.id = t.id;
+    card.innerHTML = `
+      <div class="term-card-head">
+        <span class="dot" style="background:${t.color}"></span>
+        <span class="term-card-title">${t.title}</span>
+      </div>
+      <span class="term-card-id">#${t.id}</span>
+      <span class="term-card-dir">${t.dir}</span>
+      <span class="status-pill ${STATUS_CLASS[t.status]}" style="align-self:flex-start;min-width:auto;">${STATUS_LABEL[t.status]}</span>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+document.getElementById('toc-launcher').addEventListener('click', openToc);
+document.getElementById('toc-overlay').addEventListener('mousedown', (e) => {
+  if (e.target.id === 'toc-overlay') closeToc();
+});
+document.getElementById('toc-search').addEventListener('input', (e) => {
+  state.query = e.target.value;
+  state.selected = 0;
+  render();
+});
+document.getElementById('toc-sort').addEventListener('change', (e) => {
+  state.sort = e.target.value;
+  render();
+});
+
+document.addEventListener('keydown', (e) => {
+  const open = document.getElementById('toc-overlay').classList.contains('open');
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
+    e.preventDefault();
+    open ? closeToc() : openToc();
+    return;
+  }
+  if (!open) return;
+  const rows = filteredSorted();
+  if (e.key === 'Escape') { e.preventDefault(); closeToc(); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); state.selected = Math.min(state.selected + 1, rows.length - 1); highlightSelected(); scrollSelectedIntoView(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); state.selected = Math.max(state.selected - 1, 0); highlightSelected(); scrollSelectedIntoView(); }
+  else if (e.key === 'Enter') { e.preventDefault(); if (rows[state.selected]) jumpTo(rows[state.selected]); }
+});
+
+function scrollSelectedIntoView() {
+  const el = document.querySelectorAll('.toc-row')[state.selected];
+  if (el) el.scrollIntoView({ block: 'nearest' });
+}
+
+buildFakeGrid();
+render();
+// Auto-open on load purely so a screenshot of this file shows the default
+// list without a manual click first.
+openToc();
+</script>
+</body>
+</html>
