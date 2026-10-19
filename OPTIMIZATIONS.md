@@ -6,6 +6,59 @@ project's current git branch.
 
 ---
 
+## 2026-10-19 — Pre-publication security audit, then `dev` + `ssh-view` + both live trees merged to `main` (branch `main`)
+
+**Request (Ethan, via the manager).** "Audit the claude-autorunner changes that
+haven't been pushed/merged to main, ensure nothing is leaked, even getting
+GitHub leaks if need be. Fix the issues, then merge to main and push." The
+repo is public, so anything already on origin was already public.
+
+**What was audited.** Everything not yet on `origin/main`: the 91 commits on
+`dev`, the one unpushed commit on `ssh-view`, and the uncommitted work in both
+live checkouts (`claude-autorunner` on ssh-view: 89 files, the newer Discord
+bridge, the backend `conversation_log` app, docker-compose changes;
+`aci-serve` on dev: 38 files, the app-side reply-quote/second-manager/terminal
+TOC work). gitleaks 8.30.1 (static binary under /mnt/smalls, nothing on the
+root disk) ran over the full history of every ref, over both working trees
+including untracked files, and again over the merge result: zero findings in
+history before and after; the only working-tree hits were in gitignored
+files (`.env`, `discord-bridge/.env`, the `.ccbot-test/` and
+`.e2e-remote-client/` sandboxes). A second, hand-written sweep looked for what
+scanners miss: Discord snowflakes, Tailscale addresses and hostnames, ntfy
+topics, token shapes, emails, phone numbers and home-directory paths.
+
+**What was found and fixed (none of it was public yet).** The owner's Discord
+user id was hard-coded as the allow-listed user in six bridge test files; the
+guild id and a thread id were quoted in the bridge changelog; one real message
+id sat in a dedupe test; `standIn.js` hard-coded a path under the owner's home
+directory; `.env.example` showed a real local path; the terminal-TOC mockup and
+its screenshots carried the live terminal list (project names and a home
+path). Fixes: synthetic snowflakes in tests, ids masked in the changelog, the
+stand-in derives the memory path from the home directory (env-overridable,
+same value on this machine), placeholder paths in `.env.example`, generic
+sample data in the mockup, and the screenshots plus the `node_modules`
+symlinks gitignored. No credential was ever in the candidate, so nothing
+needed moving to `.env` and nothing needs rotating.
+
+**Already public, left alone.** The `/media/ethan/...` paths, the `ethan@pop-os`
+SSH example and the owner's first name and university email in the 2026-08-07
+changelog entry were all on `origin/main` or `origin/dev` months ago. None is a
+credential; no history was rewritten.
+
+**Merge.** `dev` had already absorbed `main`'s four later commits, so every
+`main` conflict resolved to `dev`'s side. `ssh-view` then merged on top with
+the newer bridge winning every `discord-bridge/` conflict (its working tree
+was a superset of `aci-serve`'s stale copy), the backend taking both the
+`game_state` and `conversation_log` apps, and the Whisper service keeping
+`dev`'s lazy imports together with `ssh-view`'s `WHISPER_DEVICE` switch.
+Verified on the merged tree: bridge `npm test` 276/276, app `node --test` 258/258,
+`npm run build-remote` builds, `node --check` on every JS file, and the
+backend's Django `check` plus 41 `conversation_log` tests in a throwaway
+container. The live services were not restarted; both live checkouts were
+committed in place and never checked out, reset or stashed.
+
+---
+
 ## 2026-08-19 — Replying to a Discord message now forwards a quote of what you replied to (branch `dev`)
 
 **Request (Ethan).** When he replies to a specific message in the Discord
