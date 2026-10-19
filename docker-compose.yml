@@ -20,6 +20,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    # Come back by itself after a crash/OOM-kill or a host reboot (T619: the
+    # policy was "no", so any death meant voice stayed down until noticed).
+    restart: unless-stopped
     ports:
       # Bind to loopback only. The Electron app + manager reach the backend via
       # localhost on the host; binding 127.0.0.1 removes LAN exposure (the host
@@ -49,17 +52,35 @@ services:
       # Accept requests arriving via the llmapi-bridge gateway bind above.
       DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1,172.21.0.1"
       # Expose the host NVIDIA GPU to this container (host already runs the nvidia
-      # container runtime). Lets the CUDA torch build see the RTX 3090 for Kokoro
-      # TTS / Whisper; harmless on hosts without a GPU.
+      # container runtime). Still required: Whisper STT runs on the RTX 3090 via
+      # CTranslate2's own CUDA runtime. Harmless on hosts without a GPU.
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      # Kokoro TTS runs on CPU: torch here is the CPU-only build, which keeps
+      # ~4.8GB of CUDA libs out of the image and stops torch reserving VRAM that
+      # the co-tenant llmapi service on the same card needs. Kokoro is 82M
+      # params and synthesizes a notification in well under a second on CPU.
+      TTS_DEVICE: ${TTS_DEVICE:-cpu}
+      # Whisper STT stays on the GPU (CTranslate2, independent of torch's build).
+      # Set to cpu on a GPU-less host, though _load() also degrades on its own.
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cuda}
       # CPU Vosk wake-word model for /api/voice/wake-check/ (mounted read-only
       # below). Lets the bridge gate on the wake word without the GPU Whisper.
       VOSK_MODEL_PATH: /models/vosk-model-small-en-us.tar.gz
+      # Cap glibc malloc arenas. Every ASGI request runs on a fresh thread, and
+      # with the default 8 x cores arenas each one kept its own high-water mark
+      # of Whisper/Kokoro buffers — 10.4GB of a 14GB daphne (T619). Paired
+      # with terminal_backend/memory.py's malloc_trim after voice requests.
+      MALLOC_ARENA_MAX: "2"
     volumes:
       # Reuse the desktop app's shipped Vosk model — no duplicate download, and
       # the model stays out of the image (build context is ./backend).
       - ./assets/models:/models:ro
+      # MEDIA_ROOT (synthesized TTS .wav files). Previously this lived in the
+      # container's writable layer, so every `up --build` silently destroyed the
+      # audio for notifications still referenced in Postgres. A named volume
+      # decouples the audio from the container's lifetime.
+      - ccbot-media:/app/media
     depends_on:
       db:
         condition: service_healthy
@@ -74,3 +95,5 @@ services:
 
 volumes:
   ccbot-pgdata:
+  # Synthesized TTS audio (MEDIA_ROOT). Outlives container rebuilds.
+  ccbot-media:

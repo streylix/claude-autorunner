@@ -12,13 +12,14 @@
 // Pairs with --channel: a draft then lives as a file in its own channel and is
 // re-posted there as it iterates. Over the size cap the bridge REFUSES the file
 // and says so — it never posts a truncated one.
+// --channel also takes a channel or THREAD id (T792) to post inside a thread.
 //
 // Same outbox mechanism as post-text/post-image: an atomic { file, caption }
 // descriptor the running bridge picks up within ~1s, posts, and reports back on.
 
 const fs = require('fs');
 const path = require('path');
-const { parseFlags, resolveChannel, queue, report } = require('./postCommon');
+const { parseFlags, resolveChannel, resolveThreadName, queue, report } = require('./postCommon');
 const { isTextFileName, TEXT_FILE_EXTS } = require('../src/outbox');
 const pathGuard = require('../src/pathGuard');
 const { config } = require('../config');
@@ -26,7 +27,7 @@ const { config } = require('../config');
 const flags = parseFlags(process.argv.slice(2));
 const [fileArg, ...rest] = flags.rest;
 if (!fileArg) {
-  console.error('Usage: node tools/post-file.js [--channel <name>] [--no-wait] <path> [caption...]');
+  console.error('Usage: node tools/post-file.js [--channel <name|id>] [--new-thread <name>] [--no-wait] <path> [caption...]');
   console.error(`Text file types: ${[...TEXT_FILE_EXTS].join(' ')}`);
   process.exit(1);
 }
@@ -64,7 +65,8 @@ if (!pathGuard.safeMediaPath(target)) {
   process.exit(1);
 }
 const channel = resolveChannel(flags.channel);
+const newThread = resolveThreadName(flags.newThread);
 
-const file = queue('file', { file: target, caption, channel: channel || undefined, wantResult: flags.wait });
+const file = queue('file', { file: target, caption, channel: channel || undefined, newThread: newThread || undefined, wantResult: flags.wait });
 console.log(`📤 File post: ${target}${caption ? `  (caption: "${caption}")` : ''}`);
 report(file, flags, `(${path.basename(target)}, ${st.size} bytes)`);

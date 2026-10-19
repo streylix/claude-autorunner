@@ -8,6 +8,7 @@
 // Infra values (backend URL, timings, paste mode) are fixed sensible defaults,
 // overridable by env only for the rare edge case.
 
+const os = require('os');
 const path = require('path');
 try {
   require('dotenv').config({ path: path.join(__dirname, '.env') });
@@ -98,10 +99,32 @@ const config = {
   // switch). Each utterance is buffered to a file and transcribed once at its
   // end-of-speech silence boundary (deferred Whisper, never streaming).
   alwaysListenInCall: bool(process.env.ALWAYS_LISTEN_IN_CALL, true),
-  // Absolute backstop on a single CONTINUOUS capture (no silence gap). High
-  // enough that real speech — including long monologues — is never cut; the
-  // AfterSilence VAD already segments normal speech at pauses well below this.
-  maxUtteranceMs: int(process.env.MAX_UTTERANCE_MS, 180000),
+  // Memory backstop on ONE always-listen utterance. Reaching it SENDS what was
+  // captured (never drops it) and keeps listening as a new utterance. 10 min of
+  // 48kHz stereo PCM is ~115MB, so this is a ceiling, not a turn length.
+  maxUtteranceMs: int(process.env.MAX_UTTERANCE_MS, 600000),
+  // END OF UTTERANCE (always-listen): the configured silence (the app's "Stop
+  // after silence" slider) measured against THIS energy threshold. A window
+  // (voiceEnergyWindowMs of decoded audio) whose RMS is below it counts as
+  // silence — AirPod breathing measured -43..-46 dBFS RMS on this call — and no
+  // packets at all (Discord's own VAD, lag, a stalled receiver) is silence too.
+  voiceEnergyThresholdDb: int(process.env.VOICE_ENERGY_THRESHOLD_DB, -40),
+  voiceEnergyWindowMs: int(process.env.VOICE_ENERGY_WINDOW_MS, 100),
+  // STREAMED DRAFT: while he talks, cut a segment at a pause (>= draftGapMs
+  // below the threshold, after >= draftMinSegmentMs of new audio; forced at
+  // draftMaxSegmentMs), transcribe it, and append it (fsynced) to a JSONL file
+  // in draftDir. On any stop the STITCHED draft goes to 999 — no whole-clip
+  // re-transcribe. Nothing is posted to Discord until the final "Heard:".
+  draftMinSegmentMs: int(process.env.DRAFT_MIN_SEGMENT_MS, 3000),
+  draftGapMs: int(process.env.DRAFT_GAP_MS, 700),
+  draftMaxSegmentMs: int(process.env.DRAFT_MAX_SEGMENT_MS, 15000),
+  draftDir: process.env.VOICE_DRAFT_DIR
+    || path.join(os.homedir(), '.local', 'state', 'ccbot-bridge', 'voice-drafts'),
+  // Sent drafts (*.sent.jsonl) are deleted after this age; unsent ones never.
+  draftRetentionHours: int(process.env.VOICE_DRAFT_RETENTION_HOURS, 168),
+  // TTS/SFX playback is HELD (paused or not started — never dropped) while an
+  // utterance is being written; this cap only guards a wedged flag.
+  writingHoldMaxMs: int(process.env.WRITING_HOLD_MAX_MS, 660000),
   // DEAF-RECEIVER auto-recovery. The Discord voice receiver can silently stop
   // delivering audio while the connection stays "Ready" (a known voice quirk,
   // often after a mute/unmute or a network blip). We watch for "Ready + an
@@ -138,7 +161,7 @@ const config = {
   // where the bridge owns the player) — hold it until a short silence gap.
   bargeInEnabled: bool(process.env.BARGE_IN_ENABLED, true),
   userSpeakingGraceMs: int(process.env.USER_SPEAKING_GRACE_MS, 600), // treat user as "still talking" this long after last audio
-  bargeInMaxHoldMs: int(process.env.BARGE_IN_MAX_HOLD_MS, 8000),     // safety: play anyway after holding this long
+  bargeInMaxHoldMs: int(process.env.BARGE_IN_MAX_HOLD_MS, 8000),     // wake mode only: play anyway after holding this long (always-listen uses writingHoldMaxMs)
   // BARGE-IN INTERRUPT: when the user starts speaking WHILE the bot is playing a
   // reply, cut the bot's audio so the user can talk over it naturally. Detection
   // requires SUSTAINED audio (minSpeechMs) at real speech energy (minLevelDb,
@@ -156,6 +179,9 @@ const config = {
   textMirrorEnabled: bool(process.env.TEXT_MIRROR_ENABLED, true),
   textChannelId: process.env.DISCORD_TEXT_CHANNEL_ID || '',
   textChannelName: (process.env.DISCORD_TEXT_CHANNEL_NAME || 'claude-voice').trim(),
+  // T792: channels/threads he switched off with /manager-ignore. Kept next to
+  // the bridge so it survives a restart. See src/channelIgnore.js.
+  channelIgnorePath: process.env.CHANNEL_IGNORE_PATH || path.join(__dirname, 'channel-ignore.json'),
   // IMAGE SENDING: the manager drops a tiny JSON descriptor { image, caption }
   // into this local outbox dir (same shared runtime dir as the link vault — the
   // existing manager↔bridge local channel); the bridge watches it and posts the
@@ -164,6 +190,9 @@ const config = {
   // INBOUND media (user → manager): /prompt attachments and plain image/VIDEO drops
   // are downloaded here so the manager (same machine) can open them.
   mediaInboxDir: process.env.CCBOT_MEDIA_INBOX || path.join(runtimeBase(), 'ccbot-bridge', 'inbox'),
+  // SINGLE INSTANCE: pid file proving one bridge owns the bot token. Two live
+  // bridges = Discord delivers every event to both = everything happens twice.
+  instanceLockPath: process.env.CCBOT_BRIDGE_LOCK || path.join(runtimeBase(), 'ccbot-bridge', 'bridge.pid'),
   inboundMediaMaxBytes: int(process.env.INBOUND_MEDIA_MAX_BYTES, 25 * 1024 * 1024), // Discord upload cap
   inboundMaxMedia: int(process.env.INBOUND_MAX_MEDIA, 10),
   // Plain image/video DROPS in the channel need the privileged Message Content
@@ -211,7 +240,22 @@ const config = {
   // Delay between writing the command text and sending the Enter to terminal 999
   // (mirrors the app's 150ms; separate keystroke so the TUI submits, see controlApi).
   submitDelayMs: int(process.env.SUBMIT_DELAY_MS, 180),
-  forwardLogsToBackend: bool(process.env.FORWARD_LOGS_TO_BACKEND, true),
+  // HARD OFF UNDER THE TEST RUNNER (not just a default): tests call log.* from
+  // real modules, and each call would otherwise POST to the production backend
+  // on 127.0.0.1:8123 (T636 c6 — it has happened before). No env var can turn
+  // it back on inside `node --test`; see log.testgate.test.js.
+  forwardLogsToBackend: !process.env.NODE_TEST_CONTEXT && bool(process.env.FORWARD_LOGS_TO_BACKEND, true),
+  // DURABLE CONVERSATION LOG: every message exchanged with the user, both
+  // directions, POSTed to the backend (conversation_log app) so it outlives the
+  // manager's context being wiped. Fire-and-forget — see src/conversationLog.js;
+  // a backend outage never blocks or fails a Discord/manager delivery.
+  // DEFAULTS OFF UNDER THE TEST RUNNER. `node --test` sets NODE_TEST_CONTEXT,
+  // and existing tests exercise real textMirror/linkManager methods with fake
+  // channels — which, once those methods log, would POST test fixtures into the
+  // live conversation table on every `npm test`. (This is not hypothetical: it
+  // wrote two 'manager reply' rows before it was caught.) A test that wants the
+  // logger sets config.conversationLogEnabled = true itself, and stubs fetch.
+  conversationLogEnabled: bool(process.env.CONVERSATION_LOG_ENABLED, !process.env.NODE_TEST_CONTEXT),
 };
 
 // Live wake config, mirrored from the APP (not .env). Call fresh — it re-reads
@@ -231,6 +275,9 @@ config.inCallSilence = () => appSettings.inCallSilenceMs();
 config.voiceMemoMarker =
   '🎙️ Voice memo from the user (spoken aloud, auto-transcribed — phrasing may be imperfect):';
 config.typedMemoMarker = '💬 Typed message from the user (Discord):';
+// Bridge self-test injections (routing checks). NOT the user's words — the
+// receiving agent should acknowledge briefly and take no action.
+config.syntheticMemoMarker = '🧪 Synthetic bridge self-test (NOT a message from the user; acknowledge briefly, no action):';
 config.fileMemoMarker = '📎 The user sent'; // + " a file/N files (Discord): <paths>"
 
 function validate(cfg = config) {

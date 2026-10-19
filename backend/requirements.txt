@@ -18,13 +18,23 @@ tzdata==2024.1
 # Kokoro TTS below. ffmpeg-python shells out to the ffmpeg binary that the
 # Dockerfile installs.
 faster-whisper>=1.2.1
+# PyAV is faster-whisper's audio decoder. av 19 dropped av.open(metadata_errors=)
+# which faster-whisper 1.2.1 still passes, so every transcription 500'd after
+# an unpinned rebuild pulled av 19.0.1 (T619). 17.0.0 verified working.
+av>=15.1,<18
 # CUDA-12 runtime libs for ctranslate2: the torch cu13 wheel only ships
 # libcublas.so.13 (under nvidia/cu13/), but CT2 dlopens libcublas.so.12 and
 # libcudnn*.so.9 at inference time. transcription_service preloads these by
 # absolute path via ctypes; harmless on CPU-only hosts.
 nvidia-cublas-cu12
 nvidia-cudnn-cu12>=9,<10
-torch>=2.2.0
+# Pinned to the exact version the Dockerfile installs from the CPU-only wheel
+# index. Must stay pinned: a floating spec lets a transitive resolve pull the
+# default PyPI torch, which drags the whole ~4.8GB CUDA stack back in and
+# re-reserves GPU memory. `==2.13.0` matches the installed `2.13.0+cpu` local
+# version under PEP 440, so this is satisfied by the earlier layer and pip
+# leaves it alone.
+torch==2.13.0
 ffmpeg-python==0.2.0
 
 # Lightweight CPU wake-word spotting (Vosk). Powers /api/voice/wake-check/ so

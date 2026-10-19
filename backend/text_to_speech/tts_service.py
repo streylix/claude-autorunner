@@ -9,6 +9,7 @@ share a language). Pipelines are expensive to build and hold the 82M Kokoro net
 """
 
 import logging
+import os
 import threading
 import time
 from typing import Tuple
@@ -38,22 +39,40 @@ class KokoroTTSService:
         logger.info("Kokoro TTS service initialized (pipelines load lazily)")
 
     def _resolve_device(self) -> str:
-        """Best available torch device for Kokoro: CUDA (NVIDIA) > MPS (Apple
-        Silicon) > CPU. So a CUDA box runs the model on GPU while a Mac/CPU host
-        falls back gracefully. torch is imported lazily and any probe failure
-        degrades to CPU rather than breaking synthesis."""
+        """Torch device for Kokoro, from TTS_DEVICE (default 'cpu').
+
+        Deliberately an explicit setting rather than "best available": the image
+        ships the CPU-only torch build, so an availability probe could only ever
+        answer 'cpu' anyway, and stating it plainly keeps the reason visible.
+        Kokoro is 82M params and synthesizes a typical notification in well
+        under a second on CPU, so the GPU bought little while holding VRAM that
+        the co-tenant llmapi service on the same card actually needs.
+
+        Set TTS_DEVICE=cuda (and install a CUDA torch build) to move it back.
+        An unusable value degrades to CPU rather than breaking synthesis.
+        """
         if self._device is not None:
             return self._device
-        device = "cpu"
-        try:
-            import torch
+        device = os.environ.get("TTS_DEVICE", "cpu").strip().lower() or "cpu"
+        if device != "cpu":
+            try:
+                import torch
 
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-                device = "mps"
-        except Exception as exc:  # torch missing/old or probe error -> safe CPU
-            logger.warning(f"Device probe failed ({exc!r}); using CPU for Kokoro")
+                if device == "cuda" and not torch.cuda.is_available():
+                    logger.warning(
+                        "TTS_DEVICE=cuda but this torch build sees no CUDA "
+                        "device (the image ships CPU-only torch); using CPU"
+                    )
+                    device = "cpu"
+                elif device == "mps" and not (
+                    getattr(torch.backends, "mps", None) is not None
+                    and torch.backends.mps.is_available()
+                ):
+                    logger.warning("TTS_DEVICE=mps but MPS is unavailable; using CPU")
+                    device = "cpu"
+            except Exception as exc:  # torch missing/old or probe error -> safe CPU
+                logger.warning(f"Device probe failed ({exc!r}); using CPU for Kokoro")
+                device = "cpu"
         self._device = device
         logger.info(f"Kokoro device resolved to {device!r}")
         return device

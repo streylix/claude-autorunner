@@ -20,7 +20,7 @@ const DEFAULT_TIMEOUT_MS = 15000;
 // Parse the LEADING flags only, so message text that starts with a dash is still
 // message text. `--` ends flag parsing explicitly.
 function parseFlags(argv) {
-  const out = { channel: null, wait: true, timeoutMs: DEFAULT_TIMEOUT_MS, rest: [] };
+  const out = { channel: null, newThread: null, wait: true, timeoutMs: DEFAULT_TIMEOUT_MS, rest: [] };
   const args = argv.slice();
   while (args.length) {
     const a = args[0];
@@ -28,6 +28,10 @@ function parseFlags(argv) {
     let m;
     if ((m = /^(?:--channel|-c)=(.*)$/.exec(a))) { out.channel = m[1]; args.shift(); continue; }
     if (a === '--channel' || a === '-c') { args.shift(); out.channel = args.shift() || ''; continue; }
+    // T796: --new-thread "<name>" — create (or reuse by name) a thread in the
+    // --channel parent (default #claude-voice) and post into it.
+    if ((m = /^--new-thread=(.*)$/.exec(a))) { out.newThread = m[1]; args.shift(); continue; }
+    if (a === '--new-thread') { args.shift(); out.newThread = args.shift() || ''; continue; }
     if (a === '--no-wait') { out.wait = false; args.shift(); continue; }
     if ((m = /^--timeout=(.*)$/.exec(a))) { out.timeoutMs = Math.max(0, parseFloat(m[1]) * 1000) || 0; args.shift(); continue; }
     if (a === '--timeout') { args.shift(); out.timeoutMs = Math.max(0, parseFloat(args.shift()) * 1000) || 0; continue; }
@@ -86,6 +90,12 @@ async function report(descriptorFile, flags, summary) {
     process.exitCode = 1;
     return;
   }
+  if (result.threadId) {
+    console.log(`✅ Posted to thread "${result.threadName}" (id ${result.threadId}, ` +
+      `${result.created ? 'created' : 'reused'}) in #${result.parent}${summary ? ` ${summary}` : ''}.`);
+    console.log(`   thread id: ${result.threadId}  (reply into it with --channel ${result.threadId})`);
+    return;
+  }
   if (result.fallback) {
     console.log(`⚠️  Could not use #${result.requested}: ${result.reason || 'unknown reason'}.`);
     console.log(`⚠️  Posted to the DEFAULT channel #${result.channel} instead — not where you asked.`);
@@ -94,4 +104,20 @@ async function report(descriptorFile, flags, summary) {
   console.log(`✅ Posted to #${result.channel}${summary ? ` ${summary}` : ''}.`);
 }
 
-module.exports = { parseFlags, resolveChannel, queue, report, DEFAULT_TIMEOUT_MS };
+// T796: a thread name is kept as written (Discord allows spaces and capitals
+// in thread names); only refuse one that is empty.
+function resolveThreadName(requested) {
+  if (requested == null) return null;
+  const clean = String(requested).replace(/\s+/g, ' ').trim();
+  if (!clean) {
+    console.error('❌ --new-thread needs a name.');
+    process.exit(1);
+  }
+  if (clean.length > 100) {
+    console.error(`❌ Thread name is ${clean.length} chars; Discord's limit is 100.`);
+    process.exit(1);
+  }
+  return clean;
+}
+
+module.exports = { parseFlags, resolveChannel, resolveThreadName, queue, report, DEFAULT_TIMEOUT_MS };

@@ -48,6 +48,12 @@ test('the types that already worked still work', () => {
   assert.equal(kindOf(att('a.md', null)), 'text');
 });
 
+test('audio (live-tree only) is still accepted, and a rejection says audio works', () => {
+  assert.equal(kindOf(att('note.m4a', 'audio/mp4')), 'audio');
+  assert.equal(kindOf({ name: 'v.ogg', contentType: '' }), 'audio');
+  assert.match(rejectionReason(att('a.zip', 'application/zip')), /audio/);
+});
+
 test('an unsupported type is rejected, and the reason names it', () => {
   const zip = att('archive.zip', 'application/zip');
   assert.equal(kindOf(zip), null);

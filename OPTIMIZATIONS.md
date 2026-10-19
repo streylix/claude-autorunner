@@ -65,6 +65,265 @@ destroyed that uncommitted work.
 
 ---
 
+## 2026-10-09 — T619: the voice backend held 14 GB (13 GB of it in swap); freed heap now goes back to the OS, and the container restarts itself (branch `ssh-view`, uncommitted)
+
+**Request (Ethan, via the manager).** "clean swap and fix the leaks so it
+doesn't keep filling up ram usage and yes restart the containers". Scope: the
+backend container only. The app, Electron, aci-serve and the Claude sessions
+were not touched.
+
+**Before.** Host swap was full (31 of 31 GiB). The backend's daphne (pid
+2153192, up since 2026-09-22) held 0.8 GB RSS plus 13.5 GB VmSwap, the
+largest process on the box by about 8x.
+
+**Diagnosis: allocator retention, not a Python-level leak.** An smaps
+breakdown of that process: 10.4 GB in **242 glibc per-thread malloc heaps**
+(64 MB-aligned arenas), 3.4 GB in other anonymous mmaps, and under 100 MB in
+mapped libraries (torch, CTranslate2, onnxruntime and so on). Under ASGI,
+Django runs every sync view on a fresh thread (asgiref
+`ThreadSensitiveContext`), and glibc gives those threads up to 8 x 12 cores =
+96 arenas. Each arena keeps the high-water mark of the large, variable-size
+buffers allocated per request:
+`voice_transcription/transcription_service.py:176-215` (large-v3 runs on the
+**CPU** here, `.env` `WHISPER_DEVICE=cpu`, so CTranslate2's int8
+inference, the PyAV decode and the Silero VAD all allocate on the host heap),
+`text_to_speech/tts_service.py:118-121` (Kokoro chunks plus
+`np.concatenate`), and `voice_transcription/views.py:98`
+(`audio_file.read()`). Freed chunks stay in their arena until something
+calls `malloc_trim`. Nothing did, and `docker-compose.yml` set no
+`MALLOC_ARENA_MAX`.
+
+Measured on the live process with 20 calls, each one a TTS warm-up, a
+transcription and a wake-check, with clip lengths varying from 3 to 63 s: total
+memory ratcheted 14,111 → 14,524 MB, rising every time a longer clip arrived
+and never coming back down. With a fixed short input it stayed flat at 14,111,
+which is the signature of fragmentation high-water marks rather than per-call
+object growth.
+
+**Fix.**
+- `backend/terminal_backend/memory.py`: new `TrimHeapMiddleware` (added to
+  `MIDDLEWARE`) calls glibc `malloc_trim(0)` after `/api/voice/*`,
+  `/api/tts/speak/` and `/api/tts/health/` requests. On non-glibc platforms it
+  does nothing.
+- `docker-compose.yml`: `MALLOC_ARENA_MAX: "2"` and `restart: unless-stopped`.
+  The restart policy used to be `"no"`.
+- `backend/requirements.txt`: `av>=15.1,<18`. Rebuilding for this fix
+  re-resolved PyAV to 19.0.1, which dropped `av.open(metadata_errors=)`.
+  faster-whisper 1.2.1 still passes that argument, so **every transcription
+  returned 500** for about 3 minutes (00:29:46–00:32:26) until the pin went in.
+  Now on 17.1.0, and it was the only package that changed in the rebuild.
+
+**After.** The same 20-call varied loop on the new process stays between
+2,845 and 2,855 MB once the models load (2,715 MB before the first call),
+including the 47–56 s clips that grew the old process each time. Thread count
+holds at 33. RestartPolicy is `{"Name":"unless-stopped"}`. TTS health returns
+200, and transcribe returns 200 with "On it spinning up a terminal to set up
+Vikanya now." Host swap dropped from 31.4 to 22 GiB when the old process exited.
+
+**Downtime.** Recreate 1 at 00:28:58: healthy 00:29:07, TTS back 00:29:15,
+transcription broken (the PyAV problem above). Recreate 2 at 00:32:18:
+healthy 00:32:26, TTS 00:32:34, transcription 00:33:11. TTS was down twice
+for about 15 s each. Transcription was down from 00:28:58 to 00:33:11, about
+4 minutes, which is longer than the 1–2 minutes that were asked for.
+
+**Left for the owner.** The rest of the swap belongs to other processes, and
+clearing it needs root (`sudo -n` asks for a password). See T619's report
+for the command. Follow-up worth doing: the Hugging Face cache is not on a
+volume, so every container recreate re-downloads large-v3 (about 30 s of the
+first transcription after a restart).
+
+---
+
+## 2026-08-18 — Nothing typed was ever saved: a durable conversation log, plus open-ask extraction and a media volume that survives rebuilds (branch `ssh-view`, uncommitted)
+
+**Request (Ethan).** Log every message exchanged with him — across all
+destinations, not just Discord — with structured metadata, and periodically
+extract the things he has asked for, so the manager retains what he said and
+what he wants across `/clear` and compaction. Explicitly out of scope: no
+embeddings, no vector DB, no RAG. At this volume plain SQL wins.
+
+**The gap, confirmed on disk.** Spoken output was the only thing persisted
+anywhere (`text_to_speech.Notification`). Everything typed, in either
+direction, was persisted nowhere — `backend/message_queue/models.py` still
+says in as many words that the models were removed and the frontend queue is
+the single source of truth. That queue dies with the session.
+
+**And the spoken half was quietly being destroyed too.** `text_to_speech`
+caps itself at `MAX_NOTIFICATIONS = 500` and calls `_prune()` on every
+create, deleting older rows *and* their audio. Ids ran 1625–2124 with a count
+of exactly 500: roughly 1,624 past messages were already gone for good. That
+is the data loss this whole feature exists to stop, so the new log is
+append-only by construction — no cap, no prune, no TTL, no trimming command,
+and no ForeignKey from the log back to `Notification`. A backfilled row keeps
+only the *string* `"tts:<pk>"`, so pruning can never reach it. A test asserts
+a `Message` survives deletion of the `Notification` it came from, and another
+runs `_prune()` with the cap lowered and asserts the log rows all remain.
+
+**What was built.**
+
+- **New Django app `conversation_log`** with two tables. `Message`:
+  `created_at` (indexed, and settable so backfilled rows keep their real
+  timestamps), `direction` (inbound|outbound), `destination`
+  (discord|tts|terminal|other — a real column, so sources can be told apart),
+  `kind` (text|voice|image|video|file), `text`, `media_path`, `external_id`,
+  `meta` (JSON). `OpenAsk`: `text`, `source_message` FK, `status`
+  (open|done|dropped), `created_at`, `resolved_at`, `notes`.
+- **`POST /api/conversation/messages/`** stores a message and returns its id.
+  Fire-and-forget safe: unknown enum values fall back instead of erroring,
+  non-dict `meta` is wrapped, missing fields default, and a blanket handler
+  guarantees a logging caller can never take a 500. `external_id` is unique
+  when non-empty, so a retried post can't duplicate a row.
+- **`GET /api/conversation/messages/`** with `since`, `until`, `destination`,
+  `direction`, `q` (text search), `limit`. Newest first.
+- **`GET /api/conversation/open-asks/?status=open`**.
+- **The Discord bridge writes both directions.** Inbound is logged at
+  `linkManager.forward()` — the single choke point every inbound path funnels
+  through (typed auto-forward, `/prompt`, voice transcripts, file drops), and
+  it logs *before* the linked-check, because an unlinked bot dropping a
+  message on the floor is exactly the case where losing it hurts. Outbound is
+  logged at the real send sites in `textMirror` (`postText` / `postImage` /
+  `postVideo`), which is where `tools/post-text.js`, `post-image.js` and
+  `post-video.js` all end up via the outbox watcher — so the log records what
+  actually went out, with a `delivered` flag when it didn't. `postReplied()`
+  is deliberately *not* logged: it only mirrors a TTS notification that the
+  backend already records as `destination='tts'`.
+- **A backend outage cannot break delivery.** `src/conversationLog.js` copies
+  the `src/log.js` contract — async, never awaited by callers, swallows
+  everything, 4s timeout, warnings throttled to one a minute so an outage
+  can't flood the log stream. Proven by tests that stub the backend to reject,
+  to return 500, and to hang forever, and assert the Discord post still sends
+  and the manager still receives the forwarded message.
+- **TTS is logged inline in `speak()`** with `destination='tts'`, wrapped so a
+  logging failure can never fail a successful speak, and placed *before*
+  `_prune()` can touch the row.
+- **Backfill.** `manage.py backfill_tts_messages` recovered the 500 surviving
+  notifications as historical outbound messages, timestamps intact. Idempotent
+  via `external_id`: the second run created 0 and reported 500 already logged.
+- **Extraction.** `manage.py extract_open_asks` scans only messages newer than
+  its watermark (`ExtractionState`), so it is cheap to run on a schedule, and
+  `OpenAsk.dedupe_key` is unique, so even a full `--reset` rescan cannot
+  duplicate. The matcher is plain regex over sentences — request cues
+  ("please", "can you", "make sure", a leading imperative verb…) with
+  information-seeking questions excluded. No embeddings, no vector DB, no RAG,
+  as asked. Rows whose `meta.synthetic` is true (smoke tests, probes) are kept
+  as log entries but skipped by the extractor, so a `--reset` rescan can never
+  turn a test row into something that looks like an Ethan ask.
+
+**The synthetic marker, made structural.** Ethan's words were "you can
+periodically check this", so anything a check writes must be impossible to
+mistake for something he said — an `OpenAsk` he never uttered is worse than no
+log at all, because it would get acted on. So a row marked `meta.synthetic` is
+(a) accepted top level too (`{"synthetic": true}`), because a caller that
+fumbles the nesting would otherwise produce a silently-unmarked row, (b) hidden
+from `GET /messages/` by default — `?synthetic=include` or `?synthetic=only` to
+see them — and (c) skipped by extraction entirely. The rows stay in the table;
+they just never masquerade as real traffic. One landmine found while building
+this: `qs.exclude(meta__synthetic=True)` is WRONG on a JSON key path, because a
+missing key evaluates to NULL and `NOT NULL` is NULL, so it silently drops every
+*unmarked* row — the entire real log. It has to be
+`filter(Q(meta__synthetic__isnull=True) | Q(meta__synthetic=False))`.
+
+**Hourly extraction is now actually scheduled.** `scripts/extract-open-asks.sh`
+plus a systemd **user** timer (`~/.config/systemd/user/ccbot-extract-open-asks.{service,timer}`,
+same layout as the `ccbot-discord-bridge` user unit; the account already has
+`Linger=yes`, so it runs without an active session). `OnCalendar=hourly` with
+`Persistent=true`, so a run missed while the machine was off catches up instead
+of vanishing.
+
+The runner is built to fire into a down or half-rebuilt backend and shrug: it
+checks the container's health itself and exits 0 with a single informational
+line if it isn't `healthy`, wraps the `docker compose exec` in a 300s timeout,
+and treats every unexpected failure as information rather than a unit failure.
+Nothing here is time-critical, and an hourly red unit in the journal is worse
+than a skipped run. Verified all three paths — healthy (`scanned 0 …`), stopped
+(`backend not healthy (state: unhealthy) — skipping`), and container removed
+entirely, the true mid-rebuild state (`state: absent — skipping`) — each
+exiting `Result=success`, `ExecMainStatus=0`. Partial writes aren't possible in
+a meaningful sense: every ask is its own atomic `get_or_create` and the
+watermark only advances at the end, so a run killed halfway just gets rescanned
+and de-duped next hour.
+
+**The instrumentation made `npm test` write to production, and that had to be
+fixed at the source.** `textMirror.typing.test.js` has always called
+`postText('manager reply')` against a fake channel; once `postText` logged, that
+pre-existing test started POSTing a row into the live conversation table on every
+`npm test` run — two `'manager reply'` rows landed before it was caught, and they
+looked exactly like real messages sent to Ethan. Silent fiction in the record is
+worse than a gap, because a gap is visible. So `conversationLogEnabled` now
+defaults to **false** whenever `NODE_TEST_CONTEXT` is set (the node test runner
+sets it), and any row built from under the runner is stamped `meta.synthetic`
+regardless. But a disabled flag is still only a *behavioural* guard — the URL
+still pointed at production, so a test that flipped the flag would write. The
+suite must be structurally **unable** to reach the backend, so the HTTP call is
+now an injected transport: under `NODE_TEST_CONTEXT` the default transport is a
+sink that touches no socket, and the endpoint is redirected to `http://127.0.0.1:1`
+(reserved, nothing listens). Tests observe the logger by injecting their own
+transport, never by stubbing global `fetch`, so there is no path from the suite
+to the network at all — one test asserts that even deliberately forcing the real
+transport back on still resolves to the unroutable address.
+
+Proven the way it has to be proven, against the database rather than the test
+output — `SELECT COUNT(*), MAX(id) FROM conversation_log_message` before and
+after a full 71-test run: **510 / 516 both times.**
+
+The two fixture rows were **deleted**, not marked — they were never messages at
+all (the "channel" was a test double, nothing was ever sent to anyone), so
+marking them would preserve a record of an event that did not happen.
+
+The outbound smoke test id 506 went the other way: the bridge journal records
+`08:55:25.686 [ok] posted manager text to #claude-voice (66 chars)`, so it
+genuinely reached the channel. It is therefore left **unmarked** — real traffic
+Ethan could have seen — with a `meta.note` recording that Claude authored it as
+a probe. The rule is that the log agrees with what is actually in Discord;
+`synthetic` is for rows that never happened, not for rows with an awkward
+author. The only synthetic row in the table is 501, which was never sent
+anywhere.
+
+**To disable it** (so future-you doesn't find a mystery job writing rows):
+
+```bash
+systemctl --user disable --now ccbot-extract-open-asks.timer
+```
+
+`systemctl --user list-timers` shows it; `journalctl --user -u ccbot-extract-open-asks.service`
+is its history. Extraction can still be run by hand at any time with
+`docker compose exec backend python manage.py extract_open_asks`.
+
+**Media volume — deploying this must not be what destroys the audio.** The
+backend image has no source bind-mount, so shipping the app meant a rebuild,
+and `MEDIA_ROOT` lived in the container's writable layer: every previous
+`up --build` silently destroyed the `.wav` files for notifications still
+referenced in Postgres. Added the named volume `ccbot-media` at `/app/media`
+and migrated the existing audio into it *before* the rebuild (149MB, 231
+files, tar'd out of the live container and loaded into the volume). Verified
+by playback, not by inspection: `/api/tts/audio/1896/` returns the same
+169,244 bytes of real `RIFF … WAVE` data after the rebuild as before it, and
+the audio survived a *second* rebuild with no manual step — which is the
+actual proof the volume works.
+
+**Tests.** 36 Django tests (models, both endpoints, malformed-payload
+handling, backfill idempotency, prune isolation, extraction) and 16 bridge
+tests under `node --test`, all passing, plus the pre-existing 50-test bridge
+suite still green at 66/66. Pre-existing and unrelated: `frontend_control`
+has 22 failing tests for timer endpoints that were deleted from its `urls.py`
+in the backend simplification — they fail identically without this change.
+
+**Rollback.** `docker compose exec backend python manage.py migrate
+conversation_log zero` drops the tables; removing `"conversation_log"` from
+`INSTALLED_APPS` and the `api/conversation/` line from
+`terminal_backend/urls.py` unwires it; `CONVERSATION_LOG_ENABLED=false` in the
+bridge env turns off logging without a code change. The `ccbot-media` volume
+should be kept regardless — it is a fix in its own right.
+
+- Files: `backend/conversation_log/` (new app), `scripts/extract-open-asks.sh`,
+  `~/.config/systemd/user/ccbot-extract-open-asks.{service,timer}` (outside the
+  repo), `backend/text_to_speech/views.py`,
+  `backend/terminal_backend/settings.py`, `backend/terminal_backend/urls.py`,
+  `docker-compose.yml`, `discord-bridge/config.js`,
+  `discord-bridge/src/conversationLog.js` (new),
+  `discord-bridge/src/conversationLog.test.js` (new),
+  `discord-bridge/src/linkManager.js`, `discord-bridge/src/textMirror.js`.
+
 ## 2026-08-11 — Restarts were loading a DIFFERENT checkout; build identity is now reportable, and manager (999) traffic bypasses the queue gate (branch `ssh-view`, uncommitted)
 
 **Request (Ethan).** Two problems. First, the blocker: a restart at 13:35
@@ -5115,6 +5374,43 @@ restart window.
 - Files: `src/features/StuckWatchManager.js` (+ test),
   `src/features/ManagerInstance.js` (+ dedup test), `renderer.js`.
 
+## 2026-08-07 — Default manager instructions: operational lessons + de-personalized
+
+- **Operational lessons baked into the default manager CLAUDE.md**
+  (`src/main/manager-session.js`, the `MANAGER_CLAUDE_MD` template literal): a
+  new `## Operational lessons (hard-won — apply these)` section inserted
+  immediately before the closing `## Rules` section. It collects behaviors that
+  previously had to be relearned per-manager, grouped as: **Steering terminals**
+  (prefer `urgent` — `normal` silently stalls and cannot reach an SSH'd
+  terminal; wait for a shell prompt after `create`; answer the "Do you trust
+  this folder?" prompt; don't hammer `/terminal/create` after a
+  `control timeout`), **Reading terminal state** (the dimmed input-line text is
+  Claude Code's autosuggestion, not the user; only manage assigned terminals;
+  sweep every terminal since a stuck one never fires a completion), **Remote
+  (SSH) work** (create bare terminal → ssh → start `claude` there, rather than a
+  local Claude issuing remote commands; verify you landed on the right machine),
+  **Infra gotchas** (an app restart kills the manager and every live session;
+  create/delete churn leaks PTYs until `sudo` and new terminals fail; a delivery
+  channel reporting "sent" is not proof its process is alive), and **Doing the
+  job well** (independently verify a delegate's self-report, report faithfully,
+  don't route around a safety classifier, acknowledge first then work).
+- **De-personalized for cloners**: the "One Hard Rule" section hardcoded the
+  original author's manager path (`/media/ethan/smalls/claude-manager`) as the
+  definition of "your own directory", which would be wrong and confusing for
+  anyone else's manager. Replaced with user-agnostic phrasing — "your own
+  manager directory (the directory this CLAUDE.md lives in — your working
+  directory)". No API or behavior change; the template stays a static const, so
+  no manager-directory interpolation was introduced.
+- `MANAGER_MD_VERSION` bumped `v9` → `v10` so existing manager directories get
+  their CLAUDE.md refreshed instead of keeping the stale copy (that's what the
+  marker-version mechanism is for).
+- Escaping: the inserted markdown is inside a JS template literal, so every
+  backtick in it is written `\``. Verified by evaluating the literal and
+  diffing the rendered section against the source markdown — byte-for-byte
+  identical, `BACKEND_URL` still interpolates, no personal paths remain.
+  `node --check src/main/manager-session.js` passes.
+- Files: `src/main/manager-session.js`.
+
 ## 2026-08-07 — Manager nightly `/clear` (daily context reset at local midnight)
 
 **Why.** The manager (999) is a long-lived session that accumulates context all
@@ -5766,3 +6062,255 @@ Also, a terminal created with a title showed as "Terminal N" in the view, becaus
   `npm run build-remote`: new bundle `0ed550b8…3e7e`, served as-is. The service is still PID 417244.
   The host-side parts of T668 (titles on create, Send-now relay, stale-lock removal in code) still
   wait for a restart.
+
+## 2026-08-12 — Backend image: CPU-only torch (Kokoro TTS off the GPU; Whisper STT stays on it)
+
+The backend image had ballooned to **8.82GB**, and its daphne process was
+holding **4,830 MiB** of the RTX 3090's 24GB around the clock. That card is
+shared with llmapi, whose models run 4.6GB–42.5GB and were constantly evicting
+each other, so the reservation was real money. Nearly all of the bulk was one
+line in `backend/Dockerfile`: `RUN pip install torch` pulled the default PyPI
+wheel, which ships the entire CUDA stack (~4.85GB of `nvidia-*` libs plus
+triton).
+
+The only torch workload in this image is **Kokoro TTS**, an 82M-parameter model.
+Ethan's call was that CPU is "pretty fast regardless" — measured below, and it
+holds. So torch is now the CPU-only wheel, pinned:
+
+```
+RUN pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+```
+
+- **Whisper STT was NOT moved to the CPU, and this is the subtle part.** The same
+  container also serves `faster-whisper` large-v3, which is where most of that
+  4.8GB actually went (Kokoro-82M is small). Whisper runs on **CTranslate2**,
+  which carries its own CUDA runtime and has nothing to do with torch's build —
+  but the device gate read `torch.cuda.is_available()`, so simply installing CPU
+  torch would have silently dropped large-v3 onto the CPU and wrecked voice
+  input while looking like a clean success. Both device decisions are now
+  explicit env vars instead of probes: `TTS_DEVICE` (default `cpu`) and
+  `WHISPER_DEVICE` (default `cuda`), set in `docker-compose.yml`. The
+  `_preload_cuda12_libs()` gate moved to `WHISPER_DEVICE` for the same reason.
+- **`nvidia-cublas-cu12` / `nvidia-cudnn-cu12` must stay in requirements.txt.**
+  CTranslate2 dlopens `libcublas.so.12` / `libcudnn*.so.9`, and with CUDA torch
+  gone these wheels are now the *sole* source of those libs — previously torch's
+  cu13 bundle was there as an accidental backstop. `torch` is pinned `==2.13.0`
+  (not `>=`) so a transitive resolve can't quietly pull the CUDA build back in
+  and re-reserve VRAM.
+- **Results.** Image **8.82GB → 4.82GB**. Disk `/` went 36G → 63G available (more
+  than the image delta: recreating the container also dropped a two-week-old
+  writable layer full of cached model weights). VRAM: the backend vanished from
+  `nvidia-smi` entirely at first, then settled at **2,162 MiB** once Whisper
+  lazily reloaded — a **permanent ~2.7GB** returned to the card, with GPU
+  transcription intact.
+- **Latency, measured, same sentence both sides** ("Terminal three has finished
+  running the test suite.", 3.525s of audio): GPU **0.09–0.18s** → CPU
+  **0.44–0.47s** warm. About a third of a second slower in absolute terms, far
+  under the point where a spoken notification feels delayed, and byte-identical
+  output (`duration_ms` 3525 both sides). Verdict: accepted. Warm STT round-trip
+  is 0.44s and still GPU-backed (`Loaded large-v3 on cuda (int8_float16)`).
+- **Cold start is the one rough edge, and it predates this change.** The first
+  TTS request after a container recreate takes ~13s (Kokoro pipeline build) and
+  the first transcription ~86s (large-v3 fetch + load), because the HF cache
+  lives in the container's writable layer and is discarded on recreate. Same
+  behavior before this change; worth a warm-up hit to `/api/tts/health/` after a
+  restart if the first notification landing late is annoying.
+
+**ROLLBACK — the pre-change image is tagged, so this is one command and ~15s:**
+
+```bash
+docker tag claude-autorunner-backend:pre-cpu-torch claude-autorunner-backend:latest && docker compose up -d --force-recreate --wait backend
+```
+
+That restores CUDA torch and puts Kokoro back on the GPU. Note it does NOT
+revert the source files — `git checkout backend/Dockerfile backend/requirements.txt
+backend/text_to_speech/tts_service.py backend/voice_transcription/transcription_service.py
+docker-compose.yml` for that, otherwise the next `docker compose build` reapplies
+the change. Once this has run happily for a while, reclaim the 8.82GB with
+`docker rmi claude-autorunner-backend:pre-cpu-torch`.
+
+- Files: `backend/Dockerfile`, `backend/requirements.txt`,
+  `backend/text_to_speech/tts_service.py`,
+  `backend/voice_transcription/transcription_service.py`, `docker-compose.yml`.
+
+## 2026-09-22 — Whisper STT moved off the GPU to unblock llmapi's vision encoder
+
+**Why.** llmapi's Qwen3-VL vision model was encoding images on the CPU, roughly 35x
+slower, because its preflight found 17.59GB of VRAM free and needed 18.77GB to put
+CLIP on the card. This backend container was holding 2,080 MiB of the RTX 3090.
+Ethan's call: "free your voice backend, it is not used that much for the time being."
+
+**What was actually holding it — measured, not assumed.** Not the TTS voice model, and
+not onnxruntime: the `onnxruntime` package here is the CPU build and none of its
+libraries are mapped into the process at all. The holder is **faster-whisper's engine,
+CTranslate2 4.8.1**, which carries its own CUDA runtime independent of torch. Proof is
+in the live process's own memory map: `libctranslate2-*.so.4.8.1` is mapped alongside
+cuDNN 9 and cuBLAS 12, while torch here is `2.13.0+cpu` and reports no CUDA. The
+compose file already said as much in a comment next to `WHISPER_DEVICE`.
+
+**The change.** One line in the gitignored `.env`, which `docker-compose.yml` already
+interpolates as `WHISPER_DEVICE: ${WHISPER_DEVICE:-cuda}`:
+
+    WHISPER_DEVICE=cpu
+
+No tracked file was edited and no image was rebuilt — the container was recreated on
+the same image id so the code it runs is byte-identical to before.
+
+**The cost.** Transcription now runs `large-v3` as int8 on the CPU. Measured on a
+5-second clip: **6.5 seconds** end to end, transcript accurate, confidence 0.97. The
+code already had this path (`transcription_service._load()` falls back to CPU), so no
+endpoint changed shape. Kokoro TTS is unaffected — it was already on CPU torch.
+
+**Result.** GPU free went from 11,858 MiB to 13,943 MiB — **2,085 MiB freed**, against
+the 1.21GB shortfall. llmapi will measure about 21.05GB free at its next model load
+against a threshold of 18.77GB, a margin of +2.28GB. That last part is a prediction
+from llmapi's own logged constants, not an observation: the model it has resident was
+loaded at 18:27, before this change, so it is still running CLIP on the CPU until it
+next reloads.
+
+**Verified after the restart:** the container is up and healthy, the conversation-log
+API answers 200 and is recording new messages, the TTS speak endpoint returns 201 with
+real audio, and transcription works on the CPU.
+
+**Files written**
+
+- `/mnt/smalls/claude-autorunner/.env` (one variable appended; gitignored)
+- `/mnt/smalls/claude-autorunner/OPTIMIZATIONS.md` (this entry)
+
+## 2026-09-23 — T459: preparing the consolidation of the two worktrees, nothing changed yet
+
+**Why.** Two working trees of this repo have existed side by side:
+`/mnt/smalls/claude-autorunner` (branch `ssh-view`, what `ccbot-discord-bridge.service`
+loads its `discord-bridge` from) and `/mnt/smalls/aci-serve` (a git worktree on branch
+`dev`, what `aci-serve.service` — the interface itself — actually runs from). A fix for
+`.html` attachments was written into aci-serve's copy of `discord-bridge/src/mediaInbox.js`
+on 2026-09-22 but the bridge service loads autorunner's copy, which never got it: verified
+code that nothing executes. Ethan decided to collapse back to one checkout in
+`claude-autorunner`.
+
+**This entry only covers preparation** — nothing was restarted, no worktree was removed, no
+unit file was touched, and no uncommitted change in either tree was altered or discarded.
+
+**What was captured and verified:**
+
+- Full non-destructive `cp -a` backups of both trees (symlinks preserved, not followed) at
+  `/mnt/smalls/T459-backups/20260923-181722/`, plus `git status --porcelain` and `git diff`
+  manifests for each tree in the same folder. Uncommitted-file counts were re-taken
+  immediately after the backup and matched the pre-backup counts exactly: 39 in
+  claude-autorunner, 22 in aci-serve.
+- Re-derived (not assumed) that `ssh-view` is a strict ancestor of `dev` —
+  `git rev-list --left-right --count ssh-view...dev` → `0  32`, and
+  `git merge-base ssh-view dev` equals `ssh-view`'s own HEAD (`7b68fac`). So `dev` is
+  ssh-view plus 32 more commits touching 68 files; nothing in ssh-view is missing from dev.
+- `discord-bridge/src/mediaInbox.js`: identical at the last-committed level in both trees
+  (0-line diff) — the `.html` fix is a pure uncommitted edit that exists only in aci-serve's
+  working tree. autorunner's live copy has 0 matches for `htm`; aci-serve's has 5. aci-serve's
+  copy is the one that must survive.
+- The two trees also carry **independent, non-identical uncommitted edits to the same files**
+  well beyond mediaInbox.js — `discord-bridge/config.js`, `discord-bridge/OPTIMIZATIONS.md`,
+  `discord-bridge/src/imageOutbox.js`, `discord-bridge/src/index.js`,
+  `discord-bridge/src/textMirror.js`, and the top-level `OPTIMIZATIONS.md` all differ between
+  the two live trees and will need a human decision, not an automatic merge, before the
+  cutover can run safely.
+- A straight `git merge --ff-only dev` inside claude-autorunner (while it's on `ssh-view`)
+  would be refused by git outright — 9 paths block it: 7 tracked files with uncommitted
+  local edits that the 32 incoming commits also touch (`OPTIMIZATIONS.md`,
+  `backend/terminal_backend/settings.py`, `backend/terminal_backend/urls.py`,
+  `backend/voice_transcription/transcription_service.py`,
+  `discord-bridge/src/controlApi.js`, `discord-bridge/src/index.js`,
+  `src/main/manager-session.js`), plus 2 untracked local files
+  (`discord-bridge/src/replyContext.js`, `discord-bridge/src/replyContext.test.js`) sitting
+  where the incoming commits would create tracked files of the same name.
+- Read (not edited) the two systemd `--user` unit files verbatim from
+  `~/.config/systemd/user/`: `aci-serve.service` (`WorkingDirectory=/mnt/smalls/aci-serve`)
+  and `ccbot-discord-bridge.service` (`WorkingDirectory=/mnt/smalls/claude-autorunner/discord-bridge`,
+  `EnvironmentFile=/mnt/smalls/claude-autorunner/discord-bridge/.env`), to ground the handoff
+  sequence in what is actually configured today.
+
+**Not done, deliberately:** no branch switch, no worktree removal, no unit-file edit, no
+service restart. The reconciliation of the 14 files listed above and the actual cutover are
+left for Ethan to run — see the T459 handoff for the exact sequence.
+
+**Files written**
+
+- `/mnt/smalls/T459-backups/20260923-181722/` (backups + status/diff manifests; new, outside
+  the repo)
+- `/mnt/smalls/claude-autorunner/OPTIMIZATIONS.md` (this entry)
+
+## 2026-10-11 — T636: Discord `/manager codex` — Codex stands in for the manager (bridge only)
+
+**Problem.** When the Claude manager (terminal 999) runs out of usage or context, every Discord
+message still lands in its dead prompt and nothing answers. There was no way, from Discord, to
+put another agent in its seat.
+
+**What changed (all inside `discord-bridge/`, the live tree the systemd unit runs:
+`WorkingDirectory=/mnt/smalls/claude-autorunner/discord-bridge`).**
+
+- New `src/standIn.js`. `/manager codex` creates a new app terminal in `/mnt/smalls/claude-manager`
+  (`POST /terminal/create`), types a `codex` command into it (`POST /terminal/keys`), and confirms
+  Codex is up by reading the screen (`POST /terminal/screen`, scrollback on). If the screen never
+  shows Codex, the command is re-sent once as an *urgent* `POST /queue/add`; an unconfirmed start is
+  reported as unconfirmed, never as success. The terminal is spawned by the app, so it carries the
+  same `CCBOT_PORT` / `CCBOT_TOKEN` as the manager.
+- **Priming is a generated first prompt, not an AGENTS.md** — so nothing is written outside the
+  bridge directory. The prompt tells Codex it is standing in for 999, to read the manager's
+  `CLAUDE.md` and its memory index (`~/.claude/projects/-mnt-smalls-claude-manager/memory/MEMORY.md`),
+  where the control API is, that its tools are `bin/tell`, `bin/task`, `bin/steer`, `bin/sweep`, to
+  answer every Discord message with `bin/tell`, never to message 999, and to start by running
+  `GET /state` and confirming readiness via `bin/tell`.
+- **Codex permissions:** `-a never` (no approval prompts — nobody is at the TUI), `-s workspace-write`
+  rooted at the manager's directory, and `sandbox_workspace_write.network_access=true` so it can reach
+  the loopback control API and post to Discord. A first attempt used the full
+  approvals-and-sandbox bypass; the tighter form was chosen instead.
+- **Codex trust prompt survived.** `/mnt/smalls/claude-manager` is not a trusted project in
+  `~/.codex/config.toml` (only the old `/media/...` path is), so a cold `codex` there shows "Trust
+  this folder?" and would stall with nobody at the TUI. Two defenses: the launch passes
+  `-c 'projects."/mnt/smalls/claude-manager".trust_level="trusted"'` (verified to parse; the bridge
+  never edits config.toml), and if the dialog still shows on screen the start loop answers it
+  (Enter = "Trust and continue", then "1"+Enter) and reports `trustPrompt: true`.
+- **Live c5 failure fixed (2026-10-11 18:58, terminal 19):** the stand-in's first `bin/tell` died
+  with "REFUSING to flag - notified: the post was not accepted". Cause, reproduced with
+  `codex sandbox`: workspace-write mounts everything outside the workspace and /tmp read-only, and
+  `bin/tell` → `post-text.js` writes its descriptor into `$XDG_RUNTIME_DIR/ccbot-bridge/outbox`
+  ("Read-only file system"). Fix: the launch adds
+  `-c 'sandbox_workspace_write.writable_roots=["<runtime>/ccbot-bridge/outbox"]'` (the exact dir the
+  bridge's outbox watcher reads; the vault/resume/stand-in files beside it stay read-only to Codex).
+  Verified the same touch succeeds with that root and the workspace stays writable. Takes effect on
+  the next `/manager codex`; terminal 19 was left untouched.
+- **Self-test messages are not Ethan's words.** The first round-trip run's test lines were sent as
+  `typed`, so they landed in the conversation log and in sweep as his last inbound. New source
+  `synthetic` (used by `tools/t636-roundtrip.sh`): framed "🧪 Synthetic bridge self-test (NOT a
+  message from the user…)" and logged with `meta.synthetic: true` (the same flag test-runner rows
+  already carry). Existing rows were left as they are; sweep can filter on the flag.
+- **Routing.** `LinkManager.effectiveTarget()` swaps the delivery terminal from 999 to the stand-in
+  while one is active. Every inbound path already funnels through `linkManager.forward()` (typed
+  auto-forward, `/prompt` without a terminal, voice memos), so all of it follows. `/clear` stays
+  pinned to 999 on purpose — it is Claude Code's own command, and resetting 999's context is exactly
+  what a stand-in period is for. `/prompt terminal:<n>` is unchanged.
+- `/manager claude` hands back: `POST /terminal/delete` on the Codex terminal, state cleared,
+  routing returns to 999. `/manager status` (and a new line in `/status`) say where messages go.
+- **State survives a bridge restart:** `$XDG_RUNTIME_DIR/ccbot-bridge/standin.json` (next to
+  `resume.json` and the vault; wiped on reboot, which matches the terminal it names). On every
+  link the record is re-validated against live `/state`; it is dropped if the terminal is gone or
+  the app's control port changed. The file is the single source of truth and is re-read when its
+  mtime changes, so the new CLI twin `tools/manager-standin.js codex|claude|status` (uses the local
+  vault, no Discord needed — the manager itself can hand over before it goes dark) is picked up by
+  the running bridge without a restart.
+- **Tests post nothing to the production backend.** `log.js` forwarded every log line to
+  `127.0.0.1:8123` with no test gating. `config.forwardLogsToBackend` is now hard-off under
+  `node --test` (no env var can re-enable it there), with `src/log.testgate.test.js` asserting it.
+  Verified at the TCP level: the whole suite ran under a `net.Socket.connect` spy (self-checked
+  against a real connect + fetch to 8123 first) — 0 connections to port 8123.
+- New tests: `src/standIn.test.js`, `src/linkManager.standIn.test.js`, `src/commands.manager.test.js`,
+  `src/log.testgate.test.js`. Suite: 215 pass / 0 fail (was 184 / 0).
+
+**Live verification status.** The control-API shape was proven live without an agent: a bare
+terminal was created in `/mnt/smalls/claude-manager` (id 19, `runtime: shell`, prompt visible on
+its screen) and deleted again. The bridge restart and the actual Codex launch (`/manager codex`,
+or `node tools/manager-standin.js codex`) were refused by the session's permission classifier as
+"creating an unsafe agent", so the end-to-end run (c1–c5) is pending a human running
+`discord-bridge/tools/t636-roundtrip.sh` (restart → start Codex → route a test message → restart →
+hand back → message to 999; prints whether the trust prompt appeared; ends on 999, no Codex terminal).
+Until the bridge is restarted, the running bridge is the pre-change build and has no `/manager`.
+
+**Not committed** (per the brief).

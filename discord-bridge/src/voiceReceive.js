@@ -63,7 +63,11 @@ class VoiceReceiver {
     this.mutedUsers = new Set();      // userIds whose mic is muted (capture OFF)
     this._uttSeq = 0;                 // per-utterance file sequence
     this.lastAudioAt = 0;             // ms timestamp of the last audio activity
+    this.lastDecodedAt = 0;           // ms timestamp of the last DECODED audio frame
+    this._decodeHealthy = true;       // false after a capture saw packets but decoded nothing
     this.attachedAt = 0;              // ms timestamp of the current attach
+    this.utterances = new Map();      // userId -> open always-listen utterance
+    this._writing = new Set();        // utterances with real speech not yet sent (isWriting)
     // Wired by index.js to the BridgeSession so wake-detection plays an
     // acknowledgment sound into the channel. No-ops until set.
     this.onWakeAck = () => {};
@@ -94,7 +98,17 @@ class VoiceReceiver {
     return this.lastAudioAt > 0 && (Date.now() - this.lastAudioAt) < config.userSpeakingGraceMs;
   }
 
-  // In-call always-listen: no wake word, mic mute is the off switch.
+  // True while an utterance with real speech is being captured, drafted or
+  // finalized and has not been sent yet. Bot playback is HELD while it's true.
+  isWriting() { return this._writing.size > 0; }
+
+  // Hold check for the player/sink: always-listen holds on isWriting (the whole
+  // utterance, pauses included); wake mode keeps the short speaking-grace hold.
+  shouldHoldPlayback() {
+    return this._alwaysOn() ? this.isWriting() : this.isUserSpeaking();
+  }
+
+  // In-call always-listen: no wake word; muting the mic sends what was said.
   _alwaysOn() {
     return !!config.alwaysListenInCall;
   }
@@ -129,8 +143,12 @@ class VoiceReceiver {
   }
 
   // Health snapshot consumed by ReceiverHealthMonitor.
+  // Speaking events fire per UDP packet BEFORE decryption, so while decoding is
+  // broken they keep lastAudioAt fresh and hide the fault (T510) — after a
+  // capture that decoded nothing, only decoded audio counts as reception.
   getHealth() {
-    const ref = this.lastAudioAt || this.attachedAt || Date.now();
+    const ref = (this._decodeHealthy ? this.lastAudioAt : this.lastDecodedAt)
+      || this.attachedAt || Date.now();
     return { audioAgeMs: Date.now() - ref, everReceived: this.lastAudioAt > 0 };
   }
 
@@ -149,6 +167,7 @@ class VoiceReceiver {
 
   attach(connection) {
     this.connection = connection;
+    this._reportUnsentDrafts();
     this.attachedAt = Date.now();
     this.lastAudioAt = 0; // reset per attach so a fresh join starts "cold"
     const receiver = connection.receiver;
@@ -159,20 +178,7 @@ class VoiceReceiver {
       // the bot speaks (their stream never contains the bot's TTS). Only pause if
       // explicitly opted in (PAUSE_CAPTURE_DURING_TTS=1).
       if (config.pauseCaptureDuringTts && this.isBotSpeaking()) return;
-      if (this.active.has(userId)) return;
-      if (this.mutedUsers.has(userId)) return; // muted = off switch
-      // Speaker authorization: ALLOWED_SPEAKER_IDS when set, otherwise fall back
-      // to the command allow-list (DISCORD_ALLOWED_USER_IDS) — speaking the wake
-      // word drives the manager just like /prompt does, so an unset speaker list
-      // must not mean "everyone in the channel".
-      const speakers = config.allowedSpeakerIds.length
-        ? config.allowedSpeakerIds : auth.allowList();
-      if (!speakers.includes(String(userId))) return;
-      this.active.add(userId);
-      this._capture(receiver, userId).catch((err) => {
-        log.error('capture error:', err.message);
-        this.active.delete(userId);
-      });
+      this._maybeStartCapture(receiver, userId);
     });
     const w = config.wake();
     if (this._alwaysOn()) {
@@ -182,8 +188,45 @@ class VoiceReceiver {
     }
   }
 
+  _maybeStartCapture(receiver, userId) {
+    if (this.active.has(userId)) return;
+    if (this.mutedUsers.has(userId)) return; // muted = not listening
+    // Speaker authorization: ALLOWED_SPEAKER_IDS when set, otherwise fall back
+    // to the command allow-list (DISCORD_ALLOWED_USER_IDS) — speaking the wake
+    // word drives the manager just like /prompt does, so an unset speaker list
+    // must not mean "everyone in the channel".
+    const speakers = config.allowedSpeakerIds.length
+      ? config.allowedSpeakerIds : auth.allowList();
+    if (!speakers.includes(String(userId))) return;
+    this.active.add(userId);
+    if (this._alwaysOn()) {
+      try { this._captureUtterance(receiver, userId); } catch (err) {
+        log.error('capture error:', err.message);
+        this.active.delete(userId);
+      }
+      return;
+    }
+    this._capture(receiver, userId).catch((err) => {
+      log.error('capture error:', err.message);
+      this.active.delete(userId);
+    });
+  }
+
+  // Unsent drafts left by a crash/restart mid-utterance: say where they are.
+  _reportUnsentDrafts() {
+    try {
+      const unsent = fs.readdirSync(config.draftDir)
+        .filter((n) => n.endsWith('.jsonl') && !n.endsWith('.sent.jsonl'));
+      if (unsent.length) log.warn(`${unsent.length} unsent voice draft(s) kept in ${config.draftDir} (e.g. ${unsent[unsent.length - 1]}).`);
+    } catch (_) { /* no draft dir yet */ }
+    this._pruneDrafts(true);
+  }
+
   detach() {
+    // Leaving ends every open utterance — and sends what was captured. The
+    // connection is cleared FIRST so a finishing utterance can't re-subscribe.
     this.connection = null;
+    for (const u of [...this.utterances.values()]) u.finish('left channel');
     this.active.clear();
     this.armedUntil.clear();
     this.mutedUsers.clear();
@@ -192,10 +235,16 @@ class VoiceReceiver {
 
   // Track a speaker's mic mute state (driven by index.js voiceStateUpdate). When
   // muted we ignore their speech entirely — mute is the sole "stop listening".
+  // In always-listen, muting is "I'm done talking": the open utterance ends at
+  // once and what was captured is SENT (nothing captured → nothing sent).
   setMute(userId, muted) {
     if (muted) {
-      if (!this.mutedUsers.has(userId)) log.info(`🔇 ${userId} muted — capture paused (mute is the off switch).`);
+      const u = this.utterances.get(userId);
+      if (!this.mutedUsers.has(userId)) {
+        log.info(`🔇 ${userId} muted — ${u ? 'sending what was captured now' : 'not listening'} (mute = done talking).`);
+      }
       this.mutedUsers.add(userId);
+      if (u) u.finish('mute');
     } else if (this.mutedUsers.has(userId)) {
       this.mutedUsers.delete(userId);
       log.info(`🔊 ${userId} unmuted — listening again.`);
@@ -250,6 +299,10 @@ class VoiceReceiver {
       decoder.once('end', done);
       decoder.once('error', (e) => { log.warn('opus decode error:', e.message); done(); });
       opusStream.once('error', (e) => { log.warn('opus stream error:', e.message); done(); });
+      // destroy() (the cap above, or any teardown) emits 'close' but never
+      // 'end', and pipe() doesn't end the decoder on close — without this the
+      // capture hung forever (T510).
+      opusStream.once('close', done);
     });
     this.active.delete(userId);
     // Wall-clock from the LAST decoded audio to the cut — should track `silence`
@@ -275,44 +328,256 @@ class VoiceReceiver {
     if (durationMs < config.minUtteranceMs) return; // drop clicks/coughs
 
     const wav = pcmToWav(pcm, { sampleRate: SAMPLE_RATE, channels: CHANNELS });
-    if (this._alwaysOn()) {
-      await this._processAlwaysOn(wav, userId, durationMs);
-    } else {
-      await this._processSerial(wav, userId, durationMs);
+    await this._processSerial(wav, userId, durationMs);
+  }
+
+  // ALWAYS-LISTEN path. One utterance per speaker: read the audio until a STOP,
+  // then send it — "if there's a stop, there's a stop". A stop is any of:
+  //   - silence: no window above voiceEnergyThresholdDb for the configured
+  //     silence. Breathing below the threshold is silence, and so is NO packets
+  //     at all — Discord's VAD, lag and a stalled receiver all look the same and
+  //     all end the utterance the same way: the captured audio is sent.
+  //   - mute (setMute): sent at once.
+  //   - the stream closing/erroring under us (teardown, recovery, leave).
+  //   - the maxUtteranceMs memory backstop (sent; listening continues).
+  // The subscription uses Manual end: the library's AfterSilence timer is only
+  // armed by a delivered packet, so a stream that never got one never ended.
+  // While he talks, each pause-cut segment is transcribed and appended (fsynced)
+  // to a durable draft file; the message to 999 is the STITCHED draft — there
+  // is no whole-clip re-transcribe at the stop (that pass was the ~30s wait).
+  _captureUtterance(receiver, userId) {
+    const silence = config.inCallSilence();
+    this._uttSeq += 1;
+    const u = {
+      key: `${userId}-${this._uttSeq}`, userId, silence, startedAt: Date.now(),
+      chunks: [], bytes: 0, decoded: 0, voicedMs: 0, lastVoiceAt: 0,
+      win: { sumSq: 0, n: 0, ms: 0 }, levels: [],
+      segIdx: 0, segBytes: 0, segVoiced: false, segs: [],
+      draftChain: Promise.resolve(), fd: null, file: null,
+      writing: false, done: false, finish: () => {},
+    };
+    log.info(`capture start (${userId}): mode=always-listen, end-of-speech silence=${silence}ms below ${config.voiceEnergyThresholdDb} dBFS`);
+    const opusStream = receiver.subscribe(userId, { end: { behavior: EndBehaviorType.Manual } });
+    const decoder = new prism.opus.Decoder({ rate: SAMPLE_RATE, channels: CHANNELS, frameSize: 960 });
+    opusStream.pipe(decoder);
+    decoder.on('data', (c) => this._onUtterancePcm(u, c));
+    // A corrupt packet kills the decoder; the silence timer then ends the
+    // utterance with everything captured so far.
+    decoder.on('error', (e) => log.warn('opus decode error:', e.message));
+    u.finish = (reason) => this._finishUtterance(u, reason, receiver, opusStream, decoder);
+    opusStream.once('close', () => { u.streamClosed = true; u.finish('stream closed'); });
+    opusStream.once('end', () => u.finish('stream ended'));
+    opusStream.once('error', (e) => { log.warn('opus stream error:', e.message); u.finish('stream error'); });
+    u.timer = setInterval(() => this._tickUtterance(u), 50);
+    this.utterances.set(userId, u);
+  }
+
+  // Every decoded 20ms frame: keep it, and classify each voiceEnergyWindowMs
+  // window as voice (resets the silence timer) or not (breathing/noise).
+  _onUtterancePcm(u, c) {
+    if (u.done) return;
+    const now = Date.now();
+    u.chunks.push(c);
+    u.bytes += c.length;
+    u.decoded += 1;
+    this.markAudio();
+    this.lastDecodedAt = now;
+    this._decodeHealthy = true;
+    this._bargeInCheck(c);
+    const w = u.win;
+    const n = Math.floor(c.length / 2);
+    for (let i = 0; i < n; i++) { const s = c.readInt16LE(i * 2); w.sumSq += s * s; }
+    w.n += n;
+    w.ms += c.length / BYTES_PER_MS;
+    if (w.ms >= config.voiceEnergyWindowMs) {
+      const rms = w.n ? Math.sqrt(w.sumSq / w.n) : 0;
+      const db = rms <= 0 ? -120 : 20 * Math.log10(rms / 32768);
+      if (u.levels.length < 20000) u.levels.push(db);
+      if (db >= config.voiceEnergyThresholdDb) {
+        u.lastVoiceAt = now;
+        u.voicedMs += w.ms;
+        u.segVoiced = true;
+        if (!u.writing) { u.writing = true; this._writing.add(u); }
+      }
+      u.win = { sumSq: 0, n: 0, ms: 0 };
+    }
+    if (u.bytes / BYTES_PER_MS >= config.maxUtteranceMs) u.finish('length cap');
+  }
+
+  _tickUtterance(u) {
+    if (u.done) return;
+    const now = Date.now();
+    if (now - (u.lastVoiceAt || u.startedAt) >= u.silence) { u.finish('silence'); return; }
+    if (!u.segVoiced) return;
+    const segMs = (u.bytes - u.segBytes) / BYTES_PER_MS;
+    const gap = now - u.lastVoiceAt;
+    if ((segMs >= config.draftMinSegmentMs && gap >= config.draftGapMs) || segMs >= config.draftMaxSegmentMs) {
+      this._cutDraftSegment(u);
     }
   }
 
-  // ALWAYS-LISTEN path: no wake word. Buffer the completed utterance to a
-  // per-utterance FILE, transcribe it ONCE with Whisper (deferred — this only
-  // runs after the silence boundary, never streaming), then forward to the
-  // manager and mirror "Heard:" into the text channel.
-  async _processAlwaysOn(wav, userId, durationMs) {
+  // Transcribe the audio since the last cut and append it to the durable draft.
+  // Queued in order, so the stitched draft is always in speaking order.
+  _cutDraftSegment(u) {
+    const pcm = Buffer.concat(u.chunks.slice(u.segIdx));
+    const ms = Math.round(pcm.length / BYTES_PER_MS);
+    u.segIdx = u.chunks.length;
+    u.segBytes = u.bytes;
+    u.segVoiced = false;
+    const idx = u.segs.push('') - 1;
+    u.draftChain = u.draftChain.then(async () => {
+      const text = (await transcribeWav(pcmToWav(pcm, { sampleRate: SAMPLE_RATE, channels: CHANNELS }))).trim();
+      u.segs[idx] = text;
+      if (text) this._appendDraft(u, { seg: idx, ms, text });
+    }).catch((e) => log.warn('draft segment transcription failed:', e.message));
+  }
+
+  // DURABLE DRAFT: one JSONL file per utterance in config.draftDir, one line per
+  // transcribed segment, fsynced on every append — a crash or restart
+  // mid-utterance leaves the words so far on disk. Renamed *.sent.jsonl only
+  // after 999 accepted the message; only those are ever pruned.
+  _appendDraft(u, rec) {
+    try {
+      if (u.fd == null) {
+        fs.mkdirSync(config.draftDir, { recursive: true });
+        const stamp = new Date(u.startedAt).toISOString().replace(/[:.]/g, '-');
+        u.file = path.join(config.draftDir, `${stamp}-${u.userId}-${u.key.split('-').pop()}.jsonl`);
+        u.fd = fs.openSync(u.file, 'a');
+      }
+      fs.writeSync(u.fd, `${JSON.stringify({ at: new Date().toISOString(), ...rec })}\n`);
+      fs.fsyncSync(u.fd);
+    } catch (e) {
+      log.warn('draft file append failed:', e.message);
+    }
+  }
+
+  _closeDraft(u, handedOff) {
+    if (u.fd == null) return;
+    try { fs.closeSync(u.fd); } catch (_) {}
+    u.fd = null;
+    if (!handedOff) { log.warn(`draft kept (not handed to 999): ${u.file}`); return; }
+    try { fs.renameSync(u.file, u.file.replace(/\.jsonl$/, '.sent.jsonl')); } catch (e) { log.warn('draft rename failed:', e.message); }
+    this._pruneDrafts();
+  }
+
+  // RETENTION: delete *.sent.jsonl drafts older than draftRetentionHours.
+  // Unsent drafts (a crash, or 999 refused the message) are never pruned.
+  _pruneDrafts(force = false) {
+    const now = Date.now();
+    if (!force && now - (this._lastPruneAt || 0) < 10 * 60 * 1000) return;
+    this._lastPruneAt = now;
+    const maxAge = config.draftRetentionHours * 3600 * 1000;
+    let names = [];
+    try { names = fs.readdirSync(config.draftDir); } catch (_) { return; }
+    for (const name of names) {
+      if (!name.endsWith('.sent.jsonl')) continue;
+      const file = path.join(config.draftDir, name);
+      try { if (now - fs.statSync(file).mtimeMs > maxAge) fs.unlinkSync(file); } catch (_) {}
+    }
+  }
+
+  // A stop: tear down this subscription, re-subscribe if his packets are still
+  // arriving (so the NEXT utterance is heard), then send what was captured.
+  _finishUtterance(u, reason, receiver, opusStream, decoder) {
+    if (u.done) return;
+    u.done = true;
+    clearInterval(u.timer);
+    if (this.utterances.get(u.userId) === u) this.utterances.delete(u.userId);
+    this.active.delete(u.userId);
+    try { opusStream.unpipe(decoder); } catch (_) {}
+    try { decoder.destroy(); } catch (_) {}
+    const subs = receiver.subscriptions;
+    if (subs && subs.get(u.userId) === opusStream) subs.delete(u.userId);
+    try { opusStream.destroy(); } catch (_) {}
+
+    const now = Date.now();
+    const durMs = u.bytes / BYTES_PER_MS;
+    const thr = config.voiceEnergyThresholdDb;
+    const quiet = u.levels.filter((d) => d < thr);
+    const loud = u.levels.filter((d) => d >= thr).sort((a, b) => a - b);
+    const f = (d) => (d == null ? 'n/a' : d.toFixed(1));
+    log.info(`capture end (${u.userId}): ${reason} — ${Math.round(durMs)}ms decoded, ${Math.round(u.voicedMs)}ms above ${thr} dBFS` +
+      `, ${u.lastVoiceAt ? now - u.lastVoiceAt : -1}ms since last voice (silence=${u.silence}ms)` +
+      ` | levels: loudest sub-threshold ${f(quiet.length ? Math.max(...quiet) : null)}, voice p10 ${f(loud[Math.floor(loud.length * 0.1)])} dBFS`);
+
+    // Packets arrived (that's what started this capture) but nothing decoded:
+    // flag it so the health monitor stops trusting speaking events.
+    if (u.decoded === 0 && this._decodeHealthy) {
+      this._decodeHealthy = false;
+      log.warn(`(${u.userId}) packets arrived but nothing decoded — receiver health now tracks decoded audio only.`);
+    }
+
+    // Re-subscribe at once while his packets are still arriving — the speaking
+    // 'start' event only re-fires after a gap, so waiting would miss speech.
+    // Only AFTER the old stream's 'close': the library's close handler deletes
+    // subscriptions[userId] by id, and would orphan a newer subscription.
+    const flowing = receiver.speaking && receiver.speaking.users && receiver.speaking.users.has(u.userId);
+    if (reason !== 'mute' && flowing && this.connection && this.connection.receiver === receiver) {
+      const resubscribe = () => {
+        if (!this.connection || this.connection.receiver !== receiver) return;
+        log.info(`(${u.userId}) packets still arriving — re-subscribing.`);
+        this._maybeStartCapture(receiver, u.userId);
+      };
+      // (`opusStream.closed` flips inside destroy(), a tick BEFORE 'close' fires
+      // — so track the event itself.)
+      if (u.streamClosed) resubscribe(); else opusStream.once('close', resubscribe);
+    }
+
+    if (!u.writing || u.voicedMs < config.minUtteranceMs) {
+      if (u.writing) this._writing.delete(u);
+      if (durMs > 0) log.info(`(${Math.round(durMs)}ms) nothing above the voice threshold — breathing/noise, not sent.`);
+      return;
+    }
+    // The tail since the last cut becomes the last draft segment.
+    if (u.segVoiced) this._cutDraftSegment(u);
+    const pcm = Buffer.concat(u.chunks); // kept only for the empty-draft fallback
+    u.chunks = [];
+    this._deliverUtterance(u, pcm, durMs, reason)
+      .catch((e) => log.error('utterance delivery failed:', e.message))
+      .finally(() => this._writing.delete(u));
+  }
+
+  // SEND the stitched streamed draft. At the stop only the last segment is
+  // still being transcribed, so stop→999 no longer grows with utterance length.
+  // A whole-clip Whisper pass runs ONLY if the draft came back empty.
+  async _deliverUtterance(u, pcm, durationMs, reason) {
+    await u.draftChain;
+    let text = u.segs.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    const wav = text ? null : pcmToWav(pcm, { sampleRate: SAMPLE_RATE, channels: CHANNELS });
+    if (!text) {
+      text = await this._transcribeUtteranceFile(wav, u.userId);
+      if (text) {
+        log.warn(`streamed draft empty — sent a whole-clip transcript instead (${text.length} chars).`);
+        this._appendDraft(u, { seg: 'fallback', ms: Math.round(durationMs), text });
+      }
+    }
+    if (!text) {
+      const { peakDb, rmsDb } = audioLevel(wav);
+      const fmt = (d) => (d === -Infinity ? '-inf' : d.toFixed(1));
+      const silent = rmsDb < -55;
+      log.info(`(${Math.round(durationMs)}ms) empty transcript — peak ${fmt(peakDb)} / rms ${fmt(rmsDb)} dBFS → ${silent ? 'SILENT capture (deaf receiver / muted mic?)' : 'audio present (likely a Whisper miss)'}.`);
+      if (config.retainEmptyWav) this._retainWav(wav, u.userId, durationMs);
+      this._closeDraft(u, false);
+      return;
+    }
+    log.success(`🎙️  heard ${u.userId} (${Math.round(durationMs)}ms, ${u.segs.length} segment(s), ended by ${reason}): "${text.slice(0, 80)}" → terminal ${this.linkManager.status().managerId || 999}`);
+    // Writing is over — release held playback before the ack sound plays.
+    this._writing.delete(u);
+    try { this.onHeard(text); } catch (e) { log.warn('onHeard mirror failed:', e.message); }
     while (this.busy) await new Promise((r) => setTimeout(r, 40));
     this.busy = true;
+    let res = null;
     try {
-      if (this.mutedUsers.has(userId)) return; // muted = off
-      // Optional capture-pause backstop (PAUSE_CAPTURE_DURING_TTS only).
-      if (config.pauseCaptureDuringTts && this.isBotSpeaking()) {
-        log.info('capture paused (bot speaking) — dropping queued utterance.');
-        return;
-      }
-      const text = await this._transcribeUtteranceFile(wav, userId);
-      if (!text) {
-        // Diagnose: was the captured audio actually silent (deaf receiver / muted
-        // mic) or did Whisper just miss audible speech?
-        const { peakDb, rmsDb } = audioLevel(wav);
-        const fmt = (d) => (d === -Infinity ? '-inf' : d.toFixed(1));
-        const silent = rmsDb < -55;
-        log.info(`(${Math.round(durationMs)}ms) empty transcript — peak ${fmt(peakDb)} / rms ${fmt(rmsDb)} dBFS → ${silent ? 'SILENT capture (deaf receiver / muted mic?)' : 'audio present (likely a Whisper miss)'}.`);
-        if (config.retainEmptyWav) this._retainWav(wav, userId, durationMs);
-        return;
-      }
-      log.success(`🎙️  heard ${userId} (${Math.round(durationMs)}ms): "${text.slice(0, 80)}" → terminal ${this.linkManager.status().managerId || 999}`);
-      try { this.onHeard(text); } catch (e) { log.warn('onHeard mirror failed:', e.message); }
-      const res = await this.linkManager.forward(text);
-      if (res && res.ok) { try { this.onCommandAck(); } catch (_) {} }
+      res = await this.linkManager.forward(text);
     } finally {
       this.busy = false;
+    }
+    if (res && res.ok) {
+      this._appendDraft(u, { sent: true, chars: text.length });
+      this._closeDraft(u, true);
+      try { this.onCommandAck(); } catch (_) {}
+    } else {
+      this._closeDraft(u, false);
     }
   }
 

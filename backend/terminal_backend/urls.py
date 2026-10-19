@@ -32,6 +32,8 @@ urlpatterns = [
     path("api/tts/", include("text_to_speech.urls")),     # Kokoro TTS + notifications
     path("api/", include("frontend_control.urls")),       # frontend control API
     path("api/game/", include("game_state.urls")),        # Vibe Blast easter egg save
+    # Durable conversation log (append-only; survives /clear + compaction).
+    path("api/conversation/", include("conversation_log.urls")),
     
     # REMOVED: admin, terminal sessions, settings, todos - all moved to frontend-only
     # This eliminates the problematic terminal state persistence and database bloat

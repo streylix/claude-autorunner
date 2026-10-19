@@ -18,11 +18,16 @@ RUN apt-get update \
 WORKDIR /app
 
 # Install torch first so its wheel source is fixed before requirements resolve.
-# Use the default PyPI wheel, which ships the CUDA build, so Kokoro TTS / Whisper
-# run on an NVIDIA GPU when one is present (this box has an RTX 3090). On hosts
-# without a GPU torch still runs on CPU automatically; the trade-off is a larger
-# image (~2GB CUDA libs) vs the previous CPU-only wheel.
-RUN pip install torch
+# CPU-ONLY build, on purpose. The default PyPI wheel ships the full CUDA stack
+# (~4.8GB of nvidia-* libs) and made torch pin ~4.8GB of the RTX 3090's VRAM,
+# which starved the co-tenant llmapi service on the same card. The only torch
+# workload here is Kokoro TTS (82M params), which synthesizes fast enough on CPU.
+#
+# This does NOT move Whisper STT to the CPU: faster-whisper runs on CTranslate2,
+# which carries its own CUDA runtime (nvidia-cublas-cu12 / nvidia-cudnn-cu12 in
+# requirements.txt) and is entirely independent of torch's build. See
+# voice_transcription/transcription_service.py for the explicit device gate.
+RUN pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt

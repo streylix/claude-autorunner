@@ -29,8 +29,25 @@ const { ChannelType, PermissionsBitField, AttachmentBuilder } = require('discord
 const { config } = require('../config');
 const log = require('./log');
 const { sanitizeChannelName, isTextFileName } = require('./outbox');
+const conversationLog = require('./conversationLog');
 
-const MAX_LEN = 1900; // Discord hard limit is 2000; leave headroom for the label.
+const MAX_LEN = 2000; // Discord's hard message limit. Longer text is SPLIT, never cut.
+const SNOWFLAKE = /^\d{17,20}$/; // a Discord channel/thread id, as opposed to a name
+
+// Split text into pieces of at most `max` chars; the FIRST piece may be shorter
+// (`firstMax`) to leave room for a label. Concatenating the pieces gives the
+// input back exactly. A body that fits is one piece.
+function chunkText(text, max = MAX_LEN, firstMax = max) {
+  const out = [];
+  let i = 0;
+  let limit = firstMax;
+  do {
+    out.push(text.slice(i, i + limit));
+    i += limit;
+    limit = max;
+  } while (i < text.length);
+  return out;
+}
 
 const TYPING_REFRESH_MS = 7000;  // Discord expires a typing ping after ~10s
 const TYPING_MAX_MS = 90000;     // safety cap: never type forever on a lost reply
@@ -111,13 +128,29 @@ class TextMirror {
     if (!this.enabled() || !this.channel) return;
     const body = String(text || '').replace(/\s+/g, ' ').trim();
     if (!body) return;
-    const content = `${label} ${body}`.slice(0, MAX_LEN);
-    Promise.resolve()
-      .then(() => this.channel.send({ content }))
+    // The label rides on the first message only. Posts are chained so a long
+    // echo's chunks, and the echo after it, always land in order.
+    const pieces = chunkText(body, MAX_LEN, MAX_LEN - label.length - 1);
+    pieces[0] = `${label} ${pieces[0]}`;
+    const ch = this.channel;
+    this._postChain = (this._postChain || Promise.resolve())
+      .then(async () => { for (const content of pieces) await ch.send({ content }); })
       .catch((err) => log.warn('text mirror post failed:', err.message));
+    return this._postChain;
+  }
+
+  // Send a file with its caption. Discord caps a message at 2000 chars, so a
+  // longer caption goes out in full: the file rides on the first piece and the
+  // rest follow as plain messages (the old code cut the tail without a word).
+  async _sendWithCaption(ch, caption, att) {
+    const text = caption ? String(caption).replace(/\s+/g, ' ').trim() : '';
+    const pieces = text ? chunkText(text) : [undefined];
+    await ch.send({ content: pieces[0], files: [att] });
+    for (const content of pieces.slice(1)) await ch.send({ content });
   }
 
   postHeard(text) { this._post('🎙️ **Heard:**', text); }
+
   postReplied(text) { this.stopTyping(); this._post('💬 **Replied:**', text); }
 
   // ---- typing indicator ------------------------------------------------
@@ -149,6 +182,23 @@ class TextMirror {
     log.info('⌨️  typing indicator off.');
   }
 
+  // Record an outbound post in the DURABLE conversation log. Covers everything
+  // the manager sends through tools/post-text.js, post-image.js and
+  // post-video.js — they all land here via the outbox watcher, so logging at
+  // the real send site records what actually went out, delivered or not.
+  //
+  // NOT called for postReplied(): that only mirrors a TTS notification, which
+  // the backend already logs with destination='tts'. Logging it here too would
+  // double-record every spoken reply.
+  _logOut(kind, text, mediaPath, delivered, reason) {
+    conversationLog.recordOutbound({
+      kind,
+      text: text || '',
+      paths: mediaPath ? [mediaPath] : [],
+      meta: Object.assign({ delivered: !!delivered }, reason ? { reason } : null),
+    });
+  }
+
   // ---- named channels --------------------------------------------------
   // Pick the channel a post should go to. Pass nothing (the voice path, and any
   // post without --channel) and you get the default mirror channel, unchanged.
@@ -169,6 +219,24 @@ class TextMirror {
     if (!want) {
       return { channel: base, name: base.name, fallback: true, requested: String(requested),
                reason: `"${requested}" leaves no usable Discord channel name` };
+    }
+    // T792: a channel or THREAD id (a snowflake) instead of a name, so a reply can
+    // go inside the thread he wrote in. Looked up, never created: an id that
+    // isn't there falls back to the default LOUDLY, like any failed name.
+    if (SNOWFLAKE.test(want)) {
+      if (want === String(base.id)) {
+        return { channel: base, name: base.name, fallback: false, requested: want, reason: null };
+      }
+      try {
+        if (!base.guild) throw new Error('the bot is not in a guild yet');
+        const ch = await base.guild.channels.fetch(want);
+        if (!ch || typeof ch.isTextBased !== 'function' || !ch.isTextBased()) throw new Error('not a text channel or thread');
+        return { channel: ch, name: ch.name, fallback: false, requested: want, reason: null };
+      } catch (err) {
+        const reason = `no text channel or thread with id ${want} (${err.message})`;
+        log.warn(`text mirror: ${reason} — using #${base.name} instead.`);
+        return { channel: base, name: base.name, fallback: true, requested: want, reason };
+      }
     }
     if (want === base.name) {
       return { channel: base, name: base.name, fallback: false, requested: want, reason: null };
@@ -201,6 +269,86 @@ class TextMirror {
       log.warn(`text mirror: can't post to #${want} (${err.message}) — using #${base.name} instead.`);
       return { channel: base, name: base.name, fallback: true, requested: want, reason: err.message };
     }
+  }
+
+  // ---- new threads (T796) ---------------------------------------------
+  // --new-thread "<name>": a public thread with that name in the parent channel
+  // (parentRequested as for channelFor; nothing → the default mirror channel).
+  // An ACTIVE thread of the same name in that parent is reused instead of
+  // duplicated, and joined if the bot isn't in it, so his replies reach us.
+  //
+  // Unlike channelFor this never falls back: a thread is asked for by name so
+  // a reply can find it, and a post quietly landing in #claude-voice instead
+  // would look like success. Resolves to { ok, channel, created, parent, reason }.
+  async threadFor(parentRequested, threadName) {
+    const name = String(threadName == null ? '' : threadName).replace(/\s+/g, ' ').trim().slice(0, 100);
+    const fail = (reason) => {
+      log.warn(`text mirror: new thread "${name}" not used — ${reason}`);
+      return { ok: false, channel: null, created: false, parent: null, reason };
+    };
+    if (!name) return fail('the thread name is empty');
+
+    const target = await this.channelFor(parentRequested);
+    if (!target.channel) return fail(target.reason || 'no text channel resolved');
+    if (target.fallback) return fail(`can't use the parent channel ${parentRequested}: ${target.reason}`);
+    const parent = target.channel;
+    if (typeof parent.isThread === 'function' && parent.isThread()) {
+      return fail(`${parentRequested} is a thread; a new thread needs a channel as its parent`);
+    }
+    if (!parent.threads) return fail(`#${parent.name} can't hold threads`);
+
+    // Check BEFORE creating, so a missing permission can't leave an empty thread.
+    const me = parent.guild && parent.guild.members && parent.guild.members.me;
+    const perms = me && typeof parent.permissionsFor === 'function' ? parent.permissionsFor(me) : null;
+    if (perms) {
+      const missing = [];
+      if (!perms.has(PermissionsBitField.Flags.CreatePublicThreads)) missing.push('Create Public Threads');
+      if (!perms.has(PermissionsBitField.Flags.SendMessagesInThreads)) missing.push('Send Messages in Threads');
+      if (missing.length) {
+        return fail(`the bot lacks ${missing.join(' and ')} in #${parent.name} — grant it to the bot's role ` +
+          `(Server Settings → Roles, or the channel's permissions)`);
+      }
+    }
+
+    // One in-flight lookup/create per parent+name, so two quick posts can't
+    // create the same thread twice.
+    const key = `${parent.id}\u0000${name}`;
+    this._resolvingThreads = this._resolvingThreads || new Map();
+    let pending = this._resolvingThreads.get(key);
+    if (!pending) {
+      pending = this._findOrCreateThread(parent, name).finally(() => this._resolvingThreads.delete(key));
+      this._resolvingThreads.set(key, pending);
+    }
+    try {
+      const { thread, created } = await pending;
+      return { ok: true, channel: thread, created, parent: parent.name, reason: null };
+    } catch (err) {
+      const hint = err && err.code === 50013 ? ' (Missing Permissions: grant Create Public Threads and Send Messages in Threads)' : '';
+      return fail(`${err.message}${hint}`);
+    }
+  }
+
+  async _findOrCreateThread(parent, name) {
+    const active = await parent.threads.fetchActive();
+    const threads = active && active.threads ? [...active.threads.values()] : [];
+    const existing = threads.find((t) => t.parentId === parent.id && t.name === name);
+    if (existing) {
+      if (!existing.joined && existing.joinable && typeof existing.join === 'function') {
+        await existing.join().catch((e) => log.warn(`could not join thread ${existing.id}: ${e.message}`));
+      }
+      log.info(`text mirror → thread "${existing.name}" (${existing.id}) in #${parent.name} (existing, reused).`);
+      return { thread: existing, created: false };
+    }
+    const thread = await parent.threads.create({
+      name,
+      type: ChannelType.PublicThread,
+      autoArchiveDuration: 1440,
+      reason: 'CCBOT Discord bridge --new-thread',
+    });
+    // The creator is added as a member by Discord; join() is a no-op guard.
+    if (!thread.joined && thread.joinable && typeof thread.join === 'function') await thread.join().catch(() => {});
+    log.success(`text mirror → created thread "${thread.name}" (${thread.id}) in #${parent.name}.`);
+    return { thread, created: true };
   }
 
   // Find a text channel by name in the guild, creating it if it's missing.
@@ -263,8 +411,7 @@ class TextMirror {
       }
       const name = path.basename(filePath).replace(/[^\w.\-]/g, '_');
       const att = new AttachmentBuilder(filePath, { name });
-      const content = caption ? String(caption).replace(/\s+/g, ' ').trim().slice(0, MAX_LEN) : undefined;
-      await ch.send({ content, files: [att] });
+      await this._sendWithCaption(ch, caption, att);
       this.lastPostError = null;
       log.success(`📄 posted file to #${ch.name}: ${name} (${size} bytes)${caption ? ` ("${String(caption).slice(0, 60)}")` : ''}.`);
       if (typeof this._logOut === 'function') this._logOut('file', caption, filePath, true);
@@ -281,17 +428,23 @@ class TextMirror {
   async postText(text, opts) {
     this.stopTyping(); // a reply is going out
     const ch = (opts && opts.channel) || this.channel;
-    if (!this.enabled() || !this.channel) { log.warn('manager text post skipped — no text channel.'); return false; }
     const body = String(text || '').trim();
+    if (!this.enabled() || !this.channel) {
+      log.warn('manager text post skipped — no text channel.');
+      this._logOut('text', body, null, false, 'no-channel');
+      return false;
+    }
     if (!body) return false;
     try {
       for (let i = 0; i < body.length; i += 2000) {
         await ch.send({ content: body.slice(i, i + 2000) });
       }
       log.success(`📝 posted manager text to #${ch.name} (${body.length} chars, not TTS'd).`);
+      this._logOut('text', body, null, true);
       return true;
     } catch (err) {
       log.warn('manager text post failed:', err.message);
+      this._logOut('text', body, null, false, err.message);
       return false;
     }
   }
@@ -303,8 +456,16 @@ class TextMirror {
   async postImage(imagePath, caption, opts) {
     this.stopTyping(); // a reply is going out
     const ch = (opts && opts.channel) || this.channel;
-    if (!this.enabled() || !this.channel) { log.warn('image post skipped — no text channel resolved.'); return false; }
-    if (!imagePath || !fs.existsSync(imagePath)) { log.warn(`image post skipped — file not found: ${imagePath}`); return false; }
+    if (!this.enabled() || !this.channel) {
+      log.warn('image post skipped — no text channel resolved.');
+      this._logOut('image', caption, imagePath, false, 'no-channel');
+      return false;
+    }
+    if (!imagePath || !fs.existsSync(imagePath)) {
+      log.warn(`image post skipped — file not found: ${imagePath}`);
+      this._logOut('image', caption, imagePath, false, 'file-not-found');
+      return false;
+    }
 
     let toSend = imagePath;
     let tmp = null;
@@ -313,10 +474,15 @@ class TextMirror {
       if (size > config.imageMaxBytes) {
         log.info(`image ${(size / 1e6).toFixed(1)}MB exceeds ${(config.imageMaxBytes / 1e6).toFixed(0)}MB — downscaling…`);
         tmp = await this._downscale(imagePath);
-        if (!tmp) { log.warn('image downscale failed — not posting oversized image.'); return false; }
+        if (!tmp) {
+          log.warn('image downscale failed — not posting oversized image.');
+          this._logOut('image', caption, imagePath, false, 'downscale-failed');
+          return false;
+        }
         const newSize = fs.statSync(tmp).size;
         if (newSize > config.imageMaxBytes) {
           log.warn(`image still ${(newSize / 1e6).toFixed(1)}MB after downscale — not posting.`);
+          this._logOut('image', caption, imagePath, false, 'too-large');
           return false;
         }
         toSend = tmp;
@@ -324,12 +490,13 @@ class TextMirror {
       }
       const name = path.basename(toSend).replace(/[^\w.\-]/g, '_');
       const att = new AttachmentBuilder(toSend, { name });
-      const content = caption ? String(caption).replace(/\s+/g, ' ').trim().slice(0, MAX_LEN) : undefined;
-      await ch.send({ content, files: [att] });
+      await this._sendWithCaption(ch, caption, att);
       log.success(`🖼️  posted image to #${ch.name}: ${path.basename(imagePath)}${caption ? ` ("${String(caption).slice(0, 60)}")` : ''}.`);
+      this._logOut('image', caption, imagePath, true);
       return true;
     } catch (err) {
       log.warn('image post failed:', err.message);
+      this._logOut('image', caption, imagePath, false, err.message);
       return false;
     } finally {
       if (tmp) { try { fs.unlinkSync(tmp); } catch (_) {} }
@@ -344,8 +511,16 @@ class TextMirror {
   async postVideo(videoPath, caption, maxBytesOverride, opts) {
     this.stopTyping(); // a reply is going out
     const ch = (opts && opts.channel) || this.channel;
-    if (!this.enabled() || !this.channel) { log.warn('video post skipped — no text channel resolved.'); return false; }
-    if (!videoPath || !fs.existsSync(videoPath)) { log.warn(`video post skipped — file not found: ${videoPath}`); return false; }
+    if (!this.enabled() || !this.channel) {
+      log.warn('video post skipped — no text channel resolved.');
+      this._logOut('video', caption, videoPath, false, 'no-channel');
+      return false;
+    }
+    if (!videoPath || !fs.existsSync(videoPath)) {
+      log.warn(`video post skipped — file not found: ${videoPath}`);
+      this._logOut('video', caption, videoPath, false, 'file-not-found');
+      return false;
+    }
 
     const cap = Number(maxBytesOverride) > 0 ? Number(maxBytesOverride) : config.videoMaxBytes;
     let toSend = videoPath;
@@ -355,10 +530,15 @@ class TextMirror {
       if (size > cap) {
         log.info(`video ${(size / 1e6).toFixed(1)}MB exceeds ${(cap / 1e6).toFixed(0)}MB cap — re-encoding (H.264/AAC)…`);
         tmp = await this._compressVideoToFit(videoPath, cap);
-        if (!tmp) { log.warn('video compression failed — not posting oversized video.'); return false; }
+        if (!tmp) {
+          log.warn('video compression failed — not posting oversized video.');
+          this._logOut('video', caption, videoPath, false, 'compression-failed');
+          return false;
+        }
         const newSize = fs.statSync(tmp).size;
         if (newSize > cap) {
           log.warn(`video still ${(newSize / 1e6).toFixed(1)}MB after compression (cap ${(cap / 1e6).toFixed(0)}MB) — not posting.`);
+          this._logOut('video', caption, videoPath, false, 'too-large');
           return false;
         }
         toSend = tmp;
@@ -368,12 +548,13 @@ class TextMirror {
       let name = path.basename(toSend).replace(/[^\w.\-]/g, '_');
       if (tmp) name = path.basename(videoPath, path.extname(videoPath)).replace(/[^\w.\-]/g, '_') + '.mp4';
       const att = new AttachmentBuilder(toSend, { name });
-      const content = caption ? String(caption).replace(/\s+/g, ' ').trim().slice(0, MAX_LEN) : undefined;
-      await ch.send({ content, files: [att] });
+      await this._sendWithCaption(ch, caption, att);
       log.success(`🎥 posted video to #${ch.name}: ${path.basename(videoPath)}${caption ? ` ("${String(caption).slice(0, 60)}")` : ''}.`);
+      this._logOut('video', caption, videoPath, true);
       return true;
     } catch (err) {
       log.warn('video post failed:', err.message);
+      this._logOut('video', caption, videoPath, false, err.message);
       return false;
     } finally {
       if (tmp) { try { fs.unlinkSync(tmp); } catch (_) {} }

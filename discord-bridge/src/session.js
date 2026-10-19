@@ -242,6 +242,15 @@ class BridgeSession {
     return !!this.connection;
   }
 
+  // T521 (c3): the single gate every outbound-audio path must check before
+  // producing sound — TTS clip playback, the system-mode sink shim, and SFX
+  // acks. False whenever we're not actually connected to voice, so leaving
+  // the call (c2) makes every one of those paths a no-op, not just the ones
+  // that happen to check `this.connection` on their own.
+  canPlayAudio() {
+    return !!(this.connection && this.player);
+  }
+
   // Join a specific voice channel and wire audio in both directions.
   async join(guild, channelId) {
     if (this.connection) await this.leave();
@@ -285,8 +294,10 @@ class BridgeSession {
 
     this.player = new VoicePlayer();
     this.player.attach(connection);
-    // BARGE-IN: hold a queued TTS clip while the user is still talking (tts mode).
-    this.player.setHoldCheck(() => this.receiver && this.receiver.isUserSpeaking());
+    // HOLD: bot audio (TTS clips and relayed sink bursts) waits while the user is
+    // writing an utterance — paused/deferred, never dropped (always-listen).
+    this.player.setHoldCheck(() => !!(this.receiver && this.receiver.shouldHoldPlayback()),
+      config.alwaysListenInCall ? config.writingHoldMaxMs : config.bargeInMaxHoldMs);
     this.receiver.attach(connection);
 
     // Resolve (or create) the text-mirror channel for this guild — best-effort.
@@ -309,8 +320,9 @@ class BridgeSession {
       // capture for its duration (+ tail) so we don't transcribe our own voice.
       this.markBotSpeaking(row.duration_ms, 'manager reply');
       if (this.receiver) this.receiver.openAutoReplyWindow(row.duration_ms);
-      // Mirror the manager's reply into the text channel ("Replied:").
-      if (this.textMirror && row.text) this.textMirror.postReplied(row.text);
+      // T521 (c3): the written "Replied:" copy is posted by the always-on
+      // replyMirror poller in index.js, NOT here — that poller runs whether or
+      // not we're in a call, so the text copy survives a leave-on-user-leave.
     };
 
     if (config.audioSource === 'system') {
@@ -335,7 +347,10 @@ class BridgeSession {
       }
     } else {
       this.poller = new TtsPoller({
-        onClip: async (wav, row) => this.player.enqueue(wav, `#${row.id}`),
+        // c3: canPlayAudio() is a defense-in-depth re-check — leave() already
+        // tears this poller down, but a clip in flight when leave() runs must
+        // never fall through to enqueue() after the connection is gone.
+        onClip: async (wav, row) => { if (this.canPlayAudio()) this.player.enqueue(wav, `#${row.id}`); },
         onNotification: onManagerSpeech,
       });
       await this.poller.seed();
@@ -389,6 +404,9 @@ class BridgeSession {
   //              with no manual step.
   async _playTtsToSink(wav, row) {
     try {
+      // c3: not connected → never paplay a clip into the sink, defense-in-depth
+      // alongside leave() tearing this poller down (see onClip above).
+      if (!this.canPlayAudio()) { log.info(`tts→sink: #${row.id} skipped — not in a voice call.`); return; }
       const verdict = await this._ttsSinkVerdict();
       if (!verdict.play) {
         log.info(`tts→sink: #${row.id} skipped — ${verdict.why}.`);
@@ -400,7 +418,8 @@ class BridgeSession {
       // BARGE_IN_INTERRUPT_ENABLED=false drop-in.
       if (config.bargeInEnabled && this.receiver) {
         const t0 = Date.now();
-        while (this.receiver.isUserSpeaking() && Date.now() - t0 < config.bargeInMaxHoldMs) {
+        const maxHold = config.alwaysListenInCall ? config.writingHoldMaxMs : config.bargeInMaxHoldMs;
+        while (this.receiver.shouldHoldPlayback() && Date.now() - t0 < maxHold) {
           await new Promise((r) => setTimeout(r, 200));
         }
         const held = Date.now() - t0;
