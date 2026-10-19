@@ -8,7 +8,7 @@
 // the new key, which lands here and replaces the target.
 
 const { resolveKey, resolveLatest } = require('./linkVault');
-const { checkState, sendVoiceMemo } = require('./controlApi');
+const { checkState, sendVoiceMemo, getFullState, queueMemo } = require('./controlApi');
 const log = require('./log');
 
 class LinkManager {
@@ -101,6 +101,24 @@ class LinkManager {
       try { this.onForwarded(); } catch (_) { /* indicator must never break delivery */ }
     }
     return res;
+  }
+
+  // Full /state terminal list through the linked control API — backs
+  // /terminals and the /prompt terminal-id validation. Read-only; throws with
+  // a human-readable reason the caller can show.
+  async listTerminals() {
+    if (!this.target) throw new Error('not linked to a session');
+    return getFullState(this.target);
+  }
+
+  // Queue a message to a NON-manager terminal (see controlApi.queueMemo) —
+  // the /prompt terminal-option counterpart to forward() (which is 999-only).
+  async queueToTerminal(terminalId, text, opts = {}) {
+    if (!this.target) {
+      log.warn(`message received for terminal ${terminalId} but bot is not linked — ignoring.`);
+      return { ok: false, error: 'not linked' };
+    }
+    return queueMemo(this.target, terminalId, text, opts);
   }
 }
 

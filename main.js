@@ -671,10 +671,42 @@ app.whenReady().then(async () => {
     // CCBOT_REMOTE=1, the setting, live enable, headless auto-start) builds it
     // here on demand if it is missing, so Remote Mode can never come up
     // serving a 404 bundle.
+    //
+    // "Missing" is not enough of a trigger: this used to return early whenever
+    // the file existed, so a bundle built once kept being served forever while
+    // renderer.js and src/ moved on underneath it. That is invisible — the
+    // browser gets a working UI, just an OLD one (the per-terminal mute bell
+    // shipped, and remote viewers kept seeing header chrome from the build
+    // before it). So compare mtimes against everything the bundle is built
+    // from and rebuild when any source is newer.
+    const newestSourceMtime = () => {
+      const fs_ = require('fs');
+      let newest = 0;
+      const visit = (p) => {
+        let st;
+        try { st = fs_.statSync(p); } catch { return; }
+        if (st.isDirectory()) {
+          for (const e of fs_.readdirSync(p)) visit(path.join(p, e));
+        } else if (p.endsWith('.js')) {
+          if (st.mtimeMs > newest) newest = st.mtimeMs;
+        }
+      };
+      visit(path.join(__dirname, 'renderer.js'));
+      visit(path.join(__dirname, 'src'));
+      return newest;
+    };
+
     const ensureRemoteBundle = async () => {
+      const fs_ = require('fs');
       const bundle = path.join(__dirname, 'dist-remote', 'renderer.bundle.js');
-      if (require('fs').existsSync(bundle)) return;
-      safeLog('[Main] Building remote renderer bundle (missing dist-remote/renderer.bundle.js)…');
+      let reason = 'missing dist-remote/renderer.bundle.js';
+      if (fs_.existsSync(bundle)) {
+        const built = fs_.statSync(bundle).mtimeMs;
+        const newest = newestSourceMtime();
+        if (built >= newest) return;
+        reason = 'renderer sources are newer than the bundle';
+      }
+      safeLog(`[Main] Building remote renderer bundle (${reason})…`);
       const esbuild = require('esbuild');
       await esbuild.build({
         entryPoints: [path.join(__dirname, 'renderer.js')],
@@ -1080,6 +1112,13 @@ function setupIpcHandlers() {
   ipcMain.on('terminal-start', (event, options = {}) => {
     const terminalId = options.terminalId || 1;
     const startDirectory = options.directory || null;
+    // The originating renderer's title/color/muted, forwarded to the other
+    // renderers in remote-terminal-created so they don't show "Terminal N" (T668).
+    const createdMeta = {
+      title: typeof options.title === 'string' ? options.title : undefined,
+      color: typeof options.color === 'string' ? options.color : undefined,
+      muted: typeof options.muted === 'boolean' ? options.muted : undefined
+    };
 
     safeLog('Received terminal-start request, terminalId:', terminalId, 'directory:', startDirectory);
 
@@ -1205,7 +1244,7 @@ function setupIpcHandlers() {
       // Cross-renderer topology sync: tell every OTHER attached renderer a
       // terminal now exists so it can build a matching view (receivers skip
       // ids they already have, so the originator's echo is harmless).
-      broadcastToRenderers('remote-terminal-created', { terminalId, directory: validatedCwd });
+      broadcastToRenderers('remote-terminal-created', { terminalId, directory: validatedCwd, ...createdMeta });
 
       // Windows-specific: send initial ready signal after short delay
       if (os.platform() === 'win32') {
@@ -1278,7 +1317,7 @@ function setupIpcHandlers() {
           }
         });
 
-        broadcastToRenderers('remote-terminal-created', { terminalId, directory: validatedCwd });
+        broadcastToRenderers('remote-terminal-created', { terminalId, directory: validatedCwd, ...createdMeta });
 
         // Send ready signal for fallback terminal too
         if (os.platform() === 'win32') {

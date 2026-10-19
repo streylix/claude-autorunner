@@ -25,7 +25,13 @@
     
     <div class="app-container">
         <div class="header">
-            <div class="header-left"></div>
+            <div class="header-left">
+                <!-- Terminal table-of-contents (T487, docs/terminal-toc-spec.md) -->
+                <button class="terminal-toc-btn" id="terminal-toc-btn" title="Jump to a terminal" data-hotkey="Cmd+J" data-test-id="terminal-toc-btn">
+                    <i data-lucide="list"></i>
+                    <span>Terminals</span>
+                </button>
+            </div>
             <div class="title">Auto-Injector</div>
         </div>
 
@@ -848,6 +854,38 @@
         </div>
     </div>
     
+    <!-- Terminal table-of-contents modal (T487, docs/terminal-toc-spec.md).
+         Rows are rendered by setupTerminalToc() in renderer.js. -->
+    <div id="terminal-toc-modal" class="modal terminal-toc-modal">
+        <div class="modal-content terminal-toc-content" role="dialog" aria-modal="true" aria-labelledby="terminal-toc-title">
+            <div class="modal-header">
+                <h3 id="terminal-toc-title">Terminals</h3>
+                <button class="modal-close" id="terminal-toc-close" title="Close" data-test-id="terminal-toc-close-btn">&times;</button>
+            </div>
+            <div class="terminal-toc-controls">
+                <input type="text" class="terminal-toc-search" id="terminal-toc-search" placeholder="Filter terminals by name or directory…" autocomplete="off" spellcheck="false" aria-label="Filter terminals" data-test-id="terminal-toc-search">
+                <div class="terminal-toc-toolbar">
+                    <div class="terminal-toc-chips" id="terminal-toc-chips" role="tablist" aria-label="Filter by status">
+                        <button class="terminal-toc-chip active" data-filter="all" role="tab" data-test-id="terminal-toc-chip-all">All <span class="terminal-toc-count"></span></button>
+                        <button class="terminal-toc-chip" data-filter="running" role="tab" data-test-id="terminal-toc-chip-running">Running <span class="terminal-toc-count"></span></button>
+                        <button class="terminal-toc-chip" data-filter="prompted" role="tab" data-test-id="terminal-toc-chip-prompted">Prompted <span class="terminal-toc-count"></span></button>
+                        <button class="terminal-toc-chip" data-filter="idle" role="tab" data-test-id="terminal-toc-chip-idle">Idle <span class="terminal-toc-count"></span></button>
+                        <button class="terminal-toc-chip" data-filter="error" role="tab" data-test-id="terminal-toc-chip-error">Error <span class="terminal-toc-count"></span></button>
+                    </div>
+                    <select class="terminal-toc-sort" id="terminal-toc-sort" aria-label="Sort terminals" data-test-id="terminal-toc-sort">
+                        <option value="status">Status, then last active</option>
+                        <option value="recent">Last active</option>
+                        <option value="name">Name (A–Z)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-body terminal-toc-body">
+                <div class="terminal-toc-list" id="terminal-toc-list" role="listbox" aria-label="Terminals" data-test-id="terminal-toc-list"></div>
+            </div>
+            <div class="terminal-toc-hint">↑ ↓ to move · Enter to jump · Esc to close</div>
+        </div>
+    </div>
+
     <!-- Terminal Color Picker Modal -->
     <div id="terminal-color-picker-modal" class="modal color-picker-modal">
         <div class="modal-content">

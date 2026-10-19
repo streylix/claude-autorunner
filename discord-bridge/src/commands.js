@@ -12,12 +12,17 @@
 //                stored session is no longer valid.
 //   /leave       Leave voice and unlink.
 //   /status      Show link + voice + audio-mode + wake-word state.
+//   /terminals   List every terminal known to the app: id, title, status.
 
 const { SlashCommandBuilder } = require('discord.js');
 const { config } = require('../config');
 const resumeStore = require('./resumeStore');
 const mediaInbox = require('./mediaInbox');
 const auth = require('./auth');
+
+// /prompt targets the manager (999) by default — unchanged behaviour when
+// the new `terminal` option is omitted.
+const DEFAULT_PROMPT_TERMINAL = 999;
 
 const definitions = [
   new SlashCommandBuilder()
@@ -49,8 +54,27 @@ const definitions = [
       o.setName('text').setDescription('Your message to the manager').setRequired(false))
     .addAttachmentOption((o) =>
       o.setName('media').setDescription('An image or video to send along').setRequired(false))
+    .addIntegerOption((o) =>
+      o.setName('terminal').setDescription('Terminal to send to (default: 999, the manager)').setRequired(false))
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('terminals')
+    .setDescription('List every terminal known to the app: id, title, status')
     .toJSON(),
 ];
+
+// Build the /terminals reply from a raw GET /state terminals array. Pure —
+// unit-tested in commands.terminals.test.js. Sorted by id, one line each;
+// shows the row count alongside the /state count so the two are visibly the
+// same (no filtering happens between the read and the reply).
+function formatTerminals(terminals) {
+  const stateCount = Array.isArray(terminals) ? terminals.length : 0;
+  const rows = (Array.isArray(terminals) ? terminals.slice() : [])
+    .sort((a, b) => Number(a.id) - Number(b.id))
+    .map((t) => `\`${t.id}\` — ${t.title || '(untitled)'} — ${t.status}`);
+  const header = `🖥️ **Terminals** — ${rows.length} of ${stateCount} (from /state)`;
+  return rows.length ? `${header}:\n${rows.join('\n')}` : `${header}.`;
+}
 
 // Shared: after a successful link, join the invoking user's CURRENT voice
 // channel and report. Returns nothing — it edits the (deferred) reply itself.
@@ -158,11 +182,31 @@ async function handle(interaction, ctx) {
     }
     const text = (interaction.options.getString('text') || '').trim();
     const media = interaction.options.getAttachment('media');
+    const terminalOpt = interaction.options.getInteger('terminal');
+    const targetTerminal = Number.isInteger(terminalOpt) ? terminalOpt : DEFAULT_PROMPT_TERMINAL;
     if (!text && !media) {
       await interaction.reply({ content: '❌ Give me some text and/or attach an image/video.', ephemeral: true });
       return;
     }
     await interaction.deferReply({ ephemeral: true });
+
+    // A non-manager target must exist RIGHT NOW — validated against a fresh
+    // /state read, before anything is saved or queued. 999 skips this (it's
+    // always the manager and can't appear/disappear from /state).
+    if (targetTerminal !== DEFAULT_PROMPT_TERMINAL) {
+      let terminals;
+      try {
+        terminals = await linkManager.listTerminals();
+      } catch (err) {
+        await interaction.editReply(`❌ Couldn't validate terminal ${targetTerminal}: ${err.message}`);
+        return;
+      }
+      const validIds = terminals.map((t) => Number(t.id)).sort((a, b) => a - b);
+      if (!validIds.includes(targetTerminal)) {
+        await interaction.editReply(`❌ Unknown terminal ${targetTerminal}. Valid ids: ${validIds.join(', ') || '(none)'}.`);
+        return;
+      }
+    }
 
     let saved = [];
     let skipped = [];
@@ -176,14 +220,36 @@ async function handle(interaction, ctx) {
     }
     // Frame by source: a file attachment → 'file' (with the saved path[s]); plain
     // text → 'typed' (verbatim, not "spoken/transcribed").
-    const res = await linkManager.forward(text, { source: saved.length ? 'file' : 'typed', paths: saved });
+    const opts = { source: saved.length ? 'file' : 'typed', paths: saved };
+    const res = targetTerminal === DEFAULT_PROMPT_TERMINAL
+      ? await linkManager.forward(text, opts)
+      : await linkManager.queueToTerminal(targetTerminal, text, opts);
     if (res && res.ok) {
       const bits = [];
       if (text) bits.push('text');
       if (saved.length) bits.push(`${saved.length} file(s)`);
-      await interaction.editReply(`✅ Sent to the manager (${bits.join(' + ')}).${skipped.length ? ` ⚠️ skipped: ${skipped.map((s) => `${s.name} (${s.reason})`).join(', ')}` : ''}`);
+      const dest = targetTerminal === DEFAULT_PROMPT_TERMINAL ? 'the manager' : `terminal ${targetTerminal}`;
+      await interaction.editReply(`✅ Sent to ${dest} (${bits.join(' + ')}).${skipped.length ? ` ⚠️ skipped: ${skipped.map((s) => `${s.name} (${s.reason})`).join(', ')}` : ''}`);
     } else {
       await interaction.editReply(`❌ Failed to send: ${(res && res.error) || 'unknown error'}`);
+    }
+    return;
+  }
+
+  if (interaction.commandName === 'terminals') {
+    // READ-ONLY listing of every terminal /state knows about. Authorization
+    // already happened at the top of handle() — same gate as every other
+    // privileged command.
+    if (!linkManager.isLinked()) {
+      await interaction.reply({ content: '❌ Not linked — run **/link** or **/resume** first.', ephemeral: true });
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const terminals = await linkManager.listTerminals();
+      await interaction.editReply(formatTerminals(terminals));
+    } catch (err) {
+      await interaction.editReply(`❌ Couldn't list terminals: ${err.message}`);
     }
     return;
   }
@@ -226,4 +292,4 @@ async function handle(interaction, ctx) {
   }
 }
 
-module.exports = { definitions, register, handle };
+module.exports = { definitions, register, handle, formatTerminals };

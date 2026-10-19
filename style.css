@@ -229,6 +229,46 @@ body {
 
 .header-left {
     flex: 1;
+    display: flex;
+    align-items: center;
+}
+
+/* macOS: the traffic lights sit over roughly x 0-78px of the header (T657).
+   The class is set in renderer.js from the user agent; 15px header padding +
+   75px here puts the Terminals button's left edge at x=90, 12px clear. */
+.mac-traffic-lights .header-left {
+    padding-left: 75px;
+}
+
+/* Terminal table-of-contents button (T487). The header is a window drag
+   region, so the button must opt out or clicks would just move the window
+   (same precedent as .remote-indicator in the footer). */
+.terminal-toc-btn {
+    -webkit-app-region: no-drag;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 10px;
+    background: none;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.terminal-toc-btn:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+}
+
+.terminal-toc-btn i,
+.terminal-toc-btn svg {
+    width: 14px;
+    height: 14px;
 }
 
 .title {
@@ -2027,6 +2067,223 @@ button#voice-btn.voice-button.processing:hover,
 
 .modal-body {
     padding: 20px 24px;
+}
+
+/* ---- Terminal table-of-contents modal (T487, docs/terminal-toc-spec.md) ----
+   Status pill colors match the terminal header's .terminal-status rules
+   (running/prompted); Error uses --accent-error, the palette's semantic
+   error color, since nothing else styles that status yet. */
+.terminal-toc-modal.show {
+    align-items: flex-start;
+    padding-top: 12vh;
+}
+
+.terminal-toc-content {
+    max-width: 640px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    max-height: 76vh;
+}
+
+.terminal-toc-content .modal-header {
+    padding: 14px 20px 12px;
+}
+
+.terminal-toc-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.terminal-toc-search {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 13px;
+    outline: none;
+}
+
+.terminal-toc-search:focus {
+    border-color: var(--accent-primary);
+}
+
+.terminal-toc-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.terminal-toc-chips {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.terminal-toc-chip {
+    padding: 3px 9px;
+    background: none;
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.terminal-toc-chip:hover {
+    color: var(--text-primary);
+}
+
+.terminal-toc-chip.active {
+    color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+    border-color: var(--border-secondary);
+}
+
+.terminal-toc-count {
+    color: var(--text-quaternary);
+    margin-left: 2px;
+}
+
+.terminal-toc-sort {
+    padding: 4px 6px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.terminal-toc-body {
+    padding: 6px 8px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+}
+
+.terminal-toc-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.terminal-toc-row:hover {
+    background-color: var(--bg-secondary);
+}
+
+.terminal-toc-row.selected {
+    background-color: var(--bg-tertiary);
+}
+
+.terminal-toc-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.terminal-toc-id {
+    color: var(--text-quaternary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    min-width: 30px;
+}
+
+.terminal-toc-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+}
+
+.terminal-toc-name {
+    color: var(--text-primary);
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.terminal-toc-dir {
+    color: var(--text-quaternary);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.terminal-toc-muted {
+    width: 13px;
+    height: 13px;
+    color: var(--text-quaternary);
+    flex-shrink: 0;
+}
+
+.terminal-toc-pill {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+}
+
+.terminal-toc-pill.running { color: var(--accent-warning); }
+.terminal-toc-pill.prompted { color: var(--accent-purple); }
+.terminal-toc-pill.error { color: var(--accent-error); }
+
+.terminal-toc-time {
+    color: var(--text-quaternary);
+    font-size: 11px;
+    min-width: 58px;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.terminal-toc-empty {
+    padding: 28px 16px;
+    text-align: center;
+    color: var(--text-tertiary);
+}
+
+.terminal-toc-empty-title {
+    margin: 0 0 4px;
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.terminal-toc-empty-text {
+    margin: 0 0 12px;
+    font-size: 12px;
+}
+
+.terminal-toc-hint {
+    padding: 8px 20px;
+    border-top: 1px solid var(--border-primary);
+    color: var(--text-quaternary);
+    font-size: 11px;
+}
+
+/* Brief outline on the terminal a TOC row jumped to, so the jump is
+   obvious even when it was already on screen. */
+.terminal-wrapper.toc-jump-flash {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
+    transition: outline-color 0.2s;
 }
 
 /* Color picker modal styles */
@@ -4904,6 +5161,12 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     bottom: var(--app-footer-height);
     z-index: 9000;
     background: var(--bg-secondary);
+    /* Electron reads drag regions from the top-level page only, never from an
+       iframe, and covering the header doesn't remove its drag region. Without
+       this, the local header's 40px drag strip sits under the remote view
+       and swallows every click on the remote header, including the Terminals
+       button (T657). The window still drags by the footer bar. */
+    -webkit-app-region: no-drag;
 }
 
 .remote-view-container.hidden {

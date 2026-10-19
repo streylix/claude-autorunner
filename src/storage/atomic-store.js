@@ -14,6 +14,9 @@ const fsSync = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+// A lock file older than this is a crash leftover, not a live write (T668).
+const STALE_LOCK_MS = 30000;
+
 // Schema definition to prevent corruption
 const schema = {
   settings: {
@@ -149,6 +152,19 @@ class AtomicStore {
         return true; // Lock acquired
       } catch (error) {
         if (error.code === 'EEXIST') {
+          // A write holds the lock for milliseconds, and writeQueue already
+          // serializes writes in this process, so a lock older than this is a
+          // leftover from a crash mid-write. Nothing else ever removes it
+          // (releaseLock only deletes its own id): one empty lock from 2026-07-27
+          // made every write time out for months, freezing the store (T668).
+          try {
+            const age = Date.now() - fsSync.statSync(this.lockPath).mtimeMs;
+            if (age > STALE_LOCK_MS) {
+              console.warn(`🔓 Removing stale write lock (${Math.round(age / 1000)}s old): ${this.lockPath}`);
+              await fs.unlink(this.lockPath);
+              continue;
+            }
+          } catch (e) { /* lock vanished between calls - just retry */ }
           // Lock exists, wait and retry
           await new Promise(resolve => setTimeout(resolve, 10));
           continue;

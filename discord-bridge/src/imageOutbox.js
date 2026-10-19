@@ -13,6 +13,13 @@
 //   { "image": "/abs/path/to/shot.png", "caption": "optional caption" }   → image
 //   { "video": "/abs/path/to/clip.mp4", "caption": "…", "maxBytes": N }    → video (re-encoded to fit)
 //   { "text": "check this link https://…" }                               → text post
+//   { "file": "/abs/path/to/draft.md", "caption": "…" }                    → plain-text file, as an ATTACHMENT
+// Any descriptor may also carry:
+//   "channel": "rma-drafts"  → post into that channel (created on first use)
+//                              instead of the default mirror channel.
+//   "wantResult": true       → write <descriptor>.result.json saying what
+//                              actually happened, which the post-* CLI reads and
+//                              prints, so a post can never fail silently.
 // On each tick the bridge posts it (if it's in a channel), then deletes the
 // descriptor. Descriptors are left to retry while the bot isn't in a channel, and
 // expired (TTL) ones are swept.
@@ -22,6 +29,7 @@ const path = require('path');
 const { config } = require('../config');
 const log = require('./log');
 const pathGuard = require('./pathGuard');
+const { isResultFile, writeResult } = require('./outbox');
 
 class ImageOutbox {
   constructor({ textMirror }) {
@@ -47,11 +55,74 @@ class ImageOutbox {
 
   _rm(p) { try { fs.unlinkSync(p); } catch (_) {} }
 
+  // Orphaned result files — the CLI gave up waiting, or died before reading one
+  // — would otherwise pile up in the outbox forever.
+  _sweepResults() {
+    let names;
+    try { names = fs.readdirSync(config.imageOutboxDir); } catch (_) { return; }
+    for (const n of names) {
+      if (!isResultFile(n)) continue;
+      const full = path.join(config.imageOutboxDir, n);
+      try {
+        if (Date.now() - fs.statSync(full).mtimeMs > config.imageDescriptorTtlMs) this._rm(full);
+      } catch (_) {}
+    }
+  }
+
+  // Route one descriptor to the right poster, in the right channel, and report
+  // back what happened. desc.channel names a channel to use instead of the
+  // default mirror; channelFor() creates it on first use, caches it, and falls
+  // back to the default (with a reason) rather than dropping the post.
+  async _deliver(desc, f) {
+    this.textMirror.lastPostError = null; // don't report a stale reason
+    const target = await this.textMirror.channelFor(desc.channel);
+    const opts = { channel: target.channel };
+    const base = {
+      channel: target.name,
+      requested: target.requested,
+      fallback: !!target.fallback,
+      reason: target.reason || null,
+    };
+    const refuse = (kind, reason) => {
+      log.warn(`image outbox: ${reason}`);
+      return Object.assign({ kind }, base, { ok: false, reason });
+    };
+    const done = (kind, ok) => Object.assign({ kind }, base, {
+      ok: !!ok,
+      reason: ok ? base.reason
+        : (this.textMirror.lastPostError || base.reason || 'the bridge could not post it — see the bridge log'),
+    });
+
+    if (desc.image) {
+      // Containment: only post files inside an allowed root (defeats
+      // arbitrary-path exfiltration via a spoofed descriptor).
+      const safe = pathGuard.safeMediaPath(desc.image);
+      if (!safe) return refuse('image', `refused image path outside allowed roots or not a file: ${desc.image}`);
+      return done('image', await this.textMirror.postImage(safe, desc.caption, opts));
+    }
+    if (desc.video) {
+      const safe = pathGuard.safeMediaPath(desc.video);
+      if (!safe) return refuse('video', `refused video path outside allowed roots or not a file: ${desc.video}`);
+      return done('video', await this.textMirror.postVideo(safe, desc.caption, desc.maxBytes, opts));
+    }
+    if (desc.file) {
+      const safe = pathGuard.safeMediaPath(desc.file);
+      if (!safe) return refuse('file', `refused file path outside allowed roots or not a file: ${desc.file}`);
+      return done('file', await this.textMirror.postFile(safe, desc.caption, opts));
+    }
+    if (typeof desc.text === 'string' && desc.text.trim()) {
+      return done('text', await this.textMirror.postText(desc.text, opts));
+    }
+    return refuse('unknown', `descriptor ${f} has no image, video, file, or text — discarding.`);
+  }
+
   async _tick() {
     if (this.busy) return;
+    this._sweepResults();
     let files;
     try {
-      files = fs.readdirSync(config.imageOutboxDir).filter((f) => f.endsWith('.json'));
+      files = fs.readdirSync(config.imageOutboxDir)
+        .filter((f) => f.endsWith('.json') && !isResultFile(f));
     } catch (_) { return; } // dir missing → nothing to do
     if (!files.length) return;
     files.sort(); // oldest-named first (timestamps in the names)
@@ -77,21 +148,10 @@ class ImageOutbox {
         // Not in a channel yet → leave it queued for when the bot joins.
         if (!this.textMirror || !this.textMirror.channel) continue;
 
-        if (desc.image) {
-          // Containment: only post files inside an allowed root (defeats
-          // arbitrary-path exfiltration via a spoofed descriptor).
-          const safe = pathGuard.safeMediaPath(desc.image);
-          if (!safe) log.warn(`image outbox: refused image path outside allowed roots or not a file: ${desc.image}`);
-          else await this.textMirror.postImage(safe, desc.caption);
-        } else if (desc.video) {
-          const safe = pathGuard.safeMediaPath(desc.video);
-          if (!safe) log.warn(`image outbox: refused video path outside allowed roots or not a file: ${desc.video}`);
-          else await this.textMirror.postVideo(safe, desc.caption, desc.maxBytes);
-        } else if (typeof desc.text === 'string' && desc.text.trim()) {
-          await this.textMirror.postText(desc.text);
-        } else {
-          log.warn(`image outbox: descriptor ${f} has neither image, video, nor text — discarding.`);
-        }
+        const result = await this._deliver(desc, f);
+        // Tell the CLI what actually happened (which channel, whether it had
+        // to fall back, why it failed) — a post must never vanish quietly.
+        if (desc.wantResult) writeResult(full, result);
         // Consume the descriptor whether the post succeeded or hard-failed (bad
         // path / too big) so it can't loop. (The no-channel case `continue`d above.)
         this._rm(full);
